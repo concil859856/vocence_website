@@ -1,0 +1,272 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 220 14% 4%;
+    --foreground: 220 20% 98%;
+    --card: 220 14% 6%;
+    --card-foreground: 220 20% 98%;
+    --popover: 220 14% 6%;
+    --popover-foreground: 220 20% 98%;
+    --primary: 68 100% 50%;
+    --primary-foreground: 220 14% 4%;
+    --secondary: 220 14% 10%;
+    --secondary-foreground: 220 20% 98%;
+    --muted: 220 14% 15%;
+    --muted-foreground: 220 10% 60%;
+    --accent: 68 100% 50%;
+    --accent-foreground: 220 14% 4%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 220 14% 15%;
+    --input: 220 14% 12%;
+    --ring: 68 100% 50%;
+    --radius: 1.25rem;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  
+  html {
+    scroll-behavior: smooth;
+  }
+  
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    background-color: #07080A;
+    color: #F5F7FF;
+    overflow-x: hidden;
+  }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #07080A;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #222;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #333;
+}
+
+/* Font utilities */
+.font-mono {
+  font-family: 'IBM Plex Mono', monospace;
+}
+
+/* Accent color utilities */
+.text-accent {
+  color: #DFFF00;
+}
+
+.bg-accent {
+  background-color: #DFFF00;
+}
+
+.border-accent {
+  border-color: #DFFF00;
+}
+
+/* Card styles */
+.card-vocence {
+  background: #0D1117;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 28px;
+  transition: border-color 0.2s ease;
+}
+
+.card-vocence:hover {
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+/* Glow effects */
+.glow-accent {
+  box-shadow: 0 0 60px rgba(223, 255, 0, 0.15);
+}
+
+/* Gradient text */
+.gradient-text {
+  background: linear-gradient(135deg, #DFFF00 0%, #2E7D32 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Noise texture overlay */
+.noise-overlay {
+  position: relative;
+}
+
+.noise-overlay::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+  opacity: 0.04;
+  pointer-events: none;
+  mix-blend-mode: overlay;
+}
+
+/* Button styles */
+.btn-primary {
+  @apply inline-flex items-center justify-center px-6 py-3 rounded-full font-medium transition-all duration-200;
+  background: #F5F7FF;
+  color: #07080A;
+}
+
+.btn-primary:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(223, 255, 0, 0.2);
+}
+
+.btn-outline {
+  @apply inline-flex items-center justify-center px-6 py-3 rounded-full font-medium transition-all duration-200;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #F5F7FF;
+}
+
+.btn-outline:hover {
+  border-color: rgba(255, 255, 255, 0.4);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+/* Label style */
+.label-mono {
+  @apply text-xs font-medium uppercase tracking-widest;
+  color: #A7B0B7;
+}
+
+/* Navigation active state */
+.nav-active {
+  color: #F5F7FF;
+  position: relative;
+}
+
+.nav-active::after {
+  content: '';
+  position: absolute;
+  bottom: -1px;
+  left: 0;
+  width: 100%;
+  height: 2px;
+  background: #DFFF00;
+  border-radius: 2px 2px 0 0;
+}
+
+/* Waveform animation */
+@keyframes waveform {
+  0%, 100% { transform: scaleY(0.6); }
+  50% { transform: scaleY(1); }
+}
+
+.waveform-bar {
+  animation: waveform 1.2s ease-in-out infinite;
+}
+
+/* Pulse animation */
+@keyframes pulse-glow {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.pulse-glow {
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+/* Fade in animation */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.4s ease forwards;
+}
+
+/* Selection color */
+::selection {
+  background: rgba(223, 255, 0, 0.3);
+  color: #F5F7FF;
+}
+
+/* Image hover effects */
+img {
+  transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.group:hover img {
+  filter: brightness(1.1);
+}
+
+/* Dashboard (design) glass panels & scrollbar */
+.glass-panel {
+  background: #0f0f0f;
+  border: 1px solid #27272a;
+}
+
+.dashboard-page .custom-scrollbar::-webkit-scrollbar {
+  width: 4px;
+}
+.dashboard-page .custom-scrollbar::-webkit-scrollbar-track {
+  background: #1a1a1a;
+}
+.dashboard-page .custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #333;
+  border-radius: 2px;
+}
+.dashboard-page .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #444;
+}
+
+/* Live indicator pulse (appear / disappear like live ramp) */
+@keyframes live-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.35; transform: scale(0.85); }
+}
+
+.dashboard-page .live-dot {
+  animation: live-pulse 1.5s ease-in-out infinite;
+}
+
+/* Validation row: live evaluating state (border + glow every 0.5s) */
+@keyframes evaluating-live {
+  0%, 100% {
+    border-color: rgba(209, 248, 64, 0.4);
+    box-shadow: 0 0 10px rgba(209, 248, 64, 0.12);
+    background-color: rgba(26, 26, 26, 0.95);
+  }
+  50% {
+    border-color: rgba(209, 248, 64, 0.85);
+    box-shadow: 0 0 14px rgba(209, 248, 64, 0.28);
+    background-color: rgba(209, 248, 64, 0.05);
+  }
+}
+
+.dashboard-page .validation-row-evaluating {
+  animation: evaluating-live 0.5s ease-in-out infinite;
+}
+
+/* Smooth scroll animations */
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+  }
+}
