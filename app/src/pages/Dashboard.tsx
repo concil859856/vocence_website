@@ -23,7 +23,6 @@ import {
   type ActivityBucket,
   type RecentEvaluation,
   type ValidationStatusResponse,
-  type LivePendingItem,
 } from '../services/dashboardApi';
 import { AudioPlayerBar } from '../components/AudioPlayerBar';
 
@@ -110,16 +109,6 @@ function getMockActivity7d(): ActivityBucket[] {
   });
 }
 
-function formatHotkey(hotkey: string) {
-  if (!hotkey || hotkey.length < 12) return hotkey;
-  return `${hotkey.slice(0, 6)}...${hotkey.slice(-4)}`;
-}
-
-function formatShortHotkey(hotkey: string) {
-  if (!hotkey || hotkey.length < 10) return hotkey;
-  return `${hotkey.slice(0, 3)}...${hotkey.slice(-2)}`;
-}
-
 /** Truncate with "…" in the middle: first `start` + last `end` chars. */
 function formatStartEnd(str: string | null | undefined, start: number, end: number): string {
   if (!str) return '—';
@@ -136,8 +125,6 @@ function formatTimeAgo(iso: string | null): string {
   if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
   return `${Math.floor(sec / 86400)}d ago`;
 }
-
-const AVATAR_COLORS = ['bg-blue-500', 'bg-pink-500', 'bg-orange-500', 'bg-teal-500', 'bg-purple-500'];
 
 export function Dashboard() {
   const dashboardRef = useRef<HTMLDivElement>(null);
@@ -327,7 +314,7 @@ export function Dashboard() {
       };
     }
     if (validationStatus && (validationStatus.pending.length > 0 || validationStatus.evaluations.length > 0)) {
-      const pendingRows: { minerUid: string; task: string; result: EvalResult; sortAt: string; detail: ValidationDetail }[] = [];
+      const pendingRows: { minerUid: string; task: string; result: EvalResult; sortAt: string; detail: ValidationDetail; minerHotkey?: string }[] = [];
       for (const p of validationStatus.pending) {
         for (const m of p.miner_hotkeys) {
           pendingRows.push({
@@ -519,11 +506,11 @@ export function Dashboard() {
                 )}
               </div>
               <div className="flex justify-between mt-3 text-[10px] text-gray-500 font-mono">
-                <span>{activityBuckets[0]?.at ? new Date(activityBuckets[0].at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '00:00'}</span>
+                <span>{(() => { const at = activityBuckets[0]?.at; return at ? new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '00:00'; })()}</span>
                 <span>06:00</span>
                 <span>12:00</span>
                 <span>18:00</span>
-                <span>{activityBuckets[activityBuckets.length - 1]?.at ? new Date(activityBuckets[activityBuckets.length - 1].at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '23:59'}</span>
+                <span>{(() => { const at = activityBuckets[activityBuckets.length - 1]?.at; return at ? new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '23:59'; })()}</span>
               </div>
             </div>
 

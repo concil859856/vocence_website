@@ -14,7 +14,7 @@ export function AudioPlayerBar({ src, label, className = '' }: AudioPlayerBarPro
   const [playing, setPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
-  const [loaded, setLoaded] = useState(false);
+  const [, setLoaded] = useState(false);
   const [volume, setVolume] = useState(1);
   const [downloading, setDownloading] = useState(false);
 

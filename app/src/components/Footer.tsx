@@ -14,9 +14,9 @@ export function Footer() {
     features: [
       { label: 'Studio', href: '/studio' },
       { label: 'API', href: '/docs#api' },
-      { label: 'Models', comingSoon: true as const },
+      { label: 'Models', comingSoon: true },
       { label: 'Analytics', href: '/dashboard' },
-    ] as const,
+    ] as Array<{ label: string; href?: string; comingSoon?: true }>,
     product: [
       { label: 'Pricing', comingSoon: true as const },
       { label: 'Integrations', href: '#' },
@@ -75,13 +75,15 @@ export function Footer() {
                       {link.label}
                       <span className="text-xs text-[#666] font-medium">Coming soon</span>
                     </span>
-                  ) : (
+                  ) : link.href ? (
                     <Link
                       to={link.href}
                       className="text-sm text-[#A7B0B7] hover:text-white transition-colors"
                     >
                       {link.label}
                     </Link>
+                  ) : (
+                    <span className="text-sm text-[#A7B0B7]">{link.label}</span>
                   )}
                 </li>
               ))}

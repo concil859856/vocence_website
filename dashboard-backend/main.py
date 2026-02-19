@@ -8,6 +8,10 @@ owner's Vocence DB.
 """
 
 import os
+
+from dotenv import load_dotenv
+
+load_dotenv()  # load .env so PORT, DATABASE_URL, JWT_SECRET, etc. are set
 from contextlib import asynccontextmanager
 from pathlib import Path
 
