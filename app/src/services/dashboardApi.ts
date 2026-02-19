@@ -1,10 +1,11 @@
 /**
- * Dashboard API client — fetches from dashboard-backend (owner DB).
- * Set VITE_DASHBOARD_API_URL in .env (e.g. http://localhost:3002).
+ * Dashboard API client — same backend as auth (VITE_API_URL).
  */
 
 const DASHBOARD_BASE =
-  import.meta.env.VITE_DASHBOARD_API_URL || 'http://localhost:3002';
+  import.meta.env.VITE_API_URL != null && import.meta.env.VITE_API_URL !== ''
+    ? import.meta.env.VITE_API_URL.replace(/\/$/, '')
+    : (import.meta.env.PROD ? '' : 'http://localhost:34717');
 
 async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
   const url = `${DASHBOARD_BASE}${path}`;

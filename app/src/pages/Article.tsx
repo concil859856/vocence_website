@@ -7,7 +7,7 @@ import { dashboardApi } from '../services/dashboardApi';
 
 gsap.registerPlugin(ScrollTrigger);
 
-const DASHBOARD_BASE = import.meta.env.VITE_DASHBOARD_API_URL || 'http://localhost:3002';
+const DASHBOARD_BASE = import.meta.env.VITE_API_URL ?? (import.meta.env.PROD ? '' : 'http://localhost:34717');
 
 function imageUrl(url: string): string {
   if (!url || url.startsWith('http')) return url || '';

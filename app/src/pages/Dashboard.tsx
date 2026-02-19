@@ -392,7 +392,7 @@ export function Dashboard() {
               <p className="mt-1 text-amber-200/90">
                 Start the dashboard backend for live data: <code className="bg-black/30 px-1.5 py-0.5 rounded font-mono text-xs">cd vocence_website/dashboard-backend && python main.py</code>
               </p>
-              <p className="mt-1 text-amber-200/80 text-xs">API: {import.meta.env.VITE_DASHBOARD_API_URL || 'http://localhost:3002'}</p>
+              <p className="mt-1 text-amber-200/80 text-xs">API: {import.meta.env.VITE_API_URL || (import.meta.env.PROD ? '—' : 'http://localhost:34717')}</p>
             </div>
             <button onClick={() => fetchAll(true)} className="text-xs font-medium text-amber-300 hover:text-white shrink-0">
               Retry

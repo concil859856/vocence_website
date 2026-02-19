@@ -29,8 +29,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (storedToken && storedUser) {
           try {
             // Check if API is configured (not using default fallback)
-            const hasApiConfigured = import.meta.env.VITE_API_BASE_URL && 
-                                     import.meta.env.VITE_API_BASE_URL !== 'http://localhost:3001/api';
+            const hasApiConfigured = Boolean(import.meta.env.VITE_API_URL);
             
             if (hasApiConfigured) {
               // Try to verify with API

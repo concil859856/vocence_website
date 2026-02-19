@@ -25,6 +25,33 @@ CREATE TABLE IF NOT EXISTS registered_users (
 );
 """
 
+# Auth (login, credits, history) — merged from backend-example
+AUTH_USERS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS auth_users (
+    id TEXT PRIMARY KEY,
+    email TEXT UNIQUE NOT NULL,
+    name TEXT NOT NULL,
+    picture TEXT,
+    credits INTEGER NOT NULL DEFAULT 100,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
+AUTH_HISTORY_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS auth_history (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    type TEXT NOT NULL,
+    content TEXT,
+    style_prompt TEXT,
+    model TEXT,
+    meta TEXT,
+    duration TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (user_id) REFERENCES auth_users(id)
+);
+"""
+
 
 async def get_connection() -> aiosqlite.Connection:
     conn = await aiosqlite.connect(DB_PATH)
@@ -36,6 +63,8 @@ async def ensure_tables() -> None:
     conn = await get_connection()
     try:
         await conn.execute(REGISTERED_USERS_TABLE_SQL)
+        await conn.execute(AUTH_USERS_TABLE_SQL)
+        await conn.execute(AUTH_HISTORY_TABLE_SQL)
         await conn.commit()
     finally:
         await conn.close()

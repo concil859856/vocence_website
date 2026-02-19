@@ -1,7 +1,10 @@
-// API Service for backend communication
-// Replace the base URL with your actual backend API URL
+// API Service for backend communication (auth, users, credits).
+// Uses VITE_API_URL + '/api' (same backend as dashboard).
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001/api';
+const API_BASE_URL =
+  import.meta.env.VITE_API_URL != null && import.meta.env.VITE_API_URL !== ''
+    ? `${import.meta.env.VITE_API_URL.replace(/\/$/, '')}/api`
+    : (import.meta.env.PROD ? '' : 'http://localhost:34717/api');
 
 export interface User {
   id: string;

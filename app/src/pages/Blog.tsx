@@ -4,7 +4,7 @@ import { ArrowRight, Clock } from 'lucide-react';
 import gsap from 'gsap';
 import { dashboardApi } from '../services/dashboardApi';
 
-const DASHBOARD_BASE = import.meta.env.VITE_DASHBOARD_API_URL || 'http://localhost:3002';
+const DASHBOARD_BASE = import.meta.env.VITE_API_URL ?? (import.meta.env.PROD ? '' : 'http://localhost:34717');
 
 type FilterType = 'all' | 'technical' | 'releases' | 'roadmap' | 'community';
 

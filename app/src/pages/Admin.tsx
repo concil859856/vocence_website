@@ -154,7 +154,8 @@ export function Admin() {
       setSubmitting(true);
       try {
         const up = await dashboardApi.uploadBlogImage(imageFile, user.email);
-        imageUrl = up.url.startsWith('http') ? up.url : `${import.meta.env.VITE_DASHBOARD_API_URL || 'http://localhost:3002'}${up.url}`;
+        const dashboardBase = import.meta.env.VITE_API_URL ?? (import.meta.env.PROD ? '' : 'http://localhost:34717');
+        imageUrl = up.url.startsWith('http') ? up.url : `${dashboardBase}${up.url}`;
       } catch (err) {
         setPostsError(err instanceof Error ? err.message : 'Image upload failed');
         setSubmitting(false);

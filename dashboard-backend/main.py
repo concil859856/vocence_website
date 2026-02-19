@@ -24,7 +24,7 @@ from database import (
     ensure_live_evaluation_pending_table,
 )
 from local_db import ensure_tables as ensure_local_tables
-from routers import dashboard
+from routers import auth, dashboard
 
 
 UPLOADS_DIR = Path(__file__).resolve().parent / "uploads"
@@ -56,6 +56,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth.router)
 app.include_router(dashboard.router)
 app.mount("/api/dashboard/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
 
