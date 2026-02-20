@@ -59,4 +59,14 @@ Interactive API docs: **http://localhost:34717/docs** (or your `PORT`)
 
 ## Frontend
 
-In the website app (and on Vercel), set **`VITE_API_URL`** to this backend's public URL (e.g. `http://YOUR_SERVER_IP:34717`). This single URL is used for both dashboard and auth. The port must match the `PORT` or `DASHBOARD_PORT` this backend is run with.
+In the website app (and on Vercel), set **`VITE_API_URL`** to this backend's public URL. This single URL is used for both dashboard and auth. The port must match the `PORT` or `DASHBOARD_PORT` this backend is run with.
+
+### Vercel / HTTPS (mixed content)
+
+If the frontend is served over **HTTPS** (e.g. Vercel), the browser will **block** requests to an **http://** API URL (mixed content). So you must expose this backend over **HTTPS** and set `VITE_API_URL` to an **https://** URL. Options:
+
+- **Reverse proxy with SSL**: Run nginx or Caddy on the same server (or in front of it) with a domain and Let's Encrypt, and proxy to `http://127.0.0.1:34717`. Set `VITE_API_URL=https://your-api-domain.com`.
+- **Cloudflare Tunnel**: Install `cloudflared`, create a tunnel to `http://localhost:34717`, and use the generated `https://xxx.trycloudflare.com` (or your custom domain) as `VITE_API_URL`.
+- **Any HTTPS proxy** that forwards to this backend.
+
+Then in Vercel env set `VITE_API_URL=https://...` (not `http://...`).

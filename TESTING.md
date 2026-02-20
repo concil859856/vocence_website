@@ -75,7 +75,7 @@ Open **http://localhost:5173**.
 | **View whole list** | Dashboard | Click **"View whole list"** → modal with full miners table (up to 500). |
 | **Validation status** | Dashboard | Right panel shows recent evaluations from `validator_evaluations`. |
 | **Blocklist** | Dashboard | **"Blacklisted hotkeys"** → add/remove (writes Postgres `blocked_entities`). |
-| **Admin** | Admin (must be logged in as **medfil777@gmail.com**) | **Validators**: add validator (UID + hotkey). **Registered users**: list of users stored in SQLite. **Blocklist** & **Blog** as before. |
+| **Admin** | Admin (must be logged in as the email set in **VITE_ADMIN_EMAIL** / **ADMIN_EMAIL**) | **Validators**: add validator (UID + hotkey). **Registered users**: list of users stored in SQLite. **Blocklist** & **Blog** as before. |
 | **Registered users** | Login + Admin | Log in with any Google account → user is stored in SQLite. Then as admin, open Admin → **Registered users** to see the list. |
 
 ### 6. Test without Postgres (backend only)
@@ -105,4 +105,4 @@ curl http://localhost:3002/api/dashboard/users \
 
 - **UI + mock data:** run only `vocence_website/app` (`npm run dev`).
 - **Real dashboard data:** run Vocence Postgres + `dashboard-backend` + `app` with `VITE_DASHBOARD_API_URL=http://localhost:3002`.
-- **Admin and registered users:** log in (Google) and use Admin as **medfil777@gmail.com**; registered users are stored in SQLite and listed under Admin → Registered users.
+- **Admin and registered users:** set **VITE_ADMIN_EMAIL** (app) and **ADMIN_EMAIL** (dashboard-backend) in .env to your admin email; log in with that Google account to access Admin. Registered users are stored in SQLite and listed under Admin → Registered users.

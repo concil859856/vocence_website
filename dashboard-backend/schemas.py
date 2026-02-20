@@ -1,5 +1,7 @@
 """Pydantic schemas for dashboard API responses."""
 
+import os
+
 from pydantic import BaseModel
 
 
@@ -55,8 +57,8 @@ class ActivityResponse(BaseModel):
     buckets: list[ActivityBucketResponse]
 
 
-# Blocklist (blocked_entities table)
-ADMIN_EMAIL = "medfil777@gmail.com"
+# Blocklist (blocked_entities table). Set ADMIN_EMAIL in .env.
+ADMIN_EMAIL = (os.environ.get("ADMIN_EMAIL") or "").strip()
 
 
 class BlocklistResponse(BaseModel):

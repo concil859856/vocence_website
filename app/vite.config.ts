@@ -5,7 +5,8 @@ import { inspectAttr } from 'kimi-plugin-inspect-react'
 
 // https://vite.dev/config/
 export default defineConfig({
-  base: './',
+  // Use '/' so assets load from site root when server serves index.html for SPA routes (e.g. /dashboard)
+  base: '/',
   plugins: [inspectAttr(), react()],
   resolve: {
     alias: {

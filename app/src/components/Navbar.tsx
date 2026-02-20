@@ -4,6 +4,7 @@ import { Menu, X } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { AuthModal } from './AuthModal';
 import { UserMenu } from './UserMenu';
+import { ADMIN_EMAIL } from '../config';
 
 export function Navbar() {
   const location = useLocation();
@@ -11,7 +12,7 @@ export function Navbar() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const { user, isAuthenticated } = useAuth();
-  const isAdmin = isAuthenticated && user?.email === 'medfil777@gmail.com';
+  const isAdmin = isAuthenticated && !!ADMIN_EMAIL && user?.email === ADMIN_EMAIL;
 
   useEffect(() => {
     const handleScroll = () => {

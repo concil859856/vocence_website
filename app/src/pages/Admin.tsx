@@ -3,8 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { dashboardApi, type BlogPost, type RegisteredUser, type DashboardValidator } from '../services/dashboardApi';
 import { ShieldOff, Plus, Trash2, Copy, ImagePlus, FileText, Users, ShieldCheck } from 'lucide-react';
+import { ADMIN_EMAIL } from '../config';
 
-const ADMIN_EMAIL = 'medfil777@gmail.com';
 const ACCENT = '#D1F840';
 
 export function Admin() {

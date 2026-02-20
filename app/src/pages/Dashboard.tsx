@@ -377,9 +377,9 @@ export function Dashboard() {
             <div className="text-amber-200 text-sm flex-1">
               <p className="font-medium">Showing sample data.</p>
               <p className="mt-1 text-amber-200/90">
-                Start the dashboard backend for live data: <code className="bg-black/30 px-1.5 py-0.5 rounded font-mono text-xs">cd vocence_website/dashboard-backend && python main.py</code>
+                This site is served over HTTPS. Browsers block requests to <strong>http://</strong> APIs (mixed content). Use an <strong>https://</strong> URL for the dashboard API: put the backend behind a reverse proxy with SSL (e.g. nginx, Caddy, or Cloudflare Tunnel) and set <code className="bg-black/30 px-1.5 py-0.5 rounded font-mono text-xs">VITE_API_URL</code> to that <code className="bg-black/30 px-1.5 py-0.5 rounded font-mono text-xs">https://...</code> URL.
               </p>
-              <p className="mt-1 text-amber-200/80 text-xs">API: {import.meta.env.VITE_API_URL || (import.meta.env.PROD ? '—' : 'http://localhost:34717')}</p>
+              <p className="mt-1 text-amber-200/80 text-xs">Configured API: {import.meta.env.VITE_API_URL || (import.meta.env.PROD ? '—' : 'http://localhost:34717')}</p>
             </div>
             <button onClick={() => fetchAll(true)} className="text-xs font-medium text-amber-300 hover:text-white shrink-0">
               Retry

@@ -33,82 +33,34 @@ const filters: { id: FilterType; label: string }[] = [
   { id: 'community', label: 'Community' },
 ];
 
-const articles: Article[] = [
-  {
-    id: '1',
-    title: 'Advancing Phase 2: From Prompt Embeddings to Dynamic Prosody',
-    excerpt:
-      "We're officially transitioning into the next phase of our roadmap. This deep-dive explores how our new latent diffusion model handles complex emotional cues within prompts, significantly increasing MOS scores across the subnet.",
-    category: 'Roadmap',
-    date: 'March 14, 2024',
-    readTime: '8 min read',
-    image: '/blog_news_1.jpg',
-    featured: true,
-  },
-  {
-    id: '2',
-    title: 'Optimizing Miner Efficiency with Tensor Parallelism',
-    excerpt:
-      'A guide for miners on implementing the latest quantization techniques to reduce VRAM requirements while maintaining high response fidelity for validation.',
-    category: 'Technical',
-    date: 'March 10, 2024',
-    readTime: '5 min read',
-    image: '/blog_tech_1.jpg',
-  },
-  {
-    id: '3',
-    title: 'Vocence Studio v1.2: Instant Voice Cloning is Here',
-    excerpt:
-      'Introducing our zero-shot voice cloning interface. Users can now upload 30 seconds of audio to create high-fidelity digital replicas for cross-prompt synthesis.',
-    category: 'Product Release',
-    date: 'March 05, 2024',
-    readTime: '3 min read',
-    image: '/blog_release_1.jpg',
-  },
-  {
-    id: '4',
-    title: 'Governance Proposal: Subnet Incentive Realignment',
-    excerpt:
-      'A summary of the community proposal to adjust the weighting of Word Error Rate (WER) versus Latency (RTF) in the validator score calculation.',
-    category: 'Community',
-    date: 'Feb 28, 2024',
-    readTime: '4 min read',
-    image: '/blog_community_1.jpg',
-  },
-  {
-    id: '5',
-    title: 'Analyzing MOS Distribution Across 1,000 Miners',
-    excerpt:
-      'An end-of-month technical audit of subnet quality performance. We analyze how decentralized compute affects model consistency and output diversity.',
-    category: 'Technical',
-    date: 'Feb 22, 2024',
-    readTime: '12 min read',
-    image: '/blog_tech_2.jpg',
-  },
-];
-
 export function Blog() {
   const [activeFilter, setActiveFilter] = useState<FilterType>('all');
   const [apiArticles, setApiArticles] = useState<Article[]>([]);
+  const [loading, setLoading] = useState(true);
   const blogRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    dashboardApi.getBlogPosts().then((res) => {
-      const list: Article[] = (res.posts || []).map((p) => ({
-        id: p.id,
-        title: p.title,
-        excerpt: p.excerpt,
-        category: p.category,
-        date: p.date,
-        readTime: p.read_time,
-        image: imageUrl(p.image),
-        featured: p.featured,
-      }));
-      setApiArticles(list);
-    }).catch(() => setApiArticles([]));
+    setLoading(true);
+    dashboardApi
+      .getBlogPosts()
+      .then((res) => {
+        const list: Article[] = (res.posts || []).map((p) => ({
+          id: p.id,
+          title: p.title,
+          excerpt: p.excerpt,
+          category: p.category,
+          date: p.date,
+          readTime: p.read_time,
+          image: imageUrl(p.image),
+          featured: p.featured,
+        }));
+        setApiArticles(list);
+      })
+      .catch(() => setApiArticles([]))
+      .finally(() => setLoading(false));
   }, []);
 
-  const articlesList = apiArticles.length > 0 ? apiArticles : articles;
+  const articlesList = apiArticles;
 
   const filteredArticles =
     activeFilter === 'all'
@@ -127,6 +79,7 @@ export function Blog() {
   const regularArticles = filteredArticles.filter((a) => !a.featured);
 
   useEffect(() => {
+    if (loading) return;
     gsap.fromTo(
       '.blog-header',
       { opacity: 0, y: 20 },
@@ -142,7 +95,7 @@ export function Blog() {
       { opacity: 0, y: 30 },
       { opacity: 1, y: 0, duration: 0.5, stagger: 0.1, delay: 0.2 }
     );
-  }, [activeFilter]);
+  }, [activeFilter, loading]);
 
   return (
     <div ref={blogRef} className="min-h-screen bg-[#07080A] pt-24 pb-16 px-6 lg:px-8">
@@ -174,7 +127,37 @@ export function Blog() {
           ))}
         </div>
 
+        {/* Loading state */}
+        {loading && (
+          <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {[1, 2, 3].map((i) => (
+              <div
+                key={i}
+                className="card-vocence overflow-hidden animate-pulse"
+                style={{ animationDelay: `${i * 0.1}s` }}
+              >
+                <div className="h-48 bg-white/5" />
+                <div className="p-6 space-y-3">
+                  <div className="h-4 bg-white/10 rounded w-1/3" />
+                  <div className="h-5 bg-white/10 rounded w-full" />
+                  <div className="h-4 bg-white/10 rounded w-full" />
+                  <div className="h-4 bg-white/10 rounded w-2/3" />
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Empty state */}
+        {!loading && articlesList.length === 0 && (
+          <div className="text-center py-16 text-[#A7B0B7]">
+            <p className="text-lg">No blog posts yet.</p>
+            <p className="text-sm mt-2">Check back later for updates.</p>
+          </div>
+        )}
+
         {/* Articles Grid */}
+        {!loading && articlesList.length > 0 && (
         <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
           {/* Featured Article */}
           {featuredArticle && activeFilter === 'all' && (
@@ -263,11 +246,14 @@ export function Blog() {
             </Link>
           ))}
         </div>
+        )}
 
         {/* Load More */}
+        {!loading && articlesList.length > 0 && (
         <div className="mt-12 text-center">
           <button className="btn-outline">Load More Articles</button>
         </div>
+        )}
       </div>
     </div>
   );

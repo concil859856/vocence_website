@@ -1,0 +1,3 @@
+# SPA fallback: serve index.html for all routes so client-side router works (e.g. /dashboard, /blog)
+# Used by Netlify and Cloudflare Pages. Prevents 404 on refresh or direct URL.
+/*    /index.html   200
