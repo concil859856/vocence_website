@@ -3,12 +3,21 @@ import { Link } from 'react-router-dom';
 import { ArrowRight, Play, Cpu, Mic, Globe, Zap, Shield, Check, Square } from 'lucide-react';
 import gsap from 'gsap';
 import { ScrollTrigger } from 'gsap/ScrollTrigger';
-import { dashboardApi, type DashboardOverview } from '../services/dashboardApi';
+import { dashboardApi, type DashboardOverview, type BlogPost } from '../services/dashboardApi';
 
 gsap.registerPlugin(ScrollTrigger);
 
+const DASHBOARD_BASE = import.meta.env.VITE_API_URL ?? (import.meta.env.PROD ? '' : 'http://localhost:34717');
+function blogImageUrl(url: string): string {
+  if (!url) return '';
+  if (url.startsWith('http')) return url;
+  return `${DASHBOARD_BASE}${url.startsWith('/') ? '' : '/'}${url}`;
+}
+
 export function Overview() {
   const [overview, setOverview] = useState<DashboardOverview | null>(null);
+  const [latestPosts, setLatestPosts] = useState<BlogPost[]>([]);
+  const [postsLoading, setPostsLoading] = useState(true);
   const [samplePlaying, setSamplePlaying] = useState(false);
   const sampleAudioRef = useRef<HTMLAudioElement>(null);
   const heroRef = useRef<HTMLDivElement>(null);
@@ -22,6 +31,15 @@ export function Overview() {
 
   useEffect(() => {
     dashboardApi.getOverview().then(setOverview).catch(() => setOverview(null));
+  }, []);
+
+  useEffect(() => {
+    setPostsLoading(true);
+    dashboardApi
+      .getBlogPosts(3, 0)
+      .then((res) => setLatestPosts(res.posts || []))
+      .catch(() => setLatestPosts([]))
+      .finally(() => setPostsLoading(false));
   }, []);
 
   const toggleSamplePlayback = () => {
@@ -716,64 +734,53 @@ export function Overview() {
           </div>
 
           <div className="grid md:grid-cols-3 gap-6">
-            {[
-              {
-                category: 'Network News',
-                title: 'Subnet 22 Emissions Increase by 15%',
-                description:
-                  'Following the latest consensus vote, the incentive mechanism has been refined to reward high-fidelity prompt adherence.',
-                date: 'May 24, 2024',
-                readTime: '4 min read',
-                image: '/blog_news_1.jpg',
-              },
-              {
-                category: 'Product Release',
-                title: 'Introducing Vocence Studio v2.0',
-                description:
-                  'A complete overhaul of our web-based synthesis platform. Now featuring zero-shot voice cloning and granular emotional control.',
-                date: 'May 18, 2024',
-                readTime: '6 min read',
-                image: '/blog_release_1.jpg',
-              },
-              {
-                category: 'Community',
-                title: 'Developer Spotlight: Building with Vocence SDK',
-                description:
-                  'We interview the team at SpeechFlow on how they integrated Vocence into their production-ready translation workflow.',
-                date: 'May 12, 2024',
-                readTime: '8 min read',
-                image: '/blog_community_1.jpg',
-              },
-            ].map((news, index) => (
-              <article
-                key={index}
-                className="news-card card-vocence overflow-hidden group cursor-pointer"
-              >
-                <div className="h-48 overflow-hidden">
-                  <img
-                    src={news.image}
-                    alt={news.title}
-                    className="w-full h-full object-cover group-hover:scale-110 group-hover:brightness-110 transition-all duration-500"
-                  />
-                </div>
-                <div className="p-6">
-                  <span className="inline-block px-3 py-1 rounded-full bg-white/5 text-xs font-mono text-[#A7B0B7] mb-3">
-                    {news.category}
-                  </span>
-                  <h3 className="text-lg font-semibold mb-2 group-hover:text-[#DFFF00] transition-colors">
-                    {news.title}
-                  </h3>
-                  <p className="text-sm text-[#A7B0B7] mb-4 line-clamp-2">
-                    {news.description}
-                  </p>
-                  <div className="flex items-center gap-2 text-xs text-[#666]">
-                    <span>{news.date}</span>
-                    <span>•</span>
-                    <span>{news.readTime}</span>
+            {postsLoading ? (
+              [...Array(3)].map((_, i) => (
+                <div key={i} className="news-card card-vocence overflow-hidden animate-pulse">
+                  <div className="h-48 bg-white/5" />
+                  <div className="p-6 space-y-3">
+                    <div className="h-4 bg-white/10 rounded w-1/3" />
+                    <div className="h-5 bg-white/10 rounded w-full" />
+                    <div className="h-4 bg-white/10 rounded w-full" />
+                    <div className="h-4 bg-white/10 rounded w-2/3" />
                   </div>
                 </div>
-              </article>
-            ))}
+              ))
+            ) : latestPosts.length === 0 ? (
+              <p className="col-span-full text-center text-[#A7B0B7] py-8">No blog posts yet.</p>
+            ) : (
+              latestPosts.map((post) => (
+                <Link
+                  key={post.id}
+                  to={`/blog/${post.id}`}
+                  className="news-card card-vocence overflow-hidden group cursor-pointer block"
+                >
+                  <div className="h-48 overflow-hidden">
+                    <img
+                      src={blogImageUrl(post.image)}
+                      alt={post.title}
+                      className="w-full h-full object-cover group-hover:scale-110 group-hover:brightness-110 transition-all duration-500"
+                    />
+                  </div>
+                  <div className="p-6">
+                    <span className="inline-block px-3 py-1 rounded-full bg-white/5 text-xs font-mono text-[#A7B0B7] mb-3">
+                      {post.category}
+                    </span>
+                    <h3 className="text-lg font-semibold mb-2 group-hover:text-[#DFFF00] transition-colors">
+                      {post.title}
+                    </h3>
+                    <p className="text-sm text-[#A7B0B7] mb-4 line-clamp-2">
+                      {post.excerpt}
+                    </p>
+                    <div className="flex items-center gap-2 text-xs text-[#666]">
+                      <span>{post.date}</span>
+                      <span>•</span>
+                      <span>{post.read_time}</span>
+                    </div>
+                  </div>
+                </Link>
+              ))
+            )}
           </div>
         </div>
       </section>
