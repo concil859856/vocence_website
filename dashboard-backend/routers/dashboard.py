@@ -205,6 +205,30 @@ async def add_validator(
     )
 
 
+@router.delete("/validators/{uid:int}")
+async def remove_validator(
+    uid: int,
+    _: str = Depends(require_admin_email),
+):
+    """Remove a validator from validator_registry by UID (admin only)."""
+    async with acquire() as conn:
+        try:
+            result = await conn.execute(
+                "DELETE FROM validator_registry WHERE uid = $1",
+                uid,
+            )
+        except Exception as e:
+            if "does not exist" in str(e).lower():
+                raise HTTPException(
+                    status_code=503,
+                    detail="validator_registry table not found. Ensure Vocence DB schema is applied.",
+                )
+            raise
+    if result == "DELETE 0":
+        raise HTTPException(status_code=404, detail="Validator not found")
+    return {"ok": True, "message": "Validator removed"}
+
+
 def _evaluations_from_rows(rows) -> list:
     return [
         RecentEvaluationResponse(
@@ -572,14 +596,22 @@ UPLOADS_DIR = Path(__file__).resolve().parent.parent / "uploads"
 
 
 @router.get("/blog", response_model=BlogPostListResponse)
-async def list_blog_posts():
-    """List all blog posts (newest first)."""
+async def list_blog_posts(
+    limit: int = Query(12, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
+    """List blog posts (newest first) with optional pagination."""
     async with acquire() as conn:
+        total_row = await conn.fetchrow("SELECT COUNT(*) AS n FROM blog_posts")
+        total = int(total_row["n"] or 0)
         rows = await conn.fetch(
             """
             SELECT id, title, excerpt, category, date, read_time, image, content, featured, created_at
             FROM blog_posts ORDER BY created_at DESC
-            """
+            LIMIT $1 OFFSET $2
+            """,
+            limit,
+            offset,
         )
     posts = [
         BlogPostResponse(
@@ -596,7 +628,7 @@ async def list_blog_posts():
         )
         for r in rows
     ]
-    return BlogPostListResponse(posts=posts)
+    return BlogPostListResponse(posts=posts, total=total)
 
 
 @router.get("/blog/{post_id}", response_model=BlogPostResponse)

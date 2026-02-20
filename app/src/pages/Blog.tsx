@@ -33,16 +33,19 @@ const filters: { id: FilterType; label: string }[] = [
   { id: 'community', label: 'Community' },
 ];
 
+const INITIAL_PAGE_SIZE = 12;
+
 export function Blog() {
   const [activeFilter, setActiveFilter] = useState<FilterType>('all');
   const [apiArticles, setApiArticles] = useState<Article[]>([]);
+  const [totalCount, setTotalCount] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const blogRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    setLoading(true);
-    dashboardApi
-      .getBlogPosts()
+  const loadPosts = (offset: number, append: boolean) => {
+    return dashboardApi
+      .getBlogPosts(INITIAL_PAGE_SIZE, offset)
       .then((res) => {
         const list: Article[] = (res.posts || []).map((p) => ({
           id: p.id,
@@ -54,13 +57,32 @@ export function Blog() {
           image: imageUrl(p.image),
           featured: p.featured,
         }));
-        setApiArticles(list);
+        setTotalCount(res.total ?? 0);
+        if (append) {
+          setApiArticles((prev) => [...prev, ...list]);
+        } else {
+          setApiArticles(list);
+        }
       })
-      .catch(() => setApiArticles([]))
-      .finally(() => setLoading(false));
+      .catch(() => {
+        if (!append) setApiArticles([]);
+        setTotalCount(0);
+      });
+  };
+
+  useEffect(() => {
+    setLoading(true);
+    loadPosts(0, false).finally(() => setLoading(false));
   }, []);
 
+  const handleLoadMore = () => {
+    if (loadingMore || apiArticles.length >= totalCount) return;
+    setLoadingMore(true);
+    loadPosts(apiArticles.length, true).finally(() => setLoadingMore(false));
+  };
+
   const articlesList = apiArticles;
+  const hasMore = totalCount > apiArticles.length;
 
   const filteredArticles =
     activeFilter === 'all'
@@ -75,8 +97,11 @@ export function Blog() {
           return article.category === categoryMap[activeFilter];
         });
 
+  // One featured post in the big slot (first in list); all others (including other featured) in the grid
   const featuredArticle = articlesList.find((a) => a.featured);
-  const regularArticles = filteredArticles.filter((a) => !a.featured);
+  const regularArticles = featuredArticle
+    ? filteredArticles.filter((a) => a.id !== featuredArticle.id)
+    : filteredArticles;
 
   useEffect(() => {
     if (loading) return;
@@ -249,9 +274,16 @@ export function Blog() {
         )}
 
         {/* Load More */}
-        {!loading && articlesList.length > 0 && (
+        {!loading && articlesList.length > 0 && hasMore && (
         <div className="mt-12 text-center">
-          <button className="btn-outline">Load More Articles</button>
+          <button
+            type="button"
+            onClick={handleLoadMore}
+            disabled={loadingMore}
+            className="btn-outline disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {loadingMore ? 'Loading…' : 'Load More Articles'}
+          </button>
         </div>
         )}
       </div>

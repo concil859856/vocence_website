@@ -186,6 +186,13 @@ export const dashboardApi = {
     });
   },
 
+  removeValidator(uid: number, adminEmail: string): Promise<{ ok: boolean }> {
+    return fetchJson(`/api/dashboard/validators/${uid}`, {
+      method: 'DELETE',
+      headers: { 'X-Admin-Email': adminEmail },
+    });
+  },
+
   getBlocklist(): Promise<{ hotkeys: string[] }> {
     return fetchJson('/api/dashboard/blocklist');
   },
@@ -205,8 +212,9 @@ export const dashboardApi = {
     });
   },
 
-  getBlogPosts(): Promise<{ posts: BlogPost[] }> {
-    return fetchJson('/api/dashboard/blog');
+  getBlogPosts(limit = 12, offset = 0): Promise<{ posts: BlogPost[]; total: number }> {
+    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    return fetchJson(`/api/dashboard/blog?${params.toString()}`);
   },
 
   getBlogPost(id: string): Promise<BlogPost> {

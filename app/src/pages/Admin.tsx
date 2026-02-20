@@ -72,7 +72,7 @@ export function Admin() {
     setPostsLoading(true);
     setPostsError(null);
     try {
-      const res = await dashboardApi.getBlogPosts();
+      const res = await dashboardApi.getBlogPosts(500, 0);
       setPosts(res.posts);
     } catch (e) {
       setPostsError(e instanceof Error ? e.message : 'Failed to load posts');
@@ -131,9 +131,11 @@ export function Admin() {
 
   const handleRemoveHotkey = async (hotkey: string) => {
     if (!user?.email) return;
+    if (!window.confirm(`Remove this hotkey from the blocklist?\n\n${hotkey}`)) return;
+    setBlocklistError(null);
     try {
       await dashboardApi.removeBlocklist(hotkey, user.email);
-      loadBlocklist();
+      await loadBlocklist();
     } catch (e) {
       setBlocklistError(e instanceof Error ? e.message : 'Failed to remove');
     }
@@ -229,6 +231,18 @@ export function Admin() {
     }
   };
 
+  const handleRemoveValidator = async (uid: number, hotkey: string) => {
+    if (!user?.email) return;
+    if (!window.confirm(`Remove this validator from the registry?\n\nUID: ${uid}\nHotkey: ${hotkey}`)) return;
+    setValidatorError(null);
+    try {
+      await dashboardApi.removeValidator(uid, user.email);
+      await loadValidators();
+    } catch (e) {
+      setValidatorError(e instanceof Error ? e.message : 'Failed to remove validator');
+    }
+  };
+
   if (!isAdmin) return null;
 
   return (
@@ -276,8 +290,9 @@ export function Admin() {
                         <button type="button" onClick={() => copyHotkey(hk)} className="p-1.5 text-gray-400 hover:text-white mr-1" title="Copy">
                           {copiedHotkey === hk ? <span className="text-[10px]" style={{ color: ACCENT }}>Copied</span> : <Copy className="w-4 h-4" />}
                         </button>
-                        <button type="button" onClick={() => handleRemoveHotkey(hk)} className="p-1.5 text-gray-400 hover:text-red-400" title="Remove">
+                        <button type="button" onClick={() => handleRemoveHotkey(hk)} className="inline-flex items-center gap-1.5 px-2 py-1.5 rounded text-gray-400 hover:text-red-400 hover:bg-red-400/10 transition-colors" title="Remove from blocklist">
                           <Trash2 className="w-4 h-4" />
+                          <span className="text-xs">Remove</span>
                         </button>
                       </td>
                     </tr>
@@ -337,6 +352,7 @@ export function Admin() {
                     <th className="py-2 px-4 text-[10px] font-semibold text-gray-500 uppercase">UID</th>
                     <th className="py-2 px-4 text-[10px] font-semibold text-gray-500 uppercase">Hotkey</th>
                     <th className="py-2 px-4 text-[10px] font-semibold text-gray-500 uppercase">Stake</th>
+                    <th className="py-2 px-4 text-[10px] font-semibold text-gray-500 uppercase w-28 text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#27272a]">
@@ -345,6 +361,15 @@ export function Admin() {
                       <td className="py-3 px-4 text-xs text-gray-300">{v.uid}</td>
                       <td className="py-3 px-4 text-xs font-mono text-gray-300 break-all">{v.hotkey}</td>
                       <td className="py-3 px-4 text-xs text-gray-400">{v.stake}</td>
+                      <td className="py-3 px-4 text-right">
+                        <button type="button" onClick={() => copyHotkey(v.hotkey)} className="p-1.5 text-gray-400 hover:text-white mr-1" title="Copy hotkey">
+                          {copiedHotkey === v.hotkey ? <span className="text-[10px]" style={{ color: ACCENT }}>Copied</span> : <Copy className="w-4 h-4" />}
+                        </button>
+                        <button type="button" onClick={() => handleRemoveValidator(v.uid, v.hotkey)} className="inline-flex items-center gap-1.5 px-2 py-1.5 rounded text-gray-400 hover:text-red-400 hover:bg-red-400/10 transition-colors" title="Remove from registry">
+                          <Trash2 className="w-4 h-4" />
+                          <span className="text-xs">Remove</span>
+                        </button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>

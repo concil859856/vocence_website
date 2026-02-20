@@ -85,6 +85,7 @@ class BlogPostResponse(BaseModel):
 
 class BlogPostListResponse(BaseModel):
     posts: list[BlogPostResponse]
+    total: int = 0
 
 
 class BlogPostCreateRequest(BaseModel):
