@@ -37,7 +37,7 @@ export function Overview() {
     setPostsLoading(true);
     dashboardApi
       .getBlogPosts(3, 0)
-      .then((res) => setLatestPosts(res.posts || []))
+      .then((res) => setLatestPosts((res.posts || []).slice(0, 3)))
       .catch(() => setLatestPosts([]))
       .finally(() => setPostsLoading(false));
   }, []);
