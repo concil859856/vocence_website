@@ -4,7 +4,7 @@ import { FaDiscord } from 'react-icons/fa';
 
 const SOCIAL_LINKS = [
   { href: 'https://x.com/vocence_bt', label: 'Twitter / X', icon: Twitter },
-  { href: 'https://github.com/vocence', label: 'GitHub', icon: Github },
+  { href: 'https://github.com/Vocence-bt', label: 'GitHub', icon: Github },
   { href: 'https://discord.gg/TWmfwJAtXG', label: 'Discord', icon: FaDiscord },
   { href: 'https://t.me/+UIrmzi5ZKTI4ZTg5', label: 'Telegram', icon: Send },
 ] as const;
