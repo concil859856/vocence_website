@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useLocation, Link } from 'react-router-dom';
-import { ChevronRight, Copy, BookOpen, Mic, Code, Layers, Terminal } from 'lucide-react';
+import { ChevronRight, BookOpen, Mic, Code, Layers, Terminal } from 'lucide-react';
 import gsap from 'gsap';
 
 type DocSection = 'getting-started' | 'core-concepts' | 'architecture' | 'api' | 'sdk' | 'models' | 'cloning' | 'integration' | 'miner' | 'validator' | 'faq' | 'troubleshooting';
@@ -31,7 +31,6 @@ const DOC_SECTIONS: DocSection[] = ['getting-started', 'core-concepts', 'archite
 export function Docs() {
   const location = useLocation();
   const [activeSection, setActiveSection] = useState<DocSection>('getting-started');
-  const [copiedCode, setCopiedCode] = useState(false);
   const docsRef = useRef<HTMLDivElement>(null);
 
   // Open section from hash (e.g. /docs#api)
@@ -54,11 +53,6 @@ export function Docs() {
       { opacity: 1, y: 0, duration: 0.5, delay: 0.2 }
     );
   }, []);
-
-  const handleCopyCode = () => {
-    setCopiedCode(true);
-    setTimeout(() => setCopiedCode(false), 2000);
-  };
 
   const renderGettingStarted = () => (
     <div className="space-y-10">
