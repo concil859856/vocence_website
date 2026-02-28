@@ -15,6 +15,7 @@ import gsap from 'gsap';
 import { useAuth } from '../contexts/AuthContext';
 import { AuthModal } from '../components/AuthModal';
 import { useNavigate } from 'react-router-dom';
+import { dashboardApi, type StudioTopModel, type StudioHistoryItem } from '../services/dashboardApi';
 
 type StudioView = 'tts' | 'stt' | 'chat' | 'cloning' | 'history';
 
@@ -45,7 +46,7 @@ const sidebarItems = [
   { id: 'history' as StudioView, label: 'History', icon: History },
 ];
 
-const models = ['V3-Neural (Standard)', 'V3-Pro (High Fidelity)', 'V2-Turbo (Low Latency)'];
+// Top 3 models from main validator; loaded in TTS view
 
 const clonedVoices: ClonedVoice[] = [
   { id: '1', name: 'Podcast Host Alpha', status: 'active', createdAt: '2d ago' },
@@ -57,7 +58,12 @@ export function Studio() {
   const { user, isAuthenticated, updateCredits } = useAuth();
   const navigate = useNavigate();
   const [activeView, setActiveView] = useState<StudioView>('tts');
-  const [selectedModel, setSelectedModel] = useState(models[0]);
+  const [topModels, setTopModels] = useState<StudioTopModel[]>([]);
+  const [topModelsLoading, setTopModelsLoading] = useState(false);
+  const [selectedModel, setSelectedModel] = useState<StudioTopModel | null>(null);
+  const [generateLoading, setGenerateLoading] = useState(false);
+  const [studioHistory, setStudioHistory] = useState<StudioHistoryItem[]>([]);
+  const [studioHistoryLoading, setStudioHistoryLoading] = useState(false);
   const [similarityBoost, setSimilarityBoost] = useState(85);
   const [stability, setStability] = useState(60);
   const [chatMessages, setChatMessages] = useState([
@@ -97,6 +103,34 @@ export function Studio() {
     );
   }, []);
 
+  useEffect(() => {
+    if (activeView === 'history' && user) {
+      setStudioHistoryLoading(true);
+      dashboardApi
+        .getStudioHistory(user.id)
+        .then((res) => setStudioHistory(res.items))
+        .catch(() => setStudioHistory([]))
+        .finally(() => setStudioHistoryLoading(false));
+    }
+  }, [activeView, user]);
+
+  useEffect(() => {
+    if (activeView !== 'tts') return;
+    setTopModelsLoading(true);
+    dashboardApi
+      .getStudioTopModels(3)
+      .then((res) => {
+        setTopModels(res.models);
+        setSelectedModel((prev) =>
+          res.models.length > 0
+            ? res.models.find((m) => m.miner_hotkey === prev?.miner_hotkey) ?? res.models[0]
+            : null
+        );
+      })
+      .catch(() => setTopModels([]))
+      .finally(() => setTopModelsLoading(false));
+  }, [activeView]);
+
   const requireAuth = (callback: () => void) => {
     if (!isAuthenticated) {
       setIsAuthModalOpen(true);
@@ -134,29 +168,29 @@ export function Studio() {
         alert('Please enter text to generate audio');
         return;
       }
-      
-      if (user && user.credits < 1) {
-        alert('Insufficient credits. Please purchase more credits.');
+      if (!selectedModel || !user) {
+        alert('Please select a model');
         return;
       }
 
-      // Simulate generation
-      alert('Generating audio... (This is a demo)');
-      
-      // Save to history
-      saveToHistory({
-        type: 'tts',
-        content: ttsText,
-        stylePrompt: ttsStylePrompt,
-        model: selectedModel,
-        meta: '48kHz',
-        duration: '0:12',
-      });
-
-      // Deduct credits
-      if (user) {
-        updateCredits(user.credits - 1);
-      }
+      setGenerateLoading(true);
+      dashboardApi
+        .generateStudioTts({
+          user_id: user.id,
+          miner_hotkey: selectedModel.miner_hotkey,
+          model_name: selectedModel.model_name,
+          chute_id: selectedModel.chute_id,
+          chute_slug: selectedModel.chute_slug,
+          text: ttsText.trim(),
+          style_instruction: ttsStylePrompt.trim() || undefined,
+        })
+        .then((res) => {
+          navigate(`/studio/result/${res.id}`);
+        })
+        .catch((err) => {
+          alert(err?.message || 'Generation failed. The miner may be offline.');
+        })
+        .finally(() => setGenerateLoading(false));
     });
   };
 
@@ -251,34 +285,42 @@ export function Studio() {
   };
 
   const renderTTSView = () => (
-    <div className="space-y-6 relative">
-      <div className="blur-[2px] pointer-events-none select-none">
-        <div>
-          <h2 className="text-2xl font-semibold mb-2">Text-to-Speech</h2>
-          <p className="text-[#A7B0B7]">
-            Synthesize natural sounding speech from text using decentralized compute.
-          </p>
-        </div>
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-2xl font-semibold mb-2">Text-to-Speech</h2>
+        <p className="text-[#A7B0B7]">
+          Synthesize natural sounding speech from text using top miners (ranked by main validator).
+        </p>
+      </div>
 
-        <div className="card-vocence p-6 space-y-6">
+      <div className="card-vocence p-6 space-y-6">
         {/* Model Selection */}
         <div>
           <label className="label-mono mb-3 block">Select Model</label>
-          <div className="grid grid-cols-3 gap-3">
-            {models.map((model) => (
-              <button
-                key={model}
-                onClick={() => setSelectedModel(model)}
-                className={`p-3 rounded-xl border text-sm text-center transition-all ${
-                  selectedModel === model
-                    ? 'border-[#DFFF00] bg-[#DFFF00]/5'
-                    : 'border-white/10 bg-white/[0.02] hover:border-white/20'
-                }`}
-              >
-                {model}
-              </button>
-            ))}
-          </div>
+          {topModelsLoading ? (
+            <div className="flex items-center gap-2 text-[#A7B0B7]">
+              <div className="w-4 h-4 border-2 border-[#DFFF00] border-t-transparent rounded-full animate-spin" />
+              Loading top models...
+            </div>
+          ) : topModels.length === 0 ? (
+            <p className="text-[#A7B0B7] text-sm">No models available. Ensure validators have run evaluations.</p>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              {topModels.map((model) => (
+                <button
+                  key={model.miner_hotkey}
+                  onClick={() => setSelectedModel(model)}
+                  className={`p-3 rounded-xl border text-sm text-center transition-all ${
+                    selectedModel?.miner_hotkey === model.miner_hotkey
+                      ? 'border-[#DFFF00] bg-[#DFFF00]/5'
+                      : 'border-white/10 bg-white/[0.02] hover:border-white/20'
+                  }`}
+                >
+                  {model.display_name}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Content Input */}
@@ -301,30 +343,34 @@ export function Studio() {
           <div className="bg-[#0a0a0a] border border-white/10 rounded-xl p-4">
             <input
               type="text"
-              placeholder="e.g. middle-aged man, excited, high-pitch, american accent, whispering, high-noise..."
+              placeholder="e.g. neutral voice, excited, high-pitch, american accent..."
               value={ttsStylePrompt}
               onChange={(e) => setTtsStylePrompt(e.target.value)}
               className="w-full bg-transparent text-white placeholder-[#666] outline-none"
             />
           </div>
+          <p className="text-xs text-[#666] mt-1">Defaults to &quot;neutral voice&quot; if left empty.</p>
         </div>
 
         {/* Actions */}
-        <div className="flex justify-between items-center">
-          <button className="btn-outline text-sm">Preview</button>
-          <button onClick={handleGenerateAudio} className="btn-primary">
-            <Play size={16} className="mr-2" />
-            Generate Audio
+        <div className="flex justify-end">
+          <button
+            onClick={handleGenerateAudio}
+            disabled={generateLoading || topModels.length === 0 || !selectedModel}
+            className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {generateLoading ? (
+              <>
+                <div className="w-4 h-4 border-2 border-[#07080A] border-t-transparent rounded-full animate-spin mr-2 inline-block" />
+                Generating...
+              </>
+            ) : (
+              <>
+                <Play size={16} className="mr-2" />
+                Generate Audio
+              </>
+            )}
           </button>
-        </div>
-      </div>
-      </div>
-      
-      {/* Coming Soon Overlay */}
-      <div className="absolute inset-0 flex items-start justify-end z-10 pt-4 pr-4">
-        <div className="text-right translate-x-[250px] -translate-y-[70px]">
-          <h3 className="text-2xl md:text-3xl font-bold text-[#DFFF00] mb-1">Coming Soon</h3>
-          <p className="text-sm text-[#A7B0B7]">This feature is under development</p>
         </div>
       </div>
     </div>
@@ -851,14 +897,78 @@ export function Studio() {
             {activeView === 'chat' && renderChatView()}
             {activeView === 'cloning' && renderCloningView()}
             {activeView === 'history' && (
-              <div className="text-center py-12">
-                <p className="text-[#A7B0B7] mb-4">View your full history</p>
-                <button
-                  onClick={() => navigate('/history')}
-                  className="btn-primary"
-                >
-                  Go to History Page
-                </button>
+              <div className="space-y-6">
+                <div>
+                  <h2 className="text-2xl font-semibold mb-2">TTS History</h2>
+                  <p className="text-[#A7B0B7]">
+                    Your generated audio. Available for 7 days; after that you can generate a new one.
+                  </p>
+                </div>
+                {!user ? (
+                  <div className="card-vocence p-6 text-center">
+                    <p className="text-[#A7B0B7] mb-4">Sign in to see your TTS history.</p>
+                    <button onClick={() => setIsAuthModalOpen(true)} className="btn-primary">
+                      Sign in
+                    </button>
+                  </div>
+                ) : studioHistoryLoading ? (
+                  <div className="flex items-center justify-center py-12 gap-2 text-[#A7B0B7]">
+                    <div className="w-5 h-5 border-2 border-[#DFFF00] border-t-transparent rounded-full animate-spin" />
+                    Loading history...
+                  </div>
+                ) : studioHistory.length === 0 ? (
+                  <div className="card-vocence p-8 text-center">
+                    <History size={40} className="mx-auto mb-4 text-[#666]" />
+                    <p className="text-[#A7B0B7]">No TTS generations yet.</p>
+                    <p className="text-sm text-[#666] mt-1">Generate audio from the Text-to-Speech tab.</p>
+                    <button onClick={() => setActiveView('tts')} className="btn-primary mt-4">
+                      Go to Text-to-Speech
+                    </button>
+                  </div>
+                ) : (
+                  <div className="card-vocence p-6">
+                    <ul className="space-y-4">
+                      {studioHistory.map((item) => (
+                        <li
+                          key={item.id}
+                          className="flex flex-wrap items-center justify-between gap-4 py-4 border-b border-white/10 last:border-0"
+                        >
+                          <div className="min-w-0 flex-1">
+                            <p className="font-medium truncate">{item.display_name}</p>
+                            <p className="text-sm text-[#A7B0B7] truncate mt-0.5">{item.prompt_text}</p>
+                            <p className="text-xs text-[#666] mt-1">
+                              {new Date(item.created_at).toLocaleString()} · Style: {item.style_instruction}
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            {item.expired ? (
+                              <span className="text-xs text-[#666]">Expired</span>
+                            ) : item.audio_url ? (
+                              <>
+                                <a
+                                  href={item.audio_url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="btn-outline text-sm py-2"
+                                >
+                                  Play / Download
+                                </a>
+                                <button
+                                  onClick={() => navigate(`/studio/result/${item.id}`)}
+                                  className="btn-outline text-sm py-2"
+                                >
+                                  Open player
+                                </button>
+                              </>
+                            ) : (
+                              <span className="text-xs text-[#666]">Unavailable</span>
+                            )}
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
               </div>
             )}
           </div>

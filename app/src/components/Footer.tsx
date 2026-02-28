@@ -1,15 +1,27 @@
-import { Link } from 'react-router-dom';
-import { Twitter, Github, Send } from 'lucide-react';
-import { FaDiscord } from 'react-icons/fa';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { Twitter, ArrowUp } from 'lucide-react';
 
 const SOCIAL_LINKS = [
   { href: 'https://x.com/vocence_bt', label: 'Twitter / X', icon: Twitter },
-  { href: 'https://github.com/Vocence-bt', label: 'GitHub', icon: Github },
-  { href: 'https://discord.gg/TWmfwJAtXG', label: 'Discord', icon: FaDiscord },
-  { href: 'https://t.me/+UIrmzi5ZKTI4ZTg5', label: 'Telegram', icon: Send },
 ] as const;
 
+function scrollToOverviewTop() {
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
 export function Footer() {
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  const handleBackToTop = (e: React.MouseEvent) => {
+    e.preventDefault();
+    if (location.pathname === '/') {
+      scrollToOverviewTop();
+    } else {
+      navigate('/');
+      setTimeout(scrollToOverviewTop, 100);
+    }
+  };
   const footerLinks = {
     features: [
       { label: 'Studio', href: '/studio' },
@@ -48,7 +60,7 @@ export function Footer() {
             <p className="text-sm text-[#A7B0B7] mb-6">
               The voice layer for decentralized intelligence.
             </p>
-            <div className="flex gap-4">
+            <div className="flex items-center gap-4">
               {SOCIAL_LINKS.map(({ href, label, icon: Icon }) => (
                 <a
                   key={label}
@@ -61,6 +73,15 @@ export function Footer() {
                   <Icon size={18} />
                 </a>
               ))}
+              <Link
+                to="/"
+                onClick={handleBackToTop}
+                aria-label="Back to overview top"
+                className="inline-flex text-[#A7B0B7] hover:text-[#DFFF00] transition-colors [&_svg]:size-[18px] [&_svg]:shrink-0"
+                title="Back to top"
+              >
+                <ArrowUp size={18} />
+              </Link>
             </div>
           </div>
 

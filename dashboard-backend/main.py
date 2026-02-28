@@ -26,9 +26,10 @@ from database import (
     ensure_blog_table,
     ensure_evaluations_audio_columns,
     ensure_live_evaluation_pending_table,
+    ensure_studio_tts_history_table,
 )
 from local_db import ensure_tables as ensure_local_tables
-from routers import auth, dashboard
+from routers import auth, dashboard, studio
 
 
 UPLOADS_DIR = Path(__file__).resolve().parent / "uploads"
@@ -40,6 +41,7 @@ async def lifespan(app: FastAPI):
     await ensure_blog_table()
     await ensure_evaluations_audio_columns()
     await ensure_live_evaluation_pending_table()
+    await ensure_studio_tts_history_table()
     await ensure_local_tables()
     yield
     await close_pool()
@@ -62,6 +64,7 @@ app.add_middleware(
 
 app.include_router(auth.router)
 app.include_router(dashboard.router)
+app.include_router(studio.router, prefix="/api/dashboard")
 app.mount("/api/dashboard/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
 
 

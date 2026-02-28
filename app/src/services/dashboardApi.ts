@@ -259,4 +259,62 @@ export const dashboardApi = {
       headers: { 'X-Admin-Email': adminEmail },
     });
   },
+
+  // ----- Studio TTS -----
+  getStudioTopModels(limit = 3): Promise<{ models: StudioTopModel[] }> {
+    return fetchJson(`/api/dashboard/studio/top-models?limit=${limit}`);
+  },
+
+  generateStudioTts(body: {
+    user_id: string;
+    miner_hotkey: string;
+    model_name: string;
+    chute_id: string;
+    chute_slug: string;
+    text: string;
+    style_instruction?: string | null;
+  }): Promise<StudioGenerateResponse> {
+    return fetchJson('/api/dashboard/studio/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  },
+
+  getStudioHistory(userId: string): Promise<{ items: StudioHistoryItem[] }> {
+    return fetchJson(`/api/dashboard/studio/history?user_id=${encodeURIComponent(userId)}`);
+  },
+
+  getStudioHistoryAudioUrl(historyId: number, userId: string): Promise<{ audio_url: string }> {
+    return fetchJson(
+      `/api/dashboard/studio/history/${historyId}/audio-url?user_id=${encodeURIComponent(userId)}`
+    );
+  },
 };
+
+export interface StudioTopModel {
+  miner_hotkey: string;
+  model_name: string;
+  display_name: string;
+  chute_id: string;
+  chute_slug: string;
+}
+
+export interface StudioGenerateResponse {
+  id: number;
+  audio_url: string;
+  expires_at: string;
+}
+
+export interface StudioHistoryItem {
+  id: number;
+  miner_hotkey: string;
+  model_name: string;
+  display_name: string;
+  prompt_text: string;
+  style_instruction: string;
+  audio_url: string | null;
+  expires_at: string;
+  created_at: string;
+  expired: boolean;
+}

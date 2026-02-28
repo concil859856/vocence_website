@@ -122,3 +122,30 @@ async def ensure_live_evaluation_pending_table() -> None:
             await conn.execute(LIVE_EVALUATION_PENDING_TABLE_SQL)
         except Exception:
             pass
+
+
+STUDIO_TTS_HISTORY_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS studio_tts_history (
+    id SERIAL PRIMARY KEY,
+    user_id VARCHAR(255) NOT NULL,
+    miner_hotkey VARCHAR(64) NOT NULL,
+    model_name VARCHAR(255) NOT NULL,
+    prompt_text TEXT NOT NULL,
+    style_instruction TEXT NOT NULL DEFAULT 'neutral voice',
+    audio_s3_bucket VARCHAR(128) NOT NULL,
+    audio_s3_key VARCHAR(512) NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_studio_tts_history_user_id ON studio_tts_history (user_id);
+CREATE INDEX IF NOT EXISTS idx_studio_tts_history_created_at ON studio_tts_history (created_at DESC);
+"""
+
+
+async def ensure_studio_tts_history_table() -> None:
+    """Create studio_tts_history table if it does not exist (Studio TTS feature)."""
+    async with acquire() as conn:
+        try:
+            await conn.execute(STUDIO_TTS_HISTORY_TABLE_SQL)
+        except Exception:
+            pass

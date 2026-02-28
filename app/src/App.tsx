@@ -10,6 +10,7 @@ import { Overview } from './pages/Overview';
 // Route-level code splitting: heavy pages load only when visited (named exports → default for lazy)
 const Dashboard = lazy(() => import('./pages/Dashboard').then((m) => ({ default: m.Dashboard })));
 const Studio = lazy(() => import('./pages/Studio').then((m) => ({ default: m.Studio })));
+const StudioResult = lazy(() => import('./pages/StudioResult').then((m) => ({ default: m.StudioResult })));
 const Docs = lazy(() => import('./pages/Docs').then((m) => ({ default: m.Docs })));
 const Blog = lazy(() => import('./pages/Blog').then((m) => ({ default: m.Blog })));
 const Article = lazy(() => import('./pages/Article').then((m) => ({ default: m.Article })));
@@ -45,6 +46,7 @@ function App() {
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/dashboard/evaluations" element={<DashboardEvaluations />} />
               <Route path="/studio" element={<Studio />} />
+              <Route path="/studio/result/:id" element={<StudioResult />} />
               <Route path="/docs" element={<Docs />} />
               <Route path="/blog" element={<Blog />} />
               <Route path="/blog/:id" element={<Article />} />

@@ -166,3 +166,52 @@ class ValidationStatusResponse(BaseModel):
     """Response for GET /api/dashboard/validation-status."""
     pending: list[LivePendingItem]
     evaluations: list[RecentEvaluationResponse]
+
+
+# ----- Studio TTS (top models, generate, history) -----
+
+
+class StudioTopModelResponse(BaseModel):
+    """One of the top 3 miners by main validator; display_name = repo name only (no HF username)."""
+    miner_hotkey: str
+    model_name: str
+    display_name: str
+    chute_id: str
+    chute_slug: str
+
+
+class StudioTopModelsResponse(BaseModel):
+    models: list[StudioTopModelResponse]
+
+
+class StudioGenerateRequest(BaseModel):
+    user_id: str
+    miner_hotkey: str
+    model_name: str
+    chute_id: str
+    chute_slug: str
+    text: str
+    style_instruction: str | None = None
+
+
+class StudioGenerateResponse(BaseModel):
+    id: int
+    audio_url: str
+    expires_at: str
+
+
+class StudioHistoryItemResponse(BaseModel):
+    id: int
+    miner_hotkey: str
+    model_name: str
+    display_name: str
+    prompt_text: str
+    style_instruction: str
+    audio_url: str | None
+    expires_at: str
+    created_at: str
+    expired: bool
+
+
+class StudioHistoryResponse(BaseModel):
+    items: list[StudioHistoryItemResponse]
