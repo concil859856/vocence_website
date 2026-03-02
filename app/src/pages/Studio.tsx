@@ -20,7 +20,6 @@ import {
 import gsap from 'gsap';
 import { useAuth } from '../contexts/AuthContext';
 import { AuthModal } from '../components/AuthModal';
-import { useNavigate } from 'react-router-dom';
 import { dashboardApi, type StudioTopModel, type StudioHistoryItem } from '../services/dashboardApi';
 
 type StudioView = 'tts' | 'stt' | 'chat' | 'cloning' | 'history';
@@ -62,7 +61,6 @@ const clonedVoices: ClonedVoice[] = [
 
 export function Studio() {
   const { user, isAuthenticated, updateCredits } = useAuth();
-  const navigate = useNavigate();
   const [activeView, setActiveView] = useState<StudioView>('tts');
   const [topModels, setTopModels] = useState<StudioTopModel[]>([]);
   const [topModelsLoading, setTopModelsLoading] = useState(false);
