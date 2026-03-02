@@ -6,10 +6,16 @@ import {
   History,
   Upload,
   Play,
+  Pause,
+  Download,
+  Volume2,
+  X,
   MoreHorizontal,
   ChevronDown,
   Send,
   Square,
+  Search,
+  Copy,
 } from 'lucide-react';
 import gsap from 'gsap';
 import { useAuth } from '../contexts/AuthContext';
@@ -64,6 +70,14 @@ export function Studio() {
   const [generateLoading, setGenerateLoading] = useState(false);
   const [studioHistory, setStudioHistory] = useState<StudioHistoryItem[]>([]);
   const [studioHistoryLoading, setStudioHistoryLoading] = useState(false);
+  const [studioHistorySearch, setStudioHistorySearch] = useState('');
+  const [resultOverlay, setResultOverlay] = useState<{
+    id: number;
+    audioUrl: string;
+    promptText: string;
+    styleInstruction: string;
+    modelName: string;
+  } | null>(null);
   const [similarityBoost, setSimilarityBoost] = useState(85);
   const [stability, setStability] = useState(60);
   const [chatMessages, setChatMessages] = useState([
@@ -89,6 +103,10 @@ export function Studio() {
   const studioRef = useRef<HTMLDivElement>(null);
   const sttFileInputRef = useRef<HTMLInputElement>(null);
   const cloningFileInputRef = useRef<HTMLInputElement>(null);
+  const overlayAudioRef = useRef<HTMLAudioElement>(null);
+  const [overlayPlaying, setOverlayPlaying] = useState(false);
+  const [overlayCurrentTime, setOverlayCurrentTime] = useState(0);
+  const [overlayDuration, setOverlayDuration] = useState(0);
 
   useEffect(() => {
     gsap.fromTo(
@@ -102,6 +120,13 @@ export function Studio() {
       { opacity: 1, y: 0, duration: 0.5, delay: 0.2 }
     );
   }, []);
+
+  useEffect(() => {
+    if (resultOverlay) {
+      setOverlayCurrentTime(0);
+      setOverlayDuration(0);
+    }
+  }, [resultOverlay?.id]);
 
   useEffect(() => {
     if (activeView === 'history' && user) {
@@ -139,6 +164,45 @@ export function Studio() {
     callback();
   };
 
+  const formatTime = (sec: number) => {
+    const m = Math.floor(sec / 60);
+    const s = Math.floor(sec % 60);
+    return `${m}:${s.toString().padStart(2, '0')}`;
+  };
+
+  const handleOverlayPlayPause = () => {
+    const el = overlayAudioRef.current;
+    if (!el) return;
+    if (el.paused) {
+      el.play();
+      setOverlayPlaying(true);
+    } else {
+      el.pause();
+      setOverlayPlaying(false);
+    }
+  };
+
+  const handleOverlaySeek = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const el = overlayAudioRef.current;
+    if (!el) return;
+    const v = parseFloat(e.target.value);
+    el.currentTime = v;
+    setOverlayCurrentTime(v);
+  };
+
+  const handleOverlayVolume = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const v = parseFloat(e.target.value);
+    if (overlayAudioRef.current) overlayAudioRef.current.volume = v;
+  };
+
+  const handleOverlayDownload = () => {
+    if (!resultOverlay?.audioUrl) return;
+    const a = document.createElement('a');
+    a.href = resultOverlay.audioUrl;
+    a.download = `vocence-tts-${resultOverlay.id}.wav`;
+    a.click();
+  };
+
   const saveToHistory = (item: Omit<HistoryItem, 'id' | 'timestamp' | 'date'>) => {
     if (!user) return;
     
@@ -172,20 +236,50 @@ export function Studio() {
         alert('Please select a model');
         return;
       }
+      if (user.credits < 10) {
+        alert('Insufficient credits. TTS generation costs 10 credits. Please add more credits.');
+        return;
+      }
 
+      const token = localStorage.getItem('vocence_token');
       setGenerateLoading(true);
       dashboardApi
-        .generateStudioTts({
-          user_id: user.id,
-          miner_hotkey: selectedModel.miner_hotkey,
-          model_name: selectedModel.model_name,
-          chute_id: selectedModel.chute_id,
-          chute_slug: selectedModel.chute_slug,
-          text: ttsText.trim(),
-          style_instruction: ttsStylePrompt.trim() || undefined,
-        })
+        .generateStudioTts(
+          {
+            user_id: user.id,
+            miner_hotkey: selectedModel.miner_hotkey,
+            model_name: selectedModel.model_name,
+            chute_id: selectedModel.chute_id,
+            chute_slug: selectedModel.chute_slug,
+            text: ttsText.trim(),
+            style_instruction: ttsStylePrompt.trim() || undefined,
+          },
+          token
+        )
         .then((res) => {
-          navigate(`/studio/result/${res.id}`);
+          setResultOverlay({
+            id: res.id,
+            audioUrl: res.audio_url,
+            promptText: ttsText.trim(),
+            styleInstruction: (ttsStylePrompt.trim() || 'neutral voice'),
+            modelName: selectedModel.display_name,
+          });
+          setStudioHistory((prev) => [
+            {
+              id: res.id,
+              miner_hotkey: selectedModel.miner_hotkey,
+              model_name: selectedModel.model_name,
+              display_name: selectedModel.display_name,
+              prompt_text: ttsText.trim(),
+              style_instruction: ttsStylePrompt.trim() || 'neutral voice',
+              audio_url: res.audio_url,
+              expires_at: res.expires_at,
+              created_at: new Date().toISOString(),
+              expired: false,
+            },
+            ...prev,
+          ]);
+          if (res.credits != null) updateCredits(res.credits);
         })
         .catch((err) => {
           alert(err?.message || 'Generation failed. The miner may be offline.');
@@ -840,6 +934,86 @@ export function Studio() {
 
   return (
     <div ref={studioRef} className="min-h-screen bg-[#07080A] pt-20">
+      {/* TTS result overlay – raised panel with prompt + capsule player */}
+      {resultOverlay && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60" onClick={() => setResultOverlay(null)}>
+          <div
+            className="bg-[#0f1114] border border-white/10 rounded-2xl shadow-2xl max-w-lg w-full overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-6">
+              <div className="flex items-start justify-between gap-4 mb-4">
+                <h3 className="text-lg font-semibold text-white">Your generated audio</h3>
+                <button
+                  onClick={() => setResultOverlay(null)}
+                  className="p-1.5 rounded-lg text-[#666] hover:text-white hover:bg-white/10 transition-colors"
+                  aria-label="Close"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+              <div className="space-y-2 mb-4">
+                <p className="text-sm text-[#A7B0B7]">
+                  <span className="text-[#666]">Content:</span> {resultOverlay.promptText}
+                </p>
+                <p className="text-sm text-[#A7B0B7]">
+                  <span className="text-[#666]">Style:</span> {resultOverlay.styleInstruction}
+                </p>
+                <p className="text-xs text-[#666]">Model: {resultOverlay.modelName}</p>
+              </div>
+              <audio
+                ref={overlayAudioRef}
+                src={resultOverlay.audioUrl}
+                onLoadedMetadata={() => setOverlayDuration(overlayAudioRef.current?.duration ?? 0)}
+                onTimeUpdate={() => setOverlayCurrentTime(overlayAudioRef.current?.currentTime ?? 0)}
+                onEnded={() => setOverlayPlaying(false)}
+                onPlay={() => setOverlayPlaying(true)}
+                onPause={() => setOverlayPlaying(false)}
+              />
+              {/* Capsule-style player: play, time, progress, volume, download */}
+              <div className="flex items-center gap-3 p-3 rounded-full bg-[#0a0a0a] border border-white/10">
+                <button
+                  onClick={handleOverlayPlayPause}
+                  className="w-10 h-10 rounded-full bg-white/10 flex items-center justify-center text-white hover:bg-white/20 shrink-0"
+                  aria-label={overlayPlaying ? 'Pause' : 'Play'}
+                >
+                  {overlayPlaying ? <Pause size={18} fill="currentColor" /> : <Play size={18} className="ml-0.5" fill="currentColor" />}
+                </button>
+                <span className="text-sm text-white tabular-nums shrink-0">
+                  {formatTime(overlayCurrentTime)} / {formatTime(overlayDuration)}
+                </span>
+                <input
+                  type="range"
+                  min={0}
+                  max={overlayDuration || 1}
+                  step={0.1}
+                  value={overlayCurrentTime}
+                  onChange={handleOverlaySeek}
+                  className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer bg-white/10 accent-[#DFFF00]"
+                />
+                <Volume2 size={18} className="text-[#A7B0B7] shrink-0" />
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  defaultValue={1}
+                  onChange={handleOverlayVolume}
+                  className="w-16 h-1.5 rounded-full appearance-none cursor-pointer bg-white/10 accent-[#DFFF00] shrink-0"
+                />
+                <button
+                  onClick={handleOverlayDownload}
+                  className="w-10 h-10 rounded-full bg-white/10 flex items-center justify-center text-white hover:bg-white/20 shrink-0"
+                  aria-label="Download"
+                >
+                  <Download size={18} />
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="flex">
         {/* Sidebar */}
         <aside className="studio-sidebar w-64 border-r border-white/5 bg-[#07080A] min-h-screen p-4 hidden lg:block">
@@ -899,75 +1073,127 @@ export function Studio() {
             {activeView === 'history' && (
               <div className="space-y-6">
                 <div>
-                  <h2 className="text-2xl font-semibold mb-2">TTS History</h2>
-                  <p className="text-[#A7B0B7]">
-                    Your generated audio. Available for 7 days; after that you can generate a new one.
-                  </p>
+                  <h2 className="text-2xl font-semibold mb-2">History</h2>
+                  <p className="text-[#A7B0B7]">View and manage your TTS generations. Available for 7 days.</p>
                 </div>
                 {!user ? (
                   <div className="card-vocence p-6 text-center">
-                    <p className="text-[#A7B0B7] mb-4">Sign in to see your TTS history.</p>
+                    <p className="text-[#A7B0B7] mb-4">Sign in to see your history.</p>
                     <button onClick={() => setIsAuthModalOpen(true)} className="btn-primary">
                       Sign in
                     </button>
                   </div>
-                ) : studioHistoryLoading ? (
-                  <div className="flex items-center justify-center py-12 gap-2 text-[#A7B0B7]">
-                    <div className="w-5 h-5 border-2 border-[#DFFF00] border-t-transparent rounded-full animate-spin" />
-                    Loading history...
-                  </div>
-                ) : studioHistory.length === 0 ? (
-                  <div className="card-vocence p-8 text-center">
-                    <History size={40} className="mx-auto mb-4 text-[#666]" />
-                    <p className="text-[#A7B0B7]">No TTS generations yet.</p>
-                    <p className="text-sm text-[#666] mt-1">Generate audio from the Text-to-Speech tab.</p>
-                    <button onClick={() => setActiveView('tts')} className="btn-primary mt-4">
-                      Go to Text-to-Speech
-                    </button>
-                  </div>
                 ) : (
-                  <div className="card-vocence p-6">
-                    <ul className="space-y-4">
-                      {studioHistory.map((item) => (
-                        <li
-                          key={item.id}
-                          className="flex flex-wrap items-center justify-between gap-4 py-4 border-b border-white/10 last:border-0"
-                        >
-                          <div className="min-w-0 flex-1">
-                            <p className="font-medium truncate">{item.display_name}</p>
-                            <p className="text-sm text-[#A7B0B7] truncate mt-0.5">{item.prompt_text}</p>
-                            <p className="text-xs text-[#666] mt-1">
-                              {new Date(item.created_at).toLocaleString()} · Style: {item.style_instruction}
-                            </p>
-                          </div>
-                          <div className="flex items-center gap-2 shrink-0">
-                            {item.expired ? (
-                              <span className="text-xs text-[#666]">Expired</span>
-                            ) : item.audio_url ? (
-                              <>
-                                <a
-                                  href={item.audio_url}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="btn-outline text-sm py-2"
-                                >
-                                  Play / Download
-                                </a>
-                                <button
-                                  onClick={() => navigate(`/studio/result/${item.id}`)}
-                                  className="btn-outline text-sm py-2"
-                                >
-                                  Open player
-                                </button>
-                              </>
-                            ) : (
-                              <span className="text-xs text-[#666]">Unavailable</span>
-                            )}
-                          </div>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
+                  <>
+                    <div className="card-vocence p-4 mb-6">
+                      <div className="flex flex-wrap gap-4">
+                        <div className="flex-1 min-w-[200px] bg-[#0a0a0a] border border-white/10 rounded-lg px-4 py-2 flex items-center gap-2">
+                          <Search size={16} className="text-[#666]" />
+                          <input
+                            type="text"
+                            placeholder="Search prompts or style..."
+                            value={studioHistorySearch}
+                            onChange={(e) => setStudioHistorySearch(e.target.value)}
+                            className="flex-1 bg-transparent text-sm outline-none text-white placeholder-[#666]"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                    {studioHistoryLoading ? (
+                      <div className="flex items-center justify-center py-12 gap-2 text-[#A7B0B7]">
+                        <div className="w-5 h-5 border-2 border-[#DFFF00] border-t-transparent rounded-full animate-spin" />
+                        Loading history...
+                      </div>
+                    ) : studioHistory.filter((h) => !studioHistorySearch.trim() || h.prompt_text.toLowerCase().includes(studioHistorySearch.toLowerCase()) || h.style_instruction.toLowerCase().includes(studioHistorySearch.toLowerCase())).length === 0 ? (
+                      <div className="card-vocence p-12 text-center">
+                        <p className="text-[#A7B0B7] mb-4">No history found</p>
+                        <p className="text-sm text-[#666]">
+                          {studioHistory.length === 0
+                            ? "You haven't generated any audio yet. Use the Text-to-Speech tab to get started."
+                            : 'Try adjusting your search.'}
+                        </p>
+                        {studioHistory.length === 0 && (
+                          <button onClick={() => setActiveView('tts')} className="btn-primary mt-4">
+                            Go to Text-to-Speech
+                          </button>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="card-vocence overflow-hidden">
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-sm">
+                            <thead className="text-xs text-[#666] uppercase bg-white/5">
+                              <tr>
+                                <th className="px-4 py-3 text-left">Timestamp</th>
+                                <th className="px-4 py-3 text-left">Type</th>
+                                <th className="px-4 py-3 text-left">Content</th>
+                                <th className="px-4 py-3 text-left">Style Prompt</th>
+                                <th className="px-4 py-3 text-left">Model</th>
+                                <th className="px-4 py-3 text-right">Actions</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-white/5">
+                              {studioHistory
+                                .filter((h) => !studioHistorySearch.trim() || h.prompt_text.toLowerCase().includes(studioHistorySearch.toLowerCase()) || h.style_instruction.toLowerCase().includes(studioHistorySearch.toLowerCase()))
+                                .map((item) => {
+                                  const created = new Date(item.created_at);
+                                  const timestamp = created.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+                                  const date = created.toLocaleDateString();
+                                  return (
+                                    <tr key={item.id} className="hover:bg-white/5 transition-colors">
+                                      <td className="px-4 py-4">
+                                        <div className="font-medium">{timestamp}</div>
+                                        <div className="text-xs text-[#666]">{date}</div>
+                                      </td>
+                                      <td className="px-4 py-4">
+                                        <span className="px-2 py-0.5 rounded text-[10px] font-medium bg-[#DFFF00]/15 text-[#DFFF00]">TTS</span>
+                                      </td>
+                                      <td className="px-4 py-4">
+                                        <div className="flex items-center gap-2">
+                                          <span className="truncate max-w-[200px]">{item.prompt_text}</span>
+                                          <button className="text-[#666] hover:text-white" onClick={() => navigator.clipboard.writeText(item.prompt_text)}>
+                                            <Copy size={14} />
+                                          </button>
+                                        </div>
+                                      </td>
+                                      <td className="px-4 py-4">
+                                        <div className="flex items-center gap-2">
+                                          <span className="text-[#A7B0B7] truncate max-w-[150px]">{item.style_instruction}</span>
+                                          <button className="text-[#666] hover:text-white" onClick={() => navigator.clipboard.writeText(item.style_instruction)}>
+                                            <Copy size={14} />
+                                          </button>
+                                        </div>
+                                      </td>
+                                      <td className="px-4 py-4">
+                                        <span className="px-2 py-1 bg-[#0a0a0a] rounded text-xs">{item.display_name}</span>
+                                      </td>
+                                      <td className="px-4 py-4 text-right">
+                                        <div className="flex items-center justify-end gap-2">
+                                          {item.expired ? (
+                                            <span className="text-xs text-[#666]">Expired</span>
+                                          ) : item.audio_url ? (
+                                            <>
+                                              <a href={item.audio_url} target="_blank" rel="noopener noreferrer" className="p-1.5 text-[#666] hover:text-white" title="Play">
+                                                <Play size={16} />
+                                              </a>
+                                              <a href={item.audio_url} download={`vocence-tts-${item.id}.wav`} className="p-1.5 text-[#666] hover:text-white" title="Download">
+                                                <Download size={16} />
+                                              </a>
+                                            </>
+                                          ) : (
+                                            <span className="text-xs text-[#666]">Unavailable</span>
+                                          )}
+                                        </div>
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             )}

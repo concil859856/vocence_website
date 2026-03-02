@@ -9,6 +9,7 @@ import {
   Download,
   MoreHorizontal,
 } from 'lucide-react';
+import { dashboardApi } from '../services/dashboardApi';
 
 interface HistoryItem {
   id: string;
@@ -20,6 +21,9 @@ interface HistoryItem {
   model: string;
   meta: string;
   duration: string;
+  /** From Studio TTS API; enables Play/Download when not expired */
+  audioUrl?: string | null;
+  expired?: boolean;
 }
 
 export function History() {
@@ -35,11 +39,28 @@ export function History() {
       return;
     }
 
-    // Load user's history from localStorage
-    const userHistory = JSON.parse(
-      localStorage.getItem(`vocence_history_${user.id}`) || '[]'
-    );
-    setHistory(userHistory);
+    dashboardApi
+      .getStudioHistory(user.id)
+      .then((res) => {
+        const items: HistoryItem[] = res.items.map((item) => {
+          const created = new Date(item.created_at);
+          return {
+            id: `api-${item.id}`,
+            type: 'tts' as const,
+            timestamp: created.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+            date: created.toLocaleDateString(),
+            content: item.prompt_text,
+            stylePrompt: item.style_instruction,
+            model: item.display_name,
+            meta: 'Studio',
+            duration: '—',
+            audioUrl: item.audio_url,
+            expired: item.expired,
+          };
+        });
+        setHistory(items);
+      })
+      .catch(() => setHistory([]));
   }, [user, navigate]);
 
   const filteredHistory = history.filter((item) => {
@@ -115,7 +136,7 @@ export function History() {
             <p className="text-[#A7B0B7] mb-4">No history found</p>
             <p className="text-sm text-[#666]">
               {history.length === 0
-                ? "You haven't created anything yet. Start using the Studio to see your history here."
+                ? "You haven't generated any TTS yet. Use Studio → Text-to-Speech to create audio."
                 : 'Try adjusting your search or filter criteria.'}
             </p>
           </div>
@@ -153,7 +174,7 @@ export function History() {
                       <td className="px-4 py-4">
                         <div className="flex items-center gap-2">
                           <span className="truncate max-w-[200px]">{item.content}</span>
-                          <button className="text-[#666] hover:text-white">
+                          <button className="text-[#666] hover:text-white" onClick={() => navigator.clipboard.writeText(item.content)} title="Copy">
                             <Copy size={14} />
                           </button>
                         </div>
@@ -164,7 +185,7 @@ export function History() {
                             {item.stylePrompt || '-'}
                           </span>
                           {item.stylePrompt && (
-                            <button className="text-[#666] hover:text-white">
+                            <button className="text-[#666] hover:text-white" onClick={() => navigator.clipboard.writeText(item.stylePrompt!)} title="Copy">
                               <Copy size={14} />
                             </button>
                           )}
@@ -198,12 +219,27 @@ export function History() {
                       </td>
                       <td className="px-4 py-4 text-right">
                         <div className="flex items-center justify-end gap-2">
-                          <button className="p-1.5 text-[#666] hover:text-white">
-                            <Play size={16} />
-                          </button>
-                          <button className="p-1.5 text-[#666] hover:text-white">
-                            <Download size={16} />
-                          </button>
+                          {item.audioUrl != null && !item.expired ? (
+                            <>
+                              <a href={item.audioUrl} target="_blank" rel="noopener noreferrer" className="p-1.5 text-[#666] hover:text-white" title="Play">
+                                <Play size={16} />
+                              </a>
+                              <a href={item.audioUrl} download className="p-1.5 text-[#666] hover:text-white" title="Download">
+                                <Download size={16} />
+                              </a>
+                            </>
+                          ) : item.expired ? (
+                            <span className="text-xs text-[#666]">Expired</span>
+                          ) : (
+                            <>
+                              <button className="p-1.5 text-[#666] hover:text-white" title="Play" disabled>
+                                <Play size={16} />
+                              </button>
+                              <button className="p-1.5 text-[#666] hover:text-white" title="Download" disabled>
+                                <Download size={16} />
+                              </button>
+                            </>
+                          )}
                           <button className="p-1.5 text-[#666] hover:text-white">
                             <MoreHorizontal size={16} />
                           </button>

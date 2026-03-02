@@ -3,9 +3,11 @@
 import os
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 
 from database import acquire
+from local_db import get_connection
+from routers.auth import require_auth
 from schemas import (
     StudioGenerateRequest,
     StudioGenerateResponse,
@@ -75,9 +77,33 @@ async def get_top_models(limit: int = Query(3, ge=1, le=10)):
     return StudioTopModelsResponse(models=models)
 
 
+TTS_CREDITS_COST = 10
+
+
 @router.post("/generate", response_model=StudioGenerateResponse)
-async def generate_tts(body: StudioGenerateRequest):
-    """Call miner's Chutes /speak, upload WAV to Hippius (7-day expiry), store in owner DB, return audio URL."""
+async def generate_tts(body: StudioGenerateRequest, user_id: str = Depends(require_auth)):
+    """Call miner's Chutes /speak, upload WAV to Hippius, store in owner DB, deduct 10 credits (website.db). Requires Authorization: Bearer."""
+    if body.user_id != user_id:
+        raise HTTPException(status_code=403, detail="user_id does not match authenticated user")
+
+    conn = await get_connection()
+    try:
+        cursor = await conn.execute(
+            "SELECT credits FROM auth_users WHERE id = ?",
+            (user_id,),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        credits = int(row["credits"])
+        if credits < TTS_CREDITS_COST:
+            raise HTTPException(
+                status_code=402,
+                detail=f"Insufficient credits. Need {TTS_CREDITS_COST} credits for TTS generation. You have {credits}.",
+            )
+    finally:
+        await conn.close()
+
     text = (body.text or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="text is required")
@@ -91,12 +117,12 @@ async def generate_tts(body: StudioGenerateRequest):
             raise HTTPException(status_code=400, detail="Could not resolve chute; chute may be offline.")
         chute_slug = slug
 
-    wav_bytes = await synthesize_speak(chute_slug, text, instruction)
+    wav_bytes, err_msg = await synthesize_speak(chute_slug, text, instruction)
     if not wav_bytes:
-        raise HTTPException(
-            status_code=502,
-            detail="TTS request to miner failed or returned no audio.",
-        )
+        detail = "TTS request to miner failed or returned no audio."
+        if err_msg:
+            detail += f" ({err_msg})"
+        raise HTTPException(status_code=502, detail=detail)
 
     bucket, key, expires_at = upload_wav_to_hippius(body.user_id, wav_bytes)
 
@@ -123,10 +149,24 @@ async def generate_tts(body: StudioGenerateRequest):
     if not audio_url:
         audio_url = ""
 
+    conn = await get_connection()
+    try:
+        await conn.execute(
+            "UPDATE auth_users SET credits = credits - ? WHERE id = ?",
+            (TTS_CREDITS_COST, user_id),
+        )
+        await conn.commit()
+        cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
+        new_row = await cursor.fetchone()
+        new_credits = int(new_row["credits"]) if new_row else credits - TTS_CREDITS_COST
+    finally:
+        await conn.close()
+
     return StudioGenerateResponse(
         id=history_id,
         audio_url=audio_url,
         expires_at=expires_at_val.isoformat() if expires_at_val else "",
+        credits=new_credits,
     )
 
 

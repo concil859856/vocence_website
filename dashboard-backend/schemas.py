@@ -198,6 +198,7 @@ class StudioGenerateResponse(BaseModel):
     id: int
     audio_url: str
     expires_at: str
+    credits: int  # new balance after deducting 10 (from website.db auth_users)
 
 
 class StudioHistoryItemResponse(BaseModel):

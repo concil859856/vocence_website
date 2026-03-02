@@ -154,7 +154,7 @@ export function Account() {
                   <div className="bg-[#0a0a0a] border border-white/10 rounded-xl p-4">
                     <h4 className="font-medium mb-2">How Credits Work</h4>
                     <ul className="text-sm text-[#A7B0B7] space-y-1 list-disc list-inside">
-                      <li>Text-to-Speech: 1 credit per generation</li>
+                      <li>Text-to-Speech: 10 credits per generation</li>
                       <li>Speech-to-Text: 2 credits per transcription</li>
                       <li>Voice Cloning: 10 credits per clone</li>
                       <li>Voice Chat: 0.5 credits per message</li>

@@ -15,6 +15,7 @@ Hippius:
   - Owner credentials: HIPPIUS_OWNER_* or HIPPIUS_ACCESS_KEY / HIPPIUS_SECRET_KEY.
 """
 
+import asyncio
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -71,8 +72,9 @@ async def fetch_chute_slug(chute_id: str) -> str | None:
         return None
 
 
-async def synthesize_speak(chute_slug: str, text: str, instruction: str) -> bytes | None:
-    """POST to https://{slug}.chutes.ai/speak with JSON { text, instruction }; returns WAV bytes or None."""
+async def synthesize_speak(chute_slug: str, text: str, instruction: str) -> tuple[bytes | None, str]:
+    """POST to https://{slug}.chutes.ai/speak with JSON { text, instruction }.
+    Returns (wav_bytes, error_message). On success: (bytes, ""). On failure: (None, "reason")."""
     url = _chute_speak_url(chute_slug)
     payload = {"text": text or "Hello.", "instruction": instruction or "neutral voice"}
     headers = {"Content-Type": "application/json"}
@@ -86,11 +88,17 @@ async def synthesize_speak(chute_slug: str, text: str, instruction: str) -> byte
                 json=payload,
                 timeout=aiohttp.ClientTimeout(total=120),
             ) as resp:
+                body = await resp.read()
                 if resp.status != 200:
-                    return None
-                return await resp.read()
-    except Exception:
-        return None
+                    err = body.decode("utf-8", errors="replace")[:200] if body else ""
+                    return None, f"miner returned {resp.status}" + (f": {err}" if err else "")
+                if not body:
+                    return None, "miner returned no audio"
+                return body, ""
+    except asyncio.TimeoutError:
+        return None, "miner request timed out"
+    except Exception as e:
+        return None, str(e)
 
 
 def ensure_bucket(client: Minio, bucket: str) -> None:

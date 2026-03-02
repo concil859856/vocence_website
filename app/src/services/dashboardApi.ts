@@ -265,18 +265,23 @@ export const dashboardApi = {
     return fetchJson(`/api/dashboard/studio/top-models?limit=${limit}`);
   },
 
-  generateStudioTts(body: {
-    user_id: string;
-    miner_hotkey: string;
-    model_name: string;
-    chute_id: string;
-    chute_slug: string;
-    text: string;
-    style_instruction?: string | null;
-  }): Promise<StudioGenerateResponse> {
+  generateStudioTts(
+    body: {
+      user_id: string;
+      miner_hotkey: string;
+      model_name: string;
+      chute_id: string;
+      chute_slug: string;
+      text: string;
+      style_instruction?: string | null;
+    },
+    token: string | null
+  ): Promise<StudioGenerateResponse> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
     return fetchJson('/api/dashboard/studio/generate', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(body),
     });
   },
@@ -304,6 +309,7 @@ export interface StudioGenerateResponse {
   id: number;
   audio_url: string;
   expires_at: string;
+  credits: number;
 }
 
 export interface StudioHistoryItem {
