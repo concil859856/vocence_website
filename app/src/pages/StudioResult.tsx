@@ -1,8 +1,15 @@
 import { useState, useRef, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Play, Pause, Volume2, VolumeX, Download, ArrowLeft } from 'lucide-react';
+import { Play, Pause, Volume2, Download, ArrowLeft } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { dashboardApi } from '../services/dashboardApi';
+
+function formatTime(s: number) {
+  if (!isFinite(s) || s < 0) return '0:00';
+  const m = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  return `${m}:${sec.toString().padStart(2, '0')}`;
+}
 
 export function StudioResult() {
   const { id } = useParams<{ id: string }>();
@@ -12,8 +19,9 @@ export function StudioResult() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
   const [volume, setVolume] = useState(1);
-  const [muted, setMuted] = useState(false);
   const audioRef = useRef<HTMLAudioElement>(null);
 
   useEffect(() => {
@@ -53,15 +61,17 @@ export function StudioResult() {
   };
 
   const handleEnded = () => setIsPlaying(false);
+  const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const el = audioRef.current;
+    if (!el || !duration) return;
+    const t = parseFloat(e.target.value);
+    el.currentTime = t;
+    setCurrentTime(t);
+  };
   const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const v = parseFloat(e.target.value);
     setVolume(v);
     if (audioRef.current) audioRef.current.volume = v;
-  };
-  const toggleMute = () => {
-    const next = !muted;
-    setMuted(next);
-    if (audioRef.current) audioRef.current.volume = next ? 0 : volume;
   };
 
   const handleDownload = () => {
@@ -119,42 +129,49 @@ export function StudioResult() {
             onEnded={handleEnded}
             onPlay={() => setIsPlaying(true)}
             onPause={() => setIsPlaying(false)}
+            onTimeUpdate={() => setCurrentTime(audioRef.current?.currentTime ?? 0)}
+            onDurationChange={() => setDuration(audioRef.current?.duration ?? 0)}
+            onLoadedMetadata={() => setDuration(audioRef.current?.duration ?? 0)}
           />
 
-          <div className="flex flex-col sm:flex-row items-center gap-6">
+          {/* Capsule-style player: play, time, progress, volume, download */}
+          <div className="flex items-center gap-3 p-3 rounded-full bg-[#0a0a0a] border border-white/10">
             <button
               onClick={handlePlayPause}
-              className="w-14 h-14 rounded-full bg-[#DFFF00] text-[#07080A] flex items-center justify-center hover:bg-[#DFFF00]/90 transition-colors shrink-0"
+              className="w-10 h-10 rounded-full bg-white/10 flex items-center justify-center text-white hover:bg-white/20 shrink-0"
               aria-label={isPlaying ? 'Pause' : 'Play'}
             >
-              {isPlaying ? <Pause size={24} fill="currentColor" /> : <Play size={24} className="ml-0.5" fill="currentColor" />}
+              {isPlaying ? <Pause size={18} fill="currentColor" /> : <Play size={18} className="ml-0.5" fill="currentColor" />}
             </button>
-
-            <div className="flex-1 w-full flex items-center gap-4">
-              <button
-                onClick={toggleMute}
-                className="p-2 rounded-lg text-[#A7B0B7] hover:text-white hover:bg-white/10 transition-colors"
-                aria-label={muted ? 'Unmute' : 'Mute'}
-              >
-                {muted ? <VolumeX size={22} /> : <Volume2 size={22} />}
-              </button>
-              <input
-                type="range"
-                min="0"
-                max="1"
-                step="0.05"
-                value={muted ? 0 : volume}
-                onChange={handleVolumeChange}
-                className="flex-1 h-2 bg-white/10 rounded-full appearance-none cursor-pointer accent-[#DFFF00]"
-              />
-            </div>
-
+            <span className="text-sm text-white tabular-nums shrink-0">
+              {formatTime(currentTime)} / {formatTime(duration)}
+            </span>
+            <input
+              type="range"
+              min={0}
+              max={duration || 1}
+              step={0.1}
+              value={currentTime}
+              onChange={handleSeek}
+              className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer bg-white/10 accent-[#DFFF00]"
+            />
+            <Volume2 size={18} className="text-[#A7B0B7] shrink-0" />
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.05}
+              value={volume}
+              onChange={handleVolumeChange}
+              className="w-16 h-1.5 rounded-full appearance-none cursor-pointer bg-white/10 accent-[#DFFF00] shrink-0"
+              aria-label="Volume"
+            />
             <button
               onClick={handleDownload}
-              className="btn-outline inline-flex items-center gap-2 shrink-0"
+              className="w-10 h-10 rounded-full bg-white/10 flex items-center justify-center text-white hover:bg-white/20 shrink-0"
+              aria-label="Download"
             >
               <Download size={18} />
-              Download
             </button>
           </div>
         </div>
