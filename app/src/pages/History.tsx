@@ -10,6 +10,13 @@ import {
   MoreHorizontal,
 } from 'lucide-react';
 import { dashboardApi } from '../services/dashboardApi';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '../components/ui/select';
 
 interface HistoryItem {
   id: string;
@@ -116,17 +123,28 @@ export function History() {
                 className="flex-1 bg-transparent text-sm outline-none text-white placeholder-[#666]"
               />
             </div>
-            <select
-              value={filterType}
-              onChange={(e) => setFilterType(e.target.value)}
-              className="bg-[#0a0a0a] border border-white/10 rounded-lg px-3 py-2 text-sm text-white"
-            >
-              <option value="all">All Types</option>
-              <option value="tts">Text-to-Speech</option>
-              <option value="stt">Speech-to-Text</option>
-              <option value="cloning">Voice Cloning</option>
-              <option value="chat">Voice Chat</option>
-            </select>
+            <Select value={filterType} onValueChange={setFilterType}>
+              <SelectTrigger className="w-[180px] bg-[#0a0a0a] border-white/10 rounded-lg px-3 py-2 text-sm text-white hover:bg-[#111] focus:border-[#DFFF00]/50 focus:ring-[#DFFF00]/20 data-[state=open]:border-[#DFFF00]/50">
+                <SelectValue placeholder="All Types" />
+              </SelectTrigger>
+              <SelectContent className="bg-[#0a0a0a] border-white/10 text-white [&_*]:text-white [&_[data-slot=select-item]]:focus:bg-[#DFFF00]/15 [&_[data-slot=select-item]]:focus:text-[#DFFF00] [&_[data-slot=select-item]]:data-[highlighted]:bg-[#DFFF00]/15 [&_[data-slot=select-item]]:data-[highlighted]:text-[#DFFF00]">
+                <SelectItem value="all" className="focus:bg-[#DFFF00]/15 focus:text-[#DFFF00] data-[highlighted]:bg-[#DFFF00]/15 data-[highlighted]:text-[#DFFF00]">
+                  All Types
+                </SelectItem>
+                <SelectItem value="tts" className="focus:bg-[#DFFF00]/15 focus:text-[#DFFF00] data-[highlighted]:bg-[#DFFF00]/15 data-[highlighted]:text-[#DFFF00]">
+                  Text-to-Speech
+                </SelectItem>
+                <SelectItem value="stt" className="focus:bg-[#DFFF00]/15 focus:text-[#DFFF00] data-[highlighted]:bg-[#DFFF00]/15 data-[highlighted]:text-[#DFFF00]">
+                  Speech-to-Text
+                </SelectItem>
+                <SelectItem value="cloning" className="focus:bg-[#DFFF00]/15 focus:text-[#DFFF00] data-[highlighted]:bg-[#DFFF00]/15 data-[highlighted]:text-[#DFFF00]">
+                  Voice Cloning
+                </SelectItem>
+                <SelectItem value="chat" className="focus:bg-[#DFFF00]/15 focus:text-[#DFFF00] data-[highlighted]:bg-[#DFFF00]/15 data-[highlighted]:text-[#DFFF00]">
+                  Voice Chat
+                </SelectItem>
+              </SelectContent>
+            </Select>
           </div>
         </div>
 
@@ -221,15 +239,30 @@ export function History() {
                         <div className="flex items-center justify-end gap-2">
                           {item.audioUrl != null && !item.expired ? (
                             <>
-                              <a href={item.audioUrl} target="_blank" rel="noopener noreferrer" className="p-1.5 text-[#666] hover:text-white" title="Play">
+                              <button
+                                type="button"
+                                onClick={() => navigate(`/studio/result/${item.id.replace(/^api-/, '')}`)}
+                                className="p-1.5 text-[#666] hover:text-white"
+                                title="Play"
+                              >
                                 <Play size={16} />
-                              </a>
+                              </button>
                               <a href={item.audioUrl} download className="p-1.5 text-[#666] hover:text-white" title="Download">
                                 <Download size={16} />
                               </a>
                             </>
                           ) : item.expired ? (
-                            <span className="text-xs text-[#666]">Expired</span>
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => navigate(`/studio/result/${item.id.replace(/^api-/, '')}`)}
+                                className="p-1.5 text-[#666] hover:text-white"
+                                title="View result"
+                              >
+                                <Play size={16} />
+                              </button>
+                              <span className="text-xs text-[#666]">Expired</span>
+                            </>
                           ) : (
                             <>
                               <button className="p-1.5 text-[#666] hover:text-white" title="Play" disabled>

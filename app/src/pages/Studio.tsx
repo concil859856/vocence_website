@@ -18,6 +18,7 @@ import {
   Copy,
 } from 'lucide-react';
 import gsap from 'gsap';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { AuthModal } from '../components/AuthModal';
 import { dashboardApi, type StudioTopModel, type StudioHistoryItem } from '../services/dashboardApi';
@@ -60,6 +61,7 @@ const clonedVoices: ClonedVoice[] = [
 ];
 
 export function Studio() {
+  const navigate = useNavigate();
   const { user, isAuthenticated, updateCredits } = useAuth();
   const [activeView, setActiveView] = useState<StudioView>('tts');
   const [topModels, setTopModels] = useState<StudioTopModel[]>([]);
@@ -1168,12 +1170,27 @@ export function Studio() {
                                       <td className="px-4 py-4 text-right">
                                         <div className="flex items-center justify-end gap-2">
                                           {item.expired ? (
-                                            <span className="text-xs text-[#666]">Expired</span>
+                                            <>
+                                              <button
+                                                type="button"
+                                                onClick={() => navigate(`/studio/result/${item.id}`)}
+                                                className="p-1.5 text-[#666] hover:text-white"
+                                                title="View result"
+                                              >
+                                                <Play size={16} />
+                                              </button>
+                                              <span className="text-xs text-[#666]">Expired</span>
+                                            </>
                                           ) : item.audio_url ? (
                                             <>
-                                              <a href={item.audio_url} target="_blank" rel="noopener noreferrer" className="p-1.5 text-[#666] hover:text-white" title="Play">
+                                              <button
+                                                type="button"
+                                                onClick={() => navigate(`/studio/result/${item.id}`)}
+                                                className="p-1.5 text-[#666] hover:text-white"
+                                                title="Play"
+                                              >
                                                 <Play size={16} />
-                                              </a>
+                                              </button>
                                               <a href={item.audio_url} download={`vocence-tts-${item.id}.wav`} className="p-1.5 text-[#666] hover:text-white" title="Download">
                                                 <Download size={16} />
                                               </a>
