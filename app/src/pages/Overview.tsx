@@ -28,7 +28,6 @@ export function Overview() {
   const useCasesRef = useRef<HTMLDivElement>(null);
   const newsRef = useRef<HTMLDivElement>(null);
   const videoElementRef = useRef<HTMLVideoElement>(null);
-  const [hoveredUsecase, setHoveredUsecase] = useState<number | null>(null);
   const usecaseVideoRefs = useRef<(HTMLVideoElement | null)[]>([]);
 
   useEffect(() => {
@@ -685,11 +684,13 @@ export function Overview() {
                 key={index}
                 className="usecase-card group relative overflow-hidden rounded-2xl aspect-square cursor-pointer"
                 onMouseEnter={() => {
-                  setHoveredUsecase(index);
-                  usecaseVideoRefs.current[index]?.play().catch(() => {});
+                  const v = usecaseVideoRefs.current[index];
+                  if (v) {
+                    v.muted = false;
+                    v.play().catch(() => { v.muted = true; v.play().catch(() => {}); });
+                  }
                 }}
                 onMouseLeave={() => {
-                  setHoveredUsecase(null);
                   const v = usecaseVideoRefs.current[index];
                   if (v) {
                     v.pause();
@@ -697,21 +698,20 @@ export function Overview() {
                   }
                 }}
               >
+                {/* Image: visible by default, hidden on group-hover so video shows immediately */}
                 <img
                   src={usecase.image}
                   alt={usecase.title}
-                  className={`absolute inset-0 w-full h-full object-cover transition-all duration-300 ${
-                    hoveredUsecase === index ? 'opacity-0' : 'opacity-60 group-hover:opacity-100 group-hover:brightness-110 group-hover:scale-110'
-                  }`}
+                  className="absolute inset-0 w-full h-full object-cover opacity-60 transition-all duration-300 group-hover:opacity-0 pointer-events-none"
                 />
+                {/* Video: hidden by default, visible and plays on group-hover */}
                 <video
                   ref={(el) => { usecaseVideoRefs.current[index] = el; }}
                   src={usecase.video}
+                  muted
                   loop
                   playsInline
-                  className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-300 ${
-                    hoveredUsecase === index ? 'opacity-100' : 'opacity-0 pointer-events-none'
-                  }`}
+                  className="absolute inset-0 w-full h-full object-cover opacity-0 transition-opacity duration-300 group-hover:opacity-100 pointer-events-none"
                 />
                 <div className="absolute inset-0 bg-gradient-to-t from-[#07080A] via-[#07080A]/50 to-transparent pointer-events-none" />
                 <div className="absolute bottom-0 left-0 right-0 p-6 pointer-events-none">
