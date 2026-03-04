@@ -370,23 +370,14 @@ export function Article() {
         </article>
 
         {/* Footer Actions */}
-        <div className="mt-16 pt-8 border-t border-white/10 flex items-center justify-between">
+        <div className="mt-16 pt-8 border-t border-white/10">
           <Link
             to="/blog"
-            className="flex items-center gap-2 text-[#A7B0B7] hover:text-white transition-colors"
+            className="inline-flex items-center gap-2 text-[#A7B0B7] hover:text-white transition-colors"
           >
             <ArrowLeft size={18} />
             <span>Back to Blog</span>
           </Link>
-          <div className="flex items-center gap-4">
-            <span className="text-sm text-[#666]">Share:</span>
-            <button className="p-2 hover:bg-white/10 rounded-lg transition-colors">
-              <span className="text-sm text-[#A7B0B7]">Twitter</span>
-            </button>
-            <button className="p-2 hover:bg-white/10 rounded-lg transition-colors">
-              <span className="text-sm text-[#A7B0B7]">LinkedIn</span>
-            </button>
-          </div>
         </div>
       </div>
     </div>

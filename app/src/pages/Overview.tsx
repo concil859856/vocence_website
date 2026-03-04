@@ -28,6 +28,8 @@ export function Overview() {
   const useCasesRef = useRef<HTMLDivElement>(null);
   const newsRef = useRef<HTMLDivElement>(null);
   const videoElementRef = useRef<HTMLVideoElement>(null);
+  const [hoveredUsecase, setHoveredUsecase] = useState<number | null>(null);
+  const usecaseVideoRefs = useRef<(HTMLVideoElement | null)[]>([]);
 
   useEffect(() => {
     dashboardApi.getOverview().then(setOverview).catch(() => setOverview(null));
@@ -674,38 +676,45 @@ export function Overview() {
 
           <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-6">
             {[
-              {
-                title: 'AI Agents',
-                image: '/usecase_agents.jpg',
-                icon: Cpu,
-              },
-              {
-                title: 'Accessibility',
-                image: '/usecase_accessibility.jpg',
-                icon: Mic,
-              },
-              {
-                title: 'Gaming & Characters',
-                image: '/usecase_gaming.jpg',
-                icon: Zap,
-              },
-              {
-                title: 'Content & Dubbing',
-                image: '/usecase_dubbing.jpg',
-                icon: Globe,
-              },
+              { title: 'AI Agents', image: '/usecase_agents.jpg', video: '/ai_agents.mp4', icon: Cpu },
+              { title: 'Accessibility', image: '/usecase_accessibility.jpg', video: '/accessibility.mp4', icon: Mic },
+              { title: 'Gaming & Characters', image: '/usecase_gaming.jpg', video: '/gaming_characters.mp4', icon: Zap },
+              { title: 'Content & Dubbing', image: '/usecase_dubbing.jpg', video: '/content_dubbing.mp4', icon: Globe },
             ].map((usecase, index) => (
               <div
                 key={index}
                 className="usecase-card group relative overflow-hidden rounded-2xl aspect-square cursor-pointer"
+                onMouseEnter={() => {
+                  setHoveredUsecase(index);
+                  usecaseVideoRefs.current[index]?.play().catch(() => {});
+                }}
+                onMouseLeave={() => {
+                  setHoveredUsecase(null);
+                  const v = usecaseVideoRefs.current[index];
+                  if (v) {
+                    v.pause();
+                    v.currentTime = 0;
+                  }
+                }}
               >
                 <img
                   src={usecase.image}
                   alt={usecase.title}
-                  className="absolute inset-0 w-full h-full object-cover opacity-60 group-hover:opacity-100 group-hover:brightness-110 group-hover:scale-110 transition-all duration-500"
+                  className={`absolute inset-0 w-full h-full object-cover transition-all duration-300 ${
+                    hoveredUsecase === index ? 'opacity-0' : 'opacity-60 group-hover:opacity-100 group-hover:brightness-110 group-hover:scale-110'
+                  }`}
                 />
-                <div className="absolute inset-0 bg-gradient-to-t from-[#07080A] via-[#07080A]/50 to-transparent" />
-                <div className="absolute bottom-0 left-0 right-0 p-6">
+                <video
+                  ref={(el) => { usecaseVideoRefs.current[index] = el; }}
+                  src={usecase.video}
+                  loop
+                  playsInline
+                  className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-300 ${
+                    hoveredUsecase === index ? 'opacity-100' : 'opacity-0 pointer-events-none'
+                  }`}
+                />
+                <div className="absolute inset-0 bg-gradient-to-t from-[#07080A] via-[#07080A]/50 to-transparent pointer-events-none" />
+                <div className="absolute bottom-0 left-0 right-0 p-6 pointer-events-none">
                   <div className="w-10 h-10 rounded-lg bg-[#DFFF00]/20 flex items-center justify-center mb-3">
                     <usecase.icon size={20} className="text-[#DFFF00]" />
                   </div>
