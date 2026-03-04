@@ -597,10 +597,10 @@ UPLOADS_DIR = Path(__file__).resolve().parent.parent / "uploads"
 
 @router.get("/blog", response_model=BlogPostListResponse)
 async def list_blog_posts(
-    limit: int = Query(12, ge=1, le=100),
+    limit: int = Query(12, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
-    """List blog posts (newest first) with optional pagination."""
+    """List blog posts (newest first) with optional pagination. Admin may request up to 500."""
     async with acquire() as conn:
         total_row = await conn.fetchrow("SELECT COUNT(*) AS n FROM blog_posts")
         total = int(total_row["n"] or 0)
