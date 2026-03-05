@@ -766,7 +766,15 @@ export function Overview() {
                   const v = usecaseVideoRefs.current[index];
                   if (v) {
                     v.muted = false;
-                    v.play().catch(() => { v.muted = true; v.play().catch(() => {}); });
+                    v.removeAttribute('muted');
+                    // Let hover/visibility apply then play with sound (browsers may allow unmuted after hover)
+                    const playWithSound = () => {
+                      v.play().catch(() => {
+                        v.muted = true;
+                        v.play().catch(() => {});
+                      });
+                    };
+                    requestAnimationFrame(() => requestAnimationFrame(playWithSound));
                   }
                 }}
                 onMouseLeave={() => {
@@ -774,6 +782,7 @@ export function Overview() {
                   if (v) {
                     v.pause();
                     v.currentTime = 0;
+                    v.muted = true;
                   }
                 }}
               >
