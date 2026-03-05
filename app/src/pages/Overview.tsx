@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowRight, Play, Cpu, Mic, Globe, Zap, Shield, Check, Square } from 'lucide-react';
+import { ArrowRight, Play, Cpu, Mic, Globe, Zap, Shield, Check, Square, MessageSquare, Bot } from 'lucide-react';
 import gsap from 'gsap';
 import { ScrollTrigger } from 'gsap/ScrollTrigger';
 import { dashboardApi, type DashboardOverview, type BlogPost } from '../services/dashboardApi';
@@ -8,6 +8,41 @@ import { dashboardApi, type DashboardOverview, type BlogPost } from '../services
 gsap.registerPlugin(ScrollTrigger);
 
 const DASHBOARD_BASE = import.meta.env.VITE_API_URL ?? (import.meta.env.PROD ? '' : 'http://localhost:34717');
+
+const ROADMAP_QUARTERS = [
+  {
+    phase: 'Q1 – Foundation',
+    completed: true,
+    items: [
+      'Subnet launch on Bittensor',
+      'Official website and monitoring dashboard',
+      'Baseline evaluation pipeline for PromptTTS, STT, Voice Cloning, and other voice models—voice quality validation, voice trait accuracy, content correctness, and environmental consistency',
+    ],
+  },
+  {
+    phase: 'Q2 – Scaling and Robustness',
+    completed: false,
+    items: [
+      'Expanded voice-trait and environmental taxonomy',
+      'Start collecting datasets for model training from validator results and validator task generation/evaluation pipeline',
+      'Adversarial prompt testing to reduce overfitting and prompt gaming',
+      'Launch STT and Voice Cloning pipeline on the subnet and begin competition',
+      'Subnet product launch (PromptTTS, STT, Voice Cloning) and API for developers',
+    ],
+  },
+  {
+    phase: 'Q3 – Ecosystem Expansion',
+    completed: false,
+    items: [
+      'Launch Voice STS, TTM pipeline on the subnet and begin competition',
+      'Platform expansion with Voice AI Agents that integrate with developed multimodal models—integrable with voice applications and other platform voice agents',
+      'Platform expansion to support various APIs that integrate with other APIs, services, and external platforms',
+      'Cross-subnet integrations within the Bittensor ecosystem',
+      'Advanced controllability and expressiveness benchmarks across all voice domains',
+    ],
+  },
+];
+
 function blogImageUrl(url: string): string {
   if (!url) return '';
   if (url.startsWith('http')) return url;
@@ -29,6 +64,7 @@ export function Overview() {
   const newsRef = useRef<HTMLDivElement>(null);
   const videoElementRef = useRef<HTMLVideoElement>(null);
   const usecaseVideoRefs = useRef<(HTMLVideoElement | null)[]>([]);
+  const [roadmapActive, setRoadmapActive] = useState(0);
 
   useEffect(() => {
     dashboardApi.getOverview().then(setOverview).catch(() => setOverview(null));
@@ -94,38 +130,67 @@ export function Overview() {
         { opacity: 1, y: 0, duration: 0.6, delay: 0.9 }
       );
 
-      // Features section - more dramatic
+      // Features section: cards and content reveal left-to-right, then content “fills in” per card
       gsap.fromTo(
         '.feature-card',
-        { opacity: 0, y: 60, scale: 0.9, rotationX: -15 },
+        { opacity: 0, y: 32 },
         {
           opacity: 1,
           y: 0,
-          scale: 1,
-          rotationX: 0,
-          duration: 0.8,
-          stagger: 0.15,
-          ease: 'back.out(1.7)',
+          duration: 0.55,
+          stagger: 0.1,
+          ease: 'power2.out',
           scrollTrigger: {
             trigger: featuresRef.current,
-            start: 'top 85%',
+            start: 'top 82%',
           },
         }
       );
-
-      // Feature icons animation
       gsap.fromTo(
         '.feature-icon',
-        { scale: 0, rotation: -180 },
+        { opacity: 0, scale: 0.85 },
         {
+          opacity: 1,
           scale: 1,
-          rotation: 0,
-          duration: 0.6,
+          duration: 0.4,
           stagger: 0.1,
-          ease: 'elastic.out(1, 0.5)',
+          delay: 0.08,
+          ease: 'power2.out',
           scrollTrigger: {
             trigger: featuresRef.current,
-            start: 'top 85%',
+            start: 'top 82%',
+          },
+        }
+      );
+      gsap.fromTo(
+        '.feature-card-title',
+        { opacity: 0, y: 10 },
+        {
+          opacity: 1,
+          y: 0,
+          duration: 0.4,
+          stagger: 0.1,
+          delay: 0.2,
+          ease: 'power2.out',
+          scrollTrigger: {
+            trigger: featuresRef.current,
+            start: 'top 82%',
+          },
+        }
+      );
+      gsap.fromTo(
+        '.feature-card-desc',
+        { opacity: 0, y: 8 },
+        {
+          opacity: 1,
+          y: 0,
+          duration: 0.45,
+          stagger: 0.1,
+          delay: 0.35,
+          ease: 'power2.out',
+          scrollTrigger: {
+            trigger: featuresRef.current,
+            start: 'top 82%',
           },
         }
       );
@@ -319,8 +384,7 @@ export function Overview() {
               <span className="gradient-text">decentralized intelligence.</span>
             </h1>
             <p className="hero-subtitle text-lg md:text-xl text-[#A7B0B7] leading-relaxed mb-8 max-w-2xl">
-            Vocence is an open network dedicated to training the world’s most expressive 
-            prompt-to-speech models, governed by on-chain incentive mechanisms within the Bittensor network
+              Voice intelligence network on Bittensor
             </p>
             <div className="hero-cta flex flex-wrap gap-4">
               <Link to="/studio" className="btn-primary">
@@ -360,41 +424,56 @@ export function Overview() {
           <div className="text-center mb-16 section-header">
             <span className="label-mono mb-4 block">What is Vocence?</span>
             <h2 className="text-3xl md:text-4xl font-semibold mb-4">
-            All-in-One Prompt-to-Speech
+              Voice Intelligence Layer
             </h2>
             <p className="text-[#A7B0B7] max-w-2xl mx-auto">
-            Vocence turns rich, multi-dimensional speech prompts into natural audio, 
-            trained by a decentralized network and verified through open, prompt-faithful benchmarks
+              Prompts become natural speech and voice responses. Multiple domains, one network, open benchmarks.
             </p>
           </div>
 
-          <div className="grid md:grid-cols-3 gap-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
             {[
               {
                 icon: Mic,
                 title: 'Prompt-to-Speech',
-                description: 'Describe tone, pace, and emotion in plain language.',
+                description: 'Text and style prompt become natural speech. Control tone emotion and accent.',
+                image: '/prompt_to_speech_image.png',
               },
               {
-                icon: Cpu,
-                title: 'Decentralized Training',
-                description: 'Miners compete to improve quality; validators keep scoring honest.',
+                icon: MessageSquare,
+                title: 'STT STS Cloning',
+                description: 'Transcribe speech clone voices or generate music. Full voice stack.',
+                image: '/stt_sts_cloning_image.png',
+              },
+              {
+                icon: Bot,
+                title: 'Voice Agents',
+                description: 'TTS STT and reasoning in one place. Build voice-driven apps.',
+                image: '/voice_agents_image.png',
               },
               {
                 icon: Shield,
-                title: 'Open Evaluation',
-                description: 'No black boxes. Metrics, datasets, and code are public.',
+                title: 'Decentralized and Open',
+                description: 'Miners compete validators score publicly. No black boxes.',
+                image: '/decentralized_and_open_image.png',
               },
             ].map((feature, index) => (
               <div
                 key={index}
-                className="feature-card card-vocence p-8 hover:border-[#DFFF00]/30 transition-all duration-300 hover:scale-105 hover:shadow-lg hover:shadow-[#DFFF00]/20"
+                className="feature-card group relative overflow-hidden rounded-2xl border border-white/10 p-8 transition-all duration-300 hover:border-[#DFFF00]/40 hover:shadow-[0_0_24px_-4px_rgba(223,255,0,0.15)]"
               >
-                <div className="feature-icon w-12 h-12 rounded-xl bg-[#DFFF00]/10 flex items-center justify-center mb-6 transition-transform duration-300 group-hover:scale-110 group-hover:rotate-6">
+                <div
+                  className="absolute inset-0 transition-transform duration-500 ease-out group-hover:scale-125"
+                  style={{ backgroundImage: `url(${feature.image})`, backgroundSize: 'cover', backgroundPosition: 'center' }}
+                  aria-hidden
+                />
+                <div className="absolute inset-0 bg-[#07080A]/50 transition-opacity duration-300 group-hover:bg-[#07080A]/35" aria-hidden />
+                <div className="absolute left-0 top-0 bottom-0 w-0.5 bg-[#DFFF00]/0 transition-all duration-300 group-hover:bg-[#DFFF00]/50" aria-hidden />
+                <div className="feature-icon relative w-12 h-12 rounded-xl bg-[#DFFF00]/10 flex items-center justify-center mb-6 transition-colors duration-300 group-hover:bg-[#DFFF00]/20">
                   <feature.icon size={24} className="text-[#DFFF00]" />
                 </div>
-                <h3 className="text-xl font-semibold mb-3">{feature.title}</h3>
-                <p className="text-[#A7B0B7]">{feature.description}</p>
+                <h3 className="feature-card-title relative text-xl font-semibold mb-3 text-white">{feature.title}</h3>
+                <p className="feature-card-desc relative text-[#A7B0B7] text-sm leading-relaxed">{feature.description}</p>
               </div>
             ))}
           </div>
@@ -416,9 +495,9 @@ export function Overview() {
               </p>
               <ul className="space-y-3 mb-8">
                 {[
-                  'Real-time speech generation',
-                  'Emotional control and style prompts',
-                  'Professional-grade audio quality',
+                  'Prompt-driven voice control: tone, style, accent, and emotion',
+                  'Content-accurate, prompt-faithful speech generation',
+                  'Professional-grade audio quality and naturalness',
                 ].map((item, index) => (
                   <li key={index} className="flex items-center gap-3">
                     <span className="text-[#DFFF00]">
@@ -794,74 +873,62 @@ export function Overview() {
         </div>
       </section>
 
-      {/* Roadmap Section */}
+      {/* Roadmap Section – horizontal timeline + one card at a time */}
       <section className="py-24 px-6 lg:px-8">
-        <div className="max-w-7xl mx-auto">
-          <div className="text-center mb-16">
+        <div className="max-w-4xl mx-auto">
+          <div className="text-center mb-12">
             <span className="label-mono mb-4 block">Roadmap</span>
             <h2 className="text-3xl md:text-4xl font-semibold mb-4">Project Roadmap</h2>
             <p className="text-[#A7B0B7] max-w-2xl mx-auto">
-              Our journey to build the most expressive decentralized voice synthesis network.
+              Our journey to build the Voice Intelligence Layer: from foundation to ecosystem expansion across PromptTTS, STT, STS, voice cloning, TTM, and voice agents.
             </p>
           </div>
 
-          <div className="card-vocence p-8 md:p-12">
-            <div className="relative">
-              {/* Timeline line */}
-              <div className="absolute left-4 md:left-6 top-0 bottom-0 w-0.5 bg-white/10" />
-
-              <div className="space-y-12">
-                {[
-                  {
-                    phase: 'Q1 – Foundation',
-                    completed: true,
-                    items: [
-                      'Subnet launch on Bittensor',
-                      'Baseline PromptTTS evaluation pipeline focused on voice quality validation, voice trait accuracy, and content correctness',
-                      'Official website and monitoring dashboard',
-                    ],
-                  },
-                  {
-                    phase: 'Q2 – Scaling and Robustness',
-                    completed: false,
-                    items: [
-                      'Expanded voice-trait and environmental taxonomy',
-                      'Improved prompt adherence metrics',
-                      'Adversarial prompt testing to reduce overfitting and prompt gaming',
-                      'Subnet product launch and API for developers',
-                    ],
-                  },
-                  {
-                    phase: 'Q3 – Ecosystem Expansion',
-                    completed: false,
-                    items: [
-                      'Multilingual PromptTTS support',
-                      'Platform expansion into prompt-driven voice agents, prompt-based voice cloning, and real-time voice chat applications',
-                      'Cross-subnet integrations within the Bittensor ecosystem',
-                      'Advanced controllability and expressiveness benchmarks',
-                      'Community-driven dataset contributions and evaluation extensions',
-                    ],
-                  },
-                ].map((item, index) => (
-                  <div key={index} className="relative pl-12 md:pl-16">
-                    <div
-                      className={`absolute left-0 md:left-2 top-1 w-8 h-8 rounded-full border-2 flex items-center justify-center ${
-                        item.completed
-                          ? 'border-[#DFFF00] bg-[#DFFF00]'
-                          : 'border-white/20 bg-[#07080A]'
-                      }`}
-                    >
-                      {item.completed && <Check size={14} className="text-[#07080A]" />}
-                    </div>
-                    <h3 className="text-xl font-semibold mb-3">{item.phase}</h3>
-                    <ul className="text-[#A7B0B7] space-y-1.5 list-disc list-inside">
-                      {item.items.map((bullet, i) => (
-                        <li key={i}>{bullet}</li>
-                      ))}
-                    </ul>
+          {/* Horizontal timeline: line with Q1 — Q2 — Q3 nodes */}
+          <div className="flex items-center w-full mb-8">
+            <div className="flex-1 h-0.5 bg-white/10 rounded-l" aria-hidden />
+            {ROADMAP_QUARTERS.map((q, index) => (
+              <span key={index} className="flex items-center shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setRoadmapActive(index)}
+                  className={`flex flex-col items-center gap-2 transition-colors ${
+                    roadmapActive === index ? 'opacity-100' : 'opacity-70 hover:opacity-100'
+                  }`}
+                >
+                  <div
+                    className={`w-10 h-10 rounded-full border-2 flex items-center justify-center transition-colors ${
+                      roadmapActive === index
+                        ? 'border-[#DFFF00] bg-[#DFFF00]'
+                        : q.completed
+                          ? 'border-[#DFFF00]/60 bg-[#DFFF00]/20'
+                          : 'border-white/20 bg-white/5'
+                    }`}
+                  >
+                    {q.completed ? <Check size={18} className={roadmapActive === index ? 'text-[#07080A]' : 'text-[#DFFF00]'} /> : <span className="text-xs font-medium text-[#A7B0B7]">{index + 1}</span>}
                   </div>
+                  <span className={`text-sm font-medium whitespace-nowrap ${roadmapActive === index ? 'text-white' : 'text-[#A7B0B7]'}`}>
+                    Q{index + 1}
+                  </span>
+                </button>
+                {index < ROADMAP_QUARTERS.length - 1 && <div className="w-8 md:w-16 flex-shrink-0 h-0.5 bg-white/10" aria-hidden />}
+              </span>
+            ))}
+            <div className="flex-1 h-0.5 bg-white/10 rounded-r" aria-hidden />
+          </div>
+
+          {/* Single card: only the active quarter's content */}
+          <div className="rounded-2xl border border-white/10 bg-[#0a0a0a]/90 overflow-hidden">
+            <div className="p-6 md:p-8">
+              <h3 className="text-xl font-semibold text-white mb-4 flex items-center gap-2">
+                {ROADMAP_QUARTERS[roadmapActive].completed && <Check size={20} className="text-[#DFFF00]" />}
+                {ROADMAP_QUARTERS[roadmapActive].phase}
+              </h3>
+              <ul className="text-[#A7B0B7] text-sm space-y-2 list-disc list-outside pl-6 leading-relaxed">
+                {ROADMAP_QUARTERS[roadmapActive].items.map((bullet, i) => (
+                  <li key={i}>{bullet}</li>
                 ))}
-              </div>
+              </ul>
             </div>
           </div>
         </div>

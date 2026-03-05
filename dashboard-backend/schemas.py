@@ -98,6 +98,17 @@ class BlogPostCreateRequest(BaseModel):
     featured: bool = False
 
 
+class BlogPostUpdateRequest(BaseModel):
+    """Update post; date and created_at are never changed."""
+    title: str
+    excerpt: str
+    category: str
+    read_time: str = "5 min read"
+    image: str
+    content: str
+    featured: bool = False
+
+
 # ----- Registered users (local SQLite) -----
 
 

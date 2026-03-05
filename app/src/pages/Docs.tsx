@@ -67,7 +67,7 @@ export function Docs() {
         </div>
         <h1 className="text-4xl font-bold mb-4">Getting Started with Vocence</h1>
         <p className="text-xl text-[#A7B0B7] leading-relaxed">
-          Introduction to the Vocence decentralized voice protocol and its place in the Bittensor ecosystem.
+          Introduction to the Vocence Voice Intelligence Layer—a decentralized protocol for PromptTTS, STT, STS, voice cloning, TTM, and voice agents—and its place in the Bittensor ecosystem.
         </p>
       </div>
 
@@ -75,10 +75,13 @@ export function Docs() {
       <section>
         <h2 className="text-2xl font-semibold mb-4">What is Vocence?</h2>
         <p className="text-[#A7B0B7] leading-7 mb-4">
-          Vocence is a Bittensor subnet dedicated to training, evaluating, and improving prompt-based text-to-speech (PromptTTS) models. Unlike traditional TTS systems that merely convert text into audio, PromptTTS models generate speech from all-in prompts that combine transcription with explicit control signals, including voice characteristics (gender, age, emotion, tone), speaking style, accent and non-native speech patterns, as well as environmental attributes such as background noise, recording conditions, and overall acoustic context.
+          Vocence is a Bittensor subnet focused on the development, training, evaluation, and improvement of a wide range of voice intelligence models: PromptTTS (text-to-speech), STT (speech-to-text), STS (speech-to-speech), voice cloning, TTM (text-to-music), and voice agents. This decentralized network goes beyond traditional voice synthesis by integrating multiple layers of multimodal voice intelligence, enabling dynamic voice agents with advanced control and adaptability.
+        </p>
+        <p className="text-[#A7B0B7] leading-7 mb-4">
+          Miners train and serve models that respond to detailed prompts—voice characteristics (gender, age, emotion, tone), speaking style, accent, and environmental factors. Validators assess performance using public evaluation pipelines, ensuring prompt adherence, content accuracy, and environmental consistency across use cases from natural speech to interactive voice agents and music generation.
         </p>
         <p className="text-[#A7B0B7] leading-7">
-          Our protocol incentivizes miners to host the latest open-source voice models and fine-tune them for specific use cases, creating a competitive marketplace for AI voice generation.
+          By leveraging a decentralized incentive structure, Vocence fosters an open, permissionless ecosystem where voice models evolve into intelligent, context-aware agents adaptable to a wide array of tasks.
         </p>
       </section>
 
@@ -86,7 +89,7 @@ export function Docs() {
       <section className="bg-white/5 border border-white/10 rounded-xl p-6">
         <h2 className="text-xl font-semibold mb-3">Full technical overview</h2>
         <p className="text-[#A7B0B7] leading-7 mb-4">
-          For the complete picture—including PromptTTS, evaluation pipeline, roadmap, and governance—see the whitepaper.
+          For the complete picture—including all voice domains (PromptTTS, STT, STS, voice cloning, TTM, voice agents), evaluation pipeline, roadmap, and governance—see the whitepaper.
         </p>
         <Link
           to="/whitepaper"
@@ -144,38 +147,33 @@ export function Docs() {
       <div className="border-b border-white/10 pb-8">
         <h1 className="text-4xl font-bold mb-4">Core Concepts</h1>
         <p className="text-xl text-[#A7B0B7]">
-          Understand the fundamental concepts behind the Vocence protocol.
+          Understand the fundamental concepts behind the Vocence Voice Intelligence Layer.
         </p>
       </div>
 
       <section>
-        <h2 className="text-2xl font-semibold mb-4">Prompt-to-Speech</h2>
+        <h2 className="text-2xl font-semibold mb-4">Voice Intelligence Domains</h2>
         <p className="text-[#A7B0B7] leading-7 mb-4">
-          Unlike traditional TTS systems that only convert text into audio, PromptTTS models
-          generate speech from rich prompts that include transcription plus explicit voice
-          characteristics such as gender, age, emotion, tone, speaking style, and other
-          vocal traits.
+          Vocence spans multiple voice and audio domains: PromptTTS (prompt-based text-to-speech), STT (speech-to-text), STS (speech-to-speech), voice cloning, TTM (text-to-music), and voice agents. Unlike traditional TTS that only converts text to audio, PromptTTS and related models accept rich prompts that specify voice characteristics (gender, age, emotion, tone), speaking style, accent, and environmental context.
         </p>
         <div className="card-vocence p-6 mt-6">
-          <h3 className="font-medium mb-3">Example Prompt</h3>
+          <h3 className="font-medium mb-3">Example Prompt (PromptTTS)</h3>
           <code className="block bg-[#0a0a0a] p-4 rounded-lg text-sm text-[#A7B0B7]">
-            "A calm, middle-aged male voice, neutral accent, slow pace, warm tone, reading
-            the following sentence..."
+            &quot;A calm, middle-aged male voice, neutral accent, slow pace, warm tone, reading
+            the following sentence…&quot;
           </code>
         </div>
       </section>
 
       <section>
-        <h2 className="text-2xl font-semibold mb-4">Decentralized Training</h2>
+        <h2 className="text-2xl font-semibold mb-4">Decentralized Training & Evaluation</h2>
         <p className="text-[#A7B0B7] leading-7 mb-4">
-          Vocence introduces a decentralized incentive system where miners compete to produce
-          PromptTTS models that best follow voice-trait prompts, while validators objectively
-          evaluate audio quality, content correctness, and prompt adherence.
+          Miners train and serve models across PromptTTS, STT, STS, voice cloning, TTM, and voice agents. Validators assess outputs using public evaluation pipelines—content correctness, audio quality, prompt adherence, and environmental consistency—so the best models are rewarded and the ecosystem improves across all voice intelligence domains.
         </p>
         <div className="grid md:grid-cols-3 gap-4 mt-6">
           {[
-            { title: 'Miners', desc: 'Train and serve TTS models', icon: Layers },
-            { title: 'Validators', desc: 'Evaluate and score outputs', icon: Terminal },
+            { title: 'Miners', desc: 'Train and serve voice models across all domains', icon: Layers },
+            { title: 'Validators', desc: 'Evaluate and score outputs with public benchmarks', icon: Terminal },
             { title: 'Consensus', desc: 'On-chain reward distribution', icon: Code },
           ].map((item, i) => (
             <div key={i} className="card-vocence p-5">
@@ -194,17 +192,14 @@ export function Docs() {
       <div className="border-b border-white/10 pb-8">
         <h1 className="text-4xl font-bold mb-4">Architecture</h1>
         <p className="text-xl text-[#A7B0B7]">
-          High-level overview of the Vocence system architecture.
+          High-level overview of the Vocence Voice Intelligence Layer and how miners, validators, and Chutes interact.
         </p>
       </div>
 
       <section>
         <h2 className="text-2xl font-semibold mb-4">System Overview</h2>
         <p className="text-[#A7B0B7] leading-7 mb-6">
-          Miners train or fine-tune PromptTTS models and serve inference endpoints.
-          Validators generate tasks, score outputs, and distribute rewards. Datasets are
-          sourced from open speech corpora and enriched with structured voice-trait
-          annotations.
+          Miners train or fine-tune models across PromptTTS, STT, STS, voice cloning, TTM, and voice agents, and deploy them as inference services on Chutes. Models are exposed via a standardized API. Validators interact with deployed models via the Chutes API to submit evaluation tasks, collect generated outputs, and compute scores. Evaluation tasks are continuously sourced from dynamically updated online data streams (e.g. YouTube and other public platforms) to prevent overfitting and ensure robust, generalizable performance.
         </p>
 
         <div className="card-vocence p-8">
@@ -215,7 +210,7 @@ export function Docs() {
               </div>
               <h3 className="font-semibold mb-2">Miners</h3>
               <p className="text-sm text-[#A7B0B7]">
-                Train models and serve inference endpoints
+                Train/serve voice models on Chutes across all voice domains
               </p>
             </div>
             <div>
@@ -224,7 +219,7 @@ export function Docs() {
               </div>
               <h3 className="font-semibold mb-2">Validators</h3>
               <p className="text-sm text-[#A7B0B7]">
-                Generate tasks and evaluate outputs
+                Generate tasks, evaluate outputs, distribute rewards
               </p>
             </div>
             <div>
@@ -243,15 +238,13 @@ export function Docs() {
       <section>
         <h2 className="text-2xl font-semibold mb-4">Evaluation Pipeline</h2>
         <p className="text-[#A7B0B7] leading-7 mb-4">
-          Validator scoring focuses on three core dimensions: content correctness, audio
-          quality, and prompt adherence. These scores are combined into a single reward
-          signal.
+          Validator scoring focuses on three core dimensions: content correctness, audio quality, and prompt adherence. These are combined into a single reward signal across TTS, STT, STS, voice cloning, TTM, and voice agents. Evaluation code is open source and metrics are reproducible.
         </p>
         <ul className="space-y-3 mt-4">
           {[
-            'Content Correctness - Word Error Rate (WER) and transcription accuracy',
-            'Audio Quality - Mean Opinion Score (MOS) and naturalness metrics',
-            'Prompt Adherence - How well the output matches the voice trait description',
+            'Content Correctness – transcription accuracy and semantic fidelity',
+            'Audio Quality – naturalness and environmental consistency',
+            'Prompt Adherence – how well the output matches the voice trait and style description',
           ].map((item, i) => (
             <li key={i} className="flex items-start gap-3">
               <span className="text-[#DFFF00] mt-1">✓</span>
@@ -347,24 +340,24 @@ export function Docs() {
   const renderFAQ = () => {
     const faqs = [
       {
-        q: 'What makes Vocence different from existing TTS subnets?',
-        a: 'Vocence explicitly evaluates prompt adherence, not just audio quality or intelligibility.',
+        q: 'What makes Vocence different from existing voice subnets?',
+        a: 'Vocence explicitly evaluates prompt adherence across a wide range of voice technologies, not just audio quality or intelligibility. It supports PromptTTS, STT, STS, voice cloning, TTM, and voice agents, ensuring comprehensive evaluation and development of voice models.',
       },
       {
         q: 'Do miners need to train models from scratch?',
-        a: 'No. Miners may fine-tune existing models or develop new architectures.',
+        a: 'No. Miners can fine-tune existing models or develop new architectures, making it easier for contributors to participate and improve upon pre-trained models.',
       },
       {
         q: 'Is the evaluation model public?',
-        a: 'Yes. All evaluation logic is open and reproducible.',
+        a: 'Yes. All evaluation logic is open source and reproducible, ensuring transparency and enabling anyone to verify the evaluation process.',
       },
       {
         q: 'Can Vocence support commercial use cases?',
-        a: 'Yes. Outputs are suitable for voice agents, games, assistants, and accessibility tools.',
+        a: 'Yes. Outputs are suitable for a wide range of commercial applications, including voice agents, interactive games, virtual assistants, and accessibility tools.',
       },
       {
         q: 'How does Vocence prevent prompt cheating?',
-        a: 'Through adversarial prompts, cross-validation, and multi-axis scoring.',
+        a: 'Through adversarial prompts, cross-validation between validators, and multi-axis scoring, which ensures models adhere to prompts across multiple voice characteristics (e.g., tone, emotion, accent) and reduces the risk of manipulation.',
       },
     ];
     return (

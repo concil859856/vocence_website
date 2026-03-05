@@ -253,6 +253,26 @@ export const dashboardApi = {
     });
   },
 
+  updateBlogPost(
+    id: string,
+    data: { title: string; excerpt: string; category: string; read_time?: string; image: string; content: string; featured?: boolean },
+    adminEmail: string
+  ): Promise<BlogPost> {
+    return fetchJson(`/api/dashboard/blog/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', 'X-Admin-Email': adminEmail },
+      body: JSON.stringify({
+        title: data.title,
+        excerpt: data.excerpt,
+        category: data.category,
+        read_time: data.read_time ?? '5 min read',
+        image: data.image,
+        content: data.content,
+        featured: data.featured ?? false,
+      }),
+    });
+  },
+
   deleteBlogPost(id: string, adminEmail: string): Promise<{ ok: boolean }> {
     return fetchJson(`/api/dashboard/blog/${id}`, {
       method: 'DELETE',

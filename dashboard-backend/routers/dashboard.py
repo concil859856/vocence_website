@@ -21,6 +21,7 @@ from schemas import (
     BlogPostCreateRequest,
     BlogPostListResponse,
     BlogPostResponse,
+    BlogPostUpdateRequest,
     MinerResponse,
     MinersResponse,
     OverviewResponse,
@@ -695,6 +696,46 @@ async def create_blog_post(
             body.content,
             body.featured,
         )
+    return BlogPostResponse(
+        id=str(row["id"]),
+        title=row["title"],
+        excerpt=row["excerpt"],
+        category=row["category"],
+        date=row["date"],
+        read_time=row["read_time"] or "5 min read",
+        image=row["image"],
+        content=row["content"],
+        featured=row["featured"],
+        created_at=row["created_at"].isoformat() if row["created_at"] else None,
+    )
+
+
+@router.patch("/blog/{post_id}", response_model=BlogPostResponse)
+async def update_blog_post(
+    post_id: str,
+    body: BlogPostUpdateRequest,
+    _: str = Depends(require_admin_email),
+):
+    """Update a blog post. Date and created_at are left unchanged (published date preserved)."""
+    async with acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            UPDATE blog_posts
+            SET title = $1, excerpt = $2, category = $3, read_time = $4, image = $5, content = $6, featured = $7
+            WHERE id = $8
+            RETURNING id, title, excerpt, category, date, read_time, image, content, featured, created_at
+            """,
+            body.title,
+            body.excerpt,
+            body.category,
+            body.read_time,
+            body.image,
+            body.content,
+            body.featured,
+            post_id,
+        )
+    if not row:
+        raise HTTPException(status_code=404, detail="Post not found")
     return BlogPostResponse(
         id=str(row["id"]),
         title=row["title"],

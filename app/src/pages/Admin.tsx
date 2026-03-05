@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { dashboardApi, type BlogPost, type RegisteredUser, type DashboardValidator } from '../services/dashboardApi';
-import { ShieldOff, Plus, Trash2, Copy, ImagePlus, FileText, Users, ShieldCheck } from 'lucide-react';
+import { ShieldOff, Plus, Trash2, Copy, ImagePlus, FileText, Users, ShieldCheck, Pencil } from 'lucide-react';
 import { ADMIN_EMAIL } from '../config';
 
 const ACCENT = '#D1F840';
@@ -21,6 +21,7 @@ export function Admin() {
   const [postsLoading, setPostsLoading] = useState(false);
   const [postsError, setPostsError] = useState<string | null>(null);
   const [showPostForm, setShowPostForm] = useState(false);
+  const [editingPostId, setEditingPostId] = useState<string | null>(null);
   const [postForm, setPostForm] = useState({
     title: '',
     excerpt: '',
@@ -148,7 +149,22 @@ export function Admin() {
     });
   };
 
-  const handleCreatePost = async (e: React.FormEvent) => {
+  const handleEditPost = (p: BlogPost) => {
+    setEditingPostId(p.id);
+    setPostForm({
+      title: p.title,
+      excerpt: p.excerpt,
+      category: p.category,
+      read_time: p.read_time ?? '5 min read',
+      image: p.image,
+      content: p.content,
+      featured: p.featured ?? false,
+    });
+    setImageFile(null);
+    setShowPostForm(true);
+  };
+
+  const handleSubmitPost = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user?.email) return;
     let imageUrl = postForm.image;
@@ -172,19 +188,29 @@ export function Admin() {
     setSubmitting(true);
     setPostsError(null);
     try {
-      await dashboardApi.createBlogPost(
-        { ...postForm, image: imageUrl },
-        user.email
-      );
+      const payload = { ...postForm, image: imageUrl };
+      if (editingPostId) {
+        await dashboardApi.updateBlogPost(editingPostId, payload, user.email);
+      } else {
+        await dashboardApi.createBlogPost(payload, user.email);
+      }
+      setEditingPostId(null);
       setPostForm({ title: '', excerpt: '', category: 'Updates', read_time: '5 min read', image: '', content: '', featured: false });
       setImageFile(null);
       setShowPostForm(false);
       loadPosts();
     } catch (e) {
-      setPostsError(e instanceof Error ? e.message : 'Failed to create post');
+      setPostsError(e instanceof Error ? e.message : (editingPostId ? 'Failed to update post' : 'Failed to create post'));
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const handleCancelPostForm = () => {
+    setEditingPostId(null);
+    setPostForm({ title: '', excerpt: '', category: 'Updates', read_time: '5 min read', image: '', content: '', featured: false });
+    setImageFile(null);
+    setShowPostForm(false);
   };
 
   const handleDeletePost = async (id: string) => {
@@ -423,15 +449,20 @@ export function Admin() {
           {!showPostForm ? (
             <button
               type="button"
-              onClick={() => setShowPostForm(true)}
+              onClick={() => { setEditingPostId(null); setShowPostForm(true); }}
               className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium mb-4 text-[#07080A] hover:opacity-90"
               style={{ background: ACCENT }}
             >
               <Plus className="w-4 h-4" /> New post
             </button>
           ) : (
-            <form onSubmit={handleCreatePost} className="mb-6 p-4 rounded-xl border border-[#27272a] bg-[#0a0a0a] space-y-4">
-              <h3 className="text-sm font-medium text-white">New post</h3>
+            <form onSubmit={handleSubmitPost} className="mb-6 p-4 rounded-xl border border-[#27272a] bg-[#0a0a0a] space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-medium text-white">{editingPostId ? 'Edit post' : 'New post'}</h3>
+                {editingPostId && (
+                  <span className="text-xs text-gray-500">Published: {posts.find((p) => p.id === editingPostId)?.date ?? '—'}</span>
+                )}
+              </div>
               <div>
                 <label className="block text-xs text-gray-500 mb-1">Title</label>
                 <input
@@ -521,9 +552,9 @@ export function Admin() {
                 </label>
                 <div className="flex gap-2">
                   <button type="submit" disabled={submitting} className="px-4 py-2 rounded-lg text-sm font-medium text-[#07080A] disabled:opacity-50" style={{ background: ACCENT }}>
-                    {submitting ? 'Saving...' : 'Publish'}
+                    {submitting ? 'Saving...' : editingPostId ? 'Update post' : 'Publish'}
                   </button>
-                  <button type="button" onClick={() => setShowPostForm(false)} className="px-4 py-2 rounded-lg text-sm font-medium text-gray-400 hover:text-white border border-[#27272a]">
+                  <button type="button" onClick={handleCancelPostForm} className="px-4 py-2 rounded-lg text-sm font-medium text-gray-400 hover:text-white border border-[#27272a]">
                     Cancel
                   </button>
                 </div>
@@ -540,9 +571,14 @@ export function Admin() {
                 <li key={p.id} className="flex items-center justify-between py-3 px-4 rounded-lg border border-[#27272a] hover:bg-[#1a1a1a]">
                   <span className="text-sm text-white font-medium truncate flex-1 mr-4">{p.title}</span>
                   <span className="text-xs text-gray-500 shrink-0 mr-4">{p.date}</span>
-                  <button type="button" onClick={() => handleDeletePost(p.id)} className="p-1.5 text-gray-400 hover:text-red-400" title="Delete">
-                    <Trash2 className="w-4 h-4" />
-                  </button>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button type="button" onClick={() => handleEditPost(p)} className="p-1.5 text-gray-400 hover:text-white" title="Edit">
+                      <Pencil className="w-4 h-4" />
+                    </button>
+                    <button type="button" onClick={() => handleDeletePost(p.id)} className="p-1.5 text-gray-400 hover:text-red-400" title="Delete">
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
                 </li>
               ))}
             </ul>
