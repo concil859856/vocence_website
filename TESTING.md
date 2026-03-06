@@ -96,7 +96,7 @@ curl -X POST http://localhost:3002/api/dashboard/users/register \
 
 # List users (admin only)
 curl http://localhost:3002/api/dashboard/users \
-  -H "X-Admin-Email: medfil777@gmail.com"
+  -H "X-Admin-Email: axe.vldk@gmail.com"
 ```
 
 ---
