@@ -377,7 +377,7 @@ export function Overview() {
         <div className="relative z-10 max-w-7xl mx-auto px-6 lg:px-8 pt-32 pb-20">
           <div className="max-w-3xl">
             <span className="hero-eyebrow inline-block px-4 py-1.5 rounded-full bg-[#DFFF00]/10 border border-[#DFFF00]/20 text-[#DFFF00] text-xs font-mono uppercase tracking-wider mb-6">
-              Bittensor Subnet XX
+              BITTENSOR SUBNET 102
             </span>
             <h1 className="hero-title text-5xl md:text-7xl font-semibold tracking-tight leading-[1.1] mb-6">
               The voice layer for{' '}
