@@ -31,7 +31,10 @@ gsap.registerPlugin(ScrollTrigger);
 const SUBNET_ID = 22;
 const ACCENT = '#D1F840';
 
-// Mock when backend unavailable
+/** Mock by default. Set VITE_USE_MOCK_DASHBOARD=false in .env to reveal real dashboard. */
+const USE_MOCK_DASHBOARD = import.meta.env.VITE_USE_MOCK_DASHBOARD !== 'false';
+
+// Mock when backend unavailable or when USE_MOCK_DASHBOARD is true
 const MOCK_OVERVIEW: DashboardOverview = {
   total_miners: 12,
   valid_miners: 8,
@@ -177,6 +180,20 @@ export function Dashboard() {
   const fetchAll = useCallback(async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true);
     else setLoading(true);
+    if (USE_MOCK_DASHBOARD) {
+      setOverview(MOCK_OVERVIEW);
+      setMiners(MOCK_MINERS);
+      setValidators(MOCK_VALIDATORS);
+      setSelectedValidatorHotkey((prev) => prev ?? MOCK_VALIDATORS[0]?.hotkey ?? null);
+      setActivityBuckets(activityRange === '24h' ? getMockActivity24h() : getMockActivity7d());
+      setRecentEvaluations([]);
+      setRecentEvalsTotal(0);
+      setLastFetch(new Date());
+      setUseFallbackData(true);
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
     try {
       const validatorHotkey = selectedValidatorRef.current ?? undefined;
       const [overviewRes, minersRes, validatorsRes, activityRes, evalsRes] = await Promise.all([
@@ -253,7 +270,7 @@ export function Dashboard() {
   }, []);
 
   const fetchMinersForValidator = useCallback(async (validatorHotkey: string | null) => {
-    if (useFallbackData) return;
+    if (USE_MOCK_DASHBOARD || useFallbackData) return;
     try {
       const res = await dashboardApi.getMiners(true, validatorHotkey ?? undefined);
       setMiners(res.miners || []);
@@ -268,13 +285,14 @@ export function Dashboard() {
   }, [fetchMinersForValidator]);
 
   useEffect(() => {
+    if (USE_MOCK_DASHBOARD) return;
     fetchValidationStatus();
     const t = setInterval(fetchValidationStatus, 2_000);
     return () => clearInterval(t);
   }, [fetchValidationStatus]);
 
   useEffect(() => {
-    if (useFallbackData) return;
+    if (USE_MOCK_DASHBOARD || useFallbackData) return;
     fetchRecentEvaluationsOnly();
     const t = setInterval(fetchRecentEvaluationsOnly, 15_000);
     return () => clearInterval(t);
@@ -371,7 +389,16 @@ export function Dashboard() {
   return (
     <div ref={dashboardRef} className="dashboard-page min-h-screen bg-[#050505] text-white pt-24 pb-12 px-4 md:px-6 lg:px-8">
       <div className="max-w-[1680px] mx-auto w-full">
-        {useFallbackData && (
+        {USE_MOCK_DASHBOARD && useFallbackData && (
+          <div className="mb-6 p-4 rounded-xl flex items-center gap-3 border border-[#D1F840]/30 bg-[#D1F840]/10">
+            <AlertCircle size={20} className="shrink-0" style={{ color: ACCENT }} />
+            <div className="text-gray-200 text-sm flex-1">
+              <p className="font-semibold" style={{ color: ACCENT }}>Mock data</p>
+              <p className="mt-1 text-gray-400">Real-time dashboard coming soon. Numbers and tables below are for preview only.</p>
+            </div>
+          </div>
+        )}
+        {!USE_MOCK_DASHBOARD && useFallbackData && (
           <div className="mb-6 p-4 rounded-xl flex items-center gap-3 border border-amber-500/20 bg-amber-500/10">
             <AlertCircle size={20} className="text-amber-400 shrink-0" />
             <div className="text-amber-200 text-sm flex-1">
@@ -458,7 +485,7 @@ export function Dashboard() {
               </div>
             </div>
             <div>
-              <p className="text-gray-400 text-xs font-medium mb-1">Network Emission</p>
+              <p className="text-gray-400 text-xs font-medium mb-1">Network Overview</p>
               <h3 className="text-2xl font-bold text-white mb-1">
                 {overview?.total_evaluations != null ? overview.total_evaluations.toLocaleString() : '—'}{' '}
                 <span className="text-sm font-normal text-gray-400">evals</span>
