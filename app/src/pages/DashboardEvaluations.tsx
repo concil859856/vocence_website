@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, Fragment } from 'react';
+import { useEffect, useState, useCallback, Fragment, useRef } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, RefreshCw, ChevronDown, ChevronRight, Copy } from 'lucide-react';
 import { dashboardApi, type RecentEvaluation, type DashboardValidator } from '../services/dashboardApi';
@@ -33,6 +33,19 @@ export function DashboardEvaluations() {
   const [filterMiner, setFilterMiner] = useState<string>(minerFromUrl);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [copiedCellId, setCopiedCellId] = useState<string | null>(null);
+  const [validatorDropdownOpen, setValidatorDropdownOpen] = useState(false);
+  const validatorDropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!validatorDropdownOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (validatorDropdownRef.current && !validatorDropdownRef.current.contains(e.target as Node)) {
+        setValidatorDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [validatorDropdownOpen]);
 
   const copyToClipboard = useCallback((text: string, cellId: string) => {
     navigator.clipboard.writeText(text).then(() => {
@@ -120,36 +133,84 @@ export function DashboardEvaluations() {
         </header>
 
         {/* Filters */}
-        <div className="mb-6 p-4 rounded-xl glass-panel border border-[#27272a] flex flex-wrap items-end gap-4">
-          <div className="flex flex-col gap-1">
-            <label className="text-[10px] font-semibold text-gray-500 uppercase">Validator hotkey</label>
-            <select
-              value={filterValidator}
-              onChange={(e) => setFilterValidator(e.target.value)}
-              className="min-w-[200px] px-3 py-2 rounded-lg bg-[#0f0f0f] border border-[#27272a] text-white text-sm focus:border-[#333] focus:outline-none"
-            >
-              <option value="">All</option>
-              {validators.map((v) => (
-                <option key={v.uid} value={v.hotkey}>
-                  {formatHotkey(v.hotkey)} (uid {v.uid})
-                </option>
-              ))}
-            </select>
+        <div className="mb-6 p-5 rounded-2xl glass-panel border border-[#27272a] flex flex-wrap items-end gap-5">
+          <div ref={validatorDropdownRef} className="flex flex-col gap-2">
+            <label className="text-xs font-medium text-gray-400 tracking-wide">Validator</label>
+            <div className="relative min-w-[240px]">
+              <button
+                type="button"
+                onClick={() => setValidatorDropdownOpen((o) => !o)}
+                className="w-full flex items-center justify-between gap-2 bg-[#0f0f0f] border border-[#27272a] rounded-xl px-4 py-2.5 text-left text-sm font-medium text-white focus:outline-none focus:ring-2 focus:ring-[#D1F840]/40 focus:border-[#D1F840]/50 hover:border-[#3f3f46] transition-all"
+                aria-expanded={validatorDropdownOpen}
+                aria-haspopup="listbox"
+                aria-label="Select validator"
+              >
+                <span className="min-w-0 truncate font-mono">
+                  {filterValidator
+                    ? `${formatHotkey(filterValidator)} (uid ${validators.find((v) => v.hotkey === filterValidator)?.uid ?? '?'})`
+                    : 'All validators'}
+                </span>
+                <ChevronDown
+                  size={18}
+                  className={`shrink-0 text-gray-400 transition-transform duration-200 ${validatorDropdownOpen ? 'rotate-180' : ''}`}
+                />
+              </button>
+              {validatorDropdownOpen && (
+                <div
+                  className="absolute top-full left-0 mt-2 w-full min-w-[240px] rounded-xl border border-[#27272a] bg-[#0f0f0f] shadow-xl shadow-black/50 py-1.5 z-50 max-h-[280px] overflow-y-auto custom-scrollbar"
+                  role="listbox"
+                >
+                  <button
+                    type="button"
+                    role="option"
+                    aria-selected={!filterValidator}
+                    onClick={() => {
+                      setFilterValidator('');
+                      setValidatorDropdownOpen(false);
+                    }}
+                    className={`w-full text-left px-4 py-2.5 text-sm transition-colors ${
+                      !filterValidator ? 'bg-[#D1F840]/15 text-[#D1F840] font-medium' : 'text-gray-300 hover:bg-[#1a1a1a] hover:text-white'
+                    }`}
+                  >
+                    All validators
+                  </button>
+                  {validators.map((v) => (
+                    <button
+                      key={v.uid}
+                      type="button"
+                      role="option"
+                      aria-selected={filterValidator === v.hotkey}
+                      onClick={() => {
+                        setFilterValidator(v.hotkey);
+                        setValidatorDropdownOpen(false);
+                      }}
+                      className={`w-full text-left px-4 py-2.5 font-mono text-sm transition-colors ${
+                        filterValidator === v.hotkey
+                          ? 'bg-[#D1F840]/15 text-[#D1F840] font-medium'
+                          : 'text-gray-300 hover:bg-[#1a1a1a] hover:text-white'
+                      }`}
+                    >
+                      {formatHotkey(v.hotkey)} <span className="text-gray-500 font-sans">(uid {v.uid})</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
-          <div className="flex flex-col gap-1">
-            <label className="text-[10px] font-semibold text-gray-500 uppercase">Miner hotkey</label>
+          <div className="flex flex-col gap-2">
+            <label className="text-xs font-medium text-gray-400 tracking-wide">Miner hotkey</label>
             <input
               type="text"
               value={filterMiner}
               onChange={(e) => setFilterMiner(e.target.value)}
               placeholder="Paste or type miner hotkey"
-              className="min-w-[220px] px-3 py-2 rounded-lg bg-[#0f0f0f] border border-[#27272a] text-white text-sm placeholder-gray-500 focus:border-[#333] focus:outline-none"
+              className="min-w-[240px] px-4 py-2.5 rounded-xl bg-[#0f0f0f] border border-[#27272a] text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-[#D1F840]/40 focus:border-[#D1F840]/50 hover:border-[#3f3f46] transition-all"
             />
           </div>
           <button
             type="button"
             onClick={applyFilters}
-            className="px-4 py-2 rounded-lg text-sm font-medium text-[#050505] hover:opacity-90"
+            className="px-5 py-2.5 rounded-xl text-sm font-semibold text-[#050505] hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-[#D1F840]/50 transition-all"
             style={{ background: ACCENT }}
           >
             Apply filters

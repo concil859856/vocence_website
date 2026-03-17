@@ -11,6 +11,11 @@ from fastapi.responses import JSONResponse
 
 from database import acquire
 from local_db import get_connection, ensure_tables
+from ranking import (
+    RANKING_WINDOW_EVALS,
+    get_ranked_miner_stats_for_validator,
+    sort_miners_for_display,
+)
 from schemas import (
     ADMIN_EMAIL,
     ActivityBucketResponse,
@@ -89,8 +94,7 @@ async def get_miners(
     valid: bool = True,
     validator_hotkey: str | None = Query(None, description="Show miners for this validator only (default: main)"),
 ):
-    """List miners with win rate and evaluation counts for a single validator.
-    Always shows one validator's data; no 'all' aggregation. Default validator is main (env or first)."""
+    """List miners: owner #1 when no eligible or no one beats owner; else eligible (by win_rate) then non-eligible (by win_rate)."""
     async with acquire() as conn:
         val_rows = await conn.fetch("""
             SELECT uid, hotkey FROM validator_registry ORDER BY uid ASC
@@ -101,22 +105,27 @@ async def get_miners(
         return MinersResponse(miners=[])
 
     async with acquire() as conn:
+        stats = await get_ranked_miner_stats_for_validator(conn, chosen, RANKING_WINDOW_EVALS)
+        if not stats:
+            return MinersResponse(miners=[])
+        ordered = sort_miners_for_display(stats)
+        hotkeys = [s["miner_hotkey"] for s in ordered]
         miners_rows = await conn.fetch("""
-            SELECT rm.uid, rm.miner_hotkey, rm.block, rm.model_name, rm.model_revision,
-                   rm.chute_id, rm.chute_slug, rm.is_valid, rm.invalid_reason, rm.last_validated_at,
-                   pm.total_evaluations, pm.total_wins, pm.win_rate
-            FROM registered_miners rm
-            INNER JOIN performance_metrics pm
-              ON pm.miner_hotkey = rm.miner_hotkey AND pm.validator_hotkey = $1
-            WHERE ($2::boolean IS FALSE OR rm.is_valid = true)
-            ORDER BY pm.win_rate DESC, rm.uid ASC
-            LIMIT $3
-        """, chosen, valid, limit)
+            SELECT uid, miner_hotkey, block, model_name, model_revision,
+                   chute_id, chute_slug, is_valid, invalid_reason, last_validated_at
+            FROM registered_miners
+            WHERE miner_hotkey = ANY($1::text[])
+              AND ($2::boolean IS FALSE OR is_valid = true)
+        """, hotkeys, valid)
+        rm_by_hotkey = {r["miner_hotkey"]: r for r in miners_rows}
     miners = []
-    for m in miners_rows:
-        total_ev = int(m["total_evaluations"] or 0)
-        total_wins = int(m["total_wins"] or 0)
-        win_rate = round((total_wins / total_ev * 10000) / 100, 2) if total_ev > 0 else 0.0
+    for s in ordered:
+        if s["miner_hotkey"] not in rm_by_hotkey:
+            continue
+        m = rm_by_hotkey[s["miner_hotkey"]]
+        total_ev = int(s["total_evaluations"] or 0)
+        total_wins = int(s["total_wins"] or 0)
+        win_rate = round(float(s["win_rate"] or 0) * 10000 / 100, 2) if total_ev > 0 else 0.0
         last_val = m["last_validated_at"]
         miners.append(
             MinerResponse(
@@ -135,6 +144,8 @@ async def get_miners(
                 win_rate=win_rate,
             )
         )
+        if len(miners) >= limit:
+            break
     return MinersResponse(miners=miners)
 
 
@@ -267,27 +278,31 @@ def _evaluations_where(validator_hotkey: str | None, miner_hotkey: str | None) -
 
 @router.get("/validation-status", response_model=ValidationStatusResponse)
 async def get_validation_status(
-    limit_pending: int = Query(10, ge=1, le=50, description="Max pending entries"),
-    limit_evaluations: int = Query(30, ge=1, le=200, description="Max recent evaluations"),
+    limit_pending: int = Query(30, ge=1, le=100, description="Max pending entries for owner validator"),
+    limit_evaluations: int = Query(100, ge=1, le=300, description="Max recent evaluations for owner validator"),
 ):
-    """Live validation status for the main validator (dashboard status bar).
-    Returns pending evaluations (started, not yet submitted) and recent evaluated results.
-    Configure LIVE_VALIDATION_MAIN_VALIDATOR_HOTKEY in env to show a specific validator."""
-    main_hotkey = (os.environ.get("LIVE_VALIDATION_MAIN_VALIDATOR_HOTKEY") or "").strip()
-    if not main_hotkey:
+    """Live validation status for the owner validator only (dashboard status bar).
+    Owner = LIVE_VALIDATION_MAIN_VALIDATOR_HOTKEY from env, or first validator in validator_registry.
+    Returns pending and recent evaluated results only for that validator."""
+    async with acquire() as conn:
+        val_rows = await conn.fetch(
+            "SELECT uid, hotkey FROM validator_registry ORDER BY uid ASC"
+        )
+    owner_hotkey = _main_validator_hotkey(val_rows)
+    if not owner_hotkey:
         return ValidationStatusResponse(pending=[], evaluations=[])
 
     async with acquire() as conn:
         try:
             pending_rows = await conn.fetch(
                 """
-                SELECT evaluation_id, prompt_summary, miner_hotkeys, created_at
+                SELECT validator_hotkey, evaluation_id, prompt_summary, miner_hotkeys, created_at
                 FROM live_evaluation_pending
                 WHERE validator_hotkey = $1
                 ORDER BY created_at DESC
                 LIMIT $2
                 """,
-                main_hotkey,
+                owner_hotkey,
                 limit_pending,
             )
         except Exception:
@@ -302,7 +317,7 @@ async def get_validation_status(
                 ORDER BY evaluated_at DESC
                 LIMIT $2
                 """,
-                main_hotkey,
+                owner_hotkey,
                 limit_evaluations,
             )
         except Exception:
@@ -318,6 +333,7 @@ async def get_validation_status(
                 pass
         pending.append(
             LivePendingItem(
+                validator_hotkey=r.get("validator_hotkey") or "",
                 evaluation_id=r["evaluation_id"],
                 prompt_summary=r.get("prompt_summary"),
                 miner_hotkeys=miner_hotkeys,

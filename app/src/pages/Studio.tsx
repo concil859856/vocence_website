@@ -52,6 +52,87 @@ const sidebarItems = [
   { id: 'history' as StudioView, label: 'History', icon: History },
 ];
 
+const TTS_STYLE_PRESETS = [
+  {
+    id: 'neutral-male',
+    label: 'Neutral Male',
+    description:
+      'neutral male voice, calm, clear, natural tone, moderate speed, friendly, professional, casual conversation style, versatile for narration or dialogue',
+  },
+  {
+    id: 'neutral-female',
+    label: 'Neutral Female',
+    description:
+      'neutral female voice, calm, clear, natural tone, moderate speed, friendly, professional, casual conversation style, versatile for narration or dialogue',
+  },
+  {
+    id: 'urgent-support',
+    label: 'Urgent Support / Emergency Tone',
+    description:
+      'clear, serious, urgent, professional, calm yet firm, informative, directing users quickly, empathetic, concise delivery',
+  },
+  {
+    id: 'friendly-ai-assistant',
+    label: 'Friendly AI Assistant',
+    description:
+      'calm, clear, neutral male/female voice, slightly robotic, polite, precise, professional, informative, friendly, digital assistant tone',
+  },
+  {
+    id: 'epic-warrior',
+    label: 'Epic Warrior',
+    description:
+      'intense cinematic warrior voice, deep male, loud, aggressive, heroic, shouting, high energy, fearless, battlefield atmosphere, dramatic, powerful delivery',
+  },
+  {
+    id: 'dark-villain',
+    label: 'Dark Villain',
+    description:
+      'dark villain voice, deep, cold, menacing, slow, evil tone, dramatic, cinematic, confident, threatening, powerful, echoing, fantasy antagonist style',
+  },
+  {
+    id: 'anime-hero',
+    label: 'Anime Hero',
+    description:
+      'anime hero voice, energetic, emotional, youthful male, shouting, determined, heroic, high energy, dramatic, action scene, fighting spirit, intense delivery',
+  },
+  {
+    id: 'military-commander',
+    label: 'Military Commander',
+    description:
+      'military commander voice, strong male, confident, loud, clear, authoritative, battlefield radio tone, commanding, serious, high intensity, tactical atmosphere',
+  },
+  {
+    id: 'narrator-trailer',
+    label: 'Narrator / Trailer Voice',
+    description:
+      'cinematic narrator voice, deep, calm, dramatic, movie trailer tone, slow, powerful, emotional, storytelling, epic atmosphere, clear and professional',
+  },
+  {
+    id: 'cyberpunk-ai',
+    label: 'Cyberpunk / AI Voice',
+    description:
+      'futuristic AI voice, robotic, calm, synthetic, digital tone, sci-fi atmosphere, precise, emotionless, clean, cyberpunk style, controlled delivery',
+  },
+  {
+    id: 'orc-monster',
+    label: 'Orc / Monster / Brutal',
+    description:
+      'brutal monster voice, rough, growling, aggressive, loud, deep, savage, angry, battle roar, fantasy creature, intense, wild, powerful shouting',
+  },
+  {
+    id: 'viking-barbarian',
+    label: 'Viking / Barbarian',
+    description:
+      'viking warrior voice, strong, rough, loud, heroic, shouting, fearless, nordic battle tone, aggressive, epic, dramatic, war cry, powerful energy',
+  },
+  {
+    id: 'little-girl',
+    label: 'Little Girl',
+    description:
+      'cute little girl voice, high-pitched, innocent, cheerful, playful, soft, energetic, happy, emotional, expressive, youthful, friendly, lighthearted delivery',
+  },
+];
+
 // Top 3 models from main validator; loaded in TTS view
 
 const clonedVoices: ClonedVoice[] = [
@@ -195,12 +276,30 @@ export function Studio() {
     if (overlayAudioRef.current) overlayAudioRef.current.volume = v;
   };
 
+  const triggerBrowserDownload = async (url: string, filename: string) => {
+    if (!url?.trim()) return;
+    try {
+      // Align download behavior with AudioPlayerBar: fetch as blob, then force a download
+      const res = await fetch(url, { mode: 'cors' });
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = objectUrl;
+      a.download = filename;
+      a.rel = 'noopener';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(objectUrl);
+    } catch {
+      // Fallback: open in new tab if fetch or download fails
+      window.open(url, '_blank', 'noopener,noreferrer');
+    }
+  };
+
   const handleOverlayDownload = () => {
     if (!resultOverlay?.audioUrl) return;
-    const a = document.createElement('a');
-    a.href = resultOverlay.audioUrl;
-    a.download = `vocence-tts-${resultOverlay.id}.wav`;
-    a.click();
+    void triggerBrowserDownload(resultOverlay.audioUrl, `vocence-tts-${resultOverlay.id}.wav`);
   };
 
   const saveToHistory = (item: Omit<HistoryItem, 'id' | 'timestamp' | 'date'>) => {
@@ -382,89 +481,129 @@ export function Studio() {
     <div className="space-y-6">
       <div>
         <h2 className="text-2xl font-semibold mb-2">Text-to-Speech</h2>
-        <p className="text-[#A7B0B7]">
-          Synthesize natural sounding speech from text using top miners (ranked by main validator).
-        </p>
+        <p className="text-[#A7B0B7]">Synthesize natural sounding speech from text using top miners.</p>
       </div>
 
-      <div className="card-vocence p-6 space-y-6">
-        {/* Model Selection */}
-        <div>
-          <label className="label-mono mb-3 block">Select Model</label>
-          {topModelsLoading ? (
-            <div className="flex items-center gap-2 text-[#A7B0B7]">
-              <div className="w-4 h-4 border-2 border-[#DFFF00] border-t-transparent rounded-full animate-spin" />
-              Loading top models...
+      <div className="flex flex-col lg:flex-row lg:items-stretch lg:gap-3">
+        {/* Main TTS card */}
+        <div className="w-full lg:flex-1 lg:min-w-0">
+          <div className="card-vocence p-6 space-y-6">
+            {/* Model Selection */}
+            <div>
+              <label className="label-mono mb-3 block">Select Model</label>
+              {topModelsLoading ? (
+                <div className="flex items-center gap-2 text-[#A7B0B7]">
+                  <div className="w-4 h-4 border-2 border-[#DFFF00] border-t-transparent rounded-full animate-spin" />
+                  Loading top models...
+                </div>
+              ) : topModels.length === 0 ? (
+                <p className="text-[#A7B0B7] text-sm">No models available. Ensure validators have run evaluations.</p>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  {topModels.map((model) => (
+                    <button
+                      key={model.miner_hotkey}
+                      onClick={() => setSelectedModel(model)}
+                      className={`p-3 rounded-xl border text-sm text-center transition-all ${
+                        selectedModel?.miner_hotkey === model.miner_hotkey
+                          ? 'border-[#DFFF00] bg-[#DFFF00]/5'
+                          : 'border-white/10 bg-white/[0.02] hover:border-white/20'
+                      }`}
+                    >
+                      {model.display_name}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
-          ) : topModels.length === 0 ? (
-            <p className="text-[#A7B0B7] text-sm">No models available. Ensure validators have run evaluations.</p>
-          ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              {topModels.map((model) => (
+
+            {/* Content Input */}
+            <div>
+              <label className="label-mono mb-3 block">Content</label>
+              <div className="bg-[#0a0a0a] border border-white/10 rounded-xl p-4">
+                <textarea
+                  rows={6}
+                  placeholder="Type or paste your text here..."
+                  value={ttsText}
+                  onChange={(e) => setTtsText(e.target.value)}
+                  className="w-full bg-transparent text-white placeholder-[#666] resize-none outline-none"
+                />
+              </div>
+            </div>
+
+            {/* Style Instruction (keeps main layout intact) */}
+            <div>
+              <label className="label-mono mb-3 block">Style Instruction (Optional)</label>
+              <div className="bg-[#0a0a0a] border border-white/10 rounded-xl p-4">
+                <input
+                  type="text"
+                  placeholder="e.g. neutral voice, epic warrior battle shout, anime hero speech..."
+                  value={ttsStylePrompt}
+                  onChange={(e) => setTtsStylePrompt(e.target.value)}
+                  className="w-full bg-transparent text-white placeholder-[#666] outline-none"
+                />
+              </div>
+              <p className="text-xs text-[#666] mt-1">
+                Choose a preset from the right panel or write your own description. Defaults to &quot;neutral voice&quot; if left empty.
+              </p>
+            </div>
+
+            {/* Actions */}
+            <div className="flex justify-end">
+              <button
+                onClick={handleGenerateAudio}
+                disabled={generateLoading || topModels.length === 0 || !selectedModel}
+                className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {generateLoading ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-[#07080A] border-t-transparent rounded-full animate-spin mr-2 inline-block" />
+                    Generating...
+                  </>
+                ) : (
+                  <>
+                    <Play size={16} className="mr-2" />
+                    Generate Audio
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Style presets panel, sits to the right on large screens */}
+        <div className="mt-4 lg:mt-0 w-full lg:w-96 flex-shrink-0">
+          <div className="h-full bg-gradient-to-b from-[#0b0b10] to-[#050506] border border-[#2b2b35] rounded-xl p-3 space-y-3">
+            <p className="text-[11px] uppercase tracking-[0.16em] text-[#DFFF00] mb-1">
+              Style presets
+            </p>
+            <div className="space-y-2 max-h-[460px] overflow-y-auto pr-1">
+              {TTS_STYLE_PRESETS.map((preset) => (
                 <button
-                  key={model.miner_hotkey}
-                  onClick={() => setSelectedModel(model)}
-                  className={`p-3 rounded-xl border text-sm text-center transition-all ${
-                    selectedModel?.miner_hotkey === model.miner_hotkey
-                      ? 'border-[#DFFF00] bg-[#DFFF00]/5'
-                      : 'border-white/10 bg-white/[0.02] hover:border-white/20'
-                  }`}
+                  key={preset.id}
+                  type="button"
+                  onClick={() => setTtsStylePrompt(preset.description)}
+                  className="w-full flex items-center gap-4 px-2 py-3 rounded-lg hover:bg-white/[0.04] border border-transparent hover:border-[#DFFF00]/40 text-left transition-colors"
                 >
-                  {model.display_name}
+                  <div className="flex-shrink-0 w-24 h-24 rounded-full overflow-hidden bg-transparent border border-white/10">
+                    <img
+                      src={`/tts-styles/${preset.id}.png`}
+                      alt={preset.label}
+                      className="w-full h-full object-cover"
+                    />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-base font-semibold text-white tracking-tight">
+                      {preset.label}
+                    </p>
+                    <p className="text-xs text-[#6B7280] leading-snug">
+                      {preset.description}
+                    </p>
+                  </div>
                 </button>
               ))}
             </div>
-          )}
-        </div>
-
-        {/* Content Input */}
-        <div>
-          <label className="label-mono mb-3 block">Content</label>
-          <div className="bg-[#0a0a0a] border border-white/10 rounded-xl p-4">
-            <textarea
-              rows={6}
-              placeholder="Type or paste your text here..."
-              value={ttsText}
-              onChange={(e) => setTtsText(e.target.value)}
-              className="w-full bg-transparent text-white placeholder-[#666] resize-none outline-none"
-            />
           </div>
-        </div>
-
-        {/* Style Instruction */}
-        <div>
-          <label className="label-mono mb-3 block">Style Instruction (Optional)</label>
-          <div className="bg-[#0a0a0a] border border-white/10 rounded-xl p-4">
-            <input
-              type="text"
-              placeholder="e.g. neutral voice, excited, high-pitch, american accent..."
-              value={ttsStylePrompt}
-              onChange={(e) => setTtsStylePrompt(e.target.value)}
-              className="w-full bg-transparent text-white placeholder-[#666] outline-none"
-            />
-          </div>
-          <p className="text-xs text-[#666] mt-1">Defaults to &quot;neutral voice&quot; if left empty.</p>
-        </div>
-
-        {/* Actions */}
-        <div className="flex justify-end">
-          <button
-            onClick={handleGenerateAudio}
-            disabled={generateLoading || topModels.length === 0 || !selectedModel}
-            className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {generateLoading ? (
-              <>
-                <div className="w-4 h-4 border-2 border-[#07080A] border-t-transparent rounded-full animate-spin mr-2 inline-block" />
-                Generating...
-              </>
-            ) : (
-              <>
-                <Play size={16} className="mr-2" />
-                Generate Audio
-              </>
-            )}
-          </button>
         </div>
       </div>
     </div>
@@ -1065,7 +1204,7 @@ export function Studio() {
 
         {/* Main Content */}
         <main className="studio-content flex-1 p-6 lg:p-10 pb-24 lg:pb-10">
-          <div className="max-w-4xl mx-auto">
+          <div className="max-w-6xl mx-auto">
             {activeView === 'tts' && renderTTSView()}
             {activeView === 'stt' && renderSTTView()}
             {activeView === 'chat' && renderChatView()}
@@ -1191,9 +1330,14 @@ export function Studio() {
                                               >
                                                 <Play size={16} />
                                               </button>
-                                              <a href={item.audio_url} download={`vocence-tts-${item.id}.wav`} className="p-1.5 text-[#666] hover:text-white" title="Download">
+                                              <button
+                                                type="button"
+                                                onClick={() => void triggerBrowserDownload(item.audio_url, `vocence-tts-${item.id}.wav`)}
+                                                className="p-1.5 text-[#666] hover:text-white"
+                                                title="Download"
+                                              >
                                                 <Download size={16} />
-                                              </a>
+                                              </button>
                                             </>
                                           ) : (
                                             <span className="text-xs text-[#666]">Unavailable</span>

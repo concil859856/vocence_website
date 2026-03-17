@@ -28,7 +28,7 @@ import { AudioPlayerBar } from '../components/AudioPlayerBar';
 
 gsap.registerPlugin(ScrollTrigger);
 
-const SUBNET_ID = 22;
+const SUBNET_ID = 102;
 const ACCENT = '#D1F840';
 
 /** Mock by default. Set VITE_USE_MOCK_DASHBOARD=false in .env to reveal real dashboard. */
@@ -66,9 +66,9 @@ type EvalResult = 'WIN' | 'LOSE' | 'EVAL' | 'PENDING';
 
 type ValidationDetail =
   | { type: 'evaluated'; evaluation: RecentEvaluation }
-  | { type: 'pending'; evaluation_id: string; prompt_summary: string | null; miner_hotkey: string; miner_hotkeys: string[]; created_at: string };
+  | { type: 'pending'; validator_hotkey: string; evaluation_id: string; prompt_summary: string | null; miner_hotkey: string; miner_hotkeys: string[]; created_at: string };
 
-type ValidationListItem = { minerUid: string; task: string; result: EvalResult; detail?: ValidationDetail; minerHotkey?: string };
+type ValidationListItem = { minerUid: string; task: string; result: EvalResult; detail?: ValidationDetail; minerHotkey?: string; validatorHotkey?: string };
 
 const MOCK_VALIDATION_LIST: ValidationListItem[] = [
   { minerUid: '9K2...8m', task: 'Audio Gen', result: 'WIN' },
@@ -332,7 +332,7 @@ export function Dashboard() {
       };
     }
     if (validationStatus && (validationStatus.pending.length > 0 || validationStatus.evaluations.length > 0)) {
-      const pendingRows: { minerUid: string; task: string; result: EvalResult; sortAt: string; detail: ValidationDetail; minerHotkey?: string }[] = [];
+      const pendingRows: { minerUid: string; task: string; result: EvalResult; sortAt: string; detail: ValidationDetail; minerHotkey?: string; validatorHotkey?: string }[] = [];
       for (const p of validationStatus.pending) {
         for (const m of p.miner_hotkeys) {
           pendingRows.push({
@@ -340,8 +340,9 @@ export function Dashboard() {
             task: p.evaluation_id,
             result: 'PENDING',
             sortAt: p.created_at,
-            detail: { type: 'pending', evaluation_id: p.evaluation_id, prompt_summary: p.prompt_summary, miner_hotkey: m, miner_hotkeys: p.miner_hotkeys, created_at: p.created_at },
+            detail: { type: 'pending', validator_hotkey: p.validator_hotkey, evaluation_id: p.evaluation_id, prompt_summary: p.prompt_summary, miner_hotkey: m, miner_hotkeys: p.miner_hotkeys, created_at: p.created_at },
             minerHotkey: m,
+            validatorHotkey: p.validator_hotkey,
           });
         }
       }
@@ -352,11 +353,12 @@ export function Dashboard() {
         sortAt: e.evaluated_at,
         detail: { type: 'evaluated', evaluation: e } as ValidationDetail,
         minerHotkey: e.miner_hotkey,
+        validatorHotkey: e.validator_hotkey,
       }));
       const combined = [...pendingRows, ...evalRows].sort(
         (a, b) => new Date(b.sortAt).getTime() - new Date(a.sortAt).getTime()
       );
-      const list: ValidationListItem[] = combined.slice(0, 25).map(({ minerUid, task, result, detail, minerHotkey }) => ({ minerUid, task, result, detail, minerHotkey }));
+      const list: ValidationListItem[] = combined.slice(0, 25).map(({ minerUid, task, result, detail, minerHotkey, validatorHotkey }) => ({ minerUid, task, result, detail, minerHotkey, validatorHotkey }));
       return {
         validationList: list,
         evaluatedCount: evalRows.length,
@@ -370,6 +372,7 @@ export function Dashboard() {
         result: (e.wins ? 'WIN' : 'LOSE') as EvalResult,
         detail: { type: 'evaluated', evaluation: e },
         minerHotkey: e.miner_hotkey,
+        validatorHotkey: e.validator_hotkey,
       })),
       evaluatedCount: recentEvaluations.length,
       batchTotal: Math.max(recentEvalsTotal, recentEvaluations.length),
@@ -754,7 +757,7 @@ export function Dashboard() {
               </div>
               {!useFallbackData && validationStatus && validationStatus.pending.length === 0 && validationStatus.evaluations.length === 0 && (
                 <p className="text-[11px] text-amber-200/90 mb-3 px-2 py-2 rounded border border-amber-500/20 bg-amber-500/10">
-                  Set <code className="font-mono text-[10px]">LIVE_VALIDATION_MAIN_VALIDATOR_HOTKEY</code> on the dashboard backend to see live and pending evaluations (updates every 2s).
+                  Live evaluations from all validators will appear here (updates every 2s).
                 </p>
               )}
               <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar pr-2">
@@ -889,7 +892,7 @@ export function Dashboard() {
                   })()}
                   <div>
                     <p className="text-[10px] font-medium text-gray-500 uppercase tracking-wider mb-1">Validator hotkey</p>
-                    <p className="font-mono text-gray-400 break-all text-xs">{selectedValidationDetail.evaluation.validator_hotkey}</p>
+                    <p className="font-mono text-gray-400 break-all text-xs">{selectedValidationDetail.evaluation.validator_hotkey?.trim() || '—'}</p>
                   </div>
                   <div className="flex items-center gap-2">
                     <span className={`text-xs font-bold px-2 py-1 rounded ${selectedValidationDetail.evaluation.wins ? 'text-[#4ade80] bg-[#4ade80]/15' : 'text-red-500 bg-red-500/15'}`}>
@@ -936,6 +939,10 @@ export function Dashboard() {
                   <div>
                     <p className="text-[10px] font-medium text-gray-500 uppercase tracking-wider mb-1">Evaluation ID</p>
                     <p className="font-mono text-gray-200 break-all">{selectedValidationDetail.evaluation_id}</p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-medium text-gray-500 uppercase tracking-wider mb-1">Validator hotkey</p>
+                    <p className="font-mono text-gray-400 break-all text-xs">{selectedValidationDetail.validator_hotkey?.trim() || '—'}</p>
                   </div>
                   <div>
                     <p className="text-[10px] font-medium text-gray-500 uppercase tracking-wider mb-1">Miner (this row)</p>

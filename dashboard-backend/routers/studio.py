@@ -7,6 +7,11 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query
 
 from database import acquire
 from local_db import get_connection
+from ranking import (
+    RANKING_WINDOW_EVALS,
+    get_ranked_miner_stats_for_validator,
+    sort_miners_for_display,
+)
 from routers.auth import require_auth
 from schemas import (
     StudioGenerateRequest,
@@ -44,7 +49,7 @@ def _model_display_name(model_name: str | None) -> str:
 
 @router.get("/top-models", response_model=StudioTopModelsResponse)
 async def get_top_models(limit: int = Query(3, ge=1, le=10)):
-    """Top miners ranked by main validator; returns up to `limit` (default 3). Display name = HF repo name only."""
+    """Top models: same order as dashboard (owner #1 when burn, else eligible then non-eligible by win_rate)."""
     async with acquire() as conn:
         val_rows = await conn.fetch(
             "SELECT uid, hotkey FROM validator_registry ORDER BY uid ASC"
@@ -54,26 +59,33 @@ async def get_top_models(limit: int = Query(3, ge=1, le=10)):
         return StudioTopModelsResponse(models=[])
 
     async with acquire() as conn:
+        stats = await get_ranked_miner_stats_for_validator(conn, main_hotkey, RANKING_WINDOW_EVALS)
+        if not stats:
+            return StudioTopModelsResponse(models=[])
+        ordered = sort_miners_for_display(stats)
+        hotkeys = [s["miner_hotkey"] for s in ordered]
         rows = await conn.fetch("""
-            SELECT rm.miner_hotkey, rm.model_name, rm.chute_id, rm.chute_slug
-            FROM registered_miners rm
-            INNER JOIN performance_metrics pm
-              ON pm.miner_hotkey = rm.miner_hotkey AND pm.validator_hotkey = $1
-            WHERE rm.is_valid = true
-            ORDER BY pm.win_rate DESC, rm.uid ASC
-            LIMIT $2
-        """, main_hotkey, limit)
-
-    models = [
-        StudioTopModelResponse(
-            miner_hotkey=r["miner_hotkey"],
-            model_name=r["model_name"] or "",
-            display_name=_model_display_name(r["model_name"]),
-            chute_id=r["chute_id"] or "",
-            chute_slug=r["chute_slug"] or "",
+            SELECT miner_hotkey, model_name, chute_id, chute_slug
+            FROM registered_miners
+            WHERE miner_hotkey = ANY($1::text[]) AND is_valid = true
+        """, hotkeys)
+        rm_by_hotkey = {r["miner_hotkey"]: r for r in rows}
+    models = []
+    for s in ordered:
+        if len(models) >= limit:
+            break
+        if s["miner_hotkey"] not in rm_by_hotkey:
+            continue
+        r = rm_by_hotkey[s["miner_hotkey"]]
+        models.append(
+            StudioTopModelResponse(
+                miner_hotkey=r["miner_hotkey"],
+                model_name=r["model_name"] or "",
+                display_name=_model_display_name(r["model_name"]),
+                chute_id=r["chute_id"] or "",
+                chute_slug=r["chute_slug"] or "",
+            )
         )
-        for r in rows
-    ]
     return StudioTopModelsResponse(models=models)
 
 

@@ -74,13 +74,14 @@ export interface RecentEvaluation {
 
 /** One pending evaluation (validator started, not yet submitted). */
 export interface LivePendingItem {
+  validator_hotkey: string;
   evaluation_id: string;
   prompt_summary: string | null;
   miner_hotkeys: string[];
   created_at: string;
 }
 
-/** Live validation status for main validator (status bar). */
+/** Live validation status for all validators (status bar). */
 export interface ValidationStatusResponse {
   pending: LivePendingItem[];
   evaluations: RecentEvaluation[];

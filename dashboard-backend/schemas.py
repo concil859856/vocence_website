@@ -167,6 +167,7 @@ class AddValidatorRequest(BaseModel):
 
 class LivePendingItem(BaseModel):
     """One pending evaluation (prompt generated, miners not yet evaluated)."""
+    validator_hotkey: str
     evaluation_id: str
     prompt_summary: str | None
     miner_hotkeys: list[str]

@@ -19,6 +19,7 @@ import asyncio
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
+from pathlib import PurePosixPath
 
 import aiohttp
 from minio import Minio
@@ -126,7 +127,11 @@ def upload_wav_to_hippius(user_id: str, wav_bytes: bytes) -> tuple[str, str, dat
 
 
 def get_presigned_url(bucket: str, key: str, expires_at: datetime) -> str | None:
-    """Generate presigned GET URL; validity capped by expires_at (7 days from creation)."""
+    """Generate presigned GET URL; validity capped by expires_at (7 days from creation).
+
+    We also force browsers to treat the response as a download by setting
+    Content-Disposition=attachment via S3 response headers in the presigned URL.
+    """
     if expires_at.tzinfo is None:
         expires_at = expires_at.replace(tzinfo=timezone.utc)
     client = _minio_client()
@@ -138,6 +143,16 @@ def get_presigned_url(bucket: str, key: str, expires_at: datetime) -> str | None
     if expiry_sec <= 0:
         return None
     try:
-        return client.presigned_get_object(bucket, key, expires=timedelta(seconds=expiry_sec))
+        # Derive a friendly filename from the object key (last path segment).
+        filename = PurePosixPath(key).name or "vocence-tts.wav"
+        return client.presigned_get_object(
+            bucket,
+            key,
+            expires=timedelta(seconds=expiry_sec),
+            response_headers={
+                # This becomes response-content-disposition in the S3 query params.
+                "response-content-disposition": f'attachment; filename="{filename}"',
+            },
+        )
     except Exception:
         return None
