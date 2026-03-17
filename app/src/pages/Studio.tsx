@@ -220,6 +220,16 @@ export function Studio() {
     }
   }, [activeView, user]);
 
+  // Preload TTS style preset images so they appear quickly when Studio loads
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    TTS_STYLE_PRESETS.forEach((preset) => {
+      const img = new Image();
+      img.src = `/tts-styles/${preset.id}.png`;
+      img.decoding = 'async';
+    });
+  }, []);
+
   useEffect(() => {
     if (activeView !== 'tts') return;
     setTopModelsLoading(true);
@@ -590,6 +600,8 @@ export function Studio() {
                       src={`/tts-styles/${preset.id}.png`}
                       alt={preset.label}
                       className="w-full h-full object-cover"
+                      loading="lazy"
+                      decoding="async"
                     />
                   </div>
                   <div className="min-w-0">
