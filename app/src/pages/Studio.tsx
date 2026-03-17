@@ -276,7 +276,7 @@ export function Studio() {
     if (overlayAudioRef.current) overlayAudioRef.current.volume = v;
   };
 
-  const triggerBrowserDownload = async (url: string, filename: string) => {
+  const triggerBrowserDownload = async (url: string | null, filename: string) => {
     if (!url?.trim()) return;
     try {
       // Align download behavior with AudioPlayerBar: fetch as blob, then force a download
