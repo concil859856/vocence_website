@@ -25,6 +25,8 @@ from database import (
     health_check,
     ensure_blog_table,
     ensure_evaluations_audio_columns,
+    ensure_graph_activity_leases_table,
+    ensure_global_scoring_snapshots_table,
     ensure_live_evaluation_pending_table,
     ensure_studio_tts_history_table,
 )
@@ -40,6 +42,8 @@ UPLOADS_DIR.mkdir(exist_ok=True)
 async def lifespan(app: FastAPI):
     await ensure_blog_table()
     await ensure_evaluations_audio_columns()
+    await ensure_graph_activity_leases_table()
+    await ensure_global_scoring_snapshots_table()
     await ensure_live_evaluation_pending_table()
     await ensure_studio_tts_history_table()
     await ensure_local_tables()

@@ -57,6 +57,108 @@ class ActivityResponse(BaseModel):
     buckets: list[ActivityBucketResponse]
 
 
+class GlobalScoringValidatorDetailResponse(BaseModel):
+    validator_hotkey: str
+    bucket_name: str
+    label: str
+    wins: int
+    total: int
+    win_rate: float
+    weight: float
+    display: str
+
+
+class GlobalScoringThresholdCheckResponse(BaseModel):
+    prior_hotkey: str
+    prior_block: int
+    prior_rate: float
+    required_rate: float
+    candidate_rate: float
+    passed: bool
+
+
+class GlobalScoringMinerResponse(BaseModel):
+    rank: int
+    hotkey: str
+    uid: int
+    block: int
+    model_name: str | None
+    model_revision: str | None
+    chute_slug: str | None
+    chute_id: str | None
+    weighted_win_rate: float
+    raw_win_rate: float
+    wins: int
+    total: int
+    validator_count: int
+    weighted_evals: float
+    eligible: bool
+    threshold_passed: bool
+    is_winner: bool
+    status_reason: str
+    per_validator: list[GlobalScoringValidatorDetailResponse]
+    threshold_checks: list[GlobalScoringThresholdCheckResponse]
+
+
+class GlobalScoringActiveValidatorResponse(BaseModel):
+    hotkey: str
+    bucket_name: str
+    label: str
+    stake: float
+    weight: float
+
+
+class GlobalScoringWinnerResponse(GlobalScoringMinerResponse):
+    pass
+
+
+class GlobalScoringSnapshotResponse(BaseModel):
+    generated_at: str
+    max_evals_for_scoring: int
+    min_evals_to_compete: int
+    min_validator_appearances: int
+    min_evals_per_validator: int
+    threshold_margin: float
+    active_validator_count: int
+    valid_miner_count: int
+    active_validators: list[GlobalScoringActiveValidatorResponse]
+    winner: GlobalScoringWinnerResponse | None
+    winner_reason: str | None
+    miners: list[GlobalScoringMinerResponse]
+
+
+class SubnetGraphNodeResponse(BaseModel):
+    id: str
+    node_type: str
+    hotkey: str | None = None
+    uid: int | None = None
+    label: str
+    status: str
+    valid: bool | None = None
+    validator_hotkey: str | None = None
+    bucket_name: str | None = None
+    stake: float | None = None
+    last_seen_at: str | None = None
+    last_validated_at: str | None = None
+    invalid_reason: str | None = None
+
+
+class SubnetGraphActivityResponse(BaseModel):
+    activity_type: str
+    activity_key: str
+    validator_hotkey: str
+    status: str
+    payload: dict
+    started_at: str
+    expires_at: str
+
+
+class SubnetGraphResponse(BaseModel):
+    generated_at: str
+    nodes: list[SubnetGraphNodeResponse]
+    activities: list[SubnetGraphActivityResponse]
+
+
 # Blocklist (blocked_entities table). Set ADMIN_EMAIL in .env.
 ADMIN_EMAIL = (os.environ.get("ADMIN_EMAIL") or "").strip()
 

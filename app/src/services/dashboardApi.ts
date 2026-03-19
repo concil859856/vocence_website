@@ -59,6 +59,105 @@ export interface ActivityBucket {
   count: number;
 }
 
+export interface GlobalScoringValidatorDetail {
+  validator_hotkey: string;
+  bucket_name: string;
+  label: string;
+  wins: number;
+  total: number;
+  win_rate: number;
+  weight: number;
+  display: string;
+}
+
+export interface GlobalScoringThresholdCheck {
+  prior_hotkey: string;
+  prior_block: number;
+  prior_rate: number;
+  required_rate: number;
+  candidate_rate: number;
+  passed: boolean;
+}
+
+export interface GlobalScoringMiner {
+  rank: number;
+  hotkey: string;
+  uid: number;
+  block: number;
+  model_name: string | null;
+  model_revision: string | null;
+  chute_slug: string | null;
+  chute_id: string | null;
+  weighted_win_rate: number;
+  raw_win_rate: number;
+  wins: number;
+  total: number;
+  validator_count: number;
+  eligible_validator_count?: number;
+  weighted_evals: number;
+  eligible: boolean;
+  threshold_passed: boolean;
+  is_winner: boolean;
+  status_reason: string;
+  per_validator: GlobalScoringValidatorDetail[];
+  threshold_checks: GlobalScoringThresholdCheck[];
+}
+
+export interface GlobalScoringActiveValidator {
+  hotkey: string;
+  bucket_name: string;
+  label: string;
+  stake: number;
+  weight: number;
+}
+
+export interface GlobalScoringSnapshot {
+  generated_at: string;
+  max_evals_for_scoring: number;
+  min_evals_to_compete: number;
+  min_validator_appearances: number;
+  min_evals_per_validator: number;
+  threshold_margin: number;
+  active_validator_count: number;
+  valid_miner_count: number;
+  active_validators: GlobalScoringActiveValidator[];
+  winner: GlobalScoringMiner | null;
+  winner_reason: string | null;
+  miners: GlobalScoringMiner[];
+}
+
+export interface SubnetGraphNode {
+  id: string;
+  node_type: string;
+  hotkey?: string | null;
+  uid?: number | null;
+  label: string;
+  status: string;
+  valid?: boolean | null;
+  validator_hotkey?: string | null;
+  bucket_name?: string | null;
+  stake?: number | null;
+  last_seen_at?: string | null;
+  last_validated_at?: string | null;
+  invalid_reason?: string | null;
+}
+
+export interface SubnetGraphActivity {
+  activity_type: string;
+  activity_key: string;
+  validator_hotkey: string;
+  status: string;
+  payload: Record<string, unknown>;
+  started_at: string;
+  expires_at: string;
+}
+
+export interface SubnetGraphSnapshot {
+  generated_at: string;
+  nodes: SubnetGraphNode[];
+  activities: SubnetGraphActivity[];
+}
+
 export interface RecentEvaluation {
   id: number;
   validator_hotkey: string;
@@ -128,6 +227,14 @@ export const dashboardApi = {
     return fetchJson(`/api/dashboard/activity?range=${range}`);
   },
 
+  getGlobalScoring(): Promise<GlobalScoringSnapshot | null> {
+    return fetchJson('/api/dashboard/global-scoring');
+  },
+
+  getSubnetGraph(): Promise<SubnetGraphSnapshot> {
+    return fetchJson('/api/dashboard/subnet-graph');
+  },
+
   getRecentEvaluations(
     limit = 50,
     validatorHotkey?: string | null,
@@ -137,6 +244,18 @@ export const dashboardApi = {
     if (validatorHotkey?.trim()) params.set('validator_hotkey', validatorHotkey.trim());
     if (minerHotkey?.trim()) params.set('miner_hotkey', minerHotkey.trim());
     return fetchJson(`/api/dashboard/evaluations/recent?${params.toString()}`);
+  },
+
+  getEvaluations(
+    limit = 100,
+    offset = 0,
+    validatorHotkey?: string | null,
+    minerHotkey?: string | null
+  ): Promise<{ evaluations: RecentEvaluation[]; total_count: number }> {
+    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    if (validatorHotkey?.trim()) params.set('validator_hotkey', validatorHotkey.trim());
+    if (minerHotkey?.trim()) params.set('miner_hotkey', minerHotkey.trim());
+    return fetchJson(`/api/dashboard/evaluations?${params.toString()}`);
   },
 
   /** Live validation status (pending + recent evaluations) for main validator. */

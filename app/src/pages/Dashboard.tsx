@@ -21,10 +21,13 @@ import {
   type DashboardMiner,
   type DashboardValidator,
   type ActivityBucket,
+  type GlobalScoringSnapshot,
   type RecentEvaluation,
+  type SubnetGraphSnapshot,
   type ValidationStatusResponse,
 } from '../services/dashboardApi';
 import { AudioPlayerBar } from '../components/AudioPlayerBar';
+import { LiveSubnetMap } from '../components/LiveSubnetMap';
 
 gsap.registerPlugin(ScrollTrigger);
 
@@ -143,6 +146,8 @@ export function Dashboard() {
   const [showBlacklistModal, setShowBlacklistModal] = useState(false);
   const [recentEvaluations, setRecentEvaluations] = useState<RecentEvaluation[]>([]);
   const [recentEvalsTotal, setRecentEvalsTotal] = useState(0);
+  const [globalScoring, setGlobalScoring] = useState<GlobalScoringSnapshot | null>(null);
+  const [subnetGraph, setSubnetGraph] = useState<SubnetGraphSnapshot | null>(null);
   const [validationStatus, setValidationStatus] = useState<ValidationStatusResponse | null>(null);
   const [blacklistedHotkeys, setBlacklistedHotkeys] = useState<string[]>([]);
   const [copiedHotkey, setCopiedHotkey] = useState<string | null>(null);
@@ -188,6 +193,8 @@ export function Dashboard() {
       setActivityBuckets(activityRange === '24h' ? getMockActivity24h() : getMockActivity7d());
       setRecentEvaluations([]);
       setRecentEvalsTotal(0);
+      setGlobalScoring(null);
+      setSubnetGraph(null);
       setLastFetch(new Date());
       setUseFallbackData(true);
       setLoading(false);
@@ -196,12 +203,14 @@ export function Dashboard() {
     }
     try {
       const validatorHotkey = selectedValidatorRef.current ?? undefined;
-      const [overviewRes, minersRes, validatorsRes, activityRes, evalsRes] = await Promise.all([
+      const [overviewRes, minersRes, validatorsRes, activityRes, evalsRes, globalScoringRes, subnetGraphRes] = await Promise.all([
         dashboardApi.getOverview(),
         dashboardApi.getMiners(true, validatorHotkey),
         dashboardApi.getValidators(),
         dashboardApi.getActivity(activityRange),
         dashboardApi.getRecentEvaluations(50),
+        dashboardApi.getGlobalScoring(),
+        dashboardApi.getSubnetGraph(),
       ]);
       setOverview(overviewRes);
       setMiners(minersRes.miners || []);
@@ -215,6 +224,8 @@ export function Dashboard() {
       setActivityBuckets(activityRes.buckets || []);
       setRecentEvaluations(evalsRes.evaluations || []);
       setRecentEvalsTotal(evalsRes.total_count ?? 0);
+      setGlobalScoring(globalScoringRes);
+      setSubnetGraph(subnetGraphRes);
       setLastFetch(new Date());
       setUseFallbackData(false);
     } catch {
@@ -224,6 +235,8 @@ export function Dashboard() {
       setActivityBuckets(activityRange === '24h' ? getMockActivity24h() : getMockActivity7d());
       setRecentEvaluations([]);
       setRecentEvalsTotal(0);
+      setGlobalScoring(null);
+      setSubnetGraph(null);
       setLastFetch(new Date());
       setUseFallbackData(true);
     } finally {
@@ -269,6 +282,16 @@ export function Dashboard() {
     }
   }, []);
 
+  const fetchSubnetGraphOnly = useCallback(async () => {
+    if (USE_MOCK_DASHBOARD || useFallbackData) return;
+    try {
+      const graphRes = await dashboardApi.getSubnetGraph();
+      setSubnetGraph(graphRes);
+    } catch {
+      // keep existing graph
+    }
+  }, [useFallbackData]);
+
   const fetchMinersForValidator = useCallback(async (validatorHotkey: string | null) => {
     if (USE_MOCK_DASHBOARD || useFallbackData) return;
     try {
@@ -299,6 +322,13 @@ export function Dashboard() {
   }, [useFallbackData, fetchRecentEvaluationsOnly]);
 
   useEffect(() => {
+    if (USE_MOCK_DASHBOARD || useFallbackData) return;
+    fetchSubnetGraphOnly();
+    const t = setInterval(fetchSubnetGraphOnly, 2_500);
+    return () => clearInterval(t);
+  }, [useFallbackData, fetchSubnetGraphOnly]);
+
+  useEffect(() => {
     if (activityRange && useFallbackData) {
       setActivityBuckets(activityRange === '24h' ? getMockActivity24h() : getMockActivity7d());
     } else if (activityRange && !useFallbackData) {
@@ -322,6 +352,7 @@ export function Dashboard() {
   const sortedMiners = [...miners].sort((a, b) => b.win_rate - a.win_rate);
   const topMiners = sortedMiners.slice(0, 20);
   const showTopMiners = topMiners.length > 0;
+  const winner = globalScoring?.winner ?? null;
 
   const { validationList, evaluatedCount, batchTotal } = (() => {
     if (useFallbackData) {
@@ -439,63 +470,90 @@ export function Dashboard() {
         </header>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-          <div className="stat-card glass-panel rounded-xl p-5 relative overflow-hidden">
-            <div className="flex justify-between items-start mb-4">
-              <div className="w-10 h-10 rounded-lg bg-[#1a1a1a] flex items-center justify-center border border-[#333]">
-                <Cpu className="w-5 h-5 text-gray-300" />
+          <div className="stat-card glass-panel rounded-2xl px-5 py-4 relative overflow-hidden min-h-[124px]">
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-[#2ee1e8]/35 to-transparent" />
+            <div className="flex h-full flex-col justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-[#151515] flex items-center justify-center border border-[#333] shrink-0">
+                  <Cpu className="w-4.5 h-4.5 text-gray-300" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-[11px] uppercase tracking-[0.16em] text-gray-500">Total Miners</p>
+                  <p className="text-xs text-gray-600">Current registry size</p>
+                </div>
               </div>
-            </div>
-            <div>
-              <p className="text-gray-400 text-xs font-medium mb-1">Total Miners</p>
-              <h3 className="text-2xl font-bold text-white mb-1">{overview?.total_miners ?? 0}</h3>
-              <p className="text-gray-500 text-xs">{overview?.valid_miners ?? 0} valid</p>
+              <div className="flex items-end justify-between gap-4">
+                <h3 className="text-[2rem] font-semibold leading-none text-white">{overview?.total_miners ?? 0}</h3>
+                <p className="pb-1 text-sm text-gray-400">{overview?.valid_miners ?? 0} valid</p>
+              </div>
             </div>
           </div>
 
-          <div className="stat-card glass-panel rounded-xl p-5 relative overflow-hidden">
-            <div className="absolute top-5 right-5 flex flex-col items-end gap-2">
-              <span className="bg-[#1a1a1a] border border-[#333] text-gray-400 text-[10px] px-2 py-0.5 rounded">Subnet {SUBNET_ID}</span>
+          <div className="stat-card glass-panel rounded-2xl px-5 py-4 relative overflow-hidden min-h-[124px]">
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-[#D1F840]/35 to-transparent" />
+            <div className="absolute top-4 right-4">
+              <span className="bg-[#151515] border border-[#333] text-gray-400 text-[10px] px-2 py-0.5 rounded-md">Subnet {SUBNET_ID}</span>
             </div>
-            <div className="flex justify-between items-start mb-4">
-              <div className="w-10 h-10 rounded-lg bg-[#1a1a1a] flex items-center justify-center border border-[#333]">
-                <ShieldCheck className="w-5 h-5 text-gray-300" />
+            <div className="flex h-full flex-col justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-[#151515] flex items-center justify-center border border-[#333] shrink-0">
+                  <ShieldCheck className="w-4.5 h-4.5 text-gray-300" />
+                </div>
+                <div className="min-w-0 pr-16">
+                  <p className="text-[11px] uppercase tracking-[0.16em] text-gray-500">Active Validators</p>
+                  <p className="text-xs text-gray-600">Reporting to owner API</p>
+                </div>
               </div>
-            </div>
-            <div>
-              <p className="text-gray-400 text-xs font-medium mb-1">Active Validators</p>
-              <h3 className="text-2xl font-bold text-white mb-1">{overview?.total_validators ?? 0}</h3>
-              <p className="text-gray-500 text-xs">Reporting to owner API</p>
+              <div className="flex items-end justify-between gap-4">
+                <h3 className="text-[2rem] font-semibold leading-none text-white">{overview?.total_validators ?? 0}</h3>
+                <p className="pb-1 text-sm text-gray-400">Online set</p>
+              </div>
             </div>
           </div>
 
-          <div className="stat-card glass-panel rounded-xl p-5 relative overflow-hidden">
-            <div className="flex justify-between items-start mb-4">
-              <div className="w-10 h-10 rounded-lg bg-[#1a1a1a] flex items-center justify-center border border-[#333]">
-                <Activity className="w-5 h-5 text-gray-300" />
+          <div className="stat-card glass-panel rounded-2xl px-5 py-4 relative overflow-hidden min-h-[124px]">
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-[#7dd3fc]/35 to-transparent" />
+            <div className="flex h-full flex-col justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-[#151515] flex items-center justify-center border border-[#333] shrink-0">
+                  <Activity className="w-4.5 h-4.5 text-gray-300" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-[11px] uppercase tracking-[0.16em] text-gray-500">Active Miners</p>
+                  <p className="text-xs text-gray-600">Ready for evaluation</p>
+                </div>
               </div>
-            </div>
-            <div>
-              <p className="text-gray-400 text-xs font-medium mb-1">Active Miners</p>
-              <h3 className="text-2xl font-bold text-white mb-1">{overview?.valid_miners ?? 0}</h3>
-              <p className="text-gray-500 text-xs">Online now</p>
+              <div className="flex items-end justify-between gap-4">
+                <h3 className="text-[2rem] font-semibold leading-none text-white">{overview?.valid_miners ?? 0}</h3>
+                <p className="pb-1 text-sm text-gray-400">Online now</p>
+              </div>
             </div>
           </div>
 
-          <div className="stat-card glass-panel rounded-xl p-5 relative overflow-hidden">
-            <div className="flex justify-between items-start mb-4">
-              <div className="w-10 h-10 rounded-lg bg-[#1a1a1a] flex items-center justify-center border border-[#333]">
-                <Layers className="w-5 h-5 text-gray-300" />
+          <div className="stat-card glass-panel rounded-2xl px-5 py-4 relative overflow-hidden min-h-[124px]">
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-[#f59e0b]/35 to-transparent" />
+            <div className="flex h-full flex-col justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-[#151515] flex items-center justify-center border border-[#333] shrink-0">
+                  <Layers className="w-4.5 h-4.5 text-gray-300" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-[11px] uppercase tracking-[0.16em] text-gray-500">Network Overview</p>
+                  <p className="text-xs text-gray-600">Total evaluations</p>
+                </div>
+              </div>
+              <div className="flex items-end justify-between gap-4">
+                <h3 className="text-[2rem] font-semibold leading-none text-white">
+                  {overview?.total_evaluations != null ? overview.total_evaluations.toLocaleString() : '—'}
+                </h3>
+                <p className="pb-1 text-sm text-gray-400">evals</p>
               </div>
             </div>
-            <div>
-              <p className="text-gray-400 text-xs font-medium mb-1">Network Overview</p>
-              <h3 className="text-2xl font-bold text-white mb-1">
-                {overview?.total_evaluations != null ? overview.total_evaluations.toLocaleString() : '—'}{' '}
-                <span className="text-sm font-normal text-gray-400">evals</span>
-              </h3>
-              <p className="text-gray-500 text-xs">Total evaluations</p>
-            </div>
           </div>
+        </div>
+
+        <div className="mb-6">
+          <LiveSubnetMap graph={subnetGraph} useFallbackData={useFallbackData} />
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_440px] gap-6 items-stretch">
@@ -831,6 +889,184 @@ export function Dashboard() {
               </div>
             </div>
           </div>
+        </div>
+
+        <div className="mt-6 glass-panel rounded-xl overflow-hidden">
+          <div className="border-b border-[#27272a] px-6 py-5 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <span className="inline-flex items-center rounded-full px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-[#D1F840] border border-[#D1F840]/30 bg-[#D1F840]/10">
+                Global scoring
+              </span>
+              <h2 className="mt-3 text-lg font-semibold text-white">Winner Reasoning And Full Valid Miner Ranking</h2>
+              <p className="mt-2 max-w-3xl text-sm text-gray-400">
+                This snapshot mirrors validator weight-setting logic: recent bucket windows from active validators, sqrt(stake) weighting, minimum validator coverage, and threshold checks against earlier eligible miners.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2 text-[11px]">
+              <span className="rounded-full border border-[#27272a] bg-[#111111] px-3 py-1.5 text-gray-300">
+                Updated {globalScoring?.generated_at ? formatTimeAgo(globalScoring.generated_at) : '—'}
+              </span>
+              <span className="rounded-full border border-[#27272a] bg-[#111111] px-3 py-1.5 text-gray-300">
+                Window {globalScoring?.max_evals_for_scoring ?? '—'} evals
+              </span>
+              <span className="rounded-full border border-[#27272a] bg-[#111111] px-3 py-1.5 text-gray-300">
+                Active validators {globalScoring?.active_validator_count ?? '—'}
+              </span>
+              <span className="rounded-full border border-[#27272a] bg-[#111111] px-3 py-1.5 text-gray-300">
+                Threshold {globalScoring?.threshold_margin != null ? `${(globalScoring.threshold_margin * 100).toFixed(1)}%` : '—'}
+              </span>
+            </div>
+          </div>
+
+          {!globalScoring ? (
+            <div className="px-6 py-10 text-sm text-gray-500">No global scoring snapshot available yet.</div>
+          ) : (
+            <>
+              <div className="grid grid-cols-1 xl:grid-cols-[1.15fr_0.85fr] gap-4 border-b border-[#27272a] px-6 py-6">
+                <div className="rounded-2xl border border-[#D1F840]/20 bg-[radial-gradient(circle_at_top_left,rgba(209,248,64,0.18),rgba(12,12,12,0.92)_55%)] p-5">
+                  <div className="flex items-center gap-2 mb-3">
+                    <span className="inline-flex items-center rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-[#D1F840] border border-[#D1F840]/25 bg-black/30">
+                      Current winner
+                    </span>
+                    {winner ? (
+                      <span className="font-mono text-sm text-white">{formatStartEnd(winner.hotkey, 8, 8)}</span>
+                    ) : (
+                      <span className="text-sm text-red-300">No eligible winner</span>
+                    )}
+                  </div>
+                  <div className="mb-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div className="rounded-xl border border-white/10 bg-black/20 px-3 py-2">
+                      <p className="text-[10px] uppercase tracking-[0.14em] text-gray-500">Weighted</p>
+                      <p className="text-lg font-semibold text-white">{winner ? `${(winner.weighted_win_rate * 100).toFixed(1)}%` : '—'}</p>
+                    </div>
+                    <div className="rounded-xl border border-white/10 bg-black/20 px-3 py-2">
+                      <p className="text-[10px] uppercase tracking-[0.14em] text-gray-500">Raw</p>
+                      <p className="text-lg font-semibold text-white">{winner ? `${winner.wins}/${winner.total}` : '—'}</p>
+                    </div>
+                    <div className="rounded-xl border border-white/10 bg-black/20 px-3 py-2">
+                      <p className="text-[10px] uppercase tracking-[0.14em] text-gray-500">Coverage</p>
+                      <p className="text-lg font-semibold text-white">{winner ? winner.validator_count : '—'}</p>
+                    </div>
+                  </div>
+                  <p className="text-sm leading-6 text-gray-100/90">
+                    {globalScoring.winner_reason ?? 'No miner cleared the active-validator coverage and threshold rules in the current snapshot.'}
+                  </p>
+                </div>
+
+                <div className="rounded-2xl border border-[#27272a] bg-[#0d0d0d] p-5">
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="text-sm font-semibold text-white">Winner Threshold Checks</h3>
+                    <span className="text-[11px] text-gray-500">Earlier eligible miners</span>
+                  </div>
+                  {!winner || winner.threshold_checks.length === 0 ? (
+                    <p className="text-sm text-gray-500">No threshold checks recorded for this snapshot.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {winner.threshold_checks.slice(0, 2).map((check) => (
+                        <div key={`${winner.hotkey}-${check.prior_hotkey}`} className="rounded-xl border border-[#27272a] bg-[#121212] px-3 py-2.5">
+                          <div className="flex items-center justify-between gap-3">
+                            <div>
+                              <p className="font-mono text-xs text-white">{formatStartEnd(check.prior_hotkey, 8, 8)}</p>
+                              <p className="text-[11px] text-gray-500">Block {check.prior_block}</p>
+                            </div>
+                            <span className={`inline-flex items-center rounded-full px-2 py-1 text-[10px] font-semibold ${check.passed ? 'border border-emerald-400/20 bg-emerald-500/10 text-emerald-300' : 'border border-red-400/20 bg-red-500/10 text-red-300'}`}>
+                              {check.passed ? 'PASS' : 'FAIL'}
+                            </span>
+                          </div>
+                          <div className="mt-2 grid grid-cols-3 gap-2 text-[11px]">
+                            <div>
+                              <p className="text-gray-500">Prior</p>
+                              <p className="text-white">{(check.prior_rate * 100).toFixed(1)}%</p>
+                            </div>
+                            <div>
+                              <p className="text-gray-500">Need at least</p>
+                              <p className="text-white">{(check.required_rate * 100).toFixed(1)}%</p>
+                            </div>
+                            <div>
+                              <p className="text-gray-500">Winner</p>
+                              <p className="text-white">{(check.candidate_rate * 100).toFixed(1)}%</p>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                      {winner.threshold_checks.length > 2 && (
+                        <p className="pt-1 text-[11px] text-gray-500">
+                          Showing top 2 earlier eligible miners out of {winner.threshold_checks.length}.
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[1080px]">
+                  <thead>
+                    <tr className="border-b border-[#27272a] text-left">
+                      <th className="px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-500">Rank</th>
+                      <th className="px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-500">Miner</th>
+                      <th className="px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-500">Status</th>
+                      <th className="px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-500">Weighted</th>
+                      <th className="px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-500">Raw</th>
+                      <th className="px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-500">Vals</th>
+                      <th className="px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-500">Per-validator detail</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#27272a]">
+                    {globalScoring.miners.map((miner) => (
+                      <tr key={miner.hotkey} className={miner.is_winner ? 'bg-[#D1F840]/[0.06]' : 'hover:bg-[#121212] transition-colors'}>
+                        <td className="px-4 py-4 align-top text-xs text-gray-400">#{String(miner.rank).padStart(2, '0')}</td>
+                        <td className="px-4 py-4 align-top">
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-2">
+                              <span className="font-mono text-sm text-white">{formatStartEnd(miner.hotkey, 6, 6)}</span>
+                              {miner.is_winner && (
+                                <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold text-[#D1F840] border border-[#D1F840]/30 bg-[#D1F840]/10">
+                                  Winner
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-[11px] text-gray-500">UID {miner.uid} · Block {miner.block}</p>
+                            <p className="text-[11px] text-gray-400">{miner.model_name || 'Unknown model'}</p>
+                          </div>
+                        </td>
+                        <td className="px-4 py-4 align-top">
+                          <div className="space-y-2">
+                            <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-[10px] font-semibold ${
+                              miner.is_winner
+                                ? 'text-[#D1F840] border border-[#D1F840]/30 bg-[#D1F840]/10'
+                                : miner.eligible
+                                  ? 'text-emerald-300 border border-emerald-400/20 bg-emerald-500/10'
+                                  : 'text-amber-300 border border-amber-400/20 bg-amber-500/10'
+                            }`}>
+                              {miner.is_winner ? 'Winner' : miner.eligible ? 'Eligible' : 'Ineligible'}
+                            </span>
+                            <p className="max-w-[240px] text-[11px] leading-5 text-gray-400">{miner.status_reason}</p>
+                          </div>
+                        </td>
+                        <td className="px-4 py-4 align-top text-sm font-semibold text-white">{(miner.weighted_win_rate * 100).toFixed(1)}%</td>
+                        <td className="px-4 py-4 align-top text-sm text-gray-300">{miner.wins}/{miner.total}</td>
+                        <td className="px-4 py-4 align-top text-sm text-gray-300">{miner.validator_count}</td>
+                        <td className="px-4 py-4 align-top">
+                          <div className="space-y-2">
+                            {miner.per_validator.length === 0 ? (
+                              <p className="text-[11px] text-gray-500">No contributing validators.</p>
+                            ) : (
+                              miner.per_validator.map((detail) => (
+                                <div key={`${miner.hotkey}-${detail.validator_hotkey}`} className="rounded-lg border border-[#27272a] bg-[#111111] px-3 py-2 text-[11px] text-gray-300">
+                                  <span className="font-mono">{detail.display}</span>
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
         </div>
       </div>
 

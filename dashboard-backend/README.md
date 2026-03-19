@@ -50,6 +50,8 @@ uvicorn main:app --host 0.0.0.0 --port 34717
 | GET | `/health` | Service and DB health (200/503) |
 | GET | `/api/dashboard/overview` | Counts: total/valid miners, validators, evaluations, last_activity |
 | GET | `/api/dashboard/miners` | Miners list with win_rate, total_evaluations (query: `?valid=false`, `?limit=100`) |
+| GET | `/api/dashboard/global-scoring` | Latest owner-computed consensus snapshot: winner, ranking, threshold checks, per-validator breakdown |
+| GET | `/api/dashboard/subnet-graph` | Live subnet map payload: validators, miners, buckets, owner API/subtensor nodes, active graph activities |
 | GET | `/api/dashboard/validators` | Validators from validator_registry |
 | GET | `/api/dashboard/activity` | Evaluation counts over time (query: `?range=24h` or `?range=7d`) |
 

@@ -149,3 +149,54 @@ async def ensure_studio_tts_history_table() -> None:
             await conn.execute(STUDIO_TTS_HISTORY_TABLE_SQL)
         except Exception:
             pass
+
+
+GLOBAL_SCORING_SNAPSHOTS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS global_scoring_snapshots (
+    id SERIAL PRIMARY KEY,
+    snapshot_hash VARCHAR(64) NOT NULL,
+    winner_hotkey VARCHAR(64),
+    is_latest BOOLEAN NOT NULL DEFAULT TRUE,
+    snapshot_data TEXT NOT NULL,
+    generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_global_scoring_snapshots_latest ON global_scoring_snapshots (is_latest);
+CREATE INDEX IF NOT EXISTS idx_global_scoring_snapshots_generated_at ON global_scoring_snapshots (generated_at);
+"""
+
+
+async def ensure_global_scoring_snapshots_table() -> None:
+    """Create global_scoring_snapshots table if it does not exist."""
+    async with acquire() as conn:
+        try:
+            await conn.execute(GLOBAL_SCORING_SNAPSHOTS_TABLE_SQL)
+        except Exception:
+            pass
+
+
+GRAPH_ACTIVITY_LEASES_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS graph_activity_leases (
+    id SERIAL PRIMARY KEY,
+    activity_type VARCHAR(64) NOT NULL,
+    activity_key VARCHAR(255) NOT NULL UNIQUE,
+    validator_hotkey VARCHAR(64) NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'active',
+    payload_json TEXT,
+    started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_graph_activity_leases_status ON graph_activity_leases (status);
+CREATE INDEX IF NOT EXISTS idx_graph_activity_leases_expires_at ON graph_activity_leases (expires_at);
+CREATE INDEX IF NOT EXISTS idx_graph_activity_leases_validator ON graph_activity_leases (validator_hotkey);
+"""
+
+
+async def ensure_graph_activity_leases_table() -> None:
+    """Create graph_activity_leases table if it does not exist."""
+    async with acquire() as conn:
+        try:
+            await conn.execute(GRAPH_ACTIVITY_LEASES_TABLE_SQL)
+        except Exception:
+            pass

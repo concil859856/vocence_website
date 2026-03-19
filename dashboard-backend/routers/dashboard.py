@@ -27,6 +27,7 @@ from schemas import (
     BlogPostListResponse,
     BlogPostResponse,
     BlogPostUpdateRequest,
+    GlobalScoringSnapshotResponse,
     MinerResponse,
     MinersResponse,
     OverviewResponse,
@@ -34,6 +35,9 @@ from schemas import (
     RecentEvaluationsResponse,
     ValidationStatusResponse,
     LivePendingItem,
+    SubnetGraphActivityResponse,
+    SubnetGraphNodeResponse,
+    SubnetGraphResponse,
     RegisteredUserRegisterRequest,
     RegisteredUserResponse,
     RegisteredUsersListResponse,
@@ -77,6 +81,129 @@ async def get_overview():
         total_validators=total_validators,
         total_evaluations=total_evaluations,
         last_activity=last_activity.isoformat() if last_activity else None,
+    )
+
+
+@router.get("/global-scoring", response_model=GlobalScoringSnapshotResponse | None)
+async def get_global_scoring():
+    """Latest persisted global scoring snapshot from the owner metrics worker."""
+    async with acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT snapshot_data
+            FROM global_scoring_snapshots
+            WHERE is_latest = true
+            ORDER BY generated_at DESC, id DESC
+            LIMIT 1
+            """
+        )
+    if not row:
+        return None
+    payload = row["snapshot_data"]
+    if isinstance(payload, str):
+        return json.loads(payload)
+    return payload
+
+
+@router.get("/subnet-graph", response_model=SubnetGraphResponse)
+async def get_subnet_graph():
+    """Live subnet graph payload for the dashboard operations map."""
+    async with acquire() as conn:
+        validator_rows = await conn.fetch(
+            """
+            SELECT uid, hotkey, stake, s3_bucket, last_seen_at
+            FROM validator_registry
+            ORDER BY uid ASC
+            """
+        )
+        miner_rows = await conn.fetch(
+            """
+            SELECT uid, miner_hotkey, is_valid, last_validated_at, invalid_reason
+            FROM registered_miners
+            ORDER BY uid ASC
+            """
+        )
+        activity_rows = await conn.fetch(
+            """
+            SELECT activity_type, activity_key, validator_hotkey, status, payload_json, started_at, expires_at
+            FROM graph_activity_leases
+            WHERE expires_at >= NOW()
+            ORDER BY started_at DESC, id DESC
+            """
+        )
+
+    nodes: list[SubnetGraphNodeResponse] = [
+        SubnetGraphNodeResponse(id="owner-api", node_type="owner_api", label="Owner API", status="active"),
+        SubnetGraphNodeResponse(id="subtensor", node_type="subtensor", label="Subtensor", status="active"),
+    ]
+
+    for row in validator_rows:
+        hotkey = row["hotkey"]
+        nodes.append(
+            SubnetGraphNodeResponse(
+                id=f"validator:{hotkey}",
+                node_type="validator",
+                hotkey=hotkey,
+                uid=row["uid"],
+                label=f"V{row['uid']}",
+                status="active",
+                stake=float(row["stake"] or 0),
+                last_seen_at=row["last_seen_at"].isoformat() if row["last_seen_at"] else None,
+            )
+        )
+        nodes.append(
+            SubnetGraphNodeResponse(
+                id=f"bucket:{hotkey}",
+                node_type="bucket",
+                hotkey=hotkey,
+                validator_hotkey=hotkey,
+                label=(row["s3_bucket"] or f"bucket-{str(hotkey)[:6]}"),
+                status="active",
+                bucket_name=row["s3_bucket"],
+            )
+        )
+
+    for row in miner_rows:
+        hotkey = row["miner_hotkey"]
+        is_valid = bool(row["is_valid"])
+        nodes.append(
+            SubnetGraphNodeResponse(
+                id=f"miner:{hotkey}",
+                node_type="miner",
+                hotkey=hotkey,
+                uid=row["uid"],
+                label=f"M{row['uid']}",
+                status="active" if is_valid else "inactive",
+                valid=is_valid,
+                last_validated_at=row["last_validated_at"].isoformat() if row["last_validated_at"] else None,
+                invalid_reason=row["invalid_reason"],
+            )
+        )
+
+    activities: list[SubnetGraphActivityResponse] = []
+    for row in activity_rows:
+        payload = row["payload_json"]
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload) if payload else {}
+            except Exception:
+                payload = {}
+        activities.append(
+            SubnetGraphActivityResponse(
+                activity_type=row["activity_type"],
+                activity_key=row["activity_key"],
+                validator_hotkey=row["validator_hotkey"],
+                status=row["status"],
+                payload=payload or {},
+                started_at=row["started_at"].isoformat(),
+                expires_at=row["expires_at"].isoformat(),
+            )
+        )
+
+    return SubnetGraphResponse(
+        generated_at=datetime.now(timezone.utc).isoformat(),
+        nodes=nodes,
+        activities=activities,
     )
 
 
@@ -392,14 +519,16 @@ async def get_recent_evaluations(
 
 @router.get("/evaluations", response_model=RecentEvaluationsResponse)
 async def get_all_evaluations(
-    limit: int = Query(10000, ge=1, le=50000),
+    limit: int = Query(100, ge=1, le=50000),
+    offset: int = Query(0, ge=0),
     validator_hotkey: str | None = Query(None),
     miner_hotkey: str | None = Query(None),
 ):
     """All validator evaluations (for View whole list). Supports same filters as /evaluations/recent."""
     where, where_args = _evaluations_where(validator_hotkey, miner_hotkey)
-    args = list(where_args) + [limit]
-    limit_param = len(args)
+    args = list(where_args) + [limit, offset]
+    limit_param = len(where_args) + 1
+    offset_param = len(where_args) + 2
     async with acquire() as conn:
         try:
             total_row = await conn.fetchrow("SELECT COUNT(*) AS n FROM validator_evaluations" + where, *where_args)
@@ -412,6 +541,7 @@ async def get_all_evaluations(
                 {where}
                 ORDER BY evaluated_at DESC
                 LIMIT ${limit_param}
+                OFFSET ${offset_param}
                 """,
                 *args,
             )
@@ -423,6 +553,7 @@ async def get_all_evaluations(
                     FROM validator_evaluations {where}
                     ORDER BY evaluated_at DESC
                     LIMIT ${limit_param}
+                    OFFSET ${offset_param}
                     """,
                     *args,
                 )

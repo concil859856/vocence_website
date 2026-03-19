@@ -24,16 +24,19 @@ function formatTimeAgo(iso: string | null): string {
 export function DashboardEvaluations() {
   const [searchParams] = useSearchParams();
   const minerFromUrl = searchParams.get('miner_hotkey') ?? '';
+  const PAGE_SIZE = 100;
   const [evaluations, setEvaluations] = useState<RecentEvaluation[]>([]);
+  const [totalCount, setTotalCount] = useState(0);
   const [validators, setValidators] = useState<DashboardValidator[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [limitNote, setLimitNote] = useState<string | null>(null);
   const [filterValidator, setFilterValidator] = useState<string>('');
   const [filterMiner, setFilterMiner] = useState<string>(minerFromUrl);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [copiedCellId, setCopiedCellId] = useState<string | null>(null);
   const [validatorDropdownOpen, setValidatorDropdownOpen] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageInput, setPageInput] = useState('1');
   const validatorDropdownRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -55,30 +58,25 @@ export function DashboardEvaluations() {
   }, []);
 
   const load = useCallback(
-    async (limit = 10000, validatorHotkey?: string | null, minerHotkey?: string | null) => {
+    async (page = 1, validatorHotkey?: string | null, minerHotkey?: string | null) => {
       setLoading(true);
       setError(null);
-      setLimitNote(null);
       const v = validatorHotkey ?? (filterValidator.trim() || null);
       const m = minerHotkey ?? (filterMiner.trim() || null);
       try {
-        const res = await dashboardApi.getRecentEvaluations(limit, v, m);
+        const safePage = Math.max(1, page);
+        const offset = (safePage - 1) * PAGE_SIZE;
+        const res = await dashboardApi.getEvaluations(PAGE_SIZE, offset, v, m);
         setEvaluations(res.evaluations || []);
+        setTotalCount(res.total_count ?? 0);
+        setCurrentPage(safePage);
+        setPageInput(String(safePage));
+        setExpandedId(null);
       } catch (e) {
         const msg = e instanceof Error ? e.message : '';
-        if (msg.includes('422') && (msg.includes('limit') || msg.includes('less_than_equal'))) {
-          try {
-            const res = await dashboardApi.getRecentEvaluations(200, v, m);
-            setEvaluations(res.evaluations || []);
-            setLimitNote('Showing latest 200. Restart the dashboard backend to allow more.');
-          } catch {
-            setEvaluations([]);
-            setError(msg);
-          }
-        } else {
-          setEvaluations([]);
-          setError(msg || 'Failed to load evaluations');
-        }
+        setEvaluations([]);
+        setTotalCount(0);
+        setError(msg || 'Failed to load evaluations');
       } finally {
         setLoading(false);
       }
@@ -94,7 +92,7 @@ export function DashboardEvaluations() {
   }, [minerFromUrl]);
 
   useEffect(() => {
-    load(10000, filterValidator.trim() || null, filterMiner.trim() || null);
+    load(1, filterValidator.trim() || null, filterMiner.trim() || null);
   }, [filterValidator, filterMiner, load]);
 
   useEffect(() => {
@@ -107,7 +105,18 @@ export function DashboardEvaluations() {
     dashboardApi.getValidators().then((r) => setValidators(r.validators || [])).catch(() => setValidators([]));
   }, []);
 
-  const applyFilters = () => load();
+  const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
+
+  const applyFilters = () => {
+    setCurrentPage(1);
+    setPageInput('1');
+    load(1, filterValidator.trim() || null, filterMiner.trim() || null);
+  };
+
+  const goToPage = (page: number) => {
+    const nextPage = Math.min(totalPages, Math.max(1, page));
+    load(nextPage, filterValidator.trim() || null, filterMiner.trim() || null);
+  };
 
   return (
     <div className="min-h-screen bg-[#050505] text-white pt-24 pb-12 px-4 md:px-6 lg:px-8">
@@ -123,7 +132,7 @@ export function DashboardEvaluations() {
             <h1 className="text-2xl font-bold text-white">All evaluation results</h1>
           </div>
           <button
-            onClick={() => load()}
+            onClick={() => load(currentPage, filterValidator.trim() || null, filterMiner.trim() || null)}
             disabled={loading}
             className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-[#050505] hover:opacity-90 disabled:opacity-50 transition-opacity"
             style={{ background: ACCENT }}
@@ -217,19 +226,13 @@ export function DashboardEvaluations() {
           </button>
         </div>
 
-        {limitNote && (
-          <div className="mb-6 p-4 rounded-xl border border-amber-500/20 bg-amber-500/10">
-            <p className="text-amber-200 text-sm">{limitNote}</p>
-          </div>
-        )}
-
         {error && (
           <div className="mb-6 p-4 rounded-xl border border-red-500/20 bg-red-500/10">
             <p className="text-red-400 text-sm mb-2">{error}</p>
             <p className="text-gray-400 text-xs mb-4">Ensure the dashboard backend is running and connected to the same Postgres as the validator (validator_evaluations table).</p>
             <button
               type="button"
-              onClick={() => load()}
+              onClick={() => load(currentPage, filterValidator.trim() || null, filterMiner.trim() || null)}
               className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-[#050505]"
               style={{ background: ACCENT }}
             >
@@ -360,7 +363,59 @@ export function DashboardEvaluations() {
               </table>
             </div>
             <div className="px-4 py-3 border-t border-[#27272a] text-xs text-gray-500">
-              Showing {evaluations.length} evaluation result{evaluations.length !== 1 ? 's' : ''} from validator_evaluations
+              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                <span>
+                  Showing {(currentPage - 1) * PAGE_SIZE + (evaluations.length > 0 ? 1 : 0)}-
+                  {(currentPage - 1) * PAGE_SIZE + evaluations.length} of {totalCount} evaluation result{totalCount !== 1 ? 's' : ''}
+                </span>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => goToPage(currentPage - 1)}
+                    disabled={loading || currentPage <= 1}
+                    className="px-3 py-1.5 rounded-lg border border-[#27272a] bg-[#0f0f0f] text-gray-300 disabled:opacity-40 hover:border-[#3f3f46] hover:text-white transition-colors"
+                  >
+                    Prev
+                  </button>
+                  <span className="text-gray-400">
+                    Page {currentPage} / {totalPages}
+                  </span>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    value={pageInput}
+                    onChange={(e) => setPageInput(e.target.value.replace(/[^\d]/g, ''))}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        const parsed = Number(pageInput);
+                        if (!Number.isNaN(parsed)) goToPage(parsed);
+                      }
+                    }}
+                    className="w-20 rounded-lg border border-[#27272a] bg-[#0f0f0f] px-3 py-1.5 text-sm text-white"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const parsed = Number(pageInput);
+                      if (!Number.isNaN(parsed)) goToPage(parsed);
+                    }}
+                    disabled={loading}
+                    className="px-3 py-1.5 rounded-lg text-sm font-medium text-[#050505] disabled:opacity-50"
+                    style={{ background: ACCENT }}
+                  >
+                    Go
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => goToPage(currentPage + 1)}
+                    disabled={loading || currentPage >= totalPages}
+                    className="px-3 py-1.5 rounded-lg border border-[#27272a] bg-[#0f0f0f] text-gray-300 disabled:opacity-40 hover:border-[#3f3f46] hover:text-white transition-colors"
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         )}
