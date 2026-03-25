@@ -1,18 +1,26 @@
 /**
  * Dashboard API client — same backend as auth (VITE_API_URL).
  */
+import { API_ORIGIN_BASE } from './baseUrl';
 
-const DASHBOARD_BASE =
-  import.meta.env.VITE_API_URL != null && import.meta.env.VITE_API_URL !== ''
-    ? import.meta.env.VITE_API_URL.replace(/\/$/, '')
-    : (import.meta.env.PROD ? '' : 'http://localhost:34717');
+const DASHBOARD_BASE = API_ORIGIN_BASE;
 
 async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
   const url = `${DASHBOARD_BASE}${path}`;
-  const res = await fetch(url, {
-    ...options,
-    headers: { Accept: 'application/json', ...options?.headers },
-  });
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      ...options,
+      headers: { Accept: 'application/json', ...options?.headers },
+    });
+  } catch (e) {
+    if (e instanceof TypeError) {
+      throw new Error(
+        `Network error (${e.message}). Request: ${url}. In dev, either leave VITE_API_URL unset (Vite proxies /api) or set it to your backend and add your exact browser origin (localhost vs 127.0.0.1) to backend CORS_ORIGIN.`
+      );
+    }
+    throw e;
+  }
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Dashboard API ${res.status}: ${text || res.statusText}`);
@@ -187,12 +195,141 @@ export interface ValidationStatusResponse {
 }
 
 export interface RegisteredUser {
-  id: number;
+  id: number | string;
   email: string;
   name: string;
   picture: string | null;
+  credits?: number | null;
+  plan_code?: string | null;
+  plan_status?: string | null;
+  last_login_at?: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface WebsiteUsageDay {
+  day: string;
+  tts_generation_count: number;
+  unique_users: number;
+  credits_used: number;
+  revenue_usd: number;
+  credits_purchased: number;
+}
+
+export interface PlanDistribution {
+  plan_code: string;
+  user_count: number;
+}
+
+export interface RecentPayment {
+  id: string;
+  user_id: string;
+  provider: string;
+  plan_code?: string | null;
+  amount_usd: number;
+  credits_granted: number;
+  status: string;
+  created_at: string;
+}
+
+export interface WebsiteOverview {
+  total_users: number;
+  active_users_7d: number;
+  total_generations: number;
+  total_credits_used: number;
+  total_revenue_usd: number;
+  usage: WebsiteUsageDay[];
+  plan_distribution: PlanDistribution[];
+  recent_payments: RecentPayment[];
+}
+
+export interface RegisteredUsersListResult {
+  users: RegisteredUser[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface AdminTtsHistoryRow {
+  id: number;
+  user_id: string;
+  user_email: string | null;
+  user_name: string | null;
+  miner_hotkey: string;
+  model_name: string;
+  prompt_text: string;
+  style_instruction: string;
+  credits_used: number;
+  status: string;
+  latency_ms: number | null;
+  error_message: string | null;
+  created_at: string;
+}
+
+export interface AdminPaginated<T> {
+  items: T[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface AdminCreditTransactionRow {
+  id: string;
+  user_id: string;
+  user_email: string | null;
+  user_name: string | null;
+  transaction_type: string;
+  amount: number;
+  balance_after: number;
+  description: string;
+  reference_type: string | null;
+  reference_id: string | null;
+  created_at: string;
+}
+
+export interface AdminPaymentRow {
+  id: string;
+  user_id: string;
+  user_email: string | null;
+  user_name: string | null;
+  provider: string;
+  plan_code: string | null;
+  amount_usd: number;
+  credits_granted: number;
+  status: string;
+  mode: string | null;
+  stripe_checkout_session_id: string | null;
+  credits_applied_at: string | null;
+  created_at: string;
+}
+
+export interface AdminAuthHistoryRow {
+  id: string;
+  user_id: string;
+  user_email: string | null;
+  user_name: string | null;
+  type: string;
+  content: string | null;
+  style_prompt: string | null;
+  model: string | null;
+  meta: string | null;
+  duration: string | null;
+  created_at: string;
+}
+
+export interface AdminUserActivitySummary {
+  user_id: string;
+  email: string;
+  name: string;
+  credits: number;
+  plan_code: string;
+  plan_status: string;
+  created_at: string;
+  last_login_at: string | null;
+  tts_completed_count: number;
+  tts_total_credits: number;
+  credit_tx_count: number;
+  payments_count: number;
 }
 
 export interface BlogPost {
@@ -284,8 +421,84 @@ export const dashboardApi = {
     });
   },
 
-  getRegisteredUsers(adminEmail: string): Promise<{ users: RegisteredUser[] }> {
-    return fetchJson('/api/dashboard/users', {
+  getRegisteredUsers(
+    adminEmail: string,
+    opts?: { page?: number; page_size?: number; q?: string }
+  ): Promise<RegisteredUsersListResult> {
+    const params = new URLSearchParams();
+    if (opts?.page != null) params.set('page', String(opts.page));
+    if (opts?.page_size != null) params.set('page_size', String(opts.page_size));
+    if (opts?.q?.trim()) params.set('q', opts.q.trim());
+    const qs = params.toString();
+    return fetchJson(`/api/dashboard/users${qs ? `?${qs}` : ''}`, {
+      headers: { 'X-Admin-Email': adminEmail },
+    });
+  },
+
+  getAdminWebsiteUsageTts(
+    adminEmail: string,
+    opts?: { page?: number; page_size?: number; q?: string; user_id?: string | null }
+  ): Promise<AdminPaginated<AdminTtsHistoryRow>> {
+    const params = new URLSearchParams();
+    if (opts?.page != null) params.set('page', String(opts.page));
+    if (opts?.page_size != null) params.set('page_size', String(opts.page_size));
+    if (opts?.q?.trim()) params.set('q', opts.q.trim());
+    if (opts?.user_id?.trim()) params.set('user_id', opts.user_id.trim());
+    return fetchJson(`/api/dashboard/admin/website-usage/tts?${params.toString()}`, {
+      headers: { 'X-Admin-Email': adminEmail },
+    });
+  },
+
+  getAdminWebsiteUsageCredits(
+    adminEmail: string,
+    opts?: { page?: number; page_size?: number; q?: string; user_id?: string | null }
+  ): Promise<AdminPaginated<AdminCreditTransactionRow>> {
+    const params = new URLSearchParams();
+    if (opts?.page != null) params.set('page', String(opts.page));
+    if (opts?.page_size != null) params.set('page_size', String(opts.page_size));
+    if (opts?.q?.trim()) params.set('q', opts.q.trim());
+    if (opts?.user_id?.trim()) params.set('user_id', opts.user_id.trim());
+    return fetchJson(`/api/dashboard/admin/website-usage/credits?${params.toString()}`, {
+      headers: { 'X-Admin-Email': adminEmail },
+    });
+  },
+
+  getAdminWebsiteUsagePayments(
+    adminEmail: string,
+    opts?: { page?: number; page_size?: number; q?: string; user_id?: string | null }
+  ): Promise<AdminPaginated<AdminPaymentRow>> {
+    const params = new URLSearchParams();
+    if (opts?.page != null) params.set('page', String(opts.page));
+    if (opts?.page_size != null) params.set('page_size', String(opts.page_size));
+    if (opts?.q?.trim()) params.set('q', opts.q.trim());
+    if (opts?.user_id?.trim()) params.set('user_id', opts.user_id.trim());
+    return fetchJson(`/api/dashboard/admin/website-usage/payments?${params.toString()}`, {
+      headers: { 'X-Admin-Email': adminEmail },
+    });
+  },
+
+  getAdminWebsiteUsageAuthHistory(
+    adminEmail: string,
+    opts?: { page?: number; page_size?: number; q?: string; user_id?: string | null }
+  ): Promise<AdminPaginated<AdminAuthHistoryRow>> {
+    const params = new URLSearchParams();
+    if (opts?.page != null) params.set('page', String(opts.page));
+    if (opts?.page_size != null) params.set('page_size', String(opts.page_size));
+    if (opts?.q?.trim()) params.set('q', opts.q.trim());
+    if (opts?.user_id?.trim()) params.set('user_id', opts.user_id.trim());
+    return fetchJson(`/api/dashboard/admin/website-usage/auth-history?${params.toString()}`, {
+      headers: { 'X-Admin-Email': adminEmail },
+    });
+  },
+
+  getAdminUserActivitySummary(adminEmail: string, userId: string): Promise<AdminUserActivitySummary> {
+    return fetchJson(`/api/dashboard/admin/website-usage/user/${encodeURIComponent(userId)}/summary`, {
+      headers: { 'X-Admin-Email': adminEmail },
+    });
+  },
+
+  getWebsiteOverview(adminEmail: string): Promise<WebsiteOverview> {
+    return fetchJson('/api/dashboard/website-overview', {
       headers: { 'X-Admin-Email': adminEmail },
     });
   },

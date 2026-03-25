@@ -21,16 +21,15 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from database import (
+    acquire,
     close_pool,
     health_check,
-    ensure_blog_table,
     ensure_evaluations_audio_columns,
     ensure_graph_activity_leases_table,
     ensure_global_scoring_snapshots_table,
     ensure_live_evaluation_pending_table,
-    ensure_studio_tts_history_table,
 )
-from local_db import ensure_tables as ensure_local_tables
+from local_db import ensure_tables as ensure_local_tables, migrate_legacy_website_data
 from routers import auth, dashboard, studio
 
 
@@ -38,15 +37,46 @@ UPLOADS_DIR = Path(__file__).resolve().parent / "uploads"
 UPLOADS_DIR.mkdir(exist_ok=True)
 
 
+def _cors_allow_origins() -> list[str]:
+    """Explicit origins (required when allow_credentials=True). Never use '*' with credentials."""
+    raw = (os.environ.get("CORS_ORIGIN") or "").strip()
+    if not raw:
+        return [
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+        ]
+    origins = [o.strip() for o in raw.split(",") if o.strip()]
+    # Avoid "Failed to fetch" when the app is opened as localhost vs 127.0.0.1
+    expanded: list[str] = []
+    seen: set[str] = set()
+    for o in origins:
+        if o not in seen:
+            expanded.append(o)
+            seen.add(o)
+        if "://localhost:" in o:
+            mirror = o.replace("://localhost:", "://127.0.0.1:")
+            if mirror not in seen:
+                expanded.append(mirror)
+                seen.add(mirror)
+        elif "://127.0.0.1:" in o:
+            mirror = o.replace("://127.0.0.1:", "://localhost:")
+            if mirror not in seen:
+                expanded.append(mirror)
+                seen.add(mirror)
+    return expanded
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await ensure_blog_table()
     await ensure_evaluations_audio_columns()
     await ensure_graph_activity_leases_table()
     await ensure_global_scoring_snapshots_table()
     await ensure_live_evaluation_pending_table()
-    await ensure_studio_tts_history_table()
     await ensure_local_tables()
+    async with acquire() as conn:
+        await migrate_legacy_website_data(conn)
     yield
     await close_pool()
 
@@ -60,7 +90,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"] if not os.environ.get("CORS_ORIGIN") else os.environ["CORS_ORIGIN"].split(","),
+    allow_origins=_cors_allow_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

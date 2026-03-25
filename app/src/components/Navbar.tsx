@@ -25,13 +25,22 @@ export function Navbar() {
   const navLinks = [
     { path: '/', label: 'Overview' },
     { path: '/dashboard', label: 'Dashboard' },
-    { path: '/studio', label: 'Studio' },
-    { path: '/docs', label: 'Docs' },
+    { path: '/studio/tts', label: 'Studio' },
+    { path: '/docs/getting-started', label: 'Docs' },
     { path: '/blog', label: 'Blog' },
-    ...(isAdmin ? [{ path: '/admin', label: 'Admin' }] : []),
+    ...(isAdmin
+      ? [
+          { path: '/admin', label: 'Admin' },
+          { path: '/admin/website_usage', label: 'Web usage' },
+        ]
+      : []),
   ];
 
-  const isActive = (path: string) => location.pathname === path;
+  const isActive = (path: string) => {
+    if (path === '/admin') return location.pathname === '/admin';
+    if (path === '/admin/website_usage') return location.pathname.startsWith('/admin/website_usage');
+    return location.pathname === path;
+  };
 
   return (
     <nav

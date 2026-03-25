@@ -123,6 +123,11 @@ app/.env
 app/.env.local
 app/.vite/
 
+developer-api/node_modules/
+developer-api/.env
+developer-api/*.db
+developer-api/venv/
+
 # Temporary files
 *.tmp
 *.temp

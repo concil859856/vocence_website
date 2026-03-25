@@ -1,5 +1,5 @@
 import { Suspense, lazy } from 'react';
-import { Routes, Route } from 'react-router-dom';
+import { Navigate, Routes, Route } from 'react-router-dom';
 import { GoogleOAuthProvider } from '@react-oauth/google';
 import { AuthProvider } from './contexts/AuthContext';
 import { Navbar } from './components/Navbar';
@@ -18,9 +18,15 @@ const Account = lazy(() => import('./pages/Account').then((m) => ({ default: m.A
 const History = lazy(() => import('./pages/History').then((m) => ({ default: m.History })));
 const Admin = lazy(() => import('./pages/Admin').then((m) => ({ default: m.Admin })));
 const DashboardEvaluations = lazy(() => import('./pages/DashboardEvaluations').then((m) => ({ default: m.DashboardEvaluations })));
+const Pricing = lazy(() => import('./pages/Pricing').then((m) => ({ default: m.Pricing })));
 const Privacy = lazy(() => import('./pages/Privacy').then((m) => ({ default: m.Privacy })));
 const Terms = lazy(() => import('./pages/Terms').then((m) => ({ default: m.Terms })));
 const Whitepaper = lazy(() => import('./pages/Whitepaper').then((m) => ({ default: m.Whitepaper })));
+const Sales = lazy(() => import('./pages/Sales').then((m) => ({ default: m.Sales })));
+const SalesEmail = lazy(() => import('./pages/SalesEmail').then((m) => ({ default: m.SalesEmail })));
+const AdminWebsiteUsage = lazy(() =>
+  import('./pages/AdminWebsiteUsage').then((m) => ({ default: m.AdminWebsiteUsage }))
+);
 
 function PageFallback() {
   return (
@@ -45,14 +51,21 @@ function App() {
               <Route path="/" element={<Overview />} />
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/dashboard/evaluations" element={<DashboardEvaluations />} />
-              <Route path="/studio" element={<Studio />} />
               <Route path="/studio/result/:id" element={<StudioResult />} />
-              <Route path="/docs" element={<Docs />} />
+              <Route path="/studio" element={<Navigate to="/studio/tts" replace />} />
+              <Route path="/studio/:view" element={<Studio />} />
+              <Route path="/docs" element={<Navigate to="/docs/getting-started" replace />} />
+              <Route path="/docs/:section" element={<Docs />} />
               <Route path="/blog" element={<Blog />} />
               <Route path="/blog/:id" element={<Article />} />
               <Route path="/account" element={<Account />} />
+              <Route path="/account/:tab" element={<Account />} />
               <Route path="/history" element={<History />} />
               <Route path="/admin" element={<Admin />} />
+              <Route path="/admin/website_usage" element={<AdminWebsiteUsage />} />
+              <Route path="/pricing" element={<Pricing />} />
+              <Route path="/sales" element={<Sales />} />
+              <Route path="/sales/email" element={<SalesEmail />} />
               <Route path="/privacy" element={<Privacy />} />
               <Route path="/terms" element={<Terms />} />
               <Route path="/whitepaper" element={<Whitepaper />} />

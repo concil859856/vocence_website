@@ -4,10 +4,12 @@ import { ArrowRight, Play, Cpu, Mic, Globe, Zap, Shield, Check, Square, MessageS
 import gsap from 'gsap';
 import { ScrollTrigger } from 'gsap/ScrollTrigger';
 import { dashboardApi, type DashboardOverview, type BlogPost } from '../services/dashboardApi';
+import { PricingPlans } from '../components/PricingPlans';
+import { API_ORIGIN_BASE } from '../services/baseUrl';
 
 gsap.registerPlugin(ScrollTrigger);
 
-const DASHBOARD_BASE = import.meta.env.VITE_API_URL ?? (import.meta.env.PROD ? '' : 'http://localhost:34717');
+const DASHBOARD_BASE = API_ORIGIN_BASE;
 
 const ROADMAP_QUARTERS = [
   {
@@ -387,7 +389,7 @@ export function Overview() {
               Voice intelligence network on Bittensor
             </p>
             <div className="hero-cta flex flex-wrap gap-4">
-              <Link to="/studio" className="btn-primary">
+              <Link to="/studio/tts" className="btn-primary">
                 Open Studio
                 <ArrowRight size={18} className="ml-2" />
               </Link>
@@ -507,7 +509,7 @@ export function Overview() {
                   </li>
                 ))}
               </ul>
-              <Link to="/studio" className="btn-primary inline-flex items-center">
+              <Link to="/studio/tts" className="btn-primary inline-flex items-center">
                 Try It Now
                 <ArrowRight size={18} className="ml-2" />
               </Link>
@@ -881,6 +883,39 @@ export function Overview() {
         </div>
       </section>
 
+      {/* Pricing Section */}
+      <section className="py-24 px-6 lg:px-8">
+        <div className="max-w-7xl mx-auto">
+          <div className="mb-10 flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
+            <div className="max-w-xl">
+              <span className="label-mono mb-4 block">Pricing</span>
+              <h2 className="text-3xl md:text-4xl font-semibold text-white">Plans for prompt-controlled TTS</h2>
+              <p className="mt-3 text-sm text-[#A7B0B7] md:text-base">
+                We are currently supporting <span className="font-medium text-white">PromptTTS</span> only.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-3 sm:justify-end">
+              <Link
+                to="/docs/pricing"
+                className="inline-flex shrink-0 items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:border-white/25 hover:bg-white/10"
+              >
+                Pricing in Docs
+                <ArrowRight size={16} />
+              </Link>
+              <Link
+                to="/pricing"
+                className="inline-flex shrink-0 items-center gap-2 rounded-xl border border-[#DFFF00]/25 bg-[#DFFF00]/10 px-4 py-2.5 text-sm font-semibold text-[#F3FFD0] transition-colors hover:bg-[#DFFF00]/15"
+              >
+                Upgrade plan
+                <ArrowRight size={16} />
+              </Link>
+            </div>
+          </div>
+
+          <PricingPlans compact forOverview />
+        </div>
+      </section>
+
       {/* Roadmap Section – horizontal timeline + one card at a time */}
       <section className="py-24 px-6 lg:px-8">
         <div className="max-w-4xl mx-auto">
@@ -956,7 +991,7 @@ export function Overview() {
                 <p className="text-[#A7B0B7] mb-6">
                   Generate speech, clone voices, and tune style prompts—in one interface.
                 </p>
-                <Link to="/studio" className="btn-primary">
+                <Link to="/studio/tts" className="btn-primary">
                   Launch Studio
                   <ArrowRight size={18} className="ml-2" />
                 </Link>

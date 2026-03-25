@@ -1,10 +1,7 @@
 // API Service for backend communication (auth, users, credits).
-// Uses VITE_API_URL + '/api' (same backend as dashboard).
-
-const API_BASE_URL =
-  import.meta.env.VITE_API_URL != null && import.meta.env.VITE_API_URL !== ''
-    ? `${import.meta.env.VITE_API_URL.replace(/\/$/, '')}/api`
-    : (import.meta.env.PROD ? '' : 'http://localhost:34717/api');
+// Uses VITE_API_URL + '/api' (same backend as dashboard), with Vite proxy
+// support in dev when the backend target is localhost.
+import { API_BASE_URL, withNetworkHint } from './baseUrl';
 
 export interface User {
   id: string;
@@ -12,6 +9,115 @@ export interface User {
   name: string;
   picture?: string;
   credits: number;
+  planCode?: string;
+  planStatus?: string;
+  createdAt: string;
+}
+
+export interface PricingPlan {
+  code: string;
+  name: string;
+  priceUsd: number | null;
+  billingType: string;
+  creditsIncluded: number;
+  /** NOWPayments list USD when different from card (Stripe uses priceUsd). */
+  cryptoPriceUsd?: number | null;
+  /** Credits granted on successful crypto checkout when different from creditsIncluded. */
+  cryptoCreditsIncluded?: number | null;
+  creditsPerPack?: number | null;
+  priceSubtitle?: string | null;
+  description?: string | null;
+  highlighted: boolean;
+  ctaLabel: string;
+  features: string[];
+}
+
+export interface CreditTransaction {
+  id: string;
+  transactionType: string;
+  amount: number;
+  balanceAfter: number;
+  description: string;
+  referenceType?: string | null;
+  referenceId?: string | null;
+  createdAt: string;
+}
+
+export interface AccountSummary {
+  user: User;
+  plan: PricingPlan | null;
+  transactions: CreditTransaction[];
+  totalTtsGenerations: number;
+  totalCreditsUsed: number;
+}
+
+export interface DailyCreditsDay {
+  day: string;
+  creditsUsed: number;
+}
+
+export interface DailyCreditsUsage {
+  days: DailyCreditsDay[];
+  totalCreditsUsed: number;
+}
+
+export interface CheckoutSessionResponse {
+  sessionId: string;
+  provider: string;
+  status: string;
+  checkoutUrl?: string | null;
+  amountUsd: number;
+  creditsGranted: number;
+  message?: string | null;
+}
+
+export interface NowPaymentsPayCurrencyOption {
+  ticker: string;
+  label: string;
+  hint: string | null;
+}
+
+export interface NowPaymentsPayCurrencyOptions {
+  planCode: string;
+  defaultTicker: string;
+  currencies: NowPaymentsPayCurrencyOption[];
+}
+
+export interface SalesInquiryRequest {
+  name: string;
+  email: string;
+  company?: string;
+  message: string;
+}
+
+export interface SalesInquiryResponse {
+  success: boolean;
+  message: string;
+}
+
+export interface DeveloperApiKey {
+  id: string;
+  name: string;
+  keyPrefix: string;
+  tier: 'normal' | 'premium';
+  rateLimitRpm: number;
+  lastUsedAt?: string | null;
+  revokedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DeveloperApiUsageLog {
+  id: string;
+  endpoint: string;
+  provider?: string | null;
+  status: string;
+  httpStatus: number;
+  creditsUsed: number;
+  requestChars?: number | null;
+  latencyMs?: number | null;
+  errorCode?: string | null;
+  errorMessage?: string | null;
   createdAt: string;
 }
 
@@ -49,7 +155,7 @@ export const api = {
     } catch (error) {
       console.error('API Error:', error);
       // Fallback to localStorage if API is not available
-      throw error;
+      throw withNetworkHint(error);
     }
   },
 
@@ -71,7 +177,7 @@ export const api = {
       return await response.json();
     } catch (error) {
       console.error('API Error:', error);
-      throw error;
+      throw withNetworkHint(error);
     }
   },
 
@@ -94,7 +200,7 @@ export const api = {
       return await response.json();
     } catch (error) {
       console.error('API Error:', error);
-      throw error;
+      throw withNetworkHint(error);
     }
   },
 
@@ -117,8 +223,174 @@ export const api = {
       return data.user;
     } catch (error) {
       console.error('API Error:', error);
-      throw error;
+      throw withNetworkHint(error);
     }
+  },
+
+  async getPricingPlans(): Promise<{ plans: PricingPlan[] }> {
+    try {
+      const response = await fetch(`${API_BASE_URL}/pricing/plans`);
+      if (!response.ok) {
+        throw new Error('Failed to fetch pricing plans');
+      }
+      return response.json();
+    } catch (error) {
+      throw withNetworkHint(error);
+    }
+  },
+
+  async getNowPaymentsPayCurrencyOptions(planCode: string): Promise<NowPaymentsPayCurrencyOptions> {
+    try {
+      const q = new URLSearchParams({ planCode });
+      const response = await fetch(
+        `${API_BASE_URL}/payments/nowpayments/pay-currency-options?${q.toString()}`
+      );
+      if (!response.ok) {
+        throw new Error('Failed to load crypto payment options');
+      }
+      return response.json();
+    } catch (error) {
+      throw withNetworkHint(error);
+    }
+  },
+
+  async getAccountSummary(token: string): Promise<AccountSummary> {
+    try {
+      const response = await fetch(`${API_BASE_URL}/account/summary`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!response.ok) {
+        throw new Error('Failed to fetch account summary');
+      }
+      return response.json();
+    } catch (error) {
+      throw withNetworkHint(error);
+    }
+  },
+
+  async getDailyCreditsUsage(token: string, days = 14): Promise<DailyCreditsUsage> {
+    try {
+      const response = await fetch(`${API_BASE_URL}/account/credits/usage/daily?days=${days}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!response.ok) {
+        throw new Error('Failed to fetch daily credits usage');
+      }
+      return response.json();
+    } catch (error) {
+      throw withNetworkHint(error);
+    }
+  },
+
+  async createCheckoutSession(
+    token: string,
+    payload: { provider: 'stripe' | 'crypto'; planCode: string; payCurrency?: string }
+  ): Promise<CheckoutSessionResponse> {
+    try {
+      const response = await fetch(`${API_BASE_URL}/payments/checkout-session`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+      if (!response.ok) {
+        const raw = await response.text();
+        let detail = raw;
+        try {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === 'object') {
+            detail =
+              typeof parsed.detail === 'string'
+                ? parsed.detail
+                : typeof parsed.message === 'string'
+                  ? parsed.message
+                  : raw;
+          }
+        } catch {
+          // keep raw text
+        }
+        throw new Error(detail || `Failed to create checkout session (${response.status})`);
+      }
+      return response.json();
+    } catch (error) {
+      throw withNetworkHint(error);
+    }
+  },
+
+  async sendSalesInquiry(payload: SalesInquiryRequest): Promise<SalesInquiryResponse> {
+    try {
+      const response = await fetch(`${API_BASE_URL}/sales/contact`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+      if (!response.ok) {
+        const raw = await response.text();
+        let detail = raw;
+        try {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === 'object' && typeof parsed.detail === 'string') {
+            detail = parsed.detail;
+          }
+        } catch {
+          // keep raw text
+        }
+        throw new Error(detail || `Failed to send inquiry (${response.status})`);
+      }
+      return response.json();
+    } catch (error) {
+      throw withNetworkHint(error);
+    }
+  },
+
+  async createDeveloperKey(token: string, payload: { name: string }) {
+    const response = await fetch(`${API_BASE_URL}/developer/keys`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) {
+      const raw = await response.text();
+      throw new Error(raw || 'Failed to create API key');
+    }
+    return response.json() as Promise<{ key: DeveloperApiKey; plainKey: string }>;
+  },
+
+  async listDeveloperKeys(token: string): Promise<{ keys: DeveloperApiKey[] }> {
+    const response = await fetch(`${API_BASE_URL}/developer/keys`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!response.ok) {
+      throw new Error('Failed to load API keys');
+    }
+    return response.json();
+  },
+
+  async revokeDeveloperKey(token: string, keyId: string): Promise<void> {
+    const response = await fetch(`${API_BASE_URL}/developer/keys/${keyId}/revoke`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!response.ok) {
+      throw new Error('Failed to revoke API key');
+    }
+  },
+
+  async getDeveloperUsage(token: string, limit = 50): Promise<{ logs: DeveloperApiUsageLog[] }> {
+    const response = await fetch(`${API_BASE_URL}/developer/usage?limit=${limit}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!response.ok) {
+      throw new Error('Failed to load developer usage');
+    }
+    return response.json();
   },
 };
 
@@ -138,7 +410,9 @@ export const localStorageFallback = {
         email: userData.email,
         name: userData.name,
         picture: userData.picture,
-        credits: 100,
+        credits: 50,
+        planCode: 'normal',
+        planStatus: 'active',
         createdAt: new Date().toISOString(),
       };
       existingUsers.push(user);
@@ -167,4 +441,3 @@ export const localStorageFallback = {
     return existingUsers[userIndex];
   },
 };
-

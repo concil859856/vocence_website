@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, UploadFile
 from fastapi.responses import JSONResponse
 
 from database import acquire
-from local_db import get_connection, ensure_tables
+from local_db import ensure_tables, get_connection, log_admin_action
 from ranking import (
     RANKING_WINDOW_EVALS,
     get_ranked_miner_stats_for_validator,
@@ -21,6 +21,15 @@ from schemas import (
     ActivityBucketResponse,
     ActivityResponse,
     AddValidatorRequest,
+    AdminAuthHistoryRow,
+    AdminCreditTransactionRow,
+    AdminPaginatedAuthHistoryResponse,
+    AdminPaginatedCreditsResponse,
+    AdminPaginatedPaymentsResponse,
+    AdminPaginatedTtsResponse,
+    AdminPaymentRow,
+    AdminTtsHistoryRow,
+    AdminUserActivitySummary,
     BlocklistAddRequest,
     BlocklistResponse,
     BlogPostCreateRequest,
@@ -41,11 +50,21 @@ from schemas import (
     RegisteredUserRegisterRequest,
     RegisteredUserResponse,
     RegisteredUsersListResponse,
+    WebsiteOverviewResponse,
+    WebsiteUsageDayResponse,
+    PlanDistributionResponse,
+    RecentPaymentResponse,
     ValidatorResponse,
     ValidatorsResponse,
 )
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
+
+
+def _clamp_page_size(page_size: int, default: int = 20, max_size: int = 100) -> int:
+    if page_size < 1:
+        return default
+    return min(page_size, max_size)
 
 
 def require_admin_email(x_admin_email: str | None = Header(None, alias="X-Admin-Email")):
@@ -644,29 +663,534 @@ async def register_user(body: RegisteredUserRegisterRequest):
 
 
 @router.get("/users", response_model=RegisteredUsersListResponse)
-async def list_registered_users(_: str = Depends(require_admin_email)):
-    """List all registered website users (admin only). From local SQLite."""
+async def list_registered_users(
+    _: str = Depends(require_admin_email),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    q: str = Query("", max_length=200),
+):
+    """List website users (auth_users) with search and pagination. Admin only."""
+    await ensure_tables()
+    ps = _clamp_page_size(page_size)
+    offset = (page - 1) * ps
+    q_strip = (q or "").strip()
+    conn = await get_connection()
+    try:
+        if q_strip:
+            pat = f"%{q_strip}%"
+            count_row = await (
+                await conn.execute(
+                    """
+                    SELECT COUNT(*) AS n FROM auth_users
+                    WHERE email LIKE ? OR name LIKE ? OR id LIKE ?
+                    """,
+                    (pat, pat, pat),
+                )
+            ).fetchone()
+            cursor = await conn.execute(
+                """
+                SELECT id, email, name, picture, credits, plan_code, plan_status, created_at, updated_at, last_login_at
+                FROM auth_users
+                WHERE email LIKE ? OR name LIKE ? OR id LIKE ?
+                ORDER BY datetime(created_at) DESC
+                LIMIT ? OFFSET ?
+                """,
+                (pat, pat, pat, ps, offset),
+            )
+        else:
+            count_row = await (await conn.execute("SELECT COUNT(*) AS n FROM auth_users")).fetchone()
+            cursor = await conn.execute(
+                """
+                SELECT id, email, name, picture, credits, plan_code, plan_status, created_at, updated_at, last_login_at
+                FROM auth_users
+                ORDER BY datetime(created_at) DESC
+                LIMIT ? OFFSET ?
+                """,
+                (ps, offset),
+            )
+        rows = await cursor.fetchall()
+    finally:
+        await conn.close()
+    total = int(count_row["n"] or 0)
+    users = [
+        RegisteredUserResponse(
+            id=r["id"],
+            email=r["email"],
+            name=r["name"] or "",
+            picture=r["picture"],
+            credits=int(r["credits"] or 0),
+            plan_code=r["plan_code"] or "normal",
+            plan_status=r["plan_status"] or "active",
+            last_login_at=r["last_login_at"],
+            created_at=r["created_at"] or "",
+            updated_at=r["updated_at"] or "",
+        )
+        for r in rows
+    ]
+    return RegisteredUsersListResponse(users=users, total=total, page=page, page_size=ps)
+
+
+@router.get("/website-overview", response_model=WebsiteOverviewResponse)
+async def get_website_overview(_: str = Depends(require_admin_email)):
+    """Website-only admin metrics from website.db."""
     await ensure_tables()
     conn = await get_connection()
     try:
+        total_users = await (await conn.execute("SELECT COUNT(*) AS n FROM auth_users")).fetchone()
+        active_users = await (await conn.execute(
+            """
+            SELECT COUNT(*) AS n
+            FROM auth_users
+            WHERE last_login_at IS NOT NULL
+              AND datetime(last_login_at) >= datetime('now', '-7 days')
+            """
+        )).fetchone()
+        usage_rows = await (await conn.execute(
+            """
+            SELECT day, tts_generation_count, unique_users, credits_used, revenue_usd, credits_purchased
+            FROM daily_usage_stats
+            ORDER BY day ASC
+            """
+        )).fetchall()
+        plan_rows = await (await conn.execute(
+            """
+            SELECT plan_code, COUNT(*) AS user_count
+            FROM auth_users
+            GROUP BY plan_code
+            ORDER BY user_count DESC, plan_code ASC
+            """
+        )).fetchall()
+        payment_rows = await (await conn.execute(
+            """
+            SELECT id, user_id, provider, plan_code, amount_usd, credits_granted, status, created_at
+            FROM payments
+            ORDER BY datetime(created_at) DESC
+            LIMIT 10
+            """
+        )).fetchall()
+        totals = await (await conn.execute(
+            """
+            SELECT
+                COALESCE((SELECT COUNT(*) FROM studio_tts_history WHERE status = 'completed'), 0) AS total_generations,
+                COALESCE((SELECT SUM(-amount) FROM credit_transactions WHERE amount < 0), 0) AS total_credits_used,
+                COALESCE((SELECT SUM(amount_usd) FROM payments WHERE status IN ('paid', 'completed')), 0) AS total_revenue_usd
+            """
+        )).fetchone()
+        usage = [
+            WebsiteUsageDayResponse(
+                day=row["day"],
+                tts_generation_count=int(row["tts_generation_count"] or 0),
+                unique_users=int(row["unique_users"] or 0),
+                credits_used=int(row["credits_used"] or 0),
+                revenue_usd=float(row["revenue_usd"] or 0),
+                credits_purchased=int(row["credits_purchased"] or 0),
+            )
+            for row in usage_rows
+        ]
+        distribution = [
+            PlanDistributionResponse(
+                plan_code=row["plan_code"] or "normal",
+                user_count=int(row["user_count"] or 0),
+            )
+            for row in plan_rows
+        ]
+        recent_payments = [
+            RecentPaymentResponse(
+                id=row["id"],
+                user_id=row["user_id"],
+                provider=row["provider"],
+                plan_code=row["plan_code"],
+                amount_usd=float(row["amount_usd"] or 0),
+                credits_granted=int(row["credits_granted"] or 0),
+                status=row["status"],
+                created_at=row["created_at"],
+            )
+            for row in payment_rows
+        ]
+        return WebsiteOverviewResponse(
+            total_users=int(total_users["n"] or 0),
+            active_users_7d=int(active_users["n"] or 0),
+            total_generations=int(totals["total_generations"] or 0),
+            total_credits_used=int(totals["total_credits_used"] or 0),
+            total_revenue_usd=float(totals["total_revenue_usd"] or 0),
+            usage=usage,
+            plan_distribution=distribution,
+            recent_payments=recent_payments,
+        )
+    finally:
+        await conn.close()
+
+
+# ----- Admin: detailed website usage (SQLite, paginated) -----
+
+
+@router.get("/admin/website-usage/tts", response_model=AdminPaginatedTtsResponse)
+async def admin_website_usage_tts(
+    _: str = Depends(require_admin_email),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    q: str = Query("", max_length=300),
+    user_id: str | None = Query(None, max_length=128),
+):
+    """Paginated studio TTS history with user email/name; optional search and user filter."""
+    await ensure_tables()
+    ps = _clamp_page_size(page_size)
+    offset = (page - 1) * ps
+    q_strip = (q or "").strip()
+    conn = await get_connection()
+    try:
+        where_parts = ["1=1"]
+        params: list[object] = []
+        if user_id and user_id.strip():
+            where_parts.append("h.user_id = ?")
+            params.append(user_id.strip())
+        if q_strip:
+            pat = f"%{q_strip}%"
+            where_parts.append(
+                "(IFNULL(u.email,'') LIKE ? OR IFNULL(u.name,'') LIKE ? OR h.user_id LIKE ? "
+                "OR h.model_name LIKE ? OR h.prompt_text LIKE ? OR h.miner_hotkey LIKE ? OR h.style_instruction LIKE ?)"
+            )
+            params.extend([pat] * 7)
+        where_sql = " AND ".join(where_parts)
+        count_row = await (
+            await conn.execute(
+                f"""
+                SELECT COUNT(*) AS n
+                FROM studio_tts_history h
+                LEFT JOIN auth_users u ON u.id = h.user_id
+                WHERE {where_sql}
+                """,
+                params,
+            )
+        ).fetchone()
+        total = int(count_row["n"] or 0)
+        list_params = list(params) + [ps, offset]
         cursor = await conn.execute(
-            "SELECT id, email, name, picture, created_at, updated_at FROM registered_users ORDER BY created_at DESC"
+            f"""
+            SELECT h.id, h.user_id, u.email AS user_email, u.name AS user_name,
+                   h.miner_hotkey, h.model_name, h.prompt_text, h.style_instruction,
+                   h.credits_used, h.status, h.latency_ms, h.error_message, h.created_at
+            FROM studio_tts_history h
+            LEFT JOIN auth_users u ON u.id = h.user_id
+            WHERE {where_sql}
+            ORDER BY datetime(h.created_at) DESC
+            LIMIT ? OFFSET ?
+            """,
+            list_params,
         )
         rows = await cursor.fetchall()
     finally:
         await conn.close()
-    users = [
-        RegisteredUserResponse(
-            id=r[0],
-            email=r[1],
-            name=r[2] or "",
-            picture=r[3],
-            created_at=r[4] or "",
-            updated_at=r[5] or "",
+    items = [
+        AdminTtsHistoryRow(
+            id=int(r["id"]),
+            user_id=r["user_id"],
+            user_email=r["user_email"],
+            user_name=r["user_name"],
+            miner_hotkey=r["miner_hotkey"],
+            model_name=r["model_name"],
+            prompt_text=r["prompt_text"],
+            style_instruction=r["style_instruction"] or "",
+            credits_used=int(r["credits_used"] or 0),
+            status=r["status"] or "",
+            latency_ms=r["latency_ms"],
+            error_message=r["error_message"],
+            created_at=r["created_at"] or "",
         )
         for r in rows
     ]
-    return RegisteredUsersListResponse(users=users)
+    return AdminPaginatedTtsResponse(items=items, total=total, page=page, page_size=ps)
+
+
+@router.get("/admin/website-usage/credits", response_model=AdminPaginatedCreditsResponse)
+async def admin_website_usage_credits(
+    _: str = Depends(require_admin_email),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    q: str = Query("", max_length=300),
+    user_id: str | None = Query(None, max_length=128),
+):
+    """Paginated credit_transactions with user info."""
+    await ensure_tables()
+    ps = _clamp_page_size(page_size)
+    offset = (page - 1) * ps
+    q_strip = (q or "").strip()
+    conn = await get_connection()
+    try:
+        where_parts = ["1=1"]
+        params: list[object] = []
+        if user_id and user_id.strip():
+            where_parts.append("c.user_id = ?")
+            params.append(user_id.strip())
+        if q_strip:
+            pat = f"%{q_strip}%"
+            where_parts.append(
+                "(IFNULL(u.email,'') LIKE ? OR IFNULL(u.name,'') LIKE ? OR c.user_id LIKE ? "
+                "OR c.transaction_type LIKE ? OR IFNULL(c.description,'') LIKE ? "
+                "OR IFNULL(c.reference_type,'') LIKE ? OR IFNULL(c.reference_id,'') LIKE ?)"
+            )
+            params.extend([pat] * 7)
+        where_sql = " AND ".join(where_parts)
+        count_row = await (
+            await conn.execute(
+                f"""
+                SELECT COUNT(*) AS n
+                FROM credit_transactions c
+                LEFT JOIN auth_users u ON u.id = c.user_id
+                WHERE {where_sql}
+                """,
+                params,
+            )
+        ).fetchone()
+        total = int(count_row["n"] or 0)
+        list_params = list(params) + [ps, offset]
+        cursor = await conn.execute(
+            f"""
+            SELECT c.id, c.user_id, u.email AS user_email, u.name AS user_name,
+                   c.transaction_type, c.amount, c.balance_after, c.description,
+                   c.reference_type, c.reference_id, c.created_at
+            FROM credit_transactions c
+            LEFT JOIN auth_users u ON u.id = c.user_id
+            WHERE {where_sql}
+            ORDER BY datetime(c.created_at) DESC
+            LIMIT ? OFFSET ?
+            """,
+            list_params,
+        )
+        rows = await cursor.fetchall()
+    finally:
+        await conn.close()
+    items = [
+        AdminCreditTransactionRow(
+            id=r["id"],
+            user_id=r["user_id"],
+            user_email=r["user_email"],
+            user_name=r["user_name"],
+            transaction_type=r["transaction_type"],
+            amount=int(r["amount"] or 0),
+            balance_after=int(r["balance_after"] or 0),
+            description=r["description"] or "",
+            reference_type=r["reference_type"],
+            reference_id=r["reference_id"],
+            created_at=r["created_at"] or "",
+        )
+        for r in rows
+    ]
+    return AdminPaginatedCreditsResponse(items=items, total=total, page=page, page_size=ps)
+
+
+@router.get("/admin/website-usage/payments", response_model=AdminPaginatedPaymentsResponse)
+async def admin_website_usage_payments(
+    _: str = Depends(require_admin_email),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    q: str = Query("", max_length=300),
+    user_id: str | None = Query(None, max_length=128),
+):
+    """Paginated payments with user info."""
+    await ensure_tables()
+    ps = _clamp_page_size(page_size)
+    offset = (page - 1) * ps
+    q_strip = (q or "").strip()
+    conn = await get_connection()
+    try:
+        where_parts = ["1=1"]
+        params: list[object] = []
+        if user_id and user_id.strip():
+            where_parts.append("p.user_id = ?")
+            params.append(user_id.strip())
+        if q_strip:
+            pat = f"%{q_strip}%"
+            where_parts.append(
+                "(IFNULL(u.email,'') LIKE ? OR IFNULL(u.name,'') LIKE ? OR p.user_id LIKE ? "
+                "OR p.provider LIKE ? OR IFNULL(p.plan_code,'') LIKE ? OR p.status LIKE ? "
+                "OR IFNULL(p.stripe_checkout_session_id,'') LIKE ?)"
+            )
+            params.extend([pat] * 7)
+        where_sql = " AND ".join(where_parts)
+        count_row = await (
+            await conn.execute(
+                f"""
+                SELECT COUNT(*) AS n
+                FROM payments p
+                LEFT JOIN auth_users u ON u.id = p.user_id
+                WHERE {where_sql}
+                """,
+                params,
+            )
+        ).fetchone()
+        total = int(count_row["n"] or 0)
+        list_params = list(params) + [ps, offset]
+        cursor = await conn.execute(
+            f"""
+            SELECT p.id, p.user_id, u.email AS user_email, u.name AS user_name,
+                   p.provider, p.plan_code, p.amount_usd, p.credits_granted, p.status,
+                   p.mode, p.stripe_checkout_session_id, p.credits_applied_at, p.created_at
+            FROM payments p
+            LEFT JOIN auth_users u ON u.id = p.user_id
+            WHERE {where_sql}
+            ORDER BY datetime(p.created_at) DESC
+            LIMIT ? OFFSET ?
+            """,
+            list_params,
+        )
+        rows = await cursor.fetchall()
+    finally:
+        await conn.close()
+    items = [
+        AdminPaymentRow(
+            id=r["id"],
+            user_id=r["user_id"],
+            user_email=r["user_email"],
+            user_name=r["user_name"],
+            provider=r["provider"],
+            plan_code=r["plan_code"],
+            amount_usd=float(r["amount_usd"] or 0),
+            credits_granted=int(r["credits_granted"] or 0),
+            status=r["status"] or "",
+            mode=r["mode"],
+            stripe_checkout_session_id=r["stripe_checkout_session_id"],
+            credits_applied_at=r["credits_applied_at"],
+            created_at=r["created_at"] or "",
+        )
+        for r in rows
+    ]
+    return AdminPaginatedPaymentsResponse(items=items, total=total, page=page, page_size=ps)
+
+
+@router.get("/admin/website-usage/auth-history", response_model=AdminPaginatedAuthHistoryResponse)
+async def admin_website_usage_auth_history(
+    _: str = Depends(require_admin_email),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    q: str = Query("", max_length=300),
+    user_id: str | None = Query(None, max_length=128),
+):
+    """Paginated auth_history (user activity log from app)."""
+    await ensure_tables()
+    ps = _clamp_page_size(page_size)
+    offset = (page - 1) * ps
+    q_strip = (q or "").strip()
+    conn = await get_connection()
+    try:
+        where_parts = ["1=1"]
+        params: list[object] = []
+        if user_id and user_id.strip():
+            where_parts.append("h.user_id = ?")
+            params.append(user_id.strip())
+        if q_strip:
+            pat = f"%{q_strip}%"
+            where_parts.append(
+                "(IFNULL(u.email,'') LIKE ? OR IFNULL(u.name,'') LIKE ? OR h.user_id LIKE ? "
+                "OR h.type LIKE ? OR IFNULL(h.content,'') LIKE ? OR IFNULL(h.model,'') LIKE ?)"
+            )
+            params.extend([pat] * 6)
+        where_sql = " AND ".join(where_parts)
+        count_row = await (
+            await conn.execute(
+                f"""
+                SELECT COUNT(*) AS n
+                FROM auth_history h
+                LEFT JOIN auth_users u ON u.id = h.user_id
+                WHERE {where_sql}
+                """,
+                params,
+            )
+        ).fetchone()
+        total = int(count_row["n"] or 0)
+        list_params = list(params) + [ps, offset]
+        cursor = await conn.execute(
+            f"""
+            SELECT h.id, h.user_id, u.email AS user_email, u.name AS user_name,
+                   h.type, h.content, h.style_prompt, h.model, h.meta, h.duration, h.created_at
+            FROM auth_history h
+            LEFT JOIN auth_users u ON u.id = h.user_id
+            WHERE {where_sql}
+            ORDER BY datetime(h.created_at) DESC
+            LIMIT ? OFFSET ?
+            """,
+            list_params,
+        )
+        rows = await cursor.fetchall()
+    finally:
+        await conn.close()
+    items = [
+        AdminAuthHistoryRow(
+            id=r["id"],
+            user_id=r["user_id"],
+            user_email=r["user_email"],
+            user_name=r["user_name"],
+            type=r["type"],
+            content=r["content"],
+            style_prompt=r["style_prompt"],
+            model=r["model"],
+            meta=r["meta"],
+            duration=r["duration"],
+            created_at=r["created_at"] or "",
+        )
+        for r in rows
+    ]
+    return AdminPaginatedAuthHistoryResponse(items=items, total=total, page=page, page_size=ps)
+
+
+@router.get("/admin/website-usage/user/{user_id}/summary", response_model=AdminUserActivitySummary)
+async def admin_website_usage_user_summary(
+    user_id: str,
+    _: str = Depends(require_admin_email),
+):
+    """Per-user rollup for admin drill-down."""
+    await ensure_tables()
+    conn = await get_connection()
+    try:
+        urow = await (
+            await conn.execute(
+                """
+                SELECT id, email, name, credits, plan_code, plan_status, created_at, last_login_at
+                FROM auth_users WHERE id = ?
+                """,
+                (user_id,),
+            )
+        ).fetchone()
+        if not urow:
+            raise HTTPException(status_code=404, detail="User not found")
+        tts_row = await (
+            await conn.execute(
+                """
+                SELECT COUNT(*) AS n, COALESCE(SUM(credits_used), 0) AS credits
+                FROM studio_tts_history
+                WHERE user_id = ? AND status = 'completed'
+                """,
+                (user_id,),
+            )
+        ).fetchone()
+        tx_row = await (
+            await conn.execute(
+                "SELECT COUNT(*) AS n FROM credit_transactions WHERE user_id = ?",
+                (user_id,),
+            )
+        ).fetchone()
+        pay_row = await (
+            await conn.execute(
+                "SELECT COUNT(*) AS n FROM payments WHERE user_id = ?",
+                (user_id,),
+            )
+        ).fetchone()
+    finally:
+        await conn.close()
+    return AdminUserActivitySummary(
+        user_id=urow["id"],
+        email=urow["email"],
+        name=urow["name"] or "",
+        credits=int(urow["credits"] or 0),
+        plan_code=urow["plan_code"] or "normal",
+        plan_status=urow["plan_status"] or "active",
+        created_at=urow["created_at"] or "",
+        last_login_at=urow["last_login_at"],
+        tts_completed_count=int(tts_row["n"] or 0),
+        tts_total_credits=int(tts_row["credits"] or 0),
+        credit_tx_count=int(tx_row["n"] or 0),
+        payments_count=int(pay_row["n"] or 0),
+    )
 
 
 # ----- Admin: blocklist (blocked_entities table) -----
@@ -749,18 +1273,23 @@ async def list_blog_posts(
     offset: int = Query(0, ge=0),
 ):
     """List blog posts (newest first) with optional pagination. Admin may request up to 500."""
-    async with acquire() as conn:
-        total_row = await conn.fetchrow("SELECT COUNT(*) AS n FROM blog_posts")
+    await ensure_tables()
+    conn = await get_connection()
+    try:
+        total_row = await (await conn.execute("SELECT COUNT(*) AS n FROM blog_posts WHERE is_published = 1")).fetchone()
         total = int(total_row["n"] or 0)
-        rows = await conn.fetch(
+        rows = await (await conn.execute(
             """
             SELECT id, title, excerpt, category, date, read_time, image, content, featured, created_at
-            FROM blog_posts ORDER BY created_at DESC
-            LIMIT $1 OFFSET $2
+            FROM blog_posts
+            WHERE is_published = 1
+            ORDER BY datetime(created_at) DESC
+            LIMIT ? OFFSET ?
             """,
-            limit,
-            offset,
-        )
+            (limit, offset),
+        )).fetchall()
+    finally:
+        await conn.close()
     posts = [
         BlogPostResponse(
             id=str(r["id"]),
@@ -771,8 +1300,8 @@ async def list_blog_posts(
             read_time=r["read_time"] or "5 min read",
             image=r["image"],
             content=r["content"],
-            featured=r["featured"],
-            created_at=r["created_at"].isoformat() if r["created_at"] else None,
+            featured=bool(r["featured"]),
+            created_at=r["created_at"],
         )
         for r in rows
     ]
@@ -782,11 +1311,19 @@ async def list_blog_posts(
 @router.get("/blog/{post_id}", response_model=BlogPostResponse)
 async def get_blog_post(post_id: str):
     """Get a single blog post by id."""
-    async with acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT id, title, excerpt, category, date, read_time, image, content, featured, created_at FROM blog_posts WHERE id = $1",
-            post_id,
-        )
+    await ensure_tables()
+    conn = await get_connection()
+    try:
+        row = await (await conn.execute(
+            """
+            SELECT id, title, excerpt, category, date, read_time, image, content, featured, created_at
+            FROM blog_posts
+            WHERE id = ? AND is_published = 1
+            """,
+            (post_id,),
+        )).fetchone()
+    finally:
+        await conn.close()
     if not row:
         raise HTTPException(status_code=404, detail="Post not found")
     return BlogPostResponse(
@@ -798,8 +1335,8 @@ async def get_blog_post(post_id: str):
         read_time=row["read_time"] or "5 min read",
         image=row["image"],
         content=row["content"],
-        featured=row["featured"],
-        created_at=row["created_at"].isoformat() if row["created_at"] else None,
+        featured=bool(row["featured"]),
+        created_at=row["created_at"],
     )
 
 
@@ -822,38 +1359,54 @@ async def upload_blog_image(
 @router.post("/blog", response_model=BlogPostResponse)
 async def create_blog_post(
     body: BlogPostCreateRequest,
-    _: str = Depends(require_admin_email),
+    admin_email: str = Depends(require_admin_email),
 ):
     """Create a blog post. Requires admin email header."""
     now = datetime.now(timezone.utc)
     date_str = now.strftime("%B %d, %Y")
-    async with acquire() as conn:
-        row = await conn.fetchrow(
+    post_id = uuid.uuid4().hex
+    await ensure_tables()
+    conn = await get_connection()
+    try:
+        await conn.execute(
             """
-            INSERT INTO blog_posts (title, excerpt, category, date, read_time, image, content, featured)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-            RETURNING id, title, excerpt, category, date, read_time, image, content, featured, created_at
+            INSERT INTO blog_posts (id, title, excerpt, category, date, read_time, image, content, featured, is_published, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), datetime('now'))
             """,
-            body.title,
-            body.excerpt,
-            body.category,
-            date_str,
-            body.read_time,
-            body.image,
-            body.content,
-            body.featured,
+            (
+                post_id,
+                body.title,
+                body.excerpt,
+                body.category,
+                date_str,
+                body.read_time,
+                body.image,
+                body.content,
+                int(body.featured),
+            ),
         )
+        await log_admin_action(
+            conn,
+            admin_email=admin_email,
+            action="create_blog_post",
+            target_type="blog_post",
+            target_id=post_id,
+            metadata={"title": body.title},
+        )
+        await conn.commit()
+    finally:
+        await conn.close()
     return BlogPostResponse(
-        id=str(row["id"]),
-        title=row["title"],
-        excerpt=row["excerpt"],
-        category=row["category"],
-        date=row["date"],
-        read_time=row["read_time"] or "5 min read",
-        image=row["image"],
-        content=row["content"],
-        featured=row["featured"],
-        created_at=row["created_at"].isoformat() if row["created_at"] else None,
+        id=post_id,
+        title=body.title,
+        excerpt=body.excerpt,
+        category=body.category,
+        date=date_str,
+        read_time=body.read_time or "5 min read",
+        image=body.image,
+        content=body.content,
+        featured=body.featured,
+        created_at=now.isoformat(),
     )
 
 
@@ -861,26 +1414,48 @@ async def create_blog_post(
 async def update_blog_post(
     post_id: str,
     body: BlogPostUpdateRequest,
-    _: str = Depends(require_admin_email),
+    admin_email: str = Depends(require_admin_email),
 ):
     """Update a blog post. Date and created_at are left unchanged (published date preserved)."""
-    async with acquire() as conn:
-        row = await conn.fetchrow(
+    await ensure_tables()
+    conn = await get_connection()
+    try:
+        await conn.execute(
             """
             UPDATE blog_posts
-            SET title = $1, excerpt = $2, category = $3, read_time = $4, image = $5, content = $6, featured = $7
-            WHERE id = $8
-            RETURNING id, title, excerpt, category, date, read_time, image, content, featured, created_at
+            SET title = ?, excerpt = ?, category = ?, read_time = ?, image = ?, content = ?, featured = ?, updated_at = datetime('now')
+            WHERE id = ?
             """,
-            body.title,
-            body.excerpt,
-            body.category,
-            body.read_time,
-            body.image,
-            body.content,
-            body.featured,
-            post_id,
+            (
+                body.title,
+                body.excerpt,
+                body.category,
+                body.read_time,
+                body.image,
+                body.content,
+                int(body.featured),
+                post_id,
+            ),
         )
+        row = await (await conn.execute(
+            """
+            SELECT id, title, excerpt, category, date, read_time, image, content, featured, created_at
+            FROM blog_posts
+            WHERE id = ?
+            """,
+            (post_id,),
+        )).fetchone()
+        await log_admin_action(
+            conn,
+            admin_email=admin_email,
+            action="update_blog_post",
+            target_type="blog_post",
+            target_id=post_id,
+            metadata={"title": body.title},
+        )
+        await conn.commit()
+    finally:
+        await conn.close()
     if not row:
         raise HTTPException(status_code=404, detail="Post not found")
     return BlogPostResponse(
@@ -892,19 +1467,31 @@ async def update_blog_post(
         read_time=row["read_time"] or "5 min read",
         image=row["image"],
         content=row["content"],
-        featured=row["featured"],
-        created_at=row["created_at"].isoformat() if row["created_at"] else None,
+        featured=bool(row["featured"]),
+        created_at=row["created_at"],
     )
 
 
 @router.delete("/blog/{post_id}")
 async def delete_blog_post(
     post_id: str,
-    _: str = Depends(require_admin_email),
+    admin_email: str = Depends(require_admin_email),
 ):
     """Delete a blog post. Requires admin email header."""
-    async with acquire() as conn:
-        result = await conn.execute("DELETE FROM blog_posts WHERE id = $1", post_id)
-    if result == "DELETE 0":
-        raise HTTPException(status_code=404, detail="Post not found")
+    await ensure_tables()
+    conn = await get_connection()
+    try:
+        cursor = await conn.execute("DELETE FROM blog_posts WHERE id = ?", (post_id,))
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Post not found")
+        await log_admin_action(
+            conn,
+            admin_email=admin_email,
+            action="delete_blog_post",
+            target_type="blog_post",
+            target_id=post_id,
+        )
+        await conn.commit()
+    finally:
+        await conn.close()
     return {"ok": True}

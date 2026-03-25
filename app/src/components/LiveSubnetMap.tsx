@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { SubnetGraphActivity, SubnetGraphNode, SubnetGraphSnapshot } from '../services/dashboardApi';
 
 type PositionedNode = SubnetGraphNode & { x: number; y: number };
@@ -310,6 +310,8 @@ export function LiveSubnetMap({
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [serverClockOffsetMs, setServerClockOffsetMs] = useState(0);
+  const [parallax, setParallax] = useState({ x: 0, y: 0 });
+  const mapSurfaceRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     const t = window.setInterval(() => {
@@ -329,7 +331,7 @@ export function LiveSubnetMap({
 
   if (useFallbackData || !graph) {
     return (
-      <div className="rounded-xl border border-[#27272a] bg-[#0b0f17] px-6 py-10 text-sm text-gray-500">
+      <div className="rounded-xl border border-[#27272a] bg-[radial-gradient(circle_at_12%_12%,rgba(46,225,232,0.08),transparent_28%),radial-gradient(circle_at_88%_8%,rgba(125,211,252,0.07),transparent_30%),linear-gradient(160deg,#05070d_0%,#070b14_54%,#05070e_100%)] px-6 py-10 text-sm text-gray-500">
         Live subnet map becomes active when the dashboard backend receives live graph activity leases from the owner API.
       </div>
     );
@@ -345,13 +347,55 @@ export function LiveSubnetMap({
     graph.nodes.find((node) => node.node_type === 'validator') ??
     null;
   const recentActivities = graph.activities.slice(0, 6);
+  const handleMapMouseMove = (event: React.MouseEvent<HTMLDivElement>) => {
+    const el = mapSurfaceRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const px = (event.clientX - rect.left) / Math.max(1, rect.width) - 0.5;
+    const py = (event.clientY - rect.top) / Math.max(1, rect.height) - 0.5;
+    setParallax({ x: px * 16, y: py * 12 });
+  };
 
   return (
-    <div className="rounded-xl border border-[#27272a] bg-[#050811] overflow-hidden">
+    <div className="relative rounded-xl border border-[#27272a] bg-[linear-gradient(160deg,#04060c_0%,#060a13_52%,#04060d_100%)] shadow-[0_10px_36px_rgba(0,0,0,0.38),inset_0_1px_0_rgba(255,255,255,0.02)] overflow-hidden">
       <style>{`
         @keyframes subnetFlow {
           from { stroke-dashoffset: 800; }
           to { stroke-dashoffset: 0; }
+        }
+        @keyframes mapCardBgShift {
+          0% { transform: translate3d(-2%, -1%, 0) scale(1); opacity: 0.42; }
+          50% { transform: translate3d(2%, 1%, 0) scale(1.03); opacity: 0.62; }
+          100% { transform: translate3d(-2%, -1%, 0) scale(1); opacity: 0.42; }
+        }
+        @keyframes mapSurfaceDrift {
+          0% { background-position: 0% 0%, 100% 0%, 0% 0%; }
+          50% { background-position: 12% 8%, 88% 4%, 100% 100%; }
+          100% { background-position: 0% 0%, 100% 0%, 0% 0%; }
+        }
+        @keyframes starDriftSlow {
+          0% { transform: translate3d(0, 0, 0); }
+          100% { transform: translate3d(-80px, -42px, 0); }
+        }
+        @keyframes starDriftFast {
+          0% { transform: translate3d(0, 0, 0); }
+          100% { transform: translate3d(-140px, -78px, 0); }
+        }
+        @keyframes orbPulse {
+          0%, 100% {
+            transform: scale(1);
+            opacity: 0.82;
+            filter: blur(0px);
+          }
+          50% {
+            transform: scale(1.09);
+            opacity: 1;
+            filter: blur(0.2px);
+          }
+        }
+        @keyframes hudFloat {
+          0%, 100% { transform: translateY(0px); opacity: 0.36; }
+          50% { transform: translateY(-3px); opacity: 0.52; }
         }
         @keyframes liveBadgePulse {
           0%, 100% {
@@ -393,6 +437,15 @@ export function LiveSubnetMap({
           }
         }
       `}</style>
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0"
+        style={{
+          background:
+            'radial-gradient(circle at 12% 10%, rgba(46,225,232,0.10), transparent 28%), radial-gradient(circle at 86% 0%, rgba(125,211,252,0.09), transparent 34%), radial-gradient(circle at 60% 120%, rgba(46,225,232,0.06), transparent 42%)',
+          animation: 'mapCardBgShift 14s ease-in-out infinite',
+        }}
+      />
       <div className="border-b border-[#27272a] px-6 py-3.5 flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex flex-wrap items-center gap-3">
           <div
@@ -427,7 +480,95 @@ export function LiveSubnetMap({
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-[1fr_320px]">
-        <div className="relative min-h-[392px] bg-[radial-gradient(circle_at_20%_20%,rgba(46,225,232,0.08),transparent_36%),radial-gradient(circle_at_80%_30%,rgba(125,211,252,0.06),transparent_34%),linear-gradient(180deg,#040811_0%,#060a13_100%)]">
+        <div
+          ref={mapSurfaceRef}
+          className="relative min-h-[392px]"
+          onMouseMove={handleMapMouseMove}
+          onMouseLeave={() => setParallax({ x: 0, y: 0 })}
+          style={{
+            background:
+              'radial-gradient(circle at 50% 50%, rgba(90,120,140,0.05), transparent 60%), linear-gradient(180deg, #020305 0%, #04070b 60%, #020305 100%)',
+            backgroundSize: '150% 150%, 140% 140%, 100% 100%',
+            animation: 'mapSurfaceDrift 16s ease-in-out infinite',
+          }}
+        >
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0"
+            style={{
+              background:
+                'radial-gradient(circle at calc(30% + 50px) calc(42% + 50px), rgba(34,211,238,0.08) 0%, rgba(34,211,238,0.04) 4%, rgba(34,211,238,0.018) 7%, rgba(34,211,238,0.00) 11%)',
+              transform: `translate3d(${parallax.x}px, ${parallax.y}px, 0)`,
+              transition: 'transform 220ms ease-out',
+            }}
+          />
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute"
+            style={{
+              left: 'calc(30% + 50px)',
+              top: 'calc(42% + 50px)',
+              width: 66,
+              height: 66,
+              borderRadius: '9999px',
+              background:
+                'radial-gradient(circle, rgba(46,225,232,0.30) 0%, rgba(46,225,232,0.13) 30%, rgba(46,225,232,0.035) 58%, rgba(46,225,232,0.00) 82%)',
+              boxShadow:
+                '0 0 8px rgba(46,225,232,0.14), 0 0 18px rgba(46,225,232,0.08), inset 0 0 6px rgba(255,255,255,0.05)',
+              transform: `translate(-50%, -50%) translate3d(${parallax.x * 1.2}px, ${parallax.y * 1.2}px, 0)`,
+              transition: 'transform 220ms ease-out',
+              animation: 'orbPulse 4.8s ease-in-out infinite',
+            }}
+          />
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0 opacity-70"
+            style={{
+              backgroundImage:
+                'radial-gradient(circle, rgba(160,170,184,0.22) 0.7px, transparent 1.2px), radial-gradient(circle, rgba(148,163,184,0.18) 0.8px, transparent 1.35px)',
+              backgroundSize: '48px 48px, 84px 84px',
+              backgroundPosition: '0 0, 36px 22px',
+              animation: 'starDriftSlow 46s linear infinite',
+              transform: `translate3d(${parallax.x * 0.15}px, ${parallax.y * 0.1}px, 0)`,
+              transition: 'transform 280ms ease-out',
+            }}
+          />
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0 opacity-45"
+            style={{
+              backgroundImage:
+                'radial-gradient(circle, rgba(163,230,53,0.35) 1px, transparent 1.5px), radial-gradient(circle, rgba(45,212,191,0.24) 1px, transparent 1.5px)',
+              backgroundSize: '120px 120px, 160px 160px',
+              backgroundPosition: '22px 18px, 74px 44px',
+              animation: 'starDriftFast 72s linear infinite',
+              transform: `translate3d(${parallax.x * 0.25}px, ${parallax.y * 0.18}px, 0)`,
+              transition: 'transform 280ms ease-out',
+            }}
+          />
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0 opacity-25"
+            style={{
+              background:
+                'repeating-linear-gradient(112deg, rgba(56,189,248,0.08) 0px, rgba(56,189,248,0.08) 1px, transparent 1px, transparent 24px)',
+              maskImage: 'radial-gradient(circle at 30% 42%, black 10%, transparent 60%)',
+              transform: `translate3d(${parallax.x * 0.35}px, ${parallax.y * 0.25}px, 0)`,
+              transition: 'transform 280ms ease-out',
+            }}
+          />
+          <div aria-hidden="true" className="pointer-events-none absolute inset-0">
+            <div className="absolute left-4 top-4 h-7 w-7 border-l border-t border-cyan-200/20" />
+            <div className="absolute right-4 top-4 h-7 w-7 border-r border-t border-cyan-200/20" />
+            <div className="absolute left-4 bottom-4 h-7 w-7 border-l border-b border-cyan-200/20" />
+            <div className="absolute right-4 bottom-4 h-7 w-7 border-r border-b border-cyan-200/20" />
+            <div className="absolute left-6 top-12 font-mono text-[9px] text-cyan-200/40" style={{ animation: 'hudFloat 5.4s ease-in-out infinite' }}>
+              73.402
+            </div>
+            <div className="absolute right-8 bottom-10 font-mono text-[9px] text-cyan-200/40" style={{ animation: 'hudFloat 6.1s ease-in-out infinite' }}>
+              04.119
+            </div>
+          </div>
           <svg viewBox="0 0 1040 520" className="w-full h-full">
             {Object.values(positions)
               .filter((node) => node.node_type === 'bucket')

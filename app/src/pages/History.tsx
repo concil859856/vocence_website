@@ -40,6 +40,42 @@ export function History() {
   const [searchQuery, setSearchQuery] = useState('');
   const [filterType, setFilterType] = useState<string>('all');
 
+  const triggerBrowserDownload = async (url: string, filename: string) => {
+    try {
+      const res = await fetch(url, { mode: 'cors' });
+      if (!res.ok) {
+        throw new Error(`Download request failed (${res.status})`);
+      }
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = objectUrl;
+      a.download = filename;
+      a.rel = 'noopener';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      // Allow the browser to start the download before revoking.
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 5000);
+    } catch (e) {
+      // Fallback: if CORS prevents fetching, open the url (may navigate to Hippius).
+      console.error(e);
+      window.open(url, '_blank', 'noopener,noreferrer');
+    }
+  };
+
+  const getFilenameFromAudioUrl = (url: string, fallbackExt = 'wav') => {
+    try {
+      const u = new URL(url);
+      const last = u.pathname.split('/').pop() || '';
+      const m = last.match(/\.([a-zA-Z0-9]+)$/);
+      const ext = m?.[1]?.toLowerCase();
+      return ext || fallbackExt;
+    } catch {
+      return fallbackExt;
+    }
+  };
+
   useEffect(() => {
     if (!user) {
       navigate('/');
@@ -247,9 +283,19 @@ export function History() {
                               >
                                 <Play size={16} />
                               </button>
-                              <a href={item.audioUrl} download className="p-1.5 text-[#666] hover:text-white" title="Download">
+                              <button
+                                type="button"
+                                className="p-1.5 text-[#666] hover:text-white"
+                                title="Download"
+                                onClick={() => {
+                                  const rawId = item.id.replace(/^api-/, '');
+                                  const ext = getFilenameFromAudioUrl(item.audioUrl || '');
+                                  const filename = `vocence-${item.type}-${rawId}.${ext}`;
+                                  void triggerBrowserDownload(item.audioUrl || '', filename);
+                                }}
+                              >
                                 <Download size={16} />
-                              </a>
+                              </button>
                             </>
                           ) : item.expired ? (
                             <>

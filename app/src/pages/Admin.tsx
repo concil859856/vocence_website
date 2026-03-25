@@ -1,11 +1,12 @@
 import { useEffect, useState, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { dashboardApi, type BlogPost, type RegisteredUser, type DashboardValidator } from '../services/dashboardApi';
-import { ShieldOff, Plus, Trash2, Copy, ImagePlus, FileText, Users, ShieldCheck, Pencil } from 'lucide-react';
+import { API_ORIGIN_BASE } from '../services/baseUrl';
+import { ShieldOff, Plus, Trash2, Copy, ImagePlus, FileText, Users, ShieldCheck, Pencil, Search, ChevronLeft, ChevronRight } from 'lucide-react';
 import { ADMIN_EMAIL } from '../config';
-
 const ACCENT = '#D1F840';
+const USERS_PAGE_SIZE = 15;
 
 export function Admin() {
   const navigate = useNavigate();
@@ -41,6 +42,10 @@ export function Admin() {
   const [validatorError, setValidatorError] = useState<string | null>(null);
 
   const [registeredUsers, setRegisteredUsers] = useState<RegisteredUser[]>([]);
+  const [usersTotal, setUsersTotal] = useState(0);
+  const [usersPage, setUsersPage] = useState(1);
+  const [usersSearchInput, setUsersSearchInput] = useState('');
+  const [usersDebouncedQ, setUsersDebouncedQ] = useState('');
   const [usersLoading, setUsersLoading] = useState(false);
   const [usersError, setUsersError] = useState<string | null>(null);
 
@@ -97,24 +102,42 @@ export function Admin() {
     setUsersLoading(true);
     setUsersError(null);
     try {
-      const res = await dashboardApi.getRegisteredUsers(user.email);
+      const res = await dashboardApi.getRegisteredUsers(user.email, {
+        page: usersPage,
+        page_size: USERS_PAGE_SIZE,
+        q: usersDebouncedQ,
+      });
       setRegisteredUsers(res.users);
+      setUsersTotal(res.total);
     } catch (e) {
       setUsersError(e instanceof Error ? e.message : 'Failed to load users');
       setRegisteredUsers([]);
+      setUsersTotal(0);
     } finally {
       setUsersLoading(false);
     }
-  }, [user?.email]);
+  }, [user?.email, usersPage, usersDebouncedQ]);
+
+  useEffect(() => {
+    const t = setTimeout(() => setUsersDebouncedQ(usersSearchInput.trim()), 400);
+    return () => clearTimeout(t);
+  }, [usersSearchInput]);
+
+  useEffect(() => {
+    setUsersPage(1);
+  }, [usersDebouncedQ]);
 
   useEffect(() => {
     if (isAdmin) {
       loadBlocklist();
       loadPosts();
       loadValidators();
-      loadRegisteredUsers();
     }
-  }, [isAdmin, loadBlocklist, loadPosts, loadValidators, loadRegisteredUsers]);
+  }, [isAdmin, loadBlocklist, loadPosts, loadValidators]);
+
+  useEffect(() => {
+    if (isAdmin) loadRegisteredUsers();
+  }, [isAdmin, loadRegisteredUsers]);
 
   const handleAddHotkey = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -172,7 +195,7 @@ export function Admin() {
       setSubmitting(true);
       try {
         const up = await dashboardApi.uploadBlogImage(imageFile, user.email);
-        const dashboardBase = import.meta.env.VITE_API_URL ?? (import.meta.env.PROD ? '' : 'http://localhost:34717');
+        const dashboardBase = API_ORIGIN_BASE;
         imageUrl = up.url.startsWith('http') ? up.url : `${dashboardBase}${up.url}`;
       } catch (err) {
         setPostsError(err instanceof Error ? err.message : 'Image upload failed');
@@ -275,6 +298,26 @@ export function Admin() {
     <div className="min-h-screen bg-[#07080A] pt-24 pb-16 px-6 lg:px-8">
       <div className="max-w-4xl mx-auto">
         <h1 className="text-2xl font-semibold text-white mb-8">Admin</h1>
+
+        <section className="glass-panel rounded-xl p-6 mb-8 border border-[#DFFF00]/15 bg-gradient-to-br from-[#DFFF00]/[0.06] to-transparent">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <div>
+              <h2 className="text-lg font-semibold text-white flex items-center gap-2">
+                <Users className="w-5 h-5" style={{ color: ACCENT }} />
+                Website usage
+              </h2>
+              <p className="text-sm text-[#A7B0B7] mt-2 max-w-xl">
+                TTS activity, credits, payments, and per-user history live on the dedicated dashboard.
+              </p>
+            </div>
+            <Link
+              to="/admin/website_usage"
+              className="inline-flex items-center justify-center text-sm font-semibold px-5 py-3 rounded-xl bg-[#DFFF00] text-[#07080A] hover:opacity-90 transition-opacity shrink-0"
+            >
+              Open website usage →
+            </Link>
+          </div>
+        </section>
 
         {/* Blacklisted hotkeys */}
         <section className="glass-panel rounded-xl p-6 mb-8">
@@ -410,32 +453,84 @@ export function Admin() {
             <Users className="w-5 h-5" style={{ color: ACCENT }} />
             Registered users
           </h2>
+          <div className="relative mb-4 max-w-md">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
+            <input
+              type="search"
+              value={usersSearchInput}
+              onChange={(e) => setUsersSearchInput(e.target.value)}
+              placeholder="Search email, name, or user id…"
+              className="w-full rounded-lg border border-[#27272a] bg-[#0f0f0f] py-2 pl-10 pr-3 text-sm text-white placeholder-gray-500 focus:border-[#333] focus:outline-none"
+            />
+          </div>
           {usersError && <p className="text-sm text-red-400 mb-3">{usersError}</p>}
           {usersLoading ? (
             <p className="text-sm text-gray-500">Loading...</p>
           ) : registeredUsers.length === 0 ? (
-            <p className="text-sm text-gray-500">No registered users yet.</p>
+            <p className="text-sm text-gray-500">No users match this page or search.</p>
           ) : (
-            <div className="border border-[#27272a] rounded-lg overflow-hidden">
-              <table className="w-full">
-                <thead>
-                  <tr className="text-left border-b border-[#27272a] bg-[#0f0f0f]">
-                    <th className="py-2 px-4 text-[10px] font-semibold text-gray-500 uppercase">Email</th>
-                    <th className="py-2 px-4 text-[10px] font-semibold text-gray-500 uppercase">Name</th>
-                    <th className="py-2 px-4 text-[10px] font-semibold text-gray-500 uppercase">Created</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[#27272a]">
-                  {registeredUsers.map((u) => (
-                    <tr key={u.id} className="hover:bg-[#1a1a1a]">
-                      <td className="py-3 px-4 text-xs text-gray-300">{u.email}</td>
-                      <td className="py-3 px-4 text-xs text-gray-400">{u.name || '—'}</td>
-                      <td className="py-3 px-4 text-xs text-gray-500">{u.created_at ? new Date(u.created_at).toLocaleDateString() : '—'}</td>
+            <>
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-3 text-xs text-gray-500">
+                <span>
+                  {usersTotal} total · page {usersPage} / {Math.max(1, Math.ceil(usersTotal / USERS_PAGE_SIZE))}
+                </span>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    disabled={usersPage <= 1}
+                    onClick={() => setUsersPage((p) => Math.max(1, p - 1))}
+                    className="inline-flex items-center gap-1 rounded-lg border border-[#27272a] px-2 py-1 text-gray-300 hover:bg-[#1a1a1a] disabled:opacity-40"
+                  >
+                    <ChevronLeft className="w-4 h-4" /> Prev
+                  </button>
+                  <button
+                    type="button"
+                    disabled={usersPage >= Math.max(1, Math.ceil(usersTotal / USERS_PAGE_SIZE))}
+                    onClick={() => setUsersPage((p) => p + 1)}
+                    className="inline-flex items-center gap-1 rounded-lg border border-[#27272a] px-2 py-1 text-gray-300 hover:bg-[#1a1a1a] disabled:opacity-40"
+                  >
+                    Next <ChevronRight className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+              <div className="border border-[#27272a] rounded-lg overflow-hidden">
+                <table className="w-full">
+                  <thead>
+                    <tr className="text-left border-b border-[#27272a] bg-[#0f0f0f]">
+                      <th className="py-2 px-4 text-[10px] font-semibold text-gray-500 uppercase">Email</th>
+                      <th className="py-2 px-4 text-[10px] font-semibold text-gray-500 uppercase">Name</th>
+                      <th className="py-2 px-4 text-[10px] font-semibold text-gray-500 uppercase">Credits</th>
+                      <th className="py-2 px-4 text-[10px] font-semibold text-gray-500 uppercase">Plan</th>
+                      <th className="py-2 px-4 text-[10px] font-semibold text-gray-500 uppercase">Created</th>
+                      <th className="py-2 px-4 text-[10px] font-semibold text-gray-500 uppercase w-28">Usage</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody className="divide-y divide-[#27272a]">
+                    {registeredUsers.map((u) => (
+                      <tr key={u.id} className="hover:bg-[#1a1a1a]">
+                        <td className="py-3 px-4 text-xs text-gray-300">{u.email}</td>
+                        <td className="py-3 px-4 text-xs text-gray-400">{u.name || '—'}</td>
+                        <td className="py-3 px-4 text-xs text-[#DFFF00]">{u.credits ?? '—'}</td>
+                        <td className="py-3 px-4 text-xs text-gray-500 capitalize">
+                          {u.plan_code ?? '—'} / {u.plan_status ?? '—'}
+                        </td>
+                        <td className="py-3 px-4 text-xs text-gray-500">
+                          {u.created_at ? new Date(u.created_at).toLocaleDateString() : '—'}
+                        </td>
+                        <td className="py-3 px-4">
+                          <Link
+                            to={`/admin/website_usage?tab=tts&user=${encodeURIComponent(String(u.id))}`}
+                            className="text-xs text-cyan-400 hover:underline"
+                          >
+                            View
+                          </Link>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
           )}
         </section>
 

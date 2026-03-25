@@ -87,7 +87,7 @@ export function UserMenu() {
         </DropdownMenuItem>
         <DropdownMenuItem
           onClick={() => {
-            navigate('/account?tab=credits');
+            navigate('/account/credits');
             setIsOpen(false);
           }}
           className="text-white hover:bg-white/10 cursor-pointer"
@@ -98,7 +98,7 @@ export function UserMenu() {
         <DropdownMenuSeparator className="bg-white/10" />
         <DropdownMenuItem
           onClick={() => {
-            navigate('/account?tab=settings');
+            navigate('/account/settings');
             setIsOpen(false);
           }}
           className="text-white hover:bg-white/10 cursor-pointer"

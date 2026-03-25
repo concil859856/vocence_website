@@ -26,7 +26,7 @@ export function StudioResult() {
 
   useEffect(() => {
     if (!id || !user) {
-      if (!user) navigate('/studio');
+      if (!user) navigate('/studio/tts');
       setLoading(false);
       return;
     }
@@ -47,6 +47,28 @@ export function StudioResult() {
         setLoading(false);
       });
   }, [id, user, navigate]);
+
+  const triggerBrowserDownload = async (url: string, filename: string) => {
+    try {
+      const res = await fetch(url, { mode: 'cors' });
+      if (!res.ok) {
+        throw new Error(`Download request failed (${res.status})`);
+      }
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = objectUrl;
+      a.download = filename;
+      a.rel = 'noopener';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 5000);
+    } catch (e) {
+      console.error(e);
+      window.open(url, '_blank', 'noopener,noreferrer');
+    }
+  };
 
   const handlePlayPause = () => {
     const el = audioRef.current;
@@ -76,10 +98,8 @@ export function StudioResult() {
 
   const handleDownload = () => {
     if (!audioUrl) return;
-    const a = document.createElement('a');
-    a.href = audioUrl;
-    a.download = `vocence-tts-${id}.wav`;
-    a.click();
+    const filename = `vocence-tts-${id}.wav`;
+    void triggerBrowserDownload(audioUrl, filename);
   };
 
   if (loading) {
@@ -99,7 +119,7 @@ export function StudioResult() {
         <div className="max-w-md text-center px-6">
           <p className="text-red-400 mb-4">{error || 'Audio not found or expired.'}</p>
           <p className="text-[#A7B0B7] text-sm mb-6">Audio is available for 7 days. You can generate a new one from Studio.</p>
-          <button onClick={() => navigate('/studio')} className="btn-primary inline-flex items-center gap-2">
+          <button onClick={() => navigate('/studio/tts')} className="btn-primary inline-flex items-center gap-2">
             <ArrowLeft size={18} />
             Back to Studio
           </button>
@@ -112,7 +132,7 @@ export function StudioResult() {
     <div className="min-h-screen bg-[#07080A] pt-24 pb-12">
       <div className="max-w-2xl mx-auto px-6">
         <button
-          onClick={() => navigate('/studio')}
+          onClick={() => navigate('/studio/tts')}
           className="flex items-center gap-2 text-[#A7B0B7] hover:text-white mb-8 transition-colors"
         >
           <ArrowLeft size={20} />

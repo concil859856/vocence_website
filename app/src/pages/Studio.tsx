@@ -18,10 +18,11 @@ import {
   Copy,
 } from 'lucide-react';
 import gsap from 'gsap';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { AuthModal } from '../components/AuthModal';
 import { dashboardApi, type StudioTopModel, type StudioHistoryItem } from '../services/dashboardApi';
+import { api } from '../services/api';
 
 type StudioView = 'tts' | 'stt' | 'chat' | 'cloning' | 'history';
 
@@ -132,6 +133,7 @@ const TTS_STYLE_PRESETS = [
       'cute little girl voice, high-pitched, innocent, cheerful, playful, soft, energetic, happy, emotional, expressive, youthful, friendly, lighthearted delivery',
   },
 ];
+const PRIORITY_PRESET_COUNT = 6;
 
 // Top 3 models from main validator; loaded in TTS view
 
@@ -144,7 +146,10 @@ const clonedVoices: ClonedVoice[] = [
 export function Studio() {
   const navigate = useNavigate();
   const { user, isAuthenticated, updateCredits } = useAuth();
-  const [activeView, setActiveView] = useState<StudioView>('tts');
+  const routeParams = useParams<{ view?: string }>();
+  const routeViewRaw = (routeParams.view || 'tts').toLowerCase();
+  const validViews: StudioView[] = ['tts', 'stt', 'chat', 'cloning', 'history'];
+  const activeView: StudioView = validViews.includes(routeViewRaw as StudioView) ? (routeViewRaw as StudioView) : 'tts';
   const [topModels, setTopModels] = useState<StudioTopModel[]>([]);
   const [topModelsLoading, setTopModelsLoading] = useState(false);
   const [selectedModel, setSelectedModel] = useState<StudioTopModel | null>(null);
@@ -171,6 +176,8 @@ export function Studio() {
     },
   ]);
   const [chatInput, setChatInput] = useState('');
+  const [chatCreditsToday, setChatCreditsToday] = useState<number>(0);
+  const [chatCreditsLoading, setChatCreditsLoading] = useState(false);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [ttsText, setTtsText] = useState('');
   const [ttsStylePrompt, setTtsStylePrompt] = useState('');
@@ -220,10 +227,25 @@ export function Studio() {
     }
   }, [activeView, user]);
 
-  // Preload TTS style preset images so they appear quickly when Studio loads
+  useEffect(() => {
+    if (activeView !== 'chat' || !user) return;
+    const token = localStorage.getItem('vocence_token');
+    if (!token) return;
+    setChatCreditsLoading(true);
+    api
+      .getDailyCreditsUsage(token, 1)
+      .then((res) => {
+        const dayRow = res.days?.[0];
+        setChatCreditsToday(dayRow?.creditsUsed ?? 0);
+      })
+      .catch(() => setChatCreditsToday(0))
+      .finally(() => setChatCreditsLoading(false));
+  }, [activeView, user]);
+
+  // Preload only above-the-fold style preset images to speed first paint.
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    TTS_STYLE_PRESETS.forEach((preset) => {
+    TTS_STYLE_PRESETS.slice(0, PRIORITY_PRESET_COUNT).forEach((preset) => {
       const img = new Image();
       img.src = `/tts-styles/${preset.id}.png`;
       img.decoding = 'async';
@@ -588,7 +610,7 @@ export function Studio() {
               Style presets
             </p>
             <div className="space-y-2 max-h-[460px] overflow-y-auto pr-1">
-              {TTS_STYLE_PRESETS.map((preset) => (
+              {TTS_STYLE_PRESETS.map((preset, index) => (
                 <button
                   key={preset.id}
                   type="button"
@@ -600,7 +622,8 @@ export function Studio() {
                       src={`/tts-styles/${preset.id}.png`}
                       alt={preset.label}
                       className="w-full h-full object-cover"
-                      loading="lazy"
+                      loading={index < PRIORITY_PRESET_COUNT ? 'eager' : 'lazy'}
+                      fetchPriority={index < 3 ? 'high' : 'auto'}
                       decoding="async"
                     />
                   </div>
@@ -738,8 +761,8 @@ export function Studio() {
       </div>
       
       {/* Coming Soon Overlay */}
-      <div className="absolute inset-0 flex items-start justify-end z-10 pt-4 pr-4">
-        <div className="text-right translate-x-[250px] -translate-y-[70px]">
+      <div className="absolute inset-0 z-10 flex items-center justify-center pointer-events-none">
+        <div className="rounded-2xl border border-[#DFFF00]/25 bg-[#0b0f14]/70 px-7 py-5 text-center backdrop-blur-sm">
           <h3 className="text-2xl md:text-3xl font-bold text-[#DFFF00] mb-1">Coming Soon</h3>
           <p className="text-sm text-[#A7B0B7]">This feature is under development</p>
         </div>
@@ -754,6 +777,15 @@ export function Studio() {
           <h2 className="text-2xl font-semibold mb-2">Voice Chat</h2>
           <p className="text-[#A7B0B7]">
             Interact with AI using real-time voice synthesis and recognition.
+          </p>
+          <p className="text-xs text-[#666] mt-3">
+            {chatCreditsLoading ? (
+              'Today: Loading credits...'
+            ) : (
+              <>
+                Today: <span className="text-white font-medium">{chatCreditsToday.toLocaleString()}</span> credits consumed
+              </>
+            )}
           </p>
         </div>
 
@@ -814,8 +846,8 @@ export function Studio() {
       </div>
       
       {/* Coming Soon Overlay */}
-      <div className="absolute inset-0 flex items-start justify-end z-10 pt-4 pr-4">
-        <div className="text-right translate-x-[250px] -translate-y-[70px]">
+      <div className="absolute inset-0 z-10 flex items-center justify-center pointer-events-none">
+        <div className="rounded-2xl border border-[#DFFF00]/25 bg-[#0b0f14]/70 px-7 py-5 text-center backdrop-blur-sm">
           <h3 className="text-2xl md:text-3xl font-bold text-[#DFFF00] mb-1">Coming Soon</h3>
           <p className="text-sm text-[#A7B0B7]">This feature is under development</p>
         </div>
@@ -1074,8 +1106,8 @@ export function Studio() {
       </div>
       
       {/* Coming Soon Overlay */}
-      <div className="absolute inset-0 flex items-start justify-end z-10 pt-4 pr-4">
-        <div className="text-right translate-x-[250px] -translate-y-[70px]">
+      <div className="absolute inset-0 z-10 flex items-center justify-center pointer-events-none">
+        <div className="rounded-2xl border border-[#DFFF00]/25 bg-[#0b0f14]/70 px-7 py-5 text-center backdrop-blur-sm">
           <h3 className="text-2xl md:text-3xl font-bold text-[#DFFF00] mb-1">Coming Soon</h3>
           <p className="text-sm text-[#A7B0B7]">This feature is under development</p>
         </div>
@@ -1172,7 +1204,7 @@ export function Studio() {
             {sidebarItems.map((item) => (
               <button
                 key={item.id}
-                onClick={() => setActiveView(item.id)}
+                onClick={() => navigate(`/studio/${item.id}`)}
                 className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all ${
                   activeView === item.id
                     ? 'bg-white/10 text-white'
@@ -1193,7 +1225,12 @@ export function Studio() {
             <div className="text-xl font-semibold mb-1">
               {user?.credits || 0} <span className="text-sm text-[#A7B0B7] font-normal">credits</span>
             </div>
-            <button className="btn-outline w-full mt-3 text-xs py-2">Add Credits</button>
+            <Link
+              to="/pricing"
+              className="btn-outline mt-3 flex w-full items-center justify-center py-2 text-xs font-semibold"
+            >
+              Add Credits
+            </Link>
           </div>
         </aside>
 
@@ -1203,7 +1240,7 @@ export function Studio() {
             {sidebarItems.map((item) => (
               <button
                 key={item.id}
-                onClick={() => setActiveView(item.id)}
+                onClick={() => navigate(`/studio/${item.id}`)}
                 className={`p-3 rounded-lg ${
                   activeView === item.id ? 'text-[#DFFF00]' : 'text-[#666]'
                 }`}
@@ -1264,7 +1301,7 @@ export function Studio() {
                             : 'Try adjusting your search.'}
                         </p>
                         {studioHistory.length === 0 && (
-                          <button onClick={() => setActiveView('tts')} className="btn-primary mt-4">
+                          <button onClick={() => navigate('/studio/tts')} className="btn-primary mt-4">
                             Go to Text-to-Speech
                           </button>
                         )}

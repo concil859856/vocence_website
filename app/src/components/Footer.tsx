@@ -1,11 +1,12 @@
 import { Link } from 'react-router-dom';
 import { Github, Send, Twitter } from 'lucide-react';
+import { TELEGRAM_INVITE_URL } from '../config/socialLinks';
 
 const SOCIAL_LINKS = [
   { href: 'https://x.com/vocence_bt', label: 'Twitter / X', icon: Twitter },
-  { href: 'https://github.com/vocence', label: 'GitHub', icon: Github },
+  { href: 'https://github.com/vocence-bt', label: 'GitHub', icon: Github },
   { href: 'https://discord.gg/TWmfwJAtXG', label: 'Discord', icon: 'discord' as const },
-  { href: 'https://t.me/+UIrmzi5ZKTI4ZTg5', label: 'Telegram', icon: Send },
+  { href: TELEGRAM_INVITE_URL, label: 'Telegram', icon: Send },
 ] as const;
 
 function DiscordIcon({ size = 18 }: { size?: number }) {
@@ -25,16 +26,16 @@ function DiscordIcon({ size = 18 }: { size?: number }) {
 export function Footer() {
   const footerLinks = {
     features: [
-      { label: 'Studio', href: '/studio' },
-      { label: 'API', href: '/docs#api' },
+      { label: 'Studio', href: '/studio/tts' },
+      { label: 'API', href: '/docs/api' },
       { label: 'Models', comingSoon: true },
       { label: 'Analytics', href: '/dashboard' },
     ] as Array<{ label: string; href?: string; comingSoon?: true }>,
     product: [
-      { label: 'Pricing', comingSoon: true as const },
+      { label: 'Pricing', href: '/pricing' },
       { label: 'Integrations', href: '#' },
-      { label: 'Changelog', href: '#' },
-      { label: 'Documentation', href: '/docs' },
+      { label: 'Changelog', href: 'https://github.com/Vocence-bt/vocence/blob/master/CHANGELOG.md' },
+      { label: 'Documentation', href: '/docs/getting-started' },
       { label: 'Status', href: '#' },
     ],
     resources: [
@@ -118,12 +119,23 @@ export function Footer() {
                       <span className="text-xs text-[#666] font-medium">Coming soon</span>
                     </span>
                   ) : (
-                    <Link
-                      to={link.href}
-                      className="text-sm text-[#A7B0B7] hover:text-white transition-colors"
-                    >
-                      {link.label}
-                    </Link>
+                    link.href.startsWith('http') ? (
+                      <a
+                        href={link.href}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-sm text-[#A7B0B7] hover:text-white transition-colors"
+                      >
+                        {link.label}
+                      </a>
+                    ) : (
+                      <Link
+                        to={link.href}
+                        className="text-sm text-[#A7B0B7] hover:text-white transition-colors"
+                      >
+                        {link.label}
+                      </Link>
+                    )
                   )}
                 </li>
               ))}

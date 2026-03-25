@@ -221,16 +221,165 @@ class RegisteredUserRegisterRequest(BaseModel):
 
 
 class RegisteredUserResponse(BaseModel):
-    id: int
+    id: str | int
     email: str
     name: str
     picture: str | None
+    credits: int | None = None
+    plan_code: str | None = None
+    plan_status: str | None = None
+    last_login_at: str | None = None
     created_at: str
     updated_at: str
 
 
 class RegisteredUsersListResponse(BaseModel):
     users: list[RegisteredUserResponse]
+    total: int = 0
+    page: int = 1
+    page_size: int = 20
+
+
+# ----- Admin website usage (local SQLite, paginated) -----
+
+
+class AdminTtsHistoryRow(BaseModel):
+    id: int
+    user_id: str
+    user_email: str | None = None
+    user_name: str | None = None
+    miner_hotkey: str
+    model_name: str
+    prompt_text: str
+    style_instruction: str
+    credits_used: int
+    status: str
+    latency_ms: int | None = None
+    error_message: str | None = None
+    created_at: str
+
+
+class AdminPaginatedTtsResponse(BaseModel):
+    items: list[AdminTtsHistoryRow]
+    total: int
+    page: int
+    page_size: int
+
+
+class AdminCreditTransactionRow(BaseModel):
+    id: str
+    user_id: str
+    user_email: str | None = None
+    user_name: str | None = None
+    transaction_type: str
+    amount: int
+    balance_after: int
+    description: str
+    reference_type: str | None = None
+    reference_id: str | None = None
+    created_at: str
+
+
+class AdminPaginatedCreditsResponse(BaseModel):
+    items: list[AdminCreditTransactionRow]
+    total: int
+    page: int
+    page_size: int
+
+
+class AdminPaymentRow(BaseModel):
+    id: str
+    user_id: str
+    user_email: str | None = None
+    user_name: str | None = None
+    provider: str
+    plan_code: str | None = None
+    amount_usd: float
+    credits_granted: int
+    status: str
+    mode: str | None = None
+    stripe_checkout_session_id: str | None = None
+    credits_applied_at: str | None = None
+    created_at: str
+
+
+class AdminPaginatedPaymentsResponse(BaseModel):
+    items: list[AdminPaymentRow]
+    total: int
+    page: int
+    page_size: int
+
+
+class AdminAuthHistoryRow(BaseModel):
+    id: str
+    user_id: str
+    user_email: str | None = None
+    user_name: str | None = None
+    type: str
+    content: str | None = None
+    style_prompt: str | None = None
+    model: str | None = None
+    meta: str | None = None
+    duration: str | None = None
+    created_at: str
+
+
+class AdminPaginatedAuthHistoryResponse(BaseModel):
+    items: list[AdminAuthHistoryRow]
+    total: int
+    page: int
+    page_size: int
+
+
+class AdminUserActivitySummary(BaseModel):
+    user_id: str
+    email: str
+    name: str
+    credits: int
+    plan_code: str
+    plan_status: str
+    created_at: str
+    last_login_at: str | None = None
+    tts_completed_count: int
+    tts_total_credits: int
+    credit_tx_count: int
+    payments_count: int
+
+
+class WebsiteUsageDayResponse(BaseModel):
+    day: str
+    tts_generation_count: int
+    unique_users: int
+    credits_used: int
+    revenue_usd: float
+    credits_purchased: int
+
+
+class PlanDistributionResponse(BaseModel):
+    plan_code: str
+    user_count: int
+
+
+class RecentPaymentResponse(BaseModel):
+    id: str
+    user_id: str
+    provider: str
+    plan_code: str | None = None
+    amount_usd: float
+    credits_granted: int
+    status: str
+    created_at: str
+
+
+class WebsiteOverviewResponse(BaseModel):
+    total_users: int
+    active_users_7d: int
+    total_generations: int
+    total_credits_used: int
+    total_revenue_usd: float
+    usage: list[WebsiteUsageDayResponse]
+    plan_distribution: list[PlanDistributionResponse]
+    recent_payments: list[RecentPaymentResponse]
 
 
 # ----- Recent evaluations (Postgres read) -----

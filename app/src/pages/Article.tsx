@@ -4,10 +4,11 @@ import { ArrowLeft, Clock, Calendar } from 'lucide-react';
 import gsap from 'gsap';
 import { ScrollTrigger } from 'gsap/ScrollTrigger';
 import { dashboardApi } from '../services/dashboardApi';
+import { API_ORIGIN_BASE } from '../services/baseUrl';
 
 gsap.registerPlugin(ScrollTrigger);
 
-const DASHBOARD_BASE = import.meta.env.VITE_API_URL ?? (import.meta.env.PROD ? '' : 'http://localhost:34717');
+const DASHBOARD_BASE = API_ORIGIN_BASE;
 
 function imageUrl(url: string): string {
   if (!url || url.startsWith('http')) return url || '';
@@ -383,4 +384,3 @@ export function Article() {
     </div>
   );
 }
-

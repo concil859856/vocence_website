@@ -3,8 +3,9 @@ import { Link } from 'react-router-dom';
 import { ArrowRight, Clock } from 'lucide-react';
 import gsap from 'gsap';
 import { dashboardApi } from '../services/dashboardApi';
+import { API_ORIGIN_BASE } from '../services/baseUrl';
 
-const DASHBOARD_BASE = import.meta.env.VITE_API_URL ?? (import.meta.env.PROD ? '' : 'http://localhost:34717');
+const DASHBOARD_BASE = API_ORIGIN_BASE;
 
 type FilterType = 'all' | 'technical' | 'releases' | 'roadmap' | 'community';
 
