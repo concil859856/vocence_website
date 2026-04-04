@@ -4,7 +4,7 @@ This document defines the production implementation for:
 
 - Website backend traffic on `backend.vocence.ai`
 - Developer API traffic on `api.vocence.ai`
-- TTS-only API product (no STT/chat/cloning in this phase)
+- TTS + STT API product (chat/cloning not in this phase)
 - Working billing, API keys, usage metering, and docs
 
 This is intentionally focused on **current implementation only**. No future features are included.
@@ -62,6 +62,7 @@ Responsibilities:
 
 - API key auth
 - `POST /v1/tts/generate`
+- `POST /v1/stt/transcribe`
 - credits validation and deduction
 - request logging/metering
 - provider selection (env-configured chutes)
@@ -172,9 +173,9 @@ Expose key management under website backend so logged-in users can manage keys i
 
 ---
 
-## 6) TTS Generate Endpoint (api.vocence.ai)
+## 6) API Endpoints (api.vocence.ai)
 
-## 6.1 Endpoint
+## 6.1 TTS endpoint
 
 - `POST /v1/tts/generate`
 
@@ -192,7 +193,7 @@ Response:
 - `credits_remaining`
 - `latency_ms`
 
-## 6.2 Processing sequence
+## 6.2 TTS processing sequence
 
 1. Authenticate API key
 2. Validate payload
@@ -203,6 +204,25 @@ Response:
 7. Deduct credits + write credit transaction
 8. Write `api_request_logs`
 9. Return result
+
+## 6.3 STT endpoint
+
+- `POST /v1/stt/transcribe`
+
+Request body:
+
+- `audio_b64` (required, base64 audio bytes)
+- `language` (optional hint language code)
+
+Response:
+
+- `request_id`
+- `text`
+- `language` (optional)
+- `provider`
+- `credits_remaining`
+- `latency_ms`
+- `credits_used`
 
 Atomicity:
 
@@ -244,6 +264,16 @@ Plan rows in `pricing_plans` (SQLite website DB):
 - Developer API billing: `$10 per 1M characters` (pay-as-you-go, prepaid balance)
 
 Credits are granted by successful payment events and tracked in `credit_transactions`.
+
+**Studio credit costs** (`routers/studio.py`, overridable via env `STUDIO_*_CREDITS_COST`):
+
+- TTS: **25** (`STUDIO_TTS_CREDITS_COST`)
+- STT: **20** (`STUDIO_STT_CREDITS_COST`)
+- Voice clone (upload/record): **50** (`STUDIO_CLONE_CREDITS_COST`)
+- Voice design preview (creation; A/B samples): **120** (`STUDIO_VOICE_DESIGN_PREVIEW_CREDITS`); saving the voice has no extra charge
+- Generate with **My voice** (designed): **25** (`STUDIO_VOICE_DESIGN_SPEAK_CREDITS`)
+
+**Signup bonus:** **300** credits (`SIGNUP_CREDITS` in `routers/auth.py`).
 
 ## 8.2 Stripe (existing, keep unchanged)
 

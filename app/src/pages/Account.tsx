@@ -16,6 +16,14 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs'
 import { Avatar, AvatarFallback, AvatarImage } from '../components/ui/avatar';
 import { formatCreditsCompact } from '../utils/formatCredits';
 import {
+  CREDIT_MY_VOICE_GENERATE,
+  CREDIT_SIGNUP_BONUS,
+  CREDIT_STT,
+  CREDIT_TTS,
+  CREDIT_VOICE_CLONE,
+  CREDIT_VOICE_DESIGN_PREVIEW,
+} from '../studio/creditCosts';
+import {
   Area,
   AreaChart,
   CartesianGrid,
@@ -328,8 +336,12 @@ export function Account() {
                       credits for whichever checkout you complete.
                     </p>
                     <ul className="text-sm text-[#A7B0B7] space-y-1 list-disc list-inside">
-                      <li>Text-to-Speech: 10 credits per generation</li>
-                      <li>Every new account starts with 50 free credits</li>
+                      <li>
+                        Studio — TTS: {CREDIT_TTS} cr · STT: {CREDIT_STT} cr · Voice clone: {CREDIT_VOICE_CLONE} cr ·
+                        Voice design (preview): {CREDIT_VOICE_DESIGN_PREVIEW} cr · Generate with My voice:{' '}
+                        {CREDIT_MY_VOICE_GENERATE} cr
+                      </li>
+                      <li>Every new account starts with {CREDIT_SIGNUP_BONUS} free credits</li>
                       <li>
                         Normal — card: $12 → {formatCreditsCompact(4000)} credits · crypto: $20 →{' '}
                         {formatCreditsCompact(7000)} credits

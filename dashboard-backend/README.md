@@ -54,6 +54,16 @@ uvicorn main:app --host 0.0.0.0 --port 34717
 | GET | `/api/dashboard/subnet-graph` | Live subnet map payload: validators, miners, buckets, owner API/subtensor nodes, active graph activities |
 | GET | `/api/dashboard/validators` | Validators from validator_registry |
 | GET | `/api/dashboard/activity` | Evaluation counts over time (query: `?range=24h` or `?range=7d`) |
+| POST | `/api/dashboard/studio/transcribe` | Studio STT via Chutes (`multipart/form-data`: `user_id`, `audio_file`, optional `language`) |
+| POST | `/api/dashboard/studio/clone` | Voice clone: STT ref audio (Chutes), then POST ref audio b64 + ref text + target text to `STUDIO_VOICE_CLONE_URL` (Form: `user_id`, `target_text`, `ref_source`, `audio_file`, optional `language`) |
+| GET | `/api/dashboard/studio/history` | Studio history (TTS + STT + clone) |
+| GET | `/api/dashboard/studio/history/{id}/audio-url` | Fresh presigned URL (query: `user_id`, optional `entry_type=clone` for clone rows) |
+
+For **STT**, the backend calls a **Chutes** transcribe URL: set `STUDIO_STT_CHUTES_URL` or `CHUTES_WHISPER_STT_URL` (defaults to public Whisper). Body: `audio_b64`, optional `language`. Auth: `CHUTES_API_KEY` / `CHUTES_AUTH_KEY` when required.
+
+**PromptTTS / Studio TTS** uses the same Chutes `/speak` slugs as **`STUDIO_MODEL_*_CHUTE_SLUG`** (no separate PromptTTS URL).
+
+For **voice cloning**, set **`STUDIO_VOICE_CLONE_URL`** to your full HTTP clone endpoint (e.g. `http://13.32.11.120:2001/...`). Default request is **`application/json`** with **`reference_audio`** (base64), **`ref_text`**, **`target_text`**. If your FastAPI app uses only **`Form()`** with a base64 string for audio, use **`STUDIO_VOICE_CLONE_REQUEST_MODE=form`**. For **`UploadFile = File(...)` + `Form(...)`** (e.g. Qwen TTS clone service: `reference_audio`, `ref_text`, `target_text`), use **`STUDIO_VOICE_CLONE_REQUEST_MODE=form_file`**. Override field names with **`STUDIO_VOICE_CLONE_KEY_*`**. Optional **`STUDIO_VOICE_CLONE_API_KEY`** sets `Authorization: Bearer` for that service. Legacy Chutes miner: leave URL empty and use `STUDIO_VOICE_CLONE_CHUTE_SLUG` + path (JSON body).
 
 **Auth (same server):** `POST /api/auth/login`, `POST /api/auth/verify`, `GET /api/users/:id`, `PATCH /api/users/:id/credits`, `POST /api/history`, `GET /api/history`.
 

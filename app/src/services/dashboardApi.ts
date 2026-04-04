@@ -639,14 +639,135 @@ export const dashboardApi = {
     });
   },
 
+  generateStudioStt(
+    body: { user_id: string; language?: string | null; audio_file: File },
+    token: string | null
+  ): Promise<StudioTranscribeResponse> {
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    const form = new FormData();
+    form.append('user_id', body.user_id);
+    if (body.language?.trim()) {
+      form.append('language', body.language.trim());
+    }
+    form.append('audio_file', body.audio_file);
+    return fetchJson('/api/dashboard/studio/transcribe', {
+      method: 'POST',
+      headers,
+      body: form,
+    });
+  },
+
+  generateStudioClone(
+    body: {
+      user_id: string;
+      target_text: string;
+      ref_source: 'upload' | 'record';
+      language?: string | null;
+      audio_file: File;
+    },
+    token: string | null
+  ): Promise<StudioCloneResponse> {
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    const form = new FormData();
+    form.append('user_id', body.user_id);
+    form.append('target_text', body.target_text.trim());
+    form.append('ref_source', body.ref_source);
+    if (body.language?.trim()) {
+      form.append('language', body.language.trim());
+    }
+    form.append('audio_file', body.audio_file);
+    return fetchJson('/api/dashboard/studio/clone', {
+      method: 'POST',
+      headers,
+      body: form,
+    });
+  },
+
   getStudioHistory(userId: string): Promise<{ items: StudioHistoryItem[] }> {
     return fetchJson(`/api/dashboard/studio/history?user_id=${encodeURIComponent(userId)}`);
   },
 
-  getStudioHistoryAudioUrl(historyId: number, userId: string): Promise<{ audio_url: string }> {
+  getStudioHistoryAudioUrl(
+    historyId: number,
+    userId: string,
+    entryType: 'tts' | 'clone' | 'voice_design' = 'tts'
+  ): Promise<{ audio_url: string }> {
+    const et =
+      entryType === 'clone'
+        ? '&entry_type=clone'
+        : entryType === 'voice_design'
+          ? '&entry_type=voice_design'
+          : '';
     return fetchJson(
-      `/api/dashboard/studio/history/${historyId}/audio-url?user_id=${encodeURIComponent(userId)}`
+      `/api/dashboard/studio/history/${historyId}/audio-url?user_id=${encodeURIComponent(userId)}${et}`
     );
+  },
+
+  getStudioVoiceDesignConfig(): Promise<StudioVoiceDesignConfig> {
+    return fetchJson('/api/dashboard/studio/voice-design/config');
+  },
+
+  studioVoiceDesignPreview(
+    body: {
+      user_id: string;
+      voice_description: string;
+      miner_hotkey: string;
+      model_name: string;
+      chute_id: string;
+      chute_slug: string;
+    },
+    token: string | null
+  ): Promise<StudioVoiceDesignPreviewResponse> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson('/api/dashboard/studio/voice-design/preview', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+  },
+
+  studioVoiceDesignSave(
+    body: { user_id: string; preview_token: string; chosen_variant: 'original' | 'revised'; display_name: string },
+    token: string | null
+  ): Promise<StudioVoiceDesignSaveResponse> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson('/api/dashboard/studio/voice-design/save', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+  },
+
+  listStudioDesignedVoices(token: string | null): Promise<{ voices: StudioDesignedVoiceItem[] }> {
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson('/api/dashboard/studio/voice-design/voices', { headers });
+  },
+
+  deleteStudioDesignedVoice(voiceId: number, token: string | null): Promise<{ ok: boolean }> {
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson(`/api/dashboard/studio/voice-design/voices/${voiceId}`, {
+      method: 'DELETE',
+      headers,
+    });
+  },
+
+  studioDesignedVoiceSpeak(
+    body: { user_id: string; voice_id: number; target_text: string },
+    token: string | null
+  ): Promise<StudioCloneResponse> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson('/api/dashboard/studio/voice-design/speak', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
   },
 };
 
@@ -665,13 +786,83 @@ export interface StudioGenerateResponse {
   credits: number;
 }
 
+export interface StudioTranscribeResponse {
+  id: number;
+  text: string;
+  language?: string | null;
+  credits: number;
+  duration_seconds?: number | null;
+}
+
+export interface StudioCloneResponse {
+  id: number;
+  audio_url: string;
+  expires_at: string;
+  credits: number;
+  reference_text: string;
+  detected_language?: string | null;
+}
+
 export interface StudioHistoryItem {
   id: number;
+  entry_type: 'tts' | 'stt' | 'clone' | 'voice_design';
   miner_hotkey: string;
   model_name: string;
   display_name: string;
-  prompt_text: string;
+  prompt_text: string | null;
   style_instruction: string;
+  audio_url: string | null;
+  expires_at: string;
+  created_at: string;
+  expired: boolean;
+  transcribed_text?: string | null;
+  source_audio_filename?: string | null;
+  source_language?: string | null;
+  duration_seconds?: number | null;
+  reference_text?: string | null;
+  target_text?: string | null;
+  clone_source?: string | null;
+}
+
+export interface StudioVoiceDesignConfig {
+  llm_configured: boolean;
+  preview_credits: number;
+  sample_words_min: number;
+  sample_words_max: number;
+}
+
+export interface StudioVoiceDesignPreviewResponse {
+  preview_token: string;
+  sample_script: string;
+  voice_description: string;
+  revised_instruction: string;
+  audio_a_url: string;
+  audio_b_url: string;
+  expires_at: string;
+  credits: number;
+  miner_hotkey: string;
+  model_name: string;
+  chute_slug: string;
+}
+
+export interface StudioVoiceDesignSaveResponse {
+  voice_id: number;
+  audio_url: string;
+  expires_at: string;
+  credits: number;
+  ref_script: string;
+}
+
+export interface StudioDesignedVoiceItem {
+  id: number;
+  display_name: string;
+  voice_description: string;
+  revised_instruction: string;
+  chosen_variant: string;
+  ref_script: string;
+  miner_hotkey: string;
+  model_name: string;
+  chute_slug: string;
   audio_url: string | null;
   expires_at: string;
   created_at: string;

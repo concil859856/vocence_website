@@ -41,7 +41,7 @@ _np_log = logging.getLogger(__name__)
 JWT_SECRET = os.environ.get("JWT_SECRET", "your-secret-key-change-in-production")
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRY_DAYS = 30
-SIGNUP_CREDITS = int(os.environ.get("SIGNUP_CREDITS", "50"))
+SIGNUP_CREDITS = int(os.environ.get("SIGNUP_CREDITS", "300"))
 
 router = APIRouter(prefix="/api", tags=["auth"])
 

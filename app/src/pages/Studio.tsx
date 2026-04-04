@@ -1,36 +1,61 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import {
   Mic,
-  MessageSquare,
-  Users,
-  History,
   Upload,
   Play,
   Pause,
   Download,
   Volume2,
   X,
-  MoreHorizontal,
-  ChevronDown,
   Send,
   Square,
   Search,
   Copy,
+  CheckCircle2,
+  AlertCircle,
+  Sparkles,
+  LayoutGrid,
+  Trash2,
 } from 'lucide-react';
 import gsap from 'gsap';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { AuthModal } from '../components/AuthModal';
-import { dashboardApi, type StudioTopModel, type StudioHistoryItem } from '../services/dashboardApi';
+import { VoiceDesignWavePlayer } from '../components/VoiceDesignWavePlayer';
+import { ConfirmDialog } from '../components/ConfirmDialog';
+import { MyVoiceCardArt } from '../components/MyVoiceCardArt';
+import { StudioShell } from '../components/StudioShell';
+import { STUDIO_VIEWS, type StudioView } from '../studio/studioNav';
+import { DEFAULT_ABSTRACT_CARD_IMAGES } from '../data/abstractCardImages';
+import {
+  CREDIT_STT,
+  CREDIT_TTS,
+  CREDIT_VOICE_CLONE,
+  CREDIT_VOICE_DESIGN_PREVIEW,
+} from '../studio/creditCosts';
+import { blobToCloneReferenceWav } from '../utils/cloneReferenceAudio';
+import {
+  dashboardApi,
+  type StudioDesignedVoiceItem,
+  type StudioTopModel,
+  type StudioHistoryItem,
+  type StudioVoiceDesignConfig,
+  type StudioVoiceDesignPreviewResponse,
+} from '../services/dashboardApi';
 import { api } from '../services/api';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '../components/ui/select';
+import { cn } from '@/lib/utils';
 
-type StudioView = 'tts' | 'stt' | 'chat' | 'cloning' | 'history';
+const USER_FACING_TRY_AGAIN = 'Something went wrong. Please try again later.';
 
-interface ClonedVoice {
-  id: string;
-  name: string;
-  status: 'active' | 'processing';
-  createdAt: string;
+function userFacingApiError(_e: unknown): string {
+  return USER_FACING_TRY_AGAIN;
 }
 
 interface HistoryItem {
@@ -44,14 +69,6 @@ interface HistoryItem {
   meta: string;
   duration: string;
 }
-
-const sidebarItems = [
-  { id: 'tts' as StudioView, label: 'Text-to-Speech', icon: Mic },
-  { id: 'stt' as StudioView, label: 'Speech-to-Text', icon: MessageSquare },
-  { id: 'chat' as StudioView, label: 'Voice Chat', icon: MessageSquare },
-  { id: 'cloning' as StudioView, label: 'Voice Cloning', icon: Users },
-  { id: 'history' as StudioView, label: 'History', icon: History },
-];
 
 const TTS_STYLE_PRESETS = [
   {
@@ -135,21 +152,20 @@ const TTS_STYLE_PRESETS = [
 ];
 const PRIORITY_PRESET_COUNT = 6;
 
-// Top 3 models from main validator; loaded in TTS view
+/** TTS main content: character cap (shown to user only if they try to exceed it). */
+const TTS_CONTENT_MAX_CHARS = 500;
 
-const clonedVoices: ClonedVoice[] = [
-  { id: '1', name: 'Podcast Host Alpha', status: 'active', createdAt: '2d ago' },
-  { id: '2', name: 'Marketing Narrator', status: 'active', createdAt: '1w ago' },
-  { id: '3', name: 'Professional Voice', status: 'processing', createdAt: 'Just now' },
-];
+// Top 3 models from main validator; loaded in TTS view
 
 export function Studio() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { user, isAuthenticated, updateCredits } = useAuth();
   const routeParams = useParams<{ view?: string }>();
   const routeViewRaw = (routeParams.view || 'tts').toLowerCase();
-  const validViews: StudioView[] = ['tts', 'stt', 'chat', 'cloning', 'history'];
-  const activeView: StudioView = validViews.includes(routeViewRaw as StudioView) ? (routeViewRaw as StudioView) : 'tts';
+  const activeView: StudioView = STUDIO_VIEWS.includes(routeViewRaw as StudioView)
+    ? (routeViewRaw as StudioView)
+    : 'tts';
   const [topModels, setTopModels] = useState<StudioTopModel[]>([]);
   const [topModelsLoading, setTopModelsLoading] = useState(false);
   const [selectedModel, setSelectedModel] = useState<StudioTopModel | null>(null);
@@ -157,6 +173,10 @@ export function Studio() {
   const [studioHistory, setStudioHistory] = useState<StudioHistoryItem[]>([]);
   const [studioHistoryLoading, setStudioHistoryLoading] = useState(false);
   const [studioHistorySearch, setStudioHistorySearch] = useState('');
+  const [studioHistoryCategory, setStudioHistoryCategory] = useState<
+    'all' | 'tts' | 'stt' | 'clone' | 'voice_design'
+  >('all');
+  const [studioHistoryPage, setStudioHistoryPage] = useState(1);
   const [resultOverlay, setResultOverlay] = useState<{
     id: number;
     audioUrl: string;
@@ -164,8 +184,6 @@ export function Studio() {
     styleInstruction: string;
     modelName: string;
   } | null>(null);
-  const [similarityBoost, setSimilarityBoost] = useState(85);
-  const [stability, setStability] = useState(60);
   const [chatMessages, setChatMessages] = useState([
     { role: 'ai', content: "Hello! I'm your Vocence voice assistant. How can I help you today?" },
     { role: 'user', content: 'Tell me about the Bittensor network rewards for this subnet.' },
@@ -180,17 +198,55 @@ export function Studio() {
   const [chatCreditsLoading, setChatCreditsLoading] = useState(false);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [ttsText, setTtsText] = useState('');
+  const [ttsContentLimitNotice, setTtsContentLimitNotice] = useState(false);
   const [ttsStylePrompt, setTtsStylePrompt] = useState('');
   const [selectedLanguage, setSelectedLanguage] = useState('auto-detect');
   const [sttFile, setSttFile] = useState<File | null>(null);
+  const [isSttDragActive, setIsSttDragActive] = useState(false);
+  const [sttResult, setSttResult] = useState<{ text: string; language?: string | null; fileName?: string } | null>(null);
+  const [sttStatus, setSttStatus] = useState<{ type: 'success' | 'error' | 'info'; message: string } | null>(null);
+  const [sttCopied, setSttCopied] = useState(false);
   const [cloningFile, setCloningFile] = useState<File | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [cloningMode, setCloningMode] = useState<'upload' | 'record'>('upload');
+  const [cloneTargetText, setCloneTargetText] = useState('');
+  const [cloneLanguage, setCloneLanguage] = useState('');
+  const [cloneLoading, setCloneLoading] = useState(false);
+  const [cloneStatus, setCloneStatus] = useState<{ type: 'success' | 'error' | 'info'; message: string } | null>(null);
+  const [cloneResult, setCloneResult] = useState<{
+    id: number;
+    audioUrl: string;
+    referenceText: string;
+    language?: string | null;
+  } | null>(null);
+  const [isCloneDragActive, setIsCloneDragActive] = useState(false);
+  /** Blob URL for `<audio>` preview of upload or recorded reference. */
+  const [cloneReferencePreviewUrl, setCloneReferencePreviewUrl] = useState<string | null>(null);
   const [isMicRecording, setIsMicRecording] = useState(false);
+  const [vdConfig, setVdConfig] = useState<StudioVoiceDesignConfig | null>(null);
+  const [vdDescription, setVdDescription] = useState('');
+  const [vdLoading, setVdLoading] = useState(false);
+  const [vdPreview, setVdPreview] = useState<StudioVoiceDesignPreviewResponse | null>(null);
+  const [vdChosen, setVdChosen] = useState<'original' | 'revised'>('revised');
+  const [vdDisplayName, setVdDisplayName] = useState('');
+  const [vdSaveLoading, setVdSaveLoading] = useState(false);
+  const [vdStatus, setVdStatus] = useState<{ type: 'success' | 'error' | 'info'; message: string } | null>(null);
+  const [vdSavedVoiceId, setVdSavedVoiceId] = useState<number | null>(null);
+  const [designedVoices, setDesignedVoices] = useState<StudioDesignedVoiceItem[]>([]);
+  const [designedVoicesLoading, setDesignedVoicesLoading] = useState(false);
+  const [deleteConfirmVoiceId, setDeleteConfirmVoiceId] = useState<number | null>(null);
+  const [deleteVoiceLoading, setDeleteVoiceLoading] = useState(false);
+  const [myVoicesNotice, setMyVoicesNotice] = useState<{ type: 'error' | 'success'; message: string } | null>(null);
+  const [vdSaveNameInvalid, setVdSaveNameInvalid] = useState(false);
+  const [abstractImagePool, setAbstractImagePool] = useState<string[]>(DEFAULT_ABSTRACT_CARD_IMAGES);
+  const highlightedVoiceRef = useRef<HTMLDivElement | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const cloneStreamRef = useRef<MediaStream | null>(null);
   const [getVoiceDescription, setGetVoiceDescription] = useState(false);
   const studioRef = useRef<HTMLDivElement>(null);
   const sttFileInputRef = useRef<HTMLInputElement>(null);
   const cloningFileInputRef = useRef<HTMLInputElement>(null);
+  const cloneAudioRef = useRef<HTMLAudioElement>(null);
   const overlayAudioRef = useRef<HTMLAudioElement>(null);
   const [overlayPlaying, setOverlayPlaying] = useState(false);
   const [overlayCurrentTime, setOverlayCurrentTime] = useState(0);
@@ -228,6 +284,76 @@ export function Studio() {
   }, [activeView, user]);
 
   useEffect(() => {
+    if (activeView !== 'tts') setTtsContentLimitNotice(false);
+  }, [activeView]);
+
+  const STUDIO_HISTORY_PAGE_SIZE = 10;
+
+  const studioHistoryFiltered = useMemo(() => {
+    return studioHistory.filter((h) => {
+      if (studioHistoryCategory !== 'all' && h.entry_type !== studioHistoryCategory) {
+        return false;
+      }
+      if (!studioHistorySearch.trim()) return true;
+      const q = studioHistorySearch.toLowerCase();
+      return (
+        (h.prompt_text || '').toLowerCase().includes(q) ||
+        (h.style_instruction || '').toLowerCase().includes(q) ||
+        (h.transcribed_text || '').toLowerCase().includes(q) ||
+        (h.source_audio_filename || '').toLowerCase().includes(q) ||
+        (h.reference_text || '').toLowerCase().includes(q) ||
+        (h.target_text || '').toLowerCase().includes(q) ||
+        (h.clone_source || '').toLowerCase().includes(q) ||
+        (h.display_name || '').toLowerCase().includes(q) ||
+        (h.model_name || '').toLowerCase().includes(q)
+      );
+    });
+  }, [studioHistory, studioHistorySearch, studioHistoryCategory]);
+
+  useEffect(() => {
+    setStudioHistoryPage(1);
+  }, [studioHistorySearch, studioHistoryCategory]);
+
+  const studioHistoryTotalPages = Math.max(
+    1,
+    Math.ceil(studioHistoryFiltered.length / STUDIO_HISTORY_PAGE_SIZE)
+  );
+  const studioHistoryEffectivePage = Math.min(studioHistoryPage, studioHistoryTotalPages);
+
+  const studioHistoryPageItems = useMemo(() => {
+    return studioHistoryFiltered.slice(
+      (studioHistoryEffectivePage - 1) * STUDIO_HISTORY_PAGE_SIZE,
+      studioHistoryEffectivePage * STUDIO_HISTORY_PAGE_SIZE
+    );
+  }, [studioHistoryFiltered, studioHistoryEffectivePage]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/abstract/manifest.json')
+      .then((r) => r.json())
+      .then((data: { images?: string[] }) => {
+        if (!cancelled && Array.isArray(data.images) && data.images.length > 0) {
+          setAbstractImagePool(data.images);
+        }
+      })
+      .catch(() => {
+        /** Keep bundled default URLs on failure */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    DEFAULT_ABSTRACT_CARD_IMAGES.slice(0, 6).forEach((path) => {
+      const img = new Image();
+      img.decoding = 'async';
+      img.src = path;
+    });
+  }, []);
+
+  useEffect(() => {
     if (activeView !== 'chat' || !user) return;
     const token = localStorage.getItem('vocence_token');
     if (!token) return;
@@ -253,7 +379,7 @@ export function Studio() {
   }, []);
 
   useEffect(() => {
-    if (activeView !== 'tts') return;
+    if (activeView !== 'tts' && activeView !== 'voice-design') return;
     setTopModelsLoading(true);
     dashboardApi
       .getStudioTopModels(3)
@@ -269,12 +395,168 @@ export function Studio() {
       .finally(() => setTopModelsLoading(false));
   }, [activeView]);
 
+  useEffect(() => {
+    if (activeView !== 'voice-design') return;
+    dashboardApi
+      .getStudioVoiceDesignConfig()
+      .then(setVdConfig)
+      .catch(() => setVdConfig(null));
+  }, [activeView]);
+
+  useEffect(() => {
+    if (activeView !== 'my-voices' || !user) return;
+    const token = localStorage.getItem('vocence_token');
+    setDesignedVoicesLoading(true);
+    dashboardApi
+      .listStudioDesignedVoices(token)
+      .then((r) => setDesignedVoices(r.voices))
+      .catch(() => setDesignedVoices([]))
+      .finally(() => setDesignedVoicesLoading(false));
+  }, [activeView, user]);
+
+  useEffect(() => {
+    if (activeView !== 'my-voices') return;
+    const raw = searchParams.get('voice');
+    if (!raw) return;
+    const id = parseInt(raw, 10);
+    if (!Number.isFinite(id)) return;
+    window.setTimeout(() => {
+      highlightedVoiceRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 400);
+  }, [activeView, searchParams]);
+
   const requireAuth = (callback: () => void) => {
     if (!isAuthenticated) {
       setIsAuthModalOpen(true);
       return;
     }
     callback();
+  };
+
+  useEffect(() => {
+    if (cloningMode === 'upload') {
+      cloneStreamRef.current?.getTracks().forEach((t) => t.stop());
+      cloneStreamRef.current = null;
+      mediaRecorderRef.current?.stop();
+      mediaRecorderRef.current = null;
+      setIsRecording(false);
+    }
+  }, [cloningMode]);
+
+  useEffect(() => {
+    if (!cloningFile) {
+      setCloneReferencePreviewUrl(null);
+      return;
+    }
+    const url = URL.createObjectURL(cloningFile);
+    setCloneReferencePreviewUrl(url);
+    return () => {
+      URL.revokeObjectURL(url);
+    };
+  }, [cloningFile]);
+
+  useEffect(() => {
+    return () => {
+      cloneStreamRef.current?.getTracks().forEach((t) => t.stop());
+      cloneStreamRef.current = null;
+    };
+  }, []);
+
+  const startCloneRecording = async () => {
+    setCloneStatus(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      cloneStreamRef.current = stream;
+      const chunks: BlobPart[] = [];
+      const mr = new MediaRecorder(stream);
+      mediaRecorderRef.current = mr;
+      mr.ondataavailable = (e) => {
+        if (e.data.size) chunks.push(e.data);
+      };
+      mr.onstop = () => {
+        stream.getTracks().forEach((t) => t.stop());
+        cloneStreamRef.current = null;
+        const blob = new Blob(chunks, { type: mr.mimeType || 'audio/webm' });
+        void (async () => {
+          try {
+            const wavFile = await blobToCloneReferenceWav(blob, 'reference.wav');
+            setCloningFile(wavFile);
+          } catch {
+            const ext = blob.type.includes('webm') ? 'webm' : 'dat';
+            setCloningFile(new File([blob], `reference.${ext}`, { type: blob.type || 'application/octet-stream' }));
+            setCloneStatus({
+              type: 'error',
+              message:
+                'Could not convert this recording to WAV. Try again, upload a .wav file, or use another browser.',
+            });
+          } finally {
+            setIsRecording(false);
+            mediaRecorderRef.current = null;
+          }
+        })();
+      };
+      mr.start();
+      setIsRecording(true);
+    } catch {
+      setCloneStatus({ type: 'error', message: 'Microphone access denied or unavailable.' });
+      setIsRecording(false);
+    }
+  };
+
+  const stopCloneRecording = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+    }
+  };
+
+  const handleCloneGenerate = () => {
+    requireAuth(async () => {
+      if (!user) return;
+      if (user.credits < CREDIT_VOICE_CLONE) {
+        setCloneStatus({
+          type: 'error',
+          message: `Insufficient credits. Voice cloning requires ${CREDIT_VOICE_CLONE} credits.`,
+        });
+        return;
+      }
+      if (!cloningFile) {
+        setCloneStatus({ type: 'error', message: 'Add reference audio via upload or recording.' });
+        return;
+      }
+      const target = cloneTargetText.trim();
+      if (!target) {
+        setCloneStatus({ type: 'error', message: 'Enter the text you want the cloned voice to speak.' });
+        return;
+      }
+      const token = localStorage.getItem('vocence_token');
+      setCloneLoading(true);
+      setCloneStatus(null);
+      setCloneResult(null);
+      try {
+        const res = await dashboardApi.generateStudioClone(
+          {
+            user_id: user.id,
+            target_text: target,
+            ref_source: cloningMode,
+            language: cloneLanguage.trim() || null,
+            audio_file: cloningFile,
+          },
+          token
+        );
+        updateCredits(res.credits);
+        setCloneResult({
+          id: res.id,
+          audioUrl: res.audio_url,
+          referenceText: res.reference_text,
+          language: res.detected_language,
+        });
+        setCloneStatus({ type: 'success', message: 'Cloned audio is ready. Play or download below.' });
+      } catch (e) {
+        setCloneStatus({ type: 'error', message: userFacingApiError(e) });
+      } finally {
+        setCloneLoading(false);
+      }
+    });
   };
 
   const formatTime = (sec: number) => {
@@ -357,18 +639,35 @@ export function Studio() {
     );
   };
 
+  const handleTtsContentChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const v = e.target.value;
+    if (v.length <= TTS_CONTENT_MAX_CHARS) {
+      setTtsText(v);
+      setTtsContentLimitNotice(false);
+    } else {
+      setTtsText(v.slice(0, TTS_CONTENT_MAX_CHARS));
+      setTtsContentLimitNotice(true);
+    }
+  }, []);
+
   const handleGenerateAudio = () => {
     requireAuth(() => {
       if (!ttsText.trim()) {
         alert('Please enter text to generate audio');
         return;
       }
+      if (ttsText.length > TTS_CONTENT_MAX_CHARS) {
+        setTtsContentLimitNotice(true);
+        return;
+      }
       if (!selectedModel || !user) {
         alert('Please select a model');
         return;
       }
-      if (user.credits < 10) {
-        alert('Insufficient credits. TTS generation costs 10 credits. Please add more credits.');
+      if (user.credits < CREDIT_TTS) {
+        alert(
+          `Insufficient credits. TTS generation costs ${CREDIT_TTS} credits. Please add more credits.`,
+        );
         return;
       }
 
@@ -398,6 +697,7 @@ export function Studio() {
           setStudioHistory((prev) => [
             {
               id: res.id,
+              entry_type: 'tts',
               miner_hotkey: selectedModel.miner_hotkey,
               model_name: selectedModel.model_name,
               display_name: selectedModel.display_name,
@@ -421,27 +721,91 @@ export function Studio() {
 
   const handleStartTranscription = () => {
     requireAuth(() => {
-      if (user && user.credits < 2) {
-        alert('Insufficient credits. Speech-to-Text requires 2 credits.');
+      if (!user) return;
+      if (!sttFile) {
+        alert('Please upload an audio file first.');
         return;
       }
-
-      alert('Starting transcription... (This is a demo)');
-      
-      // Save to history
-      saveToHistory({
-        type: 'stt',
-        content: 'audio_file.mp3',
-        model: 'English',
-        meta: 'Auto-detect',
-        duration: '0:00',
-      });
-
-      // Deduct credits
-      if (user) {
-        updateCredits(user.credits - 2);
+      if (user && user.credits < CREDIT_STT) {
+        alert(`Insufficient credits. Speech-to-Text requires ${CREDIT_STT} credits.`);
+        return;
       }
+      setSttStatus(null);
+      const token = localStorage.getItem('vocence_token');
+      setGenerateLoading(true);
+      dashboardApi
+        .generateStudioStt(
+          {
+            user_id: user.id,
+            language: selectedLanguage === 'auto-detect' ? null : selectedLanguage,
+            audio_file: sttFile,
+          },
+          token
+        )
+        .then((res) => {
+          setSttResult({
+            text: res.text || '',
+            language: res.language ?? selectedLanguage,
+            fileName: sttFile.name,
+          });
+          setSttStatus({
+            type: 'success',
+            message: 'Transcription completed successfully.',
+          });
+          const createdAt = new Date().toISOString();
+          setStudioHistory((prev) => [
+            {
+              id: res.id,
+              entry_type: 'stt',
+              miner_hotkey: '',
+              model_name: 'Speech-to-Text',
+              display_name: 'Speech-to-Text',
+              prompt_text: null,
+              style_instruction: '',
+              audio_url: null,
+              expires_at: '',
+              created_at: createdAt,
+              expired: false,
+              transcribed_text: res.text,
+              source_audio_filename: sttFile.name,
+              source_language: res.language ?? null,
+              duration_seconds: res.duration_seconds ?? null,
+            },
+            ...prev,
+          ]);
+          if (res.credits != null) updateCredits(res.credits);
+        })
+        .catch((err) => {
+          setSttStatus({
+            type: 'error',
+            message: userFacingApiError(err),
+          });
+        })
+        .finally(() => setGenerateLoading(false));
     });
+  };
+
+  const handleSttDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsSttDragActive(true);
+  };
+
+  const handleSttDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsSttDragActive(false);
+  };
+
+  const handleSttDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsSttDragActive(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) {
+      setSttFile(file);
+      setSttStatus(null);
+    }
   };
 
   const handleSendMessage = () => {
@@ -484,29 +848,533 @@ export function Studio() {
     });
   };
 
-  const handleBeginCloning = () => {
-    requireAuth(() => {
-      if (user && user.credits < 10) {
-        alert('Insufficient credits. Voice Cloning requires 10 credits.');
+  const vdPreviewCredits = vdConfig?.preview_credits ?? CREDIT_VOICE_DESIGN_PREVIEW;
+
+  const handleVoiceDesignPreview = () => {
+    requireAuth(async () => {
+      if (!user) return;
+      if (!vdConfig?.llm_configured) {
+        setVdStatus({
+          type: 'info',
+          message: 'Voice Design is not available right now. Please try again later or contact support.',
+        });
         return;
       }
-
-      alert('Starting voice cloning process... (This is a demo)');
-      
-      // Save to history
-      saveToHistory({
-        type: 'cloning',
-        content: 'Voice Clone',
-        model: 'Cloning Model',
-        meta: `${similarityBoost}% similarity`,
-        duration: 'Processing...',
-      });
-
-      // Deduct credits
-      if (user) {
-        updateCredits(user.credits - 10);
+      if (!selectedModel) {
+        setVdStatus({
+          type: 'error',
+          message: 'No synthesis model is available. Check studio configuration or try again in a moment.',
+        });
+        return;
+      }
+      const desc = vdDescription.trim();
+      if (desc.length < 4) {
+        setVdStatus({ type: 'error', message: 'Add a slightly longer voice description (a short paragraph is ideal).' });
+        return;
+      }
+      if (user.credits < vdPreviewCredits) {
+        setVdStatus({
+          type: 'error',
+          message: `You need ${vdPreviewCredits} credits for voice design (preview / creation). You have ${user.credits}.`,
+        });
+        return;
+      }
+      const token = localStorage.getItem('vocence_token');
+      setVdLoading(true);
+      setVdStatus(null);
+      setVdSavedVoiceId(null);
+      try {
+        const res = await dashboardApi.studioVoiceDesignPreview(
+          {
+            user_id: user.id,
+            voice_description: desc,
+            miner_hotkey: selectedModel.miner_hotkey,
+            model_name: selectedModel.model_name,
+            chute_id: selectedModel.chute_id,
+            chute_slug: selectedModel.chute_slug,
+          },
+          token
+        );
+        updateCredits(res.credits);
+        setVdPreview(res);
+        setVdChosen('revised');
+        setVdDisplayName('');
+        setVdSaveNameInvalid(false);
+        setVdStatus({
+          type: 'success',
+          message: 'Listen to both samples and pick the one that fits.',
+        });
+      } catch (e) {
+        setVdStatus({ type: 'error', message: userFacingApiError(e) });
+      } finally {
+        setVdLoading(false);
       }
     });
+  };
+
+  const handleVoiceDesignSave = () => {
+    requireAuth(async () => {
+      if (!user || !vdPreview) return;
+      const name = vdDisplayName.trim();
+      if (!name) {
+        setVdSaveNameInvalid(true);
+        setVdStatus({ type: 'error', message: 'Please enter a name to save this voice.' });
+        return;
+      }
+      setVdSaveNameInvalid(false);
+      const token = localStorage.getItem('vocence_token');
+      setVdSaveLoading(true);
+      try {
+        const res = await dashboardApi.studioVoiceDesignSave(
+          {
+            user_id: user.id,
+            preview_token: vdPreview.preview_token,
+            chosen_variant: vdChosen,
+            display_name: name,
+          },
+          token
+        );
+        updateCredits(res.credits);
+        setVdSavedVoiceId(res.voice_id);
+        setVdPreview(null);
+        setVdDescription('');
+        setVdStatus({
+          type: 'success',
+          message: `Voice saved as “${name}”.`,
+        });
+      } catch (e) {
+        setVdStatus({ type: 'error', message: userFacingApiError(e) });
+      } finally {
+        setVdSaveLoading(false);
+      }
+    });
+  };
+
+  const executeDeleteDesignedVoice = useCallback(async () => {
+    const voiceId = deleteConfirmVoiceId;
+    if (voiceId == null || !user) return;
+    const token = localStorage.getItem('vocence_token');
+    setDeleteVoiceLoading(true);
+    setMyVoicesNotice(null);
+    try {
+      await dashboardApi.deleteStudioDesignedVoice(voiceId, token);
+      setDesignedVoices((prev) => prev.filter((v) => v.id !== voiceId));
+      setDeleteConfirmVoiceId(null);
+      setMyVoicesNotice({ type: 'success', message: 'Voice removed.' });
+      window.setTimeout(() => setMyVoicesNotice(null), 4000);
+    } catch (e) {
+      setMyVoicesNotice({ type: 'error', message: userFacingApiError(e) });
+    } finally {
+      setDeleteVoiceLoading(false);
+    }
+  }, [deleteConfirmVoiceId, user]);
+
+  const renderVoiceDesignView = () => {
+    return (
+      <div className="space-y-6">
+        <header className="space-y-2">
+          <h1 className="text-2xl sm:text-3xl font-semibold text-white tracking-tight">Voice Design</h1>
+          <p className="text-[10px] uppercase tracking-[0.16em] text-[#DFFF00]/80">Tips</p>
+          <p className="text-sm text-[#9CA3AF] leading-relaxed">
+            Describe the character you want - include age, gender, emotion, pacing, speaking speed, use case, and other details in neutral language.
+          </p>
+        </header>
+
+        {vdConfig !== null && !vdConfig.llm_configured && (
+          <div className="rounded-xl border border-amber-400/25 bg-amber-500/[0.08] px-4 py-3 text-sm text-amber-100 flex gap-3 items-start">
+            <AlertCircle className="shrink-0 mt-0.5" size={18} />
+            <div>
+              <p className="font-medium text-amber-50">Voice Design is unavailable</p>
+              <p className="text-amber-100/80 mt-1 text-xs leading-relaxed">
+                This feature is not turned on for this workspace yet. Please try again later or contact support.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {vdSavedVoiceId != null && (
+          <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/[0.08] p-6 space-y-4">
+            <div className="flex items-start gap-3">
+              <CheckCircle2 className="text-emerald-400 shrink-0" size={22} />
+              <div>
+                <p className="font-semibold text-white">Voice saved</p>
+                <p className="text-sm text-[#A7B0B7] mt-1">Open My voices to generate new lines in this style.</p>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-3">
+              <button
+                type="button"
+                className="btn-primary"
+                onClick={() => navigate(`/studio/my-voices/${vdSavedVoiceId}`)}
+              >
+                Use this voice now
+              </button>
+              <button
+                type="button"
+                className="btn-outline text-sm"
+                onClick={() => {
+                  setVdSavedVoiceId(null);
+                  setVdStatus(null);
+                }}
+              >
+                Design another
+              </button>
+            </div>
+          </div>
+        )}
+
+        <div className="space-y-6">
+          <div className="space-y-6">
+            <div className="card-vocence p-6 space-y-6">
+              {topModelsLoading ? (
+                <div className="flex items-center gap-2 text-sm text-[#A7B0B7]">
+                  <div className="w-4 h-4 border-2 border-[#DFFF00] border-t-transparent rounded-full animate-spin" />
+                  Preparing preview…
+                </div>
+              ) : null}
+              {!topModelsLoading && topModels.length === 0 ? (
+                <p className="text-sm text-amber-200/90 rounded-xl border border-amber-500/20 bg-amber-500/10 px-4 py-3">
+                  No TTS models are configured for this workspace. Voice Design previews need a synthesis model.
+                </p>
+              ) : null}
+
+              <div>
+                <label className="label-mono mb-3 block">How should this voice sound?</label>
+                <div className="rounded-xl border border-white/10 bg-[#0a0a0a] p-4 focus-within:border-[#DFFF00]/35 transition-colors">
+                  <textarea
+                    rows={5}
+                    disabled={!!vdPreview && !vdSavedVoiceId}
+                    placeholder="Example: Deep male dragon warrior, commanding and confident, measured pace, gravelly timbre, epic fantasy game narrator…"
+                    value={vdDescription}
+                    onChange={(e) => setVdDescription(e.target.value)}
+                    className="w-full bg-transparent text-white placeholder-[#5c6370] resize-none outline-none text-[15px] leading-relaxed disabled:opacity-50"
+                  />
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                {vdPreview && !vdSavedVoiceId ? (
+                  <button
+                    type="button"
+                    className="text-sm text-[#DFFF00] hover:underline"
+                    onClick={() => {
+                      setVdPreview(null);
+                      setVdStatus(null);
+                    }}
+                  >
+                    Clear previews & edit description
+                  </button>
+                ) : (
+                  <span />
+                )}
+                <button
+                  type="button"
+                  onClick={() => void handleVoiceDesignPreview()}
+                  disabled={
+                    vdLoading ||
+                    !vdConfig?.llm_configured ||
+                    topModels.length === 0 ||
+                    !selectedModel ||
+                    !!vdSavedVoiceId
+                  }
+                  className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {vdLoading ? (
+                    <>
+                      <div className="w-4 h-4 border-2 border-[#07080A] border-t-transparent rounded-full animate-spin mr-2 inline-block" />
+                      Generating previews…
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles size={16} className="mr-2 inline" />
+                      Generate previews ({vdPreviewCredits} cr)
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {vdPreview && !vdSavedVoiceId && (
+              <div className="space-y-6">
+                <div className="max-w-lg rounded-xl border border-[#DFFF00]/25 bg-gradient-to-br from-[#DFFF00]/[0.07] to-transparent px-4 py-3">
+                  <p className="text-[10px] uppercase tracking-[0.18em] text-[#DFFF00]/90 mb-1.5">Shared sample line</p>
+                  <p className="text-base sm:text-lg text-white font-medium leading-snug font-serif tracking-tight">
+                    “{vdPreview.sample_script}”
+                  </p>
+                </div>
+
+                <div>
+                  <h3 className="text-lg font-semibold text-white tracking-tight">Select the voice you prefer</h3>
+                  <p className="text-sm text-[#6B7280] mt-1">Listen to both, then choose the one that fits your project.</p>
+                </div>
+
+                <div className="grid md:grid-cols-2 gap-4">
+                  {(
+                    [
+                      {
+                        key: 'original' as const,
+                        title: 'Your description',
+                        sub: 'Uses your wording as written',
+                        instruction: vdPreview.voice_description,
+                        url: vdPreview.audio_a_url,
+                      },
+                      {
+                        key: 'revised' as const,
+                        title: 'Refined version',
+                        sub: 'Adjusted for clearer results',
+                        instruction: vdPreview.revised_instruction,
+                        url: vdPreview.audio_b_url,
+                      },
+                    ] as const
+                  ).map((opt) => (
+                    <label
+                      key={opt.key}
+                      className={`relative block cursor-pointer rounded-2xl border p-5 transition-all ${
+                        vdChosen === opt.key
+                          ? 'border-[#DFFF00] bg-[#DFFF00]/[0.06] ring-1 ring-[#DFFF00]/30'
+                          : 'border-white/10 bg-[#0c0d10] hover:border-white/20'
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="vd-variant"
+                        className="sr-only"
+                        checked={vdChosen === opt.key}
+                        onChange={() => setVdChosen(opt.key)}
+                      />
+                      <div className="flex items-center justify-between gap-2 mb-3">
+                        <div>
+                          <p className="font-semibold text-white">{opt.title}</p>
+                          <p className="text-xs text-[#6B7280]">{opt.sub}</p>
+                        </div>
+                        <span
+                          className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded ${
+                            vdChosen === opt.key ? 'bg-[#DFFF00] text-[#07080A]' : 'bg-white/10 text-[#A7B0B7]'
+                          }`}
+                        >
+                          {vdChosen === opt.key ? 'Selected' : 'Option'}
+                        </span>
+                      </div>
+                      <p className="text-sm text-[#A7B0B7] leading-relaxed line-clamp-4 mb-4">{opt.instruction}</p>
+                      {opt.url ? (
+                        <VoiceDesignWavePlayer src={opt.url} variantKey={opt.key} />
+                      ) : (
+                        <p className="text-xs text-red-300/90">Audio unavailable.</p>
+                      )}
+                    </label>
+                  ))}
+                </div>
+
+                <div className="card-vocence p-6 space-y-4 border border-white/[0.07]">
+                  <label className="label-mono block">Save as</label>
+                  <input
+                    type="text"
+                    value={vdDisplayName}
+                    maxLength={20}
+                    onChange={(e) => {
+                      const next = e.target.value.slice(0, 20);
+                      setVdDisplayName(next);
+                      if (vdSaveNameInvalid) setVdSaveNameInvalid(false);
+                    }}
+                    placeholder="Enter a name for this voice"
+                    autoComplete="off"
+                    aria-invalid={vdSaveNameInvalid}
+                    aria-required
+                    className={`w-full bg-[#0a0a0a] border rounded-xl px-4 py-3 text-white placeholder-[#5c6370] outline-none focus:border-[#DFFF00]/40 ${
+                      vdSaveNameInvalid ? 'border-red-400/50 ring-1 ring-red-400/20' : 'border-white/10'
+                    }`}
+                  />
+                  {vdSaveNameInvalid ? (
+                    <p className="text-xs text-red-300/90">A name is required to save.</p>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => void handleVoiceDesignSave()}
+                    disabled={vdSaveLoading}
+                    className="btn-primary w-full sm:w-auto disabled:opacity-50"
+                  >
+                    {vdSaveLoading ? (
+                      <>
+                        <div className="w-4 h-4 border-2 border-[#07080A] border-t-transparent rounded-full animate-spin mr-2 inline-block" />
+                        Saving…
+                      </>
+                    ) : (
+                      'Save chosen voice'
+                    )}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {vdStatus && (
+          <div
+            className={`rounded-xl border px-4 py-3 text-sm flex items-start gap-2 ${
+              vdStatus.type === 'success'
+                ? 'border-emerald-400/30 bg-emerald-500/10 text-emerald-100'
+                : vdStatus.type === 'error'
+                  ? 'border-red-400/30 bg-red-500/10 text-red-200'
+                  : 'border-amber-300/30 bg-amber-400/10 text-amber-100'
+            }`}
+          >
+            {vdStatus.type === 'success' ? <CheckCircle2 size={16} className="shrink-0 mt-0.5" /> : <AlertCircle size={16} className="shrink-0 mt-0.5" />}
+            <span>{vdStatus.message}</span>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderMyVoicesView = () => {
+    const pendingDelete =
+      deleteConfirmVoiceId != null ? designedVoices.find((x) => x.id === deleteConfirmVoiceId) : null;
+    return (
+      <>
+        <div className="space-y-8">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between sm:gap-6">
+            <div className="min-w-0">
+              <h2 className="text-3xl font-semibold text-white tracking-tight mb-2">My voices</h2>
+              <p className="text-[#A7B0B7] leading-relaxed text-balance">
+                Voices you saved from Voice Design. Open a card, enter new text, and generate speech in that style.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => navigate('/studio/voice-design')}
+              className="shrink-0 self-start rounded-xl border border-white/15 bg-white px-5 py-2.5 text-sm font-semibold text-[#07080A] shadow-sm shadow-black/10 transition-colors hover:bg-white/95 active:scale-[0.99] sm:mt-1"
+            >
+              Create my voice
+            </button>
+          </div>
+
+          {myVoicesNotice ? (
+            <div
+              className={`rounded-xl border px-4 py-3 text-sm flex items-start gap-2 ${
+                myVoicesNotice.type === 'success'
+                  ? 'border-emerald-400/30 bg-emerald-500/10 text-emerald-100'
+                  : 'border-red-400/30 bg-red-500/10 text-red-200'
+              }`}
+            >
+              {myVoicesNotice.type === 'success' ? (
+                <CheckCircle2 size={16} className="shrink-0 mt-0.5" />
+              ) : (
+                <AlertCircle size={16} className="shrink-0 mt-0.5" />
+              )}
+              <span>{myVoicesNotice.message}</span>
+            </div>
+          ) : null}
+
+          {!user ? (
+            <div className="card-vocence p-10 text-center">
+              <p className="text-[#A7B0B7] mb-4">Sign in to see voices you have saved.</p>
+              <button type="button" onClick={() => setIsAuthModalOpen(true)} className="btn-primary">
+                Sign in
+              </button>
+            </div>
+          ) : designedVoicesLoading ? (
+            <div className="flex items-center justify-center gap-2 py-20 text-[#A7B0B7]">
+              <div className="w-5 h-5 border-2 border-[#DFFF00] border-t-transparent rounded-full animate-spin" />
+              Loading your voices…
+            </div>
+          ) : designedVoices.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-white/15 bg-white/[0.02] p-12 text-center">
+              <LayoutGrid className="mx-auto mb-4 text-[#4B5563]" size={40} />
+              <p className="text-white font-medium mb-2">No saved voices yet</p>
+              <p className="text-sm text-[#6B7280] mb-6 max-w-md mx-auto">
+                Save a voice from Voice Design to see it here.
+              </p>
+              <button type="button" className="btn-primary" onClick={() => navigate('/studio/voice-design')}>
+                Go to Voice Design
+              </button>
+            </div>
+          ) : (
+            <div className="grid sm:grid-cols-2 xl:grid-cols-3 gap-6">
+              {designedVoices.map((v) => {
+                const isHighlight = searchParams.get('voice') === String(v.id);
+                return (
+                  <div
+                    key={v.id}
+                    ref={isHighlight ? highlightedVoiceRef : undefined}
+                    className={`group flex flex-col overflow-hidden rounded-2xl border bg-[#0f131a] transition-all ${
+                      isHighlight
+                        ? 'border-[#DFFF00]/35 ring-1 ring-[#DFFF00]/20'
+                        : 'border-white/[0.1] hover:border-white/20 hover:shadow-lg hover:shadow-black/20'
+                    }`}
+                  >
+                    <div className="relative h-40 w-full shrink-0 overflow-hidden">
+                      <MyVoiceCardArt
+                        urls={abstractImagePool}
+                        seed={v.id}
+                        eager
+                        className="h-full w-full transition-transform duration-500 group-hover:scale-[1.03]"
+                      />
+                      <div className="absolute inset-0 bg-gradient-to-t from-[#0f131a]/95 via-[#0f131a]/40 to-black/18 pointer-events-none" />
+                      <button
+                        type="button"
+                        onClick={() => setDeleteConfirmVoiceId(v.id)}
+                        className="absolute right-2 top-2 flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-black/50 text-[#A7B0B7] backdrop-blur-sm transition-colors hover:border-red-400/30 hover:bg-red-500/20 hover:text-red-200"
+                        aria-label="Delete voice"
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                      <div className="absolute bottom-3 left-4 right-4">
+                        <h3 className="font-semibold text-white text-lg leading-tight drop-shadow-md">{v.display_name}</h3>
+                        {v.model_name ? (
+                          <p className="text-[10px] text-[#A7B0B7]/90 mt-1 truncate">{v.model_name}</p>
+                        ) : null}
+                      </div>
+                    </div>
+
+                    <div className="flex flex-1 flex-col gap-3 border-t border-white/[0.08] p-4">
+                      <div>
+                        <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#DFFF00]/85 mb-1">
+                          Sample
+                        </p>
+                        <p className="text-sm text-[#C5CAD1] leading-relaxed line-clamp-3">“{v.ref_script}”</p>
+                      </div>
+                      {v.audio_url && !v.expired ? (
+                        <VoiceDesignWavePlayer src={v.audio_url} variantKey={`my-voice-${v.id}`} />
+                      ) : (
+                        <p className="text-xs text-amber-200/85 rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2">
+                          Sample audio is no longer available. Create a new voice in Voice Design.
+                        </p>
+                      )}
+                      <button
+                        type="button"
+                        disabled={v.expired}
+                        onClick={() => navigate(`/studio/my-voices/${v.id}`)}
+                        className="mt-auto w-full rounded-xl border border-white/15 bg-white py-2.5 text-sm font-semibold text-[#07080A] shadow-sm shadow-black/10 transition-colors hover:bg-white/95 active:scale-[0.99] disabled:opacity-50 disabled:pointer-events-none"
+                      >
+                        Use this voice
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <ConfirmDialog
+          open={deleteConfirmVoiceId != null}
+          title="Delete saved voice?"
+          message={
+            pendingDelete
+              ? `Remove “${pendingDelete.display_name}”? This cannot be undone.`
+              : 'Remove this voice? This cannot be undone.'
+          }
+          confirmLabel="Delete"
+          cancelLabel="Cancel"
+          confirmVariant="danger"
+          busy={deleteVoiceLoading}
+          onConfirm={() => void executeDeleteDesignedVoice()}
+          onCancel={() => {
+            if (!deleteVoiceLoading) setDeleteConfirmVoiceId(null);
+          }}
+        />
+      </>
+    );
   };
 
   const renderTTSView = () => (
@@ -552,15 +1420,37 @@ export function Studio() {
             {/* Content Input */}
             <div>
               <label className="label-mono mb-3 block">Content</label>
-              <div className="bg-[#0a0a0a] border border-white/10 rounded-xl p-4">
+              <div
+                className={cn(
+                  'bg-[#0a0a0a] rounded-xl p-4 border transition-colors',
+                  ttsContentLimitNotice
+                    ? 'border-amber-500/45 ring-1 ring-amber-500/20'
+                    : 'border-white/10'
+                )}
+              >
                 <textarea
                   rows={6}
                   placeholder="Type or paste your text here..."
                   value={ttsText}
-                  onChange={(e) => setTtsText(e.target.value)}
+                  onChange={handleTtsContentChange}
                   className="w-full bg-transparent text-white placeholder-[#666] resize-none outline-none"
+                  aria-invalid={ttsContentLimitNotice}
+                  aria-describedby={ttsContentLimitNotice ? 'tts-content-limit-hint' : undefined}
                 />
               </div>
+              {ttsContentLimitNotice ? (
+                <p
+                  id="tts-content-limit-hint"
+                  className="text-xs text-amber-400/95 mt-2 flex items-start gap-2 leading-relaxed"
+                  role="alert"
+                >
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" aria-hidden />
+                  <span>
+                    Text-to-Speech content is limited to {TTS_CONTENT_MAX_CHARS} characters. Anything beyond that
+                    wasn&apos;t added—shorten your text or split it into multiple generations.
+                  </span>
+                </p>
+              ) : null}
             </div>
 
             {/* Style Instruction (keeps main layout intact) */}
@@ -595,7 +1485,7 @@ export function Studio() {
                 ) : (
                   <>
                     <Play size={16} className="mr-2" />
-                    Generate Audio
+                    Generate Audio ({CREDIT_TTS} cr)
                   </>
                 )}
               </button>
@@ -645,16 +1535,15 @@ export function Studio() {
   );
 
   const renderSTTView = () => (
-    <div className="space-y-6 relative">
-      <div className="blur-[2px] pointer-events-none select-none">
-        <div>
-          <h2 className="text-2xl font-semibold mb-2">Speech-to-Text</h2>
-          <p className="text-[#A7B0B7]">
-            Highly accurate transcription and translation for audio files.
-          </p>
-        </div>
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-2xl font-semibold mb-2">Speech-to-Text</h2>
+        <p className="text-[#A7B0B7]">
+          Highly accurate transcription and translation for audio files.
+        </p>
+      </div>
 
-        <div className="card-vocence p-6 space-y-6">
+      <div className="card-vocence p-6 space-y-6">
         {/* Upload Zone */}
         <div>
           <input
@@ -671,7 +1560,14 @@ export function Studio() {
           />
           <div
             onClick={() => sttFileInputRef.current?.click()}
-            className="border-2 border-dashed border-white/10 rounded-2xl p-12 text-center hover:border-white/20 transition-colors cursor-pointer"
+            onDragOver={handleSttDragOver}
+            onDragLeave={handleSttDragLeave}
+            onDrop={handleSttDrop}
+            className={`border-2 border-dashed rounded-2xl p-12 text-center transition-colors cursor-pointer ${
+              isSttDragActive
+                ? 'border-[#DFFF00] bg-[#DFFF00]/10'
+                : 'border-white/10 hover:border-white/20'
+            }`}
           >
             <Upload size={40} className="mx-auto mb-4 text-[#666]" />
             {sttFile ? (
@@ -691,81 +1587,134 @@ export function Studio() {
           </div>
         </div>
 
-        {/* Language Selection */}
-        <div>
-          <label className="label-mono mb-3 block">Language Selection</label>
-          <div className="relative">
-            <select
-              value={selectedLanguage}
-              onChange={(e) => setSelectedLanguage(e.target.value)}
-              className="w-full bg-[#0a0a0a] border border-white/10 rounded-xl p-4 text-sm text-white cursor-pointer appearance-none pr-10"
-            >
-              <option value="auto-detect">Auto-detect</option>
-              <option value="en">English</option>
-              <option value="es">Spanish</option>
-              <option value="pt">Portuguese</option>
-              <option value="ja">Japanese</option>
-              <option value="zh">Chinese</option>
-              <option value="fr">French</option>
-              <option value="de">German</option>
-              <option value="it">Italian</option>
-              <option value="ru">Russian</option>
-              <option value="ko">Korean</option>
-              <option value="ar">Arabic</option>
-              <option value="hi">Hindi</option>
-            </select>
-            <ChevronDown
-              size={16}
-              className="absolute right-4 top-1/2 -translate-y-1/2 text-[#666] pointer-events-none"
-            />
+        <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+          <div className="w-full md:w-[260px]">
+            <label className="label-mono mb-2 block">Language</label>
+            <Select value={selectedLanguage} onValueChange={setSelectedLanguage}>
+              <SelectTrigger className="h-10 bg-[#0a0a0a] border-white/15 rounded-xl px-3 text-sm text-white hover:bg-[#111] focus:border-[#DFFF00]/60 focus:ring-[#DFFF00]/20">
+                <SelectValue placeholder="Auto-detect" />
+              </SelectTrigger>
+              <SelectContent className="bg-[#0a0a0a] border-white/15 text-white max-h-72">
+                <SelectItem value="auto-detect">Auto-detect</SelectItem>
+                <SelectItem value="en">English</SelectItem>
+                <SelectItem value="es">Spanish</SelectItem>
+                <SelectItem value="pt">Portuguese</SelectItem>
+                <SelectItem value="ja">Japanese</SelectItem>
+                <SelectItem value="zh">Chinese</SelectItem>
+                <SelectItem value="fr">French</SelectItem>
+                <SelectItem value="de">German</SelectItem>
+                <SelectItem value="it">Italian</SelectItem>
+                <SelectItem value="ru">Russian</SelectItem>
+                <SelectItem value="ko">Korean</SelectItem>
+                <SelectItem value="ar">Arabic</SelectItem>
+                <SelectItem value="hi">Hindi</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
-        </div>
 
-        {/* Checkbox */}
-        <label className="flex items-center gap-3 cursor-pointer group">
-          <div className="relative">
-            <input
-              type="checkbox"
-              checked={getVoiceDescription}
-              onChange={(e) => setGetVoiceDescription(e.target.checked)}
-              className="sr-only"
-            />
-            <div className={`w-5 h-5 border-2 rounded-md transition-all flex items-center justify-center ${
-              getVoiceDescription
-                ? 'bg-[#DFFF00] border-[#DFFF00]'
-                : 'bg-transparent border-white/20 group-hover:border-white/40'
-            }`}>
-              {getVoiceDescription && (
-                <svg
-                  className="w-3 h-3 text-[#07080A]"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
-                </svg>
-              )}
+          <label className="flex items-center gap-3 cursor-pointer group rounded-xl border border-white/10 bg-white/[0.02] px-3 py-2 md:self-end">
+            <div className="relative">
+              <input
+                type="checkbox"
+                checked={getVoiceDescription}
+                onChange={(e) => {
+                  if (e.target.checked) {
+                    setSttStatus({
+                      type: 'info',
+                      message: 'Get voice description is under development and not available yet.',
+                    });
+                    setGetVoiceDescription(false);
+                    return;
+                  }
+                  setGetVoiceDescription(false);
+                }}
+                className="sr-only"
+              />
+              <div className={`w-5 h-5 border-2 rounded-md transition-all flex items-center justify-center ${
+                getVoiceDescription
+                  ? 'bg-[#DFFF00] border-[#DFFF00]'
+                  : 'bg-transparent border-white/20 group-hover:border-white/40'
+              }`}>
+                {getVoiceDescription && (
+                  <svg
+                    className="w-3 h-3 text-[#07080A]"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                  </svg>
+                )}
+              </div>
             </div>
-          </div>
-          <span className="text-sm text-[#A7B0B7] group-hover:text-white transition-colors">Get voice description</span>
-        </label>
+            <span className="text-sm text-[#A7B0B7] group-hover:text-white transition-colors">Get voice description</span>
+          </label>
+        </div>
 
         {/* Actions */}
         <div className="flex justify-end">
-          <button onClick={handleStartTranscription} className="btn-primary">
+          <button onClick={handleStartTranscription} disabled={generateLoading} className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed">
             <Mic size={16} className="mr-2" />
-            Start Transcription
+            {generateLoading ? 'Transcribing...' : `Start Transcription (${CREDIT_STT} cr)`}
           </button>
         </div>
-      </div>
-      </div>
-      
-      {/* Coming Soon Overlay */}
-      <div className="absolute inset-0 z-10 flex items-center justify-center pointer-events-none">
-        <div className="rounded-2xl border border-[#DFFF00]/25 bg-[#0b0f14]/70 px-7 py-5 text-center backdrop-blur-sm">
-          <h3 className="text-2xl md:text-3xl font-bold text-[#DFFF00] mb-1">Coming Soon</h3>
-          <p className="text-sm text-[#A7B0B7]">This feature is under development</p>
-        </div>
+
+        {sttStatus && (
+          <div
+            className={`rounded-xl border px-4 py-3 text-sm flex items-center gap-2 ${
+              sttStatus.type === 'success'
+                ? 'border-emerald-400/30 bg-emerald-500/10 text-emerald-200'
+                : sttStatus.type === 'error'
+                  ? 'border-red-400/30 bg-red-500/10 text-red-200'
+                  : 'border-amber-300/30 bg-amber-300/10 text-amber-100'
+            }`}
+          >
+            {sttStatus.type === 'success' ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}
+            <span>{sttStatus.message}</span>
+          </div>
+        )}
+
+        {sttResult && (
+          <div className="rounded-2xl border border-white/10 bg-gradient-to-b from-white/[0.05] to-white/[0.02] p-5 space-y-4 shadow-[0_10px_40px_rgba(0,0,0,0.35)]">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-xs uppercase tracking-[0.14em] text-[#DFFF00]">Transcription</p>
+                <p className="text-sm text-[#A7B0B7] mt-1">
+                  {sttResult.fileName || 'Audio file'}
+                </p>
+              </div>
+              <button
+                type="button"
+                className="text-xs font-medium text-[#DFFF00] hover:underline inline-flex items-center gap-1"
+                onClick={() => {
+                  navigator.clipboard.writeText(sttResult.text || '');
+                  setSttCopied(true);
+                  window.setTimeout(() => setSttCopied(false), 1400);
+                }}
+              >
+                {sttCopied ? (
+                  <>
+                    <CheckCircle2 size={13} />
+                    Copied
+                  </>
+                ) : (
+                  <>
+                    <Copy size={13} />
+                    Copy
+                  </>
+                )}
+              </button>
+            </div>
+            <p className="text-sm leading-7 text-white whitespace-pre-wrap rounded-xl border border-white/10 bg-[#050608] p-4">
+              {sttResult.text || '(empty transcription)'}
+            </p>
+            {sttResult.language && (
+              <p className="text-xs text-[#8A93A3]">
+                Language: <span className="text-white">{sttResult.language}</span>
+              </p>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -856,23 +1805,23 @@ export function Studio() {
   );
 
   const renderCloningView = () => (
-    <div className="space-y-6 relative">
-      <div className="blur-[2px] pointer-events-none select-none">
-        <div>
-          <h2 className="text-2xl font-semibold mb-2">Voice Cloning</h2>
-          <p className="text-[#A7B0B7]">
-            Create high-fidelity digital twins of any voice using just 30 seconds of audio.
-          </p>
-        </div>
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-2xl font-semibold mb-2">Voice Cloning</h2>
+        <p className="text-[#A7B0B7] max-w-3xl">
+          Upload a reference recording or capture one with your microphone. We transcribe the reference audio automatically,
+          then synthesize your target text in that voice. Output is stored for 7 days — play or download below. Each run
+          uses {CREDIT_VOICE_CLONE} credits.
+        </p>
+      </div>
 
-        <div className="grid md:grid-cols-2 gap-6">
-        {/* Step 1: Upload or Record */}
-        <div className="card-vocence p-6">
-          <label className="label-mono mb-4 block">Step 1: Upload Samples or Record</label>
-          
-          {/* Mode Toggle */}
-          <div className="grid grid-cols-2 gap-2 mb-4">
+      <div className="grid md:grid-cols-2 gap-6">
+        <div className="card-vocence p-6 space-y-4">
+          <label className="label-mono block">Reference audio</label>
+          <p className="text-xs text-[#666]">Choose one source: file upload (drag-and-drop) or microphone recording.</p>
+          <div className="grid grid-cols-2 gap-2">
             <button
+              type="button"
               onClick={() => {
                 setCloningMode('upload');
                 setIsRecording(false);
@@ -886,6 +1835,7 @@ export function Studio() {
               Upload
             </button>
             <button
+              type="button"
               onClick={() => {
                 setCloningMode('record');
                 setCloningFile(null);
@@ -900,45 +1850,71 @@ export function Studio() {
             </button>
           </div>
 
-          {/* Upload Mode */}
           {cloningMode === 'upload' && (
             <>
               <input
                 ref={cloningFileInputRef}
                 type="file"
-                accept="audio/*,.wav,.mp3,.flac"
+                accept="audio/*,.wav,.mp3,.flac,.webm"
                 className="hidden"
                 onChange={(e) => {
                   const file = e.target.files?.[0];
-                  if (file) {
-                    setCloningFile(file);
-                  }
+                  if (file) setCloningFile(file);
                 }}
               />
               <div
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') cloningFileInputRef.current?.click();
+                }}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setIsCloneDragActive(true);
+                }}
+                onDragLeave={() => setIsCloneDragActive(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setIsCloneDragActive(false);
+                  const file = e.dataTransfer.files?.[0];
+                  if (file) setCloningFile(file);
+                }}
                 onClick={() => cloningFileInputRef.current?.click()}
-                className="border-2 border-dashed border-white/10 rounded-2xl p-10 text-center hover:border-white/20 transition-colors cursor-pointer mb-6"
+                className={`border-2 border-dashed rounded-2xl p-10 text-center transition-colors cursor-pointer ${
+                  isCloneDragActive ? 'border-[#DFFF00] bg-[#DFFF00]/5' : 'border-white/10 hover:border-white/25'
+                }`}
               >
                 {cloningFile ? (
                   <>
                     <Upload size={32} className="mx-auto mb-3 text-[#DFFF00]" />
                     <p className="text-sm mb-1 text-[#DFFF00]">{cloningFile.name}</p>
                     <p className="text-xs text-[#666]">{(cloningFile.size / 1024 / 1024).toFixed(2)} MB</p>
+                    {cloneReferencePreviewUrl ? (
+                      <div className="mt-4 pt-4 border-t border-white/10 text-left" onClick={(e) => e.stopPropagation()}>
+                        <p className="text-[11px] text-[#6B7280] mb-2">Preview reference</p>
+                        <audio
+                          key={cloneReferencePreviewUrl}
+                          src={cloneReferencePreviewUrl}
+                          controls
+                          className="w-full h-9 rounded-lg"
+                          preload="metadata"
+                        />
+                      </div>
+                    ) : null}
                   </>
                 ) : (
                   <>
-                    <Upload size={32} className="mx-auto mb-3 text-[#666]" />
-                    <p className="text-sm mb-1">Drop audio files or click to upload</p>
-                    <p className="text-xs text-[#666]">WAV, MP3 or FLAC (Min. 30s recommended)</p>
+                    <Upload size={32} className={`mx-auto mb-3 ${isCloneDragActive ? 'text-[#DFFF00]' : 'text-[#666]'}`} />
+                    <p className="text-sm mb-1">Drop audio here or click to browse</p>
+                    <p className="text-xs text-[#666]">WAV, MP3, FLAC, WebM…</p>
                   </>
                 )}
               </div>
             </>
           )}
 
-          {/* Record Mode */}
           {cloningMode === 'record' && (
-            <div className="border-2 border-dashed border-white/10 rounded-2xl p-10 text-center mb-6">
+            <div className="border-2 border-dashed border-white/10 rounded-2xl p-10 text-center">
               <div className="mb-4">
                 {isRecording ? (
                   <div className="w-20 h-20 mx-auto mb-4 rounded-full bg-red-500/20 flex items-center justify-center border-2 border-red-500">
@@ -951,9 +1927,10 @@ export function Studio() {
                 )}
               </div>
               <button
+                type="button"
                 onClick={() => {
-                  setIsRecording(!isRecording);
-                  // TODO: Implement audio recording
+                  if (isRecording) stopCloneRecording();
+                  else void startCloneRecording();
                 }}
                 className={`px-6 py-3 rounded-full font-medium transition-all ${
                   isRecording
@@ -964,154 +1941,129 @@ export function Studio() {
                 {isRecording ? (
                   <>
                     <Square size={16} className="inline mr-2" />
-                    Stop Recording
+                    Stop &amp; use recording
                   </>
                 ) : (
                   <>
                     <Mic size={16} className="inline mr-2" />
-                    Start Recording
+                    Start recording
                   </>
                 )}
               </button>
-              {isRecording && (
-                <p className="text-xs text-[#666] mt-3">Recording in progress...</p>
+              {isRecording && <p className="text-xs text-[#666] mt-3">Recording… stop when you are done.</p>}
+              {cloningMode === 'record' && cloningFile && !isRecording && (
+                <div className="mt-4 text-left max-w-md mx-auto space-y-2">
+                  <p className="text-xs text-[#DFFF00]">Ready: {cloningFile.name}</p>
+                  <p className="text-[11px] text-[#6B7280]">Play back your recording before generating.</p>
+                  {cloneReferencePreviewUrl ? (
+                    <audio
+                      key={cloneReferencePreviewUrl}
+                      src={cloneReferencePreviewUrl}
+                      controls
+                      className="w-full h-9 rounded-lg"
+                      preload="metadata"
+                    />
+                  ) : null}
+                </div>
               )}
             </div>
           )}
 
           <div>
-            <label className="label-mono mb-2 block">Voice Name</label>
-            <div className="bg-[#0a0a0a] border border-white/10 rounded-xl p-3">
-              <input
-                type="text"
-                placeholder="e.g. My Professional Avatar"
-                className="w-full bg-transparent text-white placeholder-[#666] outline-none text-sm"
-              />
-            </div>
+            <label className="label-mono mb-2 block text-xs">Reference language (optional)</label>
+            <input
+              value={cloneLanguage}
+              onChange={(e) => setCloneLanguage(e.target.value)}
+              placeholder="e.g. en — helps STT for non-English references"
+              className="w-full bg-[#0a0a0a] border border-white/10 rounded-xl px-3 py-2 text-sm text-white placeholder-[#666] outline-none"
+            />
           </div>
         </div>
 
-        {/* Step 2: Parameters */}
-        <div className="card-vocence p-6">
-          <label className="label-mono mb-4 block">Step 2: Parameters</label>
-
-          <div className="space-y-6">
-            <div>
-              <div className="flex justify-between mb-2">
-                <span className="label-mono">Similarity Boost</span>
-                <span className="text-sm">{similarityBoost}%</span>
-              </div>
-              <input
-                type="range"
-                min="0"
-                max="100"
-                value={similarityBoost}
-                onChange={(e) => setSimilarityBoost(Number(e.target.value))}
-                className="w-full accent-[#DFFF00]"
-              />
-              <p className="text-xs text-[#666] mt-1">
-                Higher values capture more nuance but may introduce artifacts.
-              </p>
-            </div>
-
-            <div>
-              <div className="flex justify-between mb-2">
-                <span className="label-mono">Stability</span>
-                <span className="text-sm">{stability}%</span>
-              </div>
-              <input
-                type="range"
-                min="0"
-                max="100"
-                value={stability}
-                onChange={(e) => setStability(Number(e.target.value))}
-                className="w-full accent-[#DFFF00]"
-              />
-              <p className="text-xs text-[#666] mt-1">
-                Controls how much the voice varies across generations.
-              </p>
-            </div>
-
-            <div>
-              <label className="label-mono mb-3 block">Privacy Level</label>
-              <div className="grid grid-cols-2 gap-3">
-                <button className="p-4 rounded-xl border border-[#DFFF00] bg-[#DFFF00]/5 text-sm">
-                  Private
-                </button>
-                <button className="p-4 rounded-xl border border-white/10 bg-white/[0.02] text-sm opacity-50">
-                  Public (Earn TAO)
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <button onClick={handleBeginCloning} className="btn-primary w-full mt-6">
-            Begin Cloning Process
+        <div className="card-vocence p-6 flex flex-col gap-4">
+          <label className="label-mono block">Text to speak (target)</label>
+          <p className="text-xs text-[#666]">
+            This is what the cloned voice will say. Reference words come from your audio via automatic transcription.
+          </p>
+          <textarea
+            rows={8}
+            value={cloneTargetText}
+            onChange={(e) => setCloneTargetText(e.target.value)}
+            placeholder="Type the sentence or paragraph you want to hear in the reference voice…"
+            className="w-full flex-1 min-h-[200px] bg-[#0a0a0a] border border-white/10 rounded-xl p-4 text-white placeholder-[#666] resize-y outline-none"
+          />
+          <button
+            type="button"
+            onClick={() => void handleCloneGenerate()}
+            disabled={cloneLoading}
+            className="btn-primary w-full disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {cloneLoading ? (
+              <>
+                <div className="w-4 h-4 border-2 border-[#07080A] border-t-transparent rounded-full animate-spin mr-2 inline-block" />
+                Cloning…
+              </>
+            ) : (
+              <>
+                <Play size={16} className="inline mr-2" />
+                Generate cloned speech ({CREDIT_VOICE_CLONE} cr)
+              </>
+            )}
           </button>
         </div>
       </div>
 
-      {/* Cloned Voices */}
-      <div className="card-vocence p-6">
-        <div className="flex items-center justify-between mb-6">
-          <h3 className="font-semibold">Your Cloned Voices</h3>
-          <span className="text-xs text-[#666]">3 OF 5 SLOTS USED</span>
+      {cloneStatus && (
+        <div
+          className={`flex items-start gap-3 rounded-xl border px-4 py-3 text-sm ${
+            cloneStatus.type === 'success'
+              ? 'border-green-500/40 bg-green-500/10 text-green-100'
+              : cloneStatus.type === 'error'
+                ? 'border-red-500/40 bg-red-500/10 text-red-100'
+                : 'border-white/15 bg-white/5 text-[#A7B0B7]'
+          }`}
+        >
+          {cloneStatus.type === 'success' ? <CheckCircle2 size={16} className="shrink-0 mt-0.5" /> : <AlertCircle size={16} className="shrink-0 mt-0.5" />}
+          <span>{cloneStatus.message}</span>
         </div>
+      )}
 
-        <div className="grid md:grid-cols-3 gap-4">
-          {clonedVoices.map((voice) => (
-            <div
-              key={voice.id}
-              className="bg-[#0a0a0a] border border-white/10 rounded-xl p-4"
+      {cloneResult && (
+        <div className="card-vocence p-6 space-y-4 border border-[#DFFF00]/20">
+          <h3 className="font-semibold text-white">Result</h3>
+          <div className="rounded-xl bg-[#0a0a0a] border border-white/10 p-4">
+            <p className="text-xs text-[#666] uppercase tracking-wide mb-1">Transcribed reference</p>
+            <p className="text-sm text-[#A7B0B7] leading-relaxed whitespace-pre-wrap">{cloneResult.referenceText}</p>
+            {cloneResult.language && (
+              <p className="text-xs text-[#666] mt-2">Language: {cloneResult.language}</p>
+            )}
+          </div>
+          <audio ref={cloneAudioRef} src={cloneResult.audioUrl} className="w-full" controls />
+          <div className="flex flex-wrap gap-3">
+            <button
+              type="button"
+              className="btn-outline text-sm"
+              onClick={() =>
+                void triggerBrowserDownload(cloneResult.audioUrl, `vocence-clone-${cloneResult.id}.wav`)
+              }
             >
-              {voice.status === 'processing' ? (
-                <div className="flex flex-col items-center justify-center h-full py-6">
-                  <div className="w-8 h-8 rounded-full bg-[#07080A] flex items-center justify-center mb-2">
-                    <span className="text-lg">⟳</span>
-                  </div>
-                  <p className="text-sm">Processing Clone...</p>
-                </div>
-              ) : (
-                <>
-                  <div className="flex items-start justify-between mb-3">
-                    <div>
-                      <h4 className="text-sm font-medium mb-1">{voice.name}</h4>
-                      <span className="inline-block px-2 py-0.5 bg-[#DFFF00]/20 rounded text-[10px] text-[#DFFF00] font-medium">
-                        ACTIVE
-                      </span>
-                    </div>
-                    <button className="text-[#666] hover:text-white">
-                      <MoreHorizontal size={18} />
-                    </button>
-                  </div>
-                  <div className="flex items-center gap-1 h-10 mb-3">
-                    {Array.from({ length: 20 }).map((_, i) => (
-                      <div
-                        key={i}
-                        className="w-1 bg-[#DFFF00] rounded-full"
-                        style={{ height: `${20 + Math.random() * 60}%`, opacity: 0.6 }}
-                      />
-                    ))}
-                  </div>
-                  <p className="text-xs text-[#666] mb-3">Created {voice.createdAt}</p>
-                  <button className="w-8 h-8 bg-white text-[#07080A] rounded-full flex items-center justify-center hover:bg-[#DFFF00] transition-colors">
-                    <Play size={14} />
-                  </button>
-                </>
-              )}
-            </div>
-          ))}
+              <Download size={16} className="inline mr-2" />
+              Download
+            </button>
+            {user && (
+              <button
+                type="button"
+                className="btn-outline text-sm"
+                onClick={() =>
+                  navigate(`/studio/result/${cloneResult.id}?entry_type=clone`)
+                }
+              >
+                Open player page
+              </button>
+            )}
+          </div>
         </div>
-      </div>
-      </div>
-      
-      {/* Coming Soon Overlay */}
-      <div className="absolute inset-0 z-10 flex items-center justify-center pointer-events-none">
-        <div className="rounded-2xl border border-[#DFFF00]/25 bg-[#0b0f14]/70 px-7 py-5 text-center backdrop-blur-sm">
-          <h3 className="text-2xl md:text-3xl font-bold text-[#DFFF00] mb-1">Coming Soon</h3>
-          <p className="text-sm text-[#A7B0B7]">This feature is under development</p>
-        </div>
-      </div>
+      )}
     </div>
   );
 
@@ -1197,72 +2149,22 @@ export function Studio() {
         </div>
       )}
 
-      <div className="flex">
-        {/* Sidebar */}
-        <aside className="studio-sidebar w-64 border-r border-white/5 bg-[#07080A] min-h-screen p-4 hidden lg:block">
-          <div className="space-y-1">
-            {sidebarItems.map((item) => (
-              <button
-                key={item.id}
-                onClick={() => navigate(`/studio/${item.id}`)}
-                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all ${
-                  activeView === item.id
-                    ? 'bg-white/10 text-white'
-                    : 'text-[#A7B0B7] hover:bg-white/5 hover:text-white'
-                }`}
-              >
-                <item.icon size={18} />
-                {item.label}
-              </button>
-            ))}
-          </div>
-
-          {/* Credit Balance */}
-          <div className="mt-16 p-4 bg-white/[0.03] rounded-xl">
-            <div className="text-xs text-[#666] uppercase tracking-wider mb-2">
-              Credit Balance
-            </div>
-            <div className="text-xl font-semibold mb-1">
-              {user?.credits || 0} <span className="text-sm text-[#A7B0B7] font-normal">credits</span>
-            </div>
-            <Link
-              to="/pricing"
-              className="btn-outline mt-3 flex w-full items-center justify-center py-2 text-xs font-semibold"
-            >
-              Add Credits
-            </Link>
-          </div>
-        </aside>
-
-        {/* Mobile Sidebar */}
-        <div className="lg:hidden fixed bottom-0 left-0 right-0 bg-[#07080A] border-t border-white/5 p-2 z-50">
-          <div className="flex justify-around">
-            {sidebarItems.map((item) => (
-              <button
-                key={item.id}
-                onClick={() => navigate(`/studio/${item.id}`)}
-                className={`p-3 rounded-lg ${
-                  activeView === item.id ? 'text-[#DFFF00]' : 'text-[#666]'
-                }`}
-              >
-                <item.icon size={20} />
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Main Content */}
-        <main className="studio-content flex-1 p-6 lg:p-10 pb-24 lg:pb-10">
-          <div className="max-w-6xl mx-auto">
+      <StudioShell activeView={activeView}>
+        <div className="max-w-6xl mx-auto">
             {activeView === 'tts' && renderTTSView()}
             {activeView === 'stt' && renderSTTView()}
             {activeView === 'chat' && renderChatView()}
             {activeView === 'cloning' && renderCloningView()}
+            {activeView === 'voice-design' && renderVoiceDesignView()}
+            {activeView === 'my-voices' && renderMyVoicesView()}
             {activeView === 'history' && (
               <div className="space-y-6">
                 <div>
                   <h2 className="text-2xl font-semibold mb-2">History</h2>
-                  <p className="text-[#A7B0B7]">View and manage your TTS generations. Available for 7 days.</p>
+                  <p className="text-[#A7B0B7]">
+                    View and manage your Studio activity: TTS, STT, voice cloning, and My voice (Voice Design) generations.
+                    Audio is available for 7 days.
+                  </p>
                 </div>
                 {!user ? (
                   <div className="card-vocence p-6 text-center">
@@ -1279,12 +2181,33 @@ export function Studio() {
                           <Search size={16} className="text-[#666]" />
                           <input
                             type="text"
-                            placeholder="Search prompts or style..."
+                            placeholder="Search prompts, transcription, clone text..."
                             value={studioHistorySearch}
                             onChange={(e) => setStudioHistorySearch(e.target.value)}
                             className="flex-1 bg-transparent text-sm outline-none text-white placeholder-[#666]"
                           />
                         </div>
+                        <Select
+                          value={studioHistoryCategory}
+                          onValueChange={(v) =>
+                            setStudioHistoryCategory(v as typeof studioHistoryCategory)
+                          }
+                        >
+                          <SelectTrigger className="w-full sm:w-[200px] h-10 bg-[#0a0a0a] border border-white/10 rounded-lg px-3 text-sm text-white">
+                            <SelectValue placeholder="Category" />
+                          </SelectTrigger>
+                          <SelectContent
+                            position="popper"
+                            sideOffset={4}
+                            className="bg-[#0a0a0a] border border-white/10 text-white [&_[data-slot=select-item]]:focus:!bg-transparent [&_[data-slot=select-item]]:data-[state=checked]:!bg-[#DFFF00]/15 [&_[data-slot=select-item]]:data-[state=checked]:!text-[#DFFF00] [&_[data-slot=select-item]]:data-[highlighted]:data-[state=unchecked]:!bg-white/[0.06] [&_[data-slot=select-item]]:data-[highlighted]:data-[state=unchecked]:!text-white [&_[data-slot=select-item]]:data-[highlighted]:data-[state=checked]:!bg-[#DFFF00]/15 [&_[data-slot=select-item]]:data-[highlighted]:data-[state=checked]:!text-[#DFFF00]"
+                          >
+                            <SelectItem value="all">All types</SelectItem>
+                            <SelectItem value="tts">Text-to-Speech</SelectItem>
+                            <SelectItem value="stt">Speech-to-Text</SelectItem>
+                            <SelectItem value="clone">Voice clone</SelectItem>
+                            <SelectItem value="voice_design">My voice (Voice Design)</SelectItem>
+                          </SelectContent>
+                        </Select>
                       </div>
                     </div>
                     {studioHistoryLoading ? (
@@ -1292,16 +2215,16 @@ export function Studio() {
                         <div className="w-5 h-5 border-2 border-[#DFFF00] border-t-transparent rounded-full animate-spin" />
                         Loading history...
                       </div>
-                    ) : studioHistory.filter((h) => !studioHistorySearch.trim() || h.prompt_text.toLowerCase().includes(studioHistorySearch.toLowerCase()) || h.style_instruction.toLowerCase().includes(studioHistorySearch.toLowerCase())).length === 0 ? (
+                    ) : studioHistoryFiltered.length === 0 ? (
                       <div className="card-vocence p-12 text-center">
                         <p className="text-[#A7B0B7] mb-4">No history found</p>
                         <p className="text-sm text-[#666]">
                           {studioHistory.length === 0
-                            ? "You haven't generated any audio yet. Use the Text-to-Speech tab to get started."
-                            : 'Try adjusting your search.'}
+                            ? "You haven't generated any studio audio yet. Use TTS, STT, cloning, or Voice Design."
+                            : 'Try adjusting your search or category filter.'}
                         </p>
                         {studioHistory.length === 0 && (
-                          <button onClick={() => navigate('/studio/tts')} className="btn-primary mt-4">
+                          <button type="button" onClick={() => navigate('/studio/tts')} className="btn-primary mt-4">
                             Go to Text-to-Speech
                           </button>
                         )}
@@ -1321,35 +2244,93 @@ export function Studio() {
                               </tr>
                             </thead>
                             <tbody className="divide-y divide-white/5">
-                              {studioHistory
-                                .filter((h) => !studioHistorySearch.trim() || h.prompt_text.toLowerCase().includes(studioHistorySearch.toLowerCase()) || h.style_instruction.toLowerCase().includes(studioHistorySearch.toLowerCase()))
-                                .map((item) => {
+                              {studioHistoryPageItems.map((item) => {
                                   const created = new Date(item.created_at);
                                   const timestamp = created.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
                                   const date = created.toLocaleDateString();
+                                  const isCloneLike =
+                                    item.entry_type === 'clone' || item.entry_type === 'voice_design';
+                                  const typeBadge =
+                                    item.entry_type === 'stt'
+                                      ? 'bg-green-500/15 text-green-400'
+                                      : item.entry_type === 'clone'
+                                        ? 'bg-cyan-500/15 text-cyan-400'
+                                        : item.entry_type === 'voice_design'
+                                          ? 'bg-violet-500/15 text-violet-300'
+                                          : 'bg-[#DFFF00]/15 text-[#DFFF00]';
+                                  const typeLabel =
+                                    item.entry_type === 'voice_design' ? 'MY VOICE' : item.entry_type.toUpperCase();
+                                  const contentCell =
+                                    item.entry_type === 'stt'
+                                      ? item.transcribed_text || item.source_audio_filename || '-'
+                                      : isCloneLike
+                                        ? item.target_text || item.prompt_text || '-'
+                                        : item.prompt_text || '-';
+                                  const contentCopy =
+                                    item.entry_type === 'stt'
+                                      ? item.transcribed_text || ''
+                                      : isCloneLike
+                                        ? item.target_text || item.prompt_text || ''
+                                        : item.prompt_text || '';
+                                  const styleCell =
+                                    item.entry_type === 'stt'
+                                      ? item.source_language || 'auto-detect'
+                                      : isCloneLike
+                                        ? (item.reference_text || '').slice(0, 80) +
+                                          ((item.reference_text || '').length > 80 ? '…' : '')
+                                        : item.style_instruction;
+                                  const styleCopy =
+                                    item.entry_type === 'stt'
+                                      ? item.source_language || ''
+                                      : isCloneLike
+                                        ? item.reference_text || ''
+                                        : item.style_instruction;
+                                  const resultQs =
+                                    item.entry_type === 'clone'
+                                      ? '?entry_type=clone'
+                                      : item.entry_type === 'voice_design'
+                                        ? '?entry_type=voice_design'
+                                        : '';
+                                  const dlName = isCloneLike
+                                    ? item.entry_type === 'voice_design'
+                                      ? `vocence-voice-design-${item.id}.wav`
+                                      : `vocence-clone-${item.id}.wav`
+                                    : `vocence-tts-${item.id}.wav`;
                                   return (
-                                    <tr key={item.id} className="hover:bg-white/5 transition-colors">
+                                    <tr key={`${item.entry_type}-${item.id}`} className="hover:bg-white/5 transition-colors">
                                       <td className="px-4 py-4">
                                         <div className="font-medium">{timestamp}</div>
                                         <div className="text-xs text-[#666]">{date}</div>
                                       </td>
                                       <td className="px-4 py-4">
-                                        <span className="px-2 py-0.5 rounded text-[10px] font-medium bg-[#DFFF00]/15 text-[#DFFF00]">TTS</span>
+                                        <span className={`px-2 py-0.5 rounded text-[10px] font-medium ${typeBadge}`}>
+                                          {typeLabel}
+                                        </span>
                                       </td>
                                       <td className="px-4 py-4">
                                         <div className="flex items-center gap-2">
-                                          <span className="truncate max-w-[200px]">{item.prompt_text}</span>
-                                          <button className="text-[#666] hover:text-white" onClick={() => navigator.clipboard.writeText(item.prompt_text)}>
+                                          <span className="truncate max-w-[200px]">{contentCell}</span>
+                                          <button
+                                            type="button"
+                                            className="text-[#666] hover:text-white"
+                                            onClick={() => navigator.clipboard.writeText(contentCopy)}
+                                          >
                                             <Copy size={14} />
                                           </button>
                                         </div>
                                       </td>
                                       <td className="px-4 py-4">
                                         <div className="flex items-center gap-2">
-                                          <span className="text-[#A7B0B7] truncate max-w-[150px]">{item.style_instruction}</span>
-                                          <button className="text-[#666] hover:text-white" onClick={() => navigator.clipboard.writeText(item.style_instruction)}>
-                                            <Copy size={14} />
-                                          </button>
+                                          <span className="text-[#A7B0B7] truncate max-w-[150px]">{styleCell}</span>
+                                          {styleCopy ? (
+                                            <button
+                                              type="button"
+                                              className="text-[#666] hover:text-white"
+                                              onClick={() => navigator.clipboard.writeText(styleCopy)}
+                                            >
+                                              <Copy size={14} />
+                                            </button>
+                                          ) : null}
                                         </div>
                                       </td>
                                       <td className="px-4 py-4">
@@ -1357,11 +2338,13 @@ export function Studio() {
                                       </td>
                                       <td className="px-4 py-4 text-right">
                                         <div className="flex items-center justify-end gap-2">
-                                          {item.expired ? (
+                                          {item.entry_type === 'stt' ? (
+                                            <span className="text-xs text-[#A7B0B7]">Text only</span>
+                                          ) : item.expired ? (
                                             <>
                                               <button
                                                 type="button"
-                                                onClick={() => navigate(`/studio/result/${item.id}`)}
+                                                onClick={() => navigate(`/studio/result/${item.id}${resultQs}`)}
                                                 className="p-1.5 text-[#666] hover:text-white"
                                                 title="View result"
                                               >
@@ -1373,7 +2356,7 @@ export function Studio() {
                                             <>
                                               <button
                                                 type="button"
-                                                onClick={() => navigate(`/studio/result/${item.id}`)}
+                                                onClick={() => navigate(`/studio/result/${item.id}${resultQs}`)}
                                                 className="p-1.5 text-[#666] hover:text-white"
                                                 title="Play"
                                               >
@@ -1381,7 +2364,7 @@ export function Studio() {
                                               </button>
                                               <button
                                                 type="button"
-                                                onClick={() => void triggerBrowserDownload(item.audio_url, `vocence-tts-${item.id}.wav`)}
+                                                onClick={() => void triggerBrowserDownload(item.audio_url, dlName)}
                                                 className="p-1.5 text-[#666] hover:text-white"
                                                 title="Download"
                                               >
@@ -1399,6 +2382,41 @@ export function Studio() {
                             </tbody>
                           </table>
                         </div>
+                        {studioHistoryTotalPages > 1 ? (
+                          <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 border-t border-white/5 text-sm text-[#A7B0B7]">
+                            <span>
+                              Showing {(studioHistoryEffectivePage - 1) * STUDIO_HISTORY_PAGE_SIZE + 1}–
+                              {Math.min(
+                                studioHistoryEffectivePage * STUDIO_HISTORY_PAGE_SIZE,
+                                studioHistoryFiltered.length
+                              )}{' '}
+                              of {studioHistoryFiltered.length}
+                            </span>
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                disabled={studioHistoryEffectivePage <= 1}
+                                onClick={() => setStudioHistoryPage((p) => Math.max(1, p - 1))}
+                                className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-white disabled:opacity-40"
+                              >
+                                Previous
+                              </button>
+                              <span className="tabular-nums text-xs">
+                                Page {studioHistoryEffectivePage} / {studioHistoryTotalPages}
+                              </span>
+                              <button
+                                type="button"
+                                disabled={studioHistoryEffectivePage >= studioHistoryTotalPages}
+                                onClick={() =>
+                                  setStudioHistoryPage((p) => Math.min(studioHistoryTotalPages, p + 1))
+                                }
+                                className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-white disabled:opacity-40"
+                              >
+                                Next
+                              </button>
+                            </div>
+                          </div>
+                        ) : null}
                       </div>
                     )}
                   </>
@@ -1406,8 +2424,7 @@ export function Studio() {
               </div>
             )}
           </div>
-        </main>
-      </div>
+      </StudioShell>
 
       {/* Auth Modal */}
       <AuthModal

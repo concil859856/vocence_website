@@ -1,5 +1,5 @@
 """
-Studio TTS service: call miner Chutes /speak, upload WAV to Hippius, presigned URLs.
+Studio audio service: call Chutes TTS/STT, upload WAV to Hippius, presigned URLs.
 
 This module is part of vocence_website (dashboard-backend) and does not import
 from the vocence package. Chutes/Hippius usage is aligned with the Vocence subnet
@@ -7,8 +7,18 @@ from the vocence package. Chutes/Hippius usage is aligned with the Vocence subne
 
 Chutes:
   - Chute metadata: GET https://api.chutes.ai/chutes/{chute_id} -> response has "slug".
-  - Miner invoke: POST https://{slug}.chutes.ai/speak (slug = subdomain).
-  - Auth: Bearer CHUTES_AUTH_KEY for both API and /speak.
+  - PromptTTS (Studio TTS): POST https://{slug}.chutes.ai/speak — same slugs as STUDIO_MODEL_* env (no separate URL).
+  - STT (Chutes): POST to STUDIO_STT_CHUTES_URL (defaults to CHUTES_WHISPER_STT_URL / public Whisper URL)
+    with JSON: {"audio_b64": "<base64-audio>", "language": "<optional-iso-code>"}.
+  - Voice clone: POST STUDIO_VOICE_CLONE_URL (full http(s) URL from .env) OR legacy https://{slug}.chutes.ai/path
+    with JSON keys from STUDIO_VOICE_CLONE_KEY_* (default reference_audio, ref_text, target_text; values ref audio as base64).
+  - Voice Design LLM: OpenAI-compatible POST {VOICE_DESIGN_LLM_BASE_URL}/chat/completions (default https://llm.chutes.ai/v1)
+    with Bearer CHUTES_API_KEY; set VOICE_DESIGN_LLM_MODEL (list models: GET https://llm.chutes.ai/v1/models).
+    Multi-model failover: use a comma-separated list of model ids in VOICE_DESIGN_LLM_MODEL; the router tries
+    alternatives when a pool is at capacity. Optional routing suffix on the last segment, e.g.
+    ``...,moonshotai/Kimi-K2.5-TEE:throughput`` (Chutes: throughput-oriented selection). Other suffixes we
+    strip for catalog checks: :latency, :cost. See https://chutes.ai/llms.txt (Model discovery / Inference).
+  - Auth: Bearer CHUTES_AUTH_KEY for Chutes TTS/STT and hosted LLM; clone URL may use STUDIO_VOICE_CLONE_API_KEY only.
 
 Hippius:
   - Endpoint: s3.hippius.com (secure, region=decentralized).
@@ -16,24 +26,82 @@ Hippius:
 """
 
 import asyncio
+import base64
+import json
+import logging
 import os
+import shutil
+import subprocess
 import uuid
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
 from pathlib import PurePosixPath
+from urllib.parse import urlparse
 
 import aiohttp
 from minio import Minio
+
+_log = logging.getLogger(__name__)
 
 # Chutes: API base for fetching chute details (GET /chutes/{chute_id})
 CHUTES_BASE_URL = os.environ.get("CHUTES_BASE_URL", "https://api.chutes.ai")
 CHUTES_AUTH_KEY = os.environ.get("CHUTES_AUTH_KEY") or os.environ.get("CHUTES_API_KEY", "")
 # Miner endpoint: https://{slug}.chutes.ai/speak (slug from API response)
 CHUTE_TTS_PATH = "/speak"
+CHUTE_STT_PATH = "/transcribe"
+CHUTES_WHISPER_STT_URL = os.environ.get(
+    "CHUTES_WHISPER_STT_URL",
+    "https://chutes-whisper-large-v3.chutes.ai/transcribe",
+)
+# Studio STT: Chutes transcribe URL (explicit Studio knob; falls back to CHUTES_WHISPER_STT_URL).
+STUDIO_STT_CHUTES_URL = (
+    os.environ.get("STUDIO_STT_CHUTES_URL") or CHUTES_WHISPER_STT_URL or ""
+).strip() or "https://chutes-whisper-large-v3.chutes.ai/transcribe"
+
+STUDIO_VOICE_CLONE_URL = (os.environ.get("STUDIO_VOICE_CLONE_URL") or "").strip()
+STUDIO_VOICE_CLONE_API_KEY = (os.environ.get("STUDIO_VOICE_CLONE_API_KEY") or "").strip()
+STUDIO_VOICE_CLONE_TIMEOUT_SEC = int(os.environ.get("STUDIO_VOICE_CLONE_TIMEOUT_SEC", "300"))
+STUDIO_VOICE_CLONE_CHUTE_SLUG = (os.environ.get("STUDIO_VOICE_CLONE_CHUTE_SLUG") or "").strip()
+STUDIO_VOICE_CLONE_PATH = (os.environ.get("STUDIO_VOICE_CLONE_PATH") or "/clone").strip()
+if not STUDIO_VOICE_CLONE_PATH.startswith("/"):
+    STUDIO_VOICE_CLONE_PATH = f"/{STUDIO_VOICE_CLONE_PATH}"
+# JSON body keys for clone HTTP API (values: base64 WAV/PCM in ref-audio field, plain strings for texts).
+# Defaults match common FastAPI bodies: reference_audio, ref_text, target_text.
+# Legacy Chutes miners often use reference_audio_b64 + reference_text — set STUDIO_VOICE_CLONE_KEY_* to override.
+STUDIO_VOICE_CLONE_KEY_REF_AUDIO = (os.environ.get("STUDIO_VOICE_CLONE_KEY_REF_AUDIO") or "reference_audio").strip()
+STUDIO_VOICE_CLONE_KEY_REF_TEXT = (os.environ.get("STUDIO_VOICE_CLONE_KEY_REF_TEXT") or "ref_text").strip()
+STUDIO_VOICE_CLONE_KEY_TARGET = (os.environ.get("STUDIO_VOICE_CLONE_KEY_TARGET") or "target_text").strip()
+# json = application/json (Chutes / many APIs). form = multipart/form-data with base64 string in ref-audio field.
+# form_file = multipart with raw WAV bytes as file part (FastAPI File() + Form()).
+STUDIO_VOICE_CLONE_REQUEST_MODE = (os.environ.get("STUDIO_VOICE_CLONE_REQUEST_MODE") or "json").strip().lower()
+STUDIO_VOICE_CLONE_REF_FILENAME = (os.environ.get("STUDIO_VOICE_CLONE_REF_FILENAME") or "reference.wav").strip()
+STUDIO_VOICE_CLONE_REF_CONTENT_TYPE = (os.environ.get("STUDIO_VOICE_CLONE_REF_CONTENT_TYPE") or "audio/wav").strip()
+
+# Voice Design: Chutes hosted LLM (OpenAI-compatible). See https://chutes.ai/llms.txt — inference at https://llm.chutes.ai/v1
+VOICE_DESIGN_LLM_BASE_URL = (os.environ.get("VOICE_DESIGN_LLM_BASE_URL") or "https://llm.chutes.ai/v1").strip().rstrip("/")
+# Single id, or comma-separated failover list; last segment may include :throughput / :latency / :cost for routing.
+VOICE_DESIGN_LLM_MODEL = (os.environ.get("VOICE_DESIGN_LLM_MODEL") or "").strip()
+CHUTES_LLM_ROUTING_SUFFIXES = frozenset({"throughput", "latency", "cost"})
+VOICE_DESIGN_LLM_TIMEOUT_SEC = int(os.environ.get("VOICE_DESIGN_LLM_TIMEOUT_SEC", "120"))
+# 1024 default: some router-selected models (e.g. Kimi) may need headroom beyond short JSON; override with env.
+VOICE_DESIGN_LLM_MAX_TOKENS = int(os.environ.get("VOICE_DESIGN_LLM_MAX_TOKENS", "1024"))
+VOICE_DESIGN_LLM_TEMPERATURE = float(os.environ.get("VOICE_DESIGN_LLM_TEMPERATURE", "0.35"))
+# Retries when Chutes returns 429 / capacity (exponential backoff)
+VOICE_DESIGN_LLM_RETRY_MAX = int(os.environ.get("VOICE_DESIGN_LLM_RETRY_MAX", "5"))
+VOICE_DESIGN_LLM_RETRY_BASE_SEC = float(os.environ.get("VOICE_DESIGN_LLM_RETRY_BASE_SEC", "3"))
+VOICE_DESIGN_SAMPLE_WORDS_MIN = int(os.environ.get("VOICE_DESIGN_SAMPLE_WORDS_MIN", "6"))
+VOICE_DESIGN_SAMPLE_WORDS_MAX = int(os.environ.get("VOICE_DESIGN_SAMPLE_WORDS_MAX", "7"))
+VOICE_DESIGN_PREVIEW_EXPIRY_HOURS = int(os.environ.get("VOICE_DESIGN_PREVIEW_EXPIRY_HOURS", "24"))
 
 
 def _chute_speak_url(slug: str) -> str:
     """Build miner TTS URL from chute slug. Rule: https://{slug}.chutes.ai/speak (chutes.ai)."""
     return f"https://{slug}.chutes.ai{CHUTE_TTS_PATH}"
+
+
+def _chute_voice_clone_url(slug: str) -> str:
+    """Voice clone Chute: https://{slug}.chutes.ai{STUDIO_VOICE_CLONE_PATH}."""
+    return f"https://{slug}.chutes.ai{STUDIO_VOICE_CLONE_PATH}"
 
 
 STUDIO_TTS_BUCKET = os.environ.get("STUDIO_TTS_BUCKET", "studio-tts")
@@ -102,16 +170,589 @@ async def synthesize_speak(chute_slug: str, text: str, instruction: str) -> tupl
         return None, str(e)
 
 
+async def transcribe_audio(
+    *,
+    audio_bytes: bytes,
+    language: str | None = None,
+) -> tuple[dict | None, str]:
+    """POST STT to configured Chutes transcribe URL (STUDIO_STT_CHUTES_URL).
+
+    Payload uses `audio_b64` and optional `language`.
+    Returns ({text, chunks, ...}, "") on success, else (None, "reason").
+    """
+    url = STUDIO_STT_CHUTES_URL
+    payload: dict[str, str] = {
+        "audio_b64": base64.b64encode(audio_bytes).decode("utf-8"),
+    }
+    if language:
+        payload["language"] = language
+    headers = {"Content-Type": "application/json"}
+    if CHUTES_AUTH_KEY:
+        headers["Authorization"] = f"Bearer {CHUTES_AUTH_KEY}"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url,
+                headers=headers,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=180),
+            ) as resp:
+                body = await resp.read()
+                if resp.status != 200:
+                    err = body.decode("utf-8", errors="replace")[:300] if body else ""
+                    return None, f"miner returned {resp.status}" + (f": {err}" if err else "")
+                try:
+                    data = await resp.json(content_type=None)
+                except Exception:
+                    return None, "miner returned non-JSON transcription response"
+                if isinstance(data, list):
+                    first = data[0] if data else {}
+                    if not isinstance(first, dict):
+                        return None, "miner returned unsupported list response"
+                    return first, ""
+                if not isinstance(data, dict):
+                    return None, "miner returned unsupported JSON response"
+                return data, ""
+    except asyncio.TimeoutError:
+        return None, "transcription request timed out"
+    except Exception as e:
+        return None, str(e)
+
+
+def voice_clone_chute_configured() -> bool:
+    """True if clone is usable: STUDIO_VOICE_CLONE_URL and/or legacy Chutes slug."""
+    return bool(STUDIO_VOICE_CLONE_URL or STUDIO_VOICE_CLONE_CHUTE_SLUG)
+
+
+def voice_clone_endpoint_label() -> str:
+    """Short label for DB history (clone host or Chutes slug)."""
+    if STUDIO_VOICE_CLONE_URL:
+        parsed = urlparse(STUDIO_VOICE_CLONE_URL)
+        if parsed.netloc:
+            return parsed.netloc
+        return STUDIO_VOICE_CLONE_URL[:120]
+    return STUDIO_VOICE_CLONE_CHUTE_SLUG or "clone"
+
+
+def _is_riff_wav(b: bytes) -> bool:
+    return len(b) >= 12 and b[:4] == b"RIFF" and b[8:12] == b"WAVE"
+
+
+def normalize_reference_audio_for_voice_clone(raw: bytes) -> bytes:
+    """Many clone endpoints only accept WAV PCM. Browser / MediaRecorder often sends WebM/Opus.
+
+    If ``ffmpeg`` is on PATH, transcode non-WAV input to 16 kHz mono PCM WAV. Otherwise return bytes unchanged.
+    """
+    if not raw or _is_riff_wav(raw):
+        return raw
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        return raw
+    try:
+        proc = subprocess.run(
+            [
+                ffmpeg,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                "pipe:0",
+                "-f",
+                "wav",
+                "-acodec",
+                "pcm_s16le",
+                "-ar",
+                "16000",
+                "-ac",
+                "1",
+                "pipe:1",
+            ],
+            input=raw,
+            capture_output=True,
+            timeout=120,
+            check=False,
+        )
+        if proc.returncode != 0 or not proc.stdout:
+            _log.debug(
+                "ffmpeg ref-audio transcode failed rc=%s stderr=%s",
+                proc.returncode,
+                (proc.stderr or b"").decode("utf-8", errors="replace")[:300],
+            )
+            return raw
+        out = proc.stdout
+        if _is_riff_wav(out):
+            return out
+    except Exception as e:
+        _log.debug("ffmpeg ref-audio transcode exception: %s", e)
+    return raw
+
+
+async def voice_clone_synthesize(
+    *,
+    reference_audio_bytes: bytes,
+    reference_text: str,
+    target_text: str,
+    chute_slug: str | None = None,
+) -> tuple[bytes | None, str]:
+    """POST to clone service: ref audio + ref text + target text.
+
+    STUDIO_VOICE_CLONE_REQUEST_MODE: json (default), form (multipart + base64 string), form_file (multipart + WAV file).
+    Prefer STUDIO_VOICE_CLONE_URL. Optional Bearer STUDIO_VOICE_CLONE_API_KEY.
+    Legacy Chutes: JSON only to https://{slug}.chutes.ai{path} with CHUTES_AUTH_KEY.
+
+    Response: raw audio, or JSON with a recognized *_b64 field.
+    """
+    reference_audio_bytes = normalize_reference_audio_for_voice_clone(reference_audio_bytes)
+    b64_audio = base64.b64encode(reference_audio_bytes).decode("utf-8")
+    payload = {
+        STUDIO_VOICE_CLONE_KEY_REF_AUDIO: b64_audio,
+        STUDIO_VOICE_CLONE_KEY_REF_TEXT: reference_text or "",
+        STUDIO_VOICE_CLONE_KEY_TARGET: target_text or "",
+    }
+    headers: dict[str, str] = {}
+    if STUDIO_VOICE_CLONE_URL:
+        url = STUDIO_VOICE_CLONE_URL
+        if STUDIO_VOICE_CLONE_API_KEY:
+            headers["Authorization"] = f"Bearer {STUDIO_VOICE_CLONE_API_KEY}"
+        req_mode = STUDIO_VOICE_CLONE_REQUEST_MODE
+    else:
+        slug = (chute_slug or STUDIO_VOICE_CLONE_CHUTE_SLUG).strip()
+        if not slug:
+            return None, "voice clone not configured (set STUDIO_VOICE_CLONE_URL or STUDIO_VOICE_CLONE_CHUTE_SLUG)"
+        url = _chute_voice_clone_url(slug)
+        if CHUTES_AUTH_KEY:
+            headers["Authorization"] = f"Bearer {CHUTES_AUTH_KEY}"
+        req_mode = "json"
+    try:
+        async with aiohttp.ClientSession() as session:
+            if STUDIO_VOICE_CLONE_URL and req_mode in ("form", "multipart", "form-data"):
+                form = aiohttp.FormData()
+                form.add_field(STUDIO_VOICE_CLONE_KEY_REF_AUDIO, b64_audio)
+                form.add_field(STUDIO_VOICE_CLONE_KEY_REF_TEXT, reference_text or "")
+                form.add_field(STUDIO_VOICE_CLONE_KEY_TARGET, target_text or "")
+                post = session.post(
+                    url,
+                    headers=headers,
+                    data=form,
+                    timeout=aiohttp.ClientTimeout(total=STUDIO_VOICE_CLONE_TIMEOUT_SEC),
+                )
+            elif STUDIO_VOICE_CLONE_URL and req_mode in ("form_file", "multipart_file", "file"):
+                form = aiohttp.FormData()
+                form.add_field(
+                    STUDIO_VOICE_CLONE_KEY_REF_AUDIO,
+                    reference_audio_bytes,
+                    filename=STUDIO_VOICE_CLONE_REF_FILENAME,
+                    content_type=STUDIO_VOICE_CLONE_REF_CONTENT_TYPE,
+                )
+                form.add_field(STUDIO_VOICE_CLONE_KEY_REF_TEXT, reference_text or "")
+                form.add_field(STUDIO_VOICE_CLONE_KEY_TARGET, target_text or "")
+                post = session.post(
+                    url,
+                    headers=headers,
+                    data=form,
+                    timeout=aiohttp.ClientTimeout(total=STUDIO_VOICE_CLONE_TIMEOUT_SEC),
+                )
+            else:
+                post = session.post(
+                    url,
+                    headers={**headers, "Content-Type": "application/json"},
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=STUDIO_VOICE_CLONE_TIMEOUT_SEC),
+                )
+            async with post as resp:
+                body = await resp.read()
+                if resp.status != 200:
+                    err = body.decode("utf-8", errors="replace")[:400] if body else ""
+                    return None, f"clone service returned {resp.status}" + (f": {err}" if err else "")
+                ct = (resp.headers.get("Content-Type") or "").lower()
+                if "audio" in ct or "octet-stream" in ct:
+                    if body:
+                        return body, ""
+                    return None, "clone service returned empty audio body"
+                if "json" in ct or body.startswith(b"{") or body.startswith(b"["):
+                    try:
+                        data = json.loads(body.decode("utf-8"))
+                    except Exception:
+                        return None, "clone service returned invalid JSON"
+                    if isinstance(data, list):
+                        data = data[0] if data else {}
+                    if not isinstance(data, dict):
+                        return None, "clone service returned unsupported JSON"
+                    for key in (
+                        "audio_wav_b64",
+                        "audio_b64",
+                        "wav_b64",
+                        "output_audio_b64",
+                        "speech_b64",
+                        "output_wav_b64",
+                    ):
+                        val = data.get(key)
+                        if isinstance(val, str) and val.strip():
+                            try:
+                                return base64.b64decode(val.strip(), validate=False), ""
+                            except Exception:
+                                continue
+                    return None, "clone service JSON had no recognized audio_b64 field"
+                if body:
+                    return body, ""
+                return None, "clone service returned empty body"
+    except asyncio.TimeoutError:
+        return None, "clone service request timed out"
+    except Exception as e:
+        return None, str(e)
+
+
+def voice_design_llm_model_ids_for_catalog() -> list[str]:
+    """
+    Individual model ids from VOICE_DESIGN_LLM_MODEL for GET /v1/models validation.
+    Strips known routing suffixes (e.g. :throughput) from the segment that includes them.
+    """
+    raw = (VOICE_DESIGN_LLM_MODEL or "").strip()
+    if not raw:
+        return []
+    out: list[str] = []
+    for part in raw.split(","):
+        p = part.strip()
+        if not p:
+            continue
+        if ":" in p:
+            base, _, suf = p.rpartition(":")
+            if suf.lower() in CHUTES_LLM_ROUTING_SUFFIXES:
+                p = base.strip()
+        out.append(p)
+    return out
+
+
+def voice_design_llm_configured() -> bool:
+    """Chutes LLM chat completions: needs model id + API key (CHUTES_API_KEY / CHUTES_AUTH_KEY)."""
+    return bool(VOICE_DESIGN_LLM_MODEL and CHUTES_AUTH_KEY)
+
+
+def clamp_sample_script_words(text: str, low: int | None = None, high: int | None = None) -> str:
+    """Force sample line to 6–7 words (defaults from env). Pad or truncate."""
+    lo = low if low is not None else VOICE_DESIGN_SAMPLE_WORDS_MIN
+    hi = high if high is not None else VOICE_DESIGN_SAMPLE_WORDS_MAX
+    if hi < lo:
+        lo, hi = hi, lo
+    raw = (text or "").strip()
+    # strip surrounding quotes
+    if (raw.startswith('"') and raw.endswith('"')) or (raw.startswith("'") and raw.endswith("'")):
+        raw = raw[1:-1].strip()
+    words = raw.split() if raw else []
+    if len(words) > hi:
+        words = words[:hi]
+    if len(words) < lo:
+        filler = ["hey", "thanks", "so", "much", "for", "this", "today"]
+        i = 0
+        while len(words) < lo and i < len(filler):
+            if filler[i] not in {w.lower() for w in words}:
+                words.append(filler[i])
+            i += 1
+        while len(words) < lo:
+            words.append("thanks")
+    return " ".join(words)
+
+
+def _assistant_message_text(message: object) -> str:
+    """
+    Normalize assistant message.content for OpenAI-compatible APIs.
+    Some models (e.g. Kimi on Chutes) return content as a list of {type, text} parts instead of a string.
+    """
+    if not isinstance(message, dict):
+        return ""
+    raw = message.get("content")
+    if raw is None:
+        raw = ""
+    if isinstance(raw, str):
+        return raw
+    if isinstance(raw, list):
+        parts: list[str] = []
+        for item in raw:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                t = item.get("text")
+                if isinstance(t, str):
+                    parts.append(t)
+                elif isinstance(item.get("content"), str):
+                    parts.append(item["content"])
+        return "".join(parts)
+    return str(raw)
+
+
+def _assistant_text_from_choice(ch: object) -> str:
+    """Best-effort assistant text from one chat.completion choice."""
+    if not isinstance(ch, dict):
+        return ""
+    msg = ch.get("message")
+    text = _assistant_message_text(msg) if isinstance(msg, dict) else ""
+    if text.strip():
+        return text
+    # Some stacks expose legacy "text" on the choice
+    legacy = ch.get("text")
+    if isinstance(legacy, str) and legacy.strip():
+        return legacy
+    # Reasoning-style models may expose reasoning / reasoning_content only (avoid as primary JSON source)
+    if isinstance(msg, dict):
+        for key in ("reasoning", "reasoning_content", "thinking"):
+            r = msg.get(key)
+            if isinstance(r, str) and r.strip():
+                return r
+    return ""
+
+
+def _extract_json_dict_from_llm_text(text: str) -> dict | None:
+    t = (text or "").strip()
+    if not t:
+        return None
+    if t.startswith("```"):
+        lines = t.split("\n")
+        if lines[0].strip().startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        t = "\n".join(lines).strip()
+    try:
+        data = json.loads(t)
+        return data if isinstance(data, dict) else None
+    except Exception:
+        pass
+    start = t.find("{")
+    end = t.rfind("}")
+    if start >= 0 and end > start:
+        try:
+            data = json.loads(t[start : end + 1])
+            return data if isinstance(data, dict) else None
+        except Exception:
+            return None
+    return None
+
+
+def _parse_voice_design_llm_payload(data: dict) -> tuple[str | None, str | None]:
+    """Return (sample_script, revised_instruction) from various key conventions."""
+    script = (
+        data.get("sample_script")
+        or data.get("sample_text")
+        or data.get("script")
+        or data.get("demo_text")
+    )
+    revised = (
+        data.get("revised_instruction")
+        or data.get("revised_voice_description")
+        or data.get("revised_description")
+        or data.get("instruction")
+    )
+    if isinstance(script, str):
+        script = script.strip()
+    else:
+        script = None
+    if isinstance(revised, str):
+        revised = revised.strip()
+    else:
+        revised = None
+    return script, revised
+
+
+async def voice_design_llm_plan(*, voice_description: str) -> tuple[dict | None, str]:
+    """Call Chutes OpenAI-compatible POST .../v1/chat/completions (Bearer = same as TTS/STT)."""
+    if not VOICE_DESIGN_LLM_MODEL:
+        return None, "VOICE_DESIGN_LLM_MODEL is not configured"
+    if not CHUTES_AUTH_KEY:
+        return None, "CHUTES_API_KEY or CHUTES_AUTH_KEY is required for Chutes LLM"
+    user_desc = (voice_description or "").strip()
+    if not user_desc:
+        return None, "voice description is empty"
+    system_rules = (
+        "You help design voices for PromptTTS. Reply with a single JSON object only, no markdown. "
+        'Keys: "sample_script" (string) and "revised_instruction" (string). '
+        f"sample_script MUST be natural spoken dialogue of exactly {VOICE_DESIGN_SAMPLE_WORDS_MIN} to "
+        f"{VOICE_DESIGN_SAMPLE_WORDS_MAX} words in English — short, fits the vibe of the voice. "
+        "revised_instruction: one clear English instruction for a TTS model describing timbre, age, emotion, pace, tone — "
+        "improved from the user's wording, no quotes inside the values."
+    )
+    url = f"{VOICE_DESIGN_LLM_BASE_URL}/chat/completions"
+    payload: dict = {
+        "model": VOICE_DESIGN_LLM_MODEL,
+        "messages": [
+            {"role": "system", "content": system_rules},
+            {"role": "user", "content": f"The user wants this voice:\n{user_desc}"},
+        ],
+        "max_tokens": VOICE_DESIGN_LLM_MAX_TOKENS,
+        "temperature": VOICE_DESIGN_LLM_TEMPERATURE,
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {CHUTES_AUTH_KEY}",
+    }
+    last_err = ""
+    max_tries = max(1, VOICE_DESIGN_LLM_RETRY_MAX)
+    try:
+        async with aiohttp.ClientSession() as session:
+            for attempt in range(max_tries):
+                async with session.post(
+                    url,
+                    headers=headers,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=VOICE_DESIGN_LLM_TIMEOUT_SEC),
+                ) as resp:
+                    body = await resp.read()
+                    err_text = body.decode("utf-8", errors="replace")[:500] if body else ""
+                    if resp.status == 429 or resp.status >= 500:
+                        last_err = f"Chutes LLM returned {resp.status}: {err_text}"
+                        _log.warning(
+                            "voice_design_llm_plan: HTTP %s attempt %s/%s url=%s snippet=%r",
+                            resp.status,
+                            attempt + 1,
+                            max_tries,
+                            url,
+                            err_text[:300],
+                        )
+                        if attempt + 1 >= max_tries:
+                            _log.error(
+                                "voice_design_llm_plan: giving up after %s tries last_error=%s",
+                                max_tries,
+                                last_err,
+                            )
+                            return None, last_err
+                        delay = min(VOICE_DESIGN_LLM_RETRY_BASE_SEC * (2**attempt), 120.0)
+                        await asyncio.sleep(delay)
+                        continue
+                    if resp.status != 200:
+                        msg = f"Chutes LLM returned {resp.status}" + (f": {err_text}" if err_text else "")
+                        _log.error(
+                            "voice_design_llm_plan: non-success status=%s url=%s snippet=%r",
+                            resp.status,
+                            url,
+                            err_text[:300],
+                        )
+                        return None, msg
+                    try:
+                        outer = json.loads(body.decode("utf-8"))
+                    except Exception:
+                        raw_snip = body.decode("utf-8", errors="replace")[:400]
+                        _log.error("voice_design_llm_plan: response not JSON snippet=%r", raw_snip)
+                        return None, "LLM returned non-JSON"
+                    if not isinstance(outer, dict):
+                        _log.error("voice_design_llm_plan: top-level JSON is not an object type=%s", type(outer))
+                        return None, "LLM returned unsupported JSON"
+                    served = outer.get("model")
+                    if isinstance(served, str) and served:
+                        _log.info("voice_design_llm_plan: completion served model=%s", served)
+                    content = ""
+                    choices = outer.get("choices")
+                    ch0: dict | None = choices[0] if isinstance(choices, list) and choices else None
+                    if isinstance(ch0, dict):
+                        content = _assistant_text_from_choice(ch0)
+                    inner = _extract_json_dict_from_llm_text(content)
+                    if not inner:
+                        diag_ch = json.dumps(ch0, default=str)[:800] if ch0 else "(no choices[0])"
+                        diag_usage = outer.get("usage")
+                        _log.error(
+                            "voice_design_llm_plan: no JSON in assistant text (empty or unparseable). "
+                            "choice0=%r usage=%r",
+                            diag_ch,
+                            diag_usage,
+                        )
+                        return None, "LLM response did not contain a JSON object with sample_script and revised_instruction"
+                    script, revised = _parse_voice_design_llm_payload(inner)
+                    if not script or not revised:
+                        _log.error(
+                            "voice_design_llm_plan: missing keys after parse script_empty=%s revised_empty=%s",
+                            not bool(script),
+                            not bool(revised),
+                        )
+                        return None, "LLM JSON missing sample_script or revised_instruction"
+                    script = clamp_sample_script_words(script)
+                    revised = revised.strip()
+                    if len(revised) < 8:
+                        _log.error("voice_design_llm_plan: revised_instruction too short len=%s", len(revised))
+                        return None, "revised_instruction too short"
+                    return {
+                        "sample_script": script,
+                        "revised_instruction": revised,
+                        "raw": outer,
+                    }, ""
+            _log.error(
+                "voice_design_llm_plan: loop exhausted without success last_err=%r",
+                last_err,
+            )
+            return None, last_err or "Chutes LLM retries exhausted"
+    except asyncio.TimeoutError:
+        _log.error(
+            "voice_design_llm_plan: timeout model=%s timeout_sec=%s",
+            VOICE_DESIGN_LLM_MODEL,
+            VOICE_DESIGN_LLM_TIMEOUT_SEC,
+        )
+        return None, "voice design LLM timed out"
+    except Exception as e:
+        _log.exception("voice_design_llm_plan: request error model=%s", VOICE_DESIGN_LLM_MODEL)
+        return None, str(e)
+
+
+def download_object_bytes(bucket: str, key: str) -> bytes | None:
+    try:
+        client = _minio_client()
+        obj = client.get_object(bucket, key)
+        try:
+            return obj.read()
+        finally:
+            obj.close()
+            obj.release_conn()
+    except Exception:
+        return None
+
+
+def delete_object(bucket: str, key: str) -> None:
+    try:
+        _minio_client().remove_object(bucket, key)
+    except Exception:
+        pass
+
+
+def copy_wav_in_bucket(user_id: str, src_bucket: str, src_key: str, dest_key_prefix: str = "voice-design/saved") -> tuple[str, str, datetime] | None:
+    """Copy existing object to new key under user_id; returns (bucket, new_key, expires_at)."""
+    data = download_object_bytes(src_bucket, src_key)
+    if not data:
+        return None
+    client = _minio_client()
+    ensure_bucket(client, STUDIO_TTS_BUCKET)
+    new_key = f"{user_id}/{dest_key_prefix}/{uuid.uuid4().hex}.wav"
+    expires_at = datetime.now(timezone.utc) + timedelta(days=STUDIO_TTS_EXPIRY_DAYS)
+
+    client.put_object(
+        STUDIO_TTS_BUCKET,
+        new_key,
+        BytesIO(data),
+        length=len(data),
+        content_type="audio/wav",
+    )
+    return STUDIO_TTS_BUCKET, new_key, expires_at
+
+
 def ensure_bucket(client: Minio, bucket: str) -> None:
     """Create bucket if it does not exist (Hippius/S3)."""
     if not client.bucket_exists(bucket):
         client.make_bucket(bucket)
 
 
+def upload_wav_preview(user_id: str, preview_token: str, variant: str, wav_bytes: bytes) -> tuple[str, str, datetime]:
+    """Short-TTL preview WAV under voice-design/preview/. Returns (bucket, key, expires_at)."""
+    client = _minio_client()
+    ensure_bucket(client, STUDIO_TTS_BUCKET)
+    key = f"{user_id}/voice-design/preview/{preview_token}/{variant}.wav"
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=VOICE_DESIGN_PREVIEW_EXPIRY_HOURS)
+    client.put_object(
+        STUDIO_TTS_BUCKET,
+        key,
+        BytesIO(wav_bytes),
+        length=len(wav_bytes),
+        content_type="audio/wav",
+    )
+    return STUDIO_TTS_BUCKET, key, expires_at
+
+
 def upload_wav_to_hippius(user_id: str, wav_bytes: bytes) -> tuple[str, str, datetime]:
     """Upload WAV bytes to Hippius studio bucket. Key: {user_id}/{uuid}.wav. Returns (bucket, key, expires_at)."""
-    from io import BytesIO
-
     client = _minio_client()
     ensure_bucket(client, STUDIO_TTS_BUCKET)
     key = f"{user_id}/{uuid.uuid4().hex}.wav"

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import {
@@ -18,9 +18,11 @@ import {
   SelectValue,
 } from '../components/ui/select';
 
+const HISTORY_PAGE_SIZE = 10;
+
 interface HistoryItem {
   id: string;
-  type: 'tts' | 'stt' | 'cloning' | 'chat';
+  type: 'tts' | 'stt' | 'cloning' | 'voice_design';
   timestamp: string;
   date: string;
   content: string;
@@ -31,6 +33,8 @@ interface HistoryItem {
   /** From Studio TTS API; enables Play/Download when not expired */
   audioUrl?: string | null;
   expired?: boolean;
+  /** Query string for /studio/result e.g. ?entry_type=clone */
+  resultQuery?: string;
 }
 
 export function History() {
@@ -39,6 +43,7 @@ export function History() {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterType, setFilterType] = useState<string>('all');
+  const [historyPage, setHistoryPage] = useState(1);
 
   const triggerBrowserDownload = async (url: string, filename: string) => {
     try {
@@ -87,18 +92,48 @@ export function History() {
       .then((res) => {
         const items: HistoryItem[] = res.items.map((item) => {
           const created = new Date(item.created_at);
+          const type: HistoryItem['type'] =
+            item.entry_type === 'stt'
+              ? 'stt'
+              : item.entry_type === 'clone'
+                ? 'cloning'
+                : item.entry_type === 'voice_design'
+                  ? 'voice_design'
+                  : 'tts';
+          const isCloneLike = item.entry_type === 'clone' || item.entry_type === 'voice_design';
           return {
             id: `api-${item.id}`,
-            type: 'tts' as const,
+            type,
             timestamp: created.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
             date: created.toLocaleDateString(),
-            content: item.prompt_text,
-            stylePrompt: item.style_instruction,
+            content: isCloneLike
+              ? item.target_text || item.prompt_text || ''
+              : item.entry_type === 'stt'
+                ? item.transcribed_text || item.source_audio_filename || ''
+                : item.prompt_text || '',
+            stylePrompt: isCloneLike
+              ? (item.reference_text || '').slice(0, 120) + ((item.reference_text || '').length > 120 ? '…' : '')
+              : item.entry_type === 'stt'
+                ? item.source_language || 'auto-detect'
+                : item.style_instruction,
             model: item.display_name,
-            meta: 'Studio',
-            duration: '—',
+            meta:
+              item.entry_type === 'voice_design'
+                ? 'Voice Design · My voice'
+                : item.entry_type === 'clone'
+                  ? `Studio Clone · ${item.clone_source || 'ref'}`
+                  : item.entry_type === 'stt'
+                    ? item.source_audio_filename || 'Studio STT'
+                    : 'Studio TTS',
+            duration: item.duration_seconds != null ? `${item.duration_seconds.toFixed(1)}s` : '—',
             audioUrl: item.audio_url,
             expired: item.expired,
+            resultQuery:
+              item.entry_type === 'clone'
+                ? '?entry_type=clone'
+                : item.entry_type === 'voice_design'
+                  ? '?entry_type=voice_design'
+                  : '',
           };
         });
         setHistory(items);
@@ -106,13 +141,34 @@ export function History() {
       .catch(() => setHistory([]));
   }, [user, navigate]);
 
-  const filteredHistory = history.filter((item) => {
-    const matchesSearch =
-      item.content.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      item.stylePrompt?.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesFilter = filterType === 'all' || item.type === filterType;
-    return matchesSearch && matchesFilter;
-  });
+  const filteredHistory = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return history.filter((item) => {
+      const matchesSearch =
+        !q ||
+        item.content.toLowerCase().includes(q) ||
+        (item.stylePrompt?.toLowerCase().includes(q) ?? false) ||
+        item.model.toLowerCase().includes(q) ||
+        item.meta.toLowerCase().includes(q);
+      const matchesFilter = filterType === 'all' || item.type === filterType;
+      return matchesSearch && matchesFilter;
+    });
+  }, [history, searchQuery, filterType]);
+
+  const totalHistoryPages = Math.max(1, Math.ceil(filteredHistory.length / HISTORY_PAGE_SIZE));
+  const safeHistoryPage = Math.min(historyPage, totalHistoryPages);
+  const paginatedHistory = useMemo(() => {
+    const start = (safeHistoryPage - 1) * HISTORY_PAGE_SIZE;
+    return filteredHistory.slice(start, start + HISTORY_PAGE_SIZE);
+  }, [filteredHistory, safeHistoryPage]);
+
+  useEffect(() => {
+    setHistoryPage(1);
+  }, [filterType, searchQuery]);
+
+  useEffect(() => {
+    setHistoryPage((p) => Math.min(p, totalHistoryPages));
+  }, [totalHistoryPages]);
 
   const getTypeColor = (type: string) => {
     switch (type) {
@@ -121,11 +177,22 @@ export function History() {
       case 'stt':
         return 'bg-green-500/15 text-green-400';
       case 'cloning':
-        return 'bg-blue-500/15 text-blue-400';
-      case 'chat':
-        return 'bg-purple-500/15 text-purple-400';
+        return 'bg-cyan-500/15 text-cyan-400';
+      case 'voice_design':
+        return 'bg-violet-500/15 text-violet-400';
       default:
         return 'bg-white/10 text-white';
+    }
+  };
+
+  const getTypeLabel = (type: HistoryItem['type']) => {
+    switch (type) {
+      case 'cloning':
+        return 'CLONE';
+      case 'voice_design':
+        return 'MY VOICE';
+      default:
+        return type.toUpperCase();
     }
   };
 
@@ -163,22 +230,16 @@ export function History() {
               <SelectTrigger className="w-[180px] bg-[#0a0a0a] border-white/10 rounded-lg px-3 py-2 text-sm text-white hover:bg-[#111] focus:border-[#DFFF00]/50 focus:ring-[#DFFF00]/20 data-[state=open]:border-[#DFFF00]/50">
                 <SelectValue placeholder="All Types" />
               </SelectTrigger>
-              <SelectContent className="bg-[#0a0a0a] border-white/10 text-white [&_*]:text-white [&_[data-slot=select-item]]:focus:bg-[#DFFF00]/15 [&_[data-slot=select-item]]:focus:text-[#DFFF00] [&_[data-slot=select-item]]:data-[highlighted]:bg-[#DFFF00]/15 [&_[data-slot=select-item]]:data-[highlighted]:text-[#DFFF00]">
-                <SelectItem value="all" className="focus:bg-[#DFFF00]/15 focus:text-[#DFFF00] data-[highlighted]:bg-[#DFFF00]/15 data-[highlighted]:text-[#DFFF00]">
-                  All Types
-                </SelectItem>
-                <SelectItem value="tts" className="focus:bg-[#DFFF00]/15 focus:text-[#DFFF00] data-[highlighted]:bg-[#DFFF00]/15 data-[highlighted]:text-[#DFFF00]">
-                  Text-to-Speech
-                </SelectItem>
-                <SelectItem value="stt" className="focus:bg-[#DFFF00]/15 focus:text-[#DFFF00] data-[highlighted]:bg-[#DFFF00]/15 data-[highlighted]:text-[#DFFF00]">
-                  Speech-to-Text
-                </SelectItem>
-                <SelectItem value="cloning" className="focus:bg-[#DFFF00]/15 focus:text-[#DFFF00] data-[highlighted]:bg-[#DFFF00]/15 data-[highlighted]:text-[#DFFF00]">
-                  Voice Cloning
-                </SelectItem>
-                <SelectItem value="chat" className="focus:bg-[#DFFF00]/15 focus:text-[#DFFF00] data-[highlighted]:bg-[#DFFF00]/15 data-[highlighted]:text-[#DFFF00]">
-                  Voice Chat
-                </SelectItem>
+              <SelectContent
+                position="popper"
+                sideOffset={4}
+                className="bg-[#0a0a0a] border-white/10 text-white [&_*]:text-white [&_[data-slot=select-item]]:focus:!bg-transparent [&_[data-slot=select-item]]:data-[state=checked]:!bg-[#DFFF00]/15 [&_[data-slot=select-item]]:data-[state=checked]:!text-[#DFFF00] [&_[data-slot=select-item]]:data-[highlighted]:data-[state=unchecked]:!bg-white/[0.06] [&_[data-slot=select-item]]:data-[highlighted]:data-[state=unchecked]:!text-white [&_[data-slot=select-item]]:data-[highlighted]:data-[state=checked]:!bg-[#DFFF00]/15 [&_[data-slot=select-item]]:data-[highlighted]:data-[state=checked]:!text-[#DFFF00]"
+              >
+                <SelectItem value="all">All Types</SelectItem>
+                <SelectItem value="tts">Text-to-Speech</SelectItem>
+                <SelectItem value="stt">Speech-to-Text</SelectItem>
+                <SelectItem value="cloning">Voice clone</SelectItem>
+                <SelectItem value="voice_design">My voice (Voice Design)</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -210,7 +271,7 @@ export function History() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-white/5">
-                  {filteredHistory.map((item) => (
+                  {paginatedHistory.map((item) => (
                     <tr key={item.id} className="hover:bg-white/5 transition-colors">
                       <td className="px-4 py-4">
                         <div className="font-medium">{item.timestamp}</div>
@@ -222,7 +283,7 @@ export function History() {
                             item.type
                           )}`}
                         >
-                          {item.type.toUpperCase()}
+                          {getTypeLabel(item.type)}
                         </span>
                       </td>
                       <td className="px-4 py-4">
@@ -257,7 +318,7 @@ export function History() {
                       </td>
                       <td className="px-4 py-4">
                         <div className="flex items-center gap-2">
-                          {item.type === 'tts' && (
+                          {(item.type === 'tts' || item.type === 'cloning' || item.type === 'voice_design') && (
                             <div className="flex items-center gap-1 h-5">
                               {Array.from({ length: 8 }).map((_, i) => (
                                 <div
@@ -277,7 +338,11 @@ export function History() {
                             <>
                               <button
                                 type="button"
-                                onClick={() => navigate(`/studio/result/${item.id.replace(/^api-/, '')}`)}
+                                onClick={() =>
+                                  navigate(
+                                    `/studio/result/${item.id.replace(/^api-/, '')}${item.resultQuery || ''}`
+                                  )
+                                }
                                 className="p-1.5 text-[#666] hover:text-white"
                                 title="Play"
                               >
@@ -290,7 +355,12 @@ export function History() {
                                 onClick={() => {
                                   const rawId = item.id.replace(/^api-/, '');
                                   const ext = getFilenameFromAudioUrl(item.audioUrl || '');
-                                  const filename = `vocence-${item.type}-${rawId}.${ext}`;
+                                  const filename =
+                                    item.type === 'cloning'
+                                      ? `vocence-clone-${rawId}.${ext}`
+                                      : item.type === 'voice_design'
+                                        ? `vocence-voice-design-${rawId}.${ext}`
+                                        : `vocence-${item.type}-${rawId}.${ext}`;
                                   void triggerBrowserDownload(item.audioUrl || '', filename);
                                 }}
                               >
@@ -301,7 +371,11 @@ export function History() {
                             <>
                               <button
                                 type="button"
-                                onClick={() => navigate(`/studio/result/${item.id.replace(/^api-/, '')}`)}
+                                onClick={() =>
+                                  navigate(
+                                    `/studio/result/${item.id.replace(/^api-/, '')}${item.resultQuery || ''}`
+                                  )
+                                }
                                 className="p-1.5 text-[#666] hover:text-white"
                                 title="View result"
                               >
@@ -331,25 +405,36 @@ export function History() {
             </div>
 
             {/* Pagination */}
-            {filteredHistory.length > 10 && (
-              <div className="p-4 border-t border-white/5 flex items-center justify-between">
+            {filteredHistory.length > HISTORY_PAGE_SIZE && (
+              <div className="p-4 border-t border-white/5 flex flex-wrap items-center justify-between gap-3">
                 <span className="text-sm text-[#A7B0B7]">
-                  Showing 1-{Math.min(10, filteredHistory.length)} of {filteredHistory.length}{' '}
-                  items
+                  Showing{' '}
+                  {(safeHistoryPage - 1) * HISTORY_PAGE_SIZE + 1}-
+                  {Math.min(safeHistoryPage * HISTORY_PAGE_SIZE, filteredHistory.length)} of{' '}
+                  {filteredHistory.length} items
                 </span>
-                <div className="flex gap-2">
-                  {[1, 2, 3].map((page) => (
+                <div className="flex items-center gap-3">
+                  <span className="text-xs text-[#666]">
+                    Page {safeHistoryPage} / {totalHistoryPages}
+                  </span>
+                  <div className="flex gap-2">
                     <button
-                      key={page}
-                      className={`w-8 h-8 rounded-lg text-sm ${
-                        page === 1
-                          ? 'bg-white/10 text-white'
-                          : 'bg-transparent border border-white/10 text-[#666] hover:text-white'
-                      }`}
+                      type="button"
+                      disabled={safeHistoryPage <= 1}
+                      onClick={() => setHistoryPage((p) => Math.max(1, p - 1))}
+                      className="px-3 py-1.5 rounded-lg text-sm border border-white/10 text-white disabled:opacity-40 disabled:cursor-not-allowed hover:bg-white/5"
                     >
-                      {page}
+                      Previous
                     </button>
-                  ))}
+                    <button
+                      type="button"
+                      disabled={safeHistoryPage >= totalHistoryPages}
+                      onClick={() => setHistoryPage((p) => Math.min(totalHistoryPages, p + 1))}
+                      className="px-3 py-1.5 rounded-lg text-sm border border-white/10 text-white disabled:opacity-40 disabled:cursor-not-allowed hover:bg-white/5"
+                    >
+                      Next
+                    </button>
+                  </div>
                 </div>
               </div>
             )}

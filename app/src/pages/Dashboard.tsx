@@ -132,6 +132,11 @@ function formatTimeAgo(iso: string | null): string {
   return `${Math.floor(sec / 86400)}d ago`;
 }
 
+/** Avoid hitting the API while the tab is in the background (user on another tab / window). */
+function skipDashboardPoll(): boolean {
+  return typeof document !== 'undefined' && document.hidden;
+}
+
 export function Dashboard() {
   const dashboardRef = useRef<HTMLDivElement>(null);
   const [overview, setOverview] = useState<DashboardOverview | null>(null);
@@ -259,7 +264,10 @@ export function Dashboard() {
   }, [showBlacklistModal]);
 
   useEffect(() => {
-    const t = setInterval(() => fetchAll(true), 60_000);
+    const t = setInterval(() => {
+      if (skipDashboardPoll()) return;
+      void fetchAll(true);
+    }, 60_000);
     return () => clearInterval(t);
   }, [fetchAll]);
 
@@ -309,22 +317,31 @@ export function Dashboard() {
 
   useEffect(() => {
     if (USE_MOCK_DASHBOARD) return;
-    fetchValidationStatus();
-    const t = setInterval(fetchValidationStatus, 2_000);
+    void fetchValidationStatus();
+    const t = setInterval(() => {
+      if (skipDashboardPoll()) return;
+      void fetchValidationStatus();
+    }, 2_000);
     return () => clearInterval(t);
   }, [fetchValidationStatus]);
 
   useEffect(() => {
     if (USE_MOCK_DASHBOARD || useFallbackData) return;
-    fetchRecentEvaluationsOnly();
-    const t = setInterval(fetchRecentEvaluationsOnly, 15_000);
+    void fetchRecentEvaluationsOnly();
+    const t = setInterval(() => {
+      if (skipDashboardPoll()) return;
+      void fetchRecentEvaluationsOnly();
+    }, 15_000);
     return () => clearInterval(t);
   }, [useFallbackData, fetchRecentEvaluationsOnly]);
 
   useEffect(() => {
     if (USE_MOCK_DASHBOARD || useFallbackData) return;
-    fetchSubnetGraphOnly();
-    const t = setInterval(fetchSubnetGraphOnly, 2_500);
+    void fetchSubnetGraphOnly();
+    const t = setInterval(() => {
+      if (skipDashboardPoll()) return;
+      void fetchSubnetGraphOnly();
+    }, 2_500);
     return () => clearInterval(t);
   }, [useFallbackData, fetchSubnetGraphOnly]);
 

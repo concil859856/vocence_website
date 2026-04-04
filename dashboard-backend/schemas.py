@@ -2,7 +2,7 @@
 
 import os
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class OverviewResponse(BaseModel):
@@ -461,21 +461,125 @@ class StudioGenerateResponse(BaseModel):
     id: int
     audio_url: str
     expires_at: str
-    credits: int  # new balance after deducting 10 (from website.db auth_users)
+    credits: int  # new balance after TTS deduction (from website.db auth_users)
+
+
+class StudioTranscribeResponse(BaseModel):
+    id: int
+    text: str
+    language: str | None = None
+    credits: int  # new balance after deducting STT credits
+    duration_seconds: float | None = None
+
+
+class StudioTranscribeRequest(BaseModel):
+    user_id: str
+    language: str | None = None
+
+
+class StudioCloneResponse(BaseModel):
+    id: int
+    audio_url: str
+    expires_at: str
+    credits: int
+    reference_text: str
+    detected_language: str | None = None
 
 
 class StudioHistoryItemResponse(BaseModel):
     id: int
+    entry_type: str = "tts"  # "tts", "stt", "clone", or "voice_design" (My voices / designed-voice generation)
     miner_hotkey: str
     model_name: str
     display_name: str
-    prompt_text: str
+    prompt_text: str | None = None
     style_instruction: str
+    audio_url: str | None
+    expires_at: str
+    created_at: str
+    expired: bool
+    transcribed_text: str | None = None
+    source_audio_filename: str | None = None
+    source_language: str | None = None
+    duration_seconds: float | None = None
+    reference_text: str | None = None
+    target_text: str | None = None
+    clone_source: str | None = None
+
+
+class StudioHistoryResponse(BaseModel):
+    items: list[StudioHistoryItemResponse]
+
+
+# ----- Studio Voice Design (LLM sample line + A/B TTS preview, save, clone) -----
+
+
+class StudioVoiceDesignConfigResponse(BaseModel):
+    llm_configured: bool
+    preview_credits: int
+    sample_words_min: int
+    sample_words_max: int
+
+
+class StudioVoiceDesignPreviewRequest(BaseModel):
+    user_id: str
+    voice_description: str
+    miner_hotkey: str
+    model_name: str
+    chute_id: str = ""
+    chute_slug: str
+
+
+class StudioVoiceDesignPreviewResponse(BaseModel):
+    preview_token: str
+    sample_script: str
+    voice_description: str
+    revised_instruction: str
+    audio_a_url: str
+    audio_b_url: str
+    expires_at: str
+    credits: int
+    miner_hotkey: str
+    model_name: str
+    chute_slug: str
+
+
+class StudioVoiceDesignSaveRequest(BaseModel):
+    user_id: str
+    preview_token: str
+    chosen_variant: str  # "original" | "revised"
+    display_name: str = Field(..., max_length=20)
+
+
+class StudioVoiceDesignSaveResponse(BaseModel):
+    voice_id: int
+    audio_url: str
+    expires_at: str
+    credits: int
+    ref_script: str
+
+
+class StudioDesignedVoiceItem(BaseModel):
+    id: int
+    display_name: str
+    voice_description: str
+    revised_instruction: str
+    chosen_variant: str
+    ref_script: str
+    miner_hotkey: str
+    model_name: str
+    chute_slug: str
     audio_url: str | None
     expires_at: str
     created_at: str
     expired: bool
 
 
-class StudioHistoryResponse(BaseModel):
-    items: list[StudioHistoryItemResponse]
+class StudioDesignedVoicesResponse(BaseModel):
+    voices: list[StudioDesignedVoiceItem]
+
+
+class StudioDesignedVoiceSpeakRequest(BaseModel):
+    user_id: str
+    voice_id: int
+    target_text: str

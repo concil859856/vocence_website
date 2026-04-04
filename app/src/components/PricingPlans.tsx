@@ -3,6 +3,14 @@ import { Check, ArrowRight, Coins, Shield, Building2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import type { PricingPlan } from '../services/api';
 import { formatCreditsCompact } from '../utils/formatCredits';
+import {
+  CREDIT_MY_VOICE_GENERATE,
+  CREDIT_STT,
+  CREDIT_TTS,
+  CREDIT_VOICE_CLONE,
+  CREDIT_VOICE_DESIGN_PREVIEW,
+  CREDIT_SIGNUP_BONUS,
+} from '../studio/creditCosts';
 
 type PricingPlanCard = {
   code?: string;
@@ -29,9 +37,9 @@ const PLANS: PricingPlanCard[] = [
     price: '$12',
     subtitle: '4K credits',
     cryptoLine: '$20 · 7K credits',
-    credits: '10 credits per TTS generation',
+    credits: `Studio: ${CREDIT_TTS} cr TTS · ${CREDIT_STT} cr STT · ${CREDIT_VOICE_CLONE} cr clone · Voice design ${CREDIT_VOICE_DESIGN_PREVIEW} cr + ${CREDIT_MY_VOICE_GENERATE} cr / My voice`,
     points: [
-      '50 free credits when you register',
+      `${CREDIT_SIGNUP_BONUS} free credits when you register`,
       'Can experiment with custom voices you describe',
       'Best for light usage and personal projects',
       'A simple way to explore prompt-controlled voice generation',
@@ -47,7 +55,7 @@ const PLANS: PricingPlanCard[] = [
     price: '$24',
     subtitle: '10K credits',
     cryptoLine: '$40 · 16K credits',
-    credits: '10 credits per TTS generation',
+    credits: `Studio: ${CREDIT_TTS} cr TTS · ${CREDIT_STT} cr STT · ${CREDIT_VOICE_CLONE} cr clone · Voice design ${CREDIT_VOICE_DESIGN_PREVIEW} cr + ${CREDIT_MY_VOICE_GENERATE} cr / My voice`,
     highlight: true,
     points: [
       'Best value for heavy Text-to-Speech usage',
@@ -106,11 +114,11 @@ function toCardPlan(plan: PricingPlan): PricingPlanCard {
     credits:
       plan.code === 'premium'
         ? plan.cryptoCreditsIncluded != null
-          ? '10 credits per Studio generation · Premium unlocks Developer API'
+          ? `Studio: ${CREDIT_TTS} cr TTS, ${CREDIT_STT} cr STT, … · Premium unlocks Developer API`
           : `${formatCreditsCompact(plan.creditsIncluded)} credits per purchase (API enabled)`
         : plan.code === 'enterprise'
           ? 'Private quotas and tailored billing'
-          : '10 credits per TTS generation',
+          : `Studio: ${CREDIT_TTS} cr TTS · ${CREDIT_STT} cr STT · ${CREDIT_VOICE_CLONE} cr clone · Voice design ${CREDIT_VOICE_DESIGN_PREVIEW} cr + ${CREDIT_MY_VOICE_GENERATE} cr / My voice`,
     highlight: plan.highlighted,
     points: plan.features,
     cta: plan.ctaLabel,

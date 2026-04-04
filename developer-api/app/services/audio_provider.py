@@ -1,8 +1,11 @@
 """
-Developer API TTS helpers (shared behavior with dashboard backend).
+Developer API audio provider helpers (TTS + STT + storage).
 """
 
+from __future__ import annotations
+
 import asyncio
+import base64
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -12,6 +15,10 @@ import aiohttp
 from minio import Minio
 
 CHUTES_AUTH_KEY = os.environ.get("CHUTES_AUTH_KEY") or os.environ.get("CHUTES_API_KEY", "")
+CHUTES_WHISPER_STT_URL = os.environ.get(
+    "CHUTES_WHISPER_STT_URL",
+    "https://chutes-whisper-large-v3.chutes.ai/transcribe",
+)
 STUDIO_TTS_BUCKET = os.environ.get("STUDIO_TTS_BUCKET", "studio-tts")
 HIPPIUS_ENDPOINT = os.environ.get("HIPPIUS_ENDPOINT", "s3.hippius.com")
 HIPPIUS_OWNER_ACCESS_KEY = os.environ.get("HIPPIUS_OWNER_ACCESS_KEY") or os.environ.get("HIPPIUS_ACCESS_KEY", "")
@@ -60,6 +67,45 @@ async def synthesize_speak(chute_slug: str, text: str, instruction: str) -> tupl
         return None, str(exc)
 
 
+async def transcribe_audio(audio_bytes: bytes, language: str | None = None) -> tuple[dict | None, str]:
+    payload: dict[str, str] = {
+        "audio_b64": base64.b64encode(audio_bytes).decode("utf-8"),
+    }
+    if language:
+        payload["language"] = language
+    headers = {"Content-Type": "application/json"}
+    if CHUTES_AUTH_KEY:
+        headers["Authorization"] = f"Bearer {CHUTES_AUTH_KEY}"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                CHUTES_WHISPER_STT_URL,
+                headers=headers,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=180),
+            ) as resp:
+                body = await resp.read()
+                if resp.status != 200:
+                    err = body.decode("utf-8", errors="replace")[:300] if body else ""
+                    return None, f"provider returned {resp.status}" + (f": {err}" if err else "")
+                try:
+                    data = await resp.json(content_type=None)
+                except Exception:
+                    return None, "provider returned non-JSON transcription response"
+                if isinstance(data, list):
+                    first = data[0] if data else {}
+                    if not isinstance(first, dict):
+                        return None, "provider returned unsupported list response"
+                    return first, ""
+                if not isinstance(data, dict):
+                    return None, "provider returned unsupported JSON response"
+                return data, ""
+    except asyncio.TimeoutError:
+        return None, "provider request timed out"
+    except Exception as exc:
+        return None, str(exc)
+
+
 def _ensure_bucket(client: Minio, bucket: str) -> None:
     if not client.bucket_exists(bucket):
         client.make_bucket(bucket)
@@ -100,3 +146,4 @@ def get_presigned_url(bucket: str, key: str, expires_at: datetime) -> str | None
         )
     except Exception:
         return None
+

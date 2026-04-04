@@ -20,6 +20,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from error_logging import configure_logging, register_exception_handlers
+
+configure_logging()
 from database import (
     acquire,
     close_pool,
@@ -87,6 +90,7 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+register_exception_handlers(app)
 
 app.add_middleware(
     CORSMiddleware,

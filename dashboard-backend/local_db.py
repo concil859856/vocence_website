@@ -46,7 +46,7 @@ SCHEMA_SQL = [
         email TEXT UNIQUE NOT NULL,
         name TEXT NOT NULL,
         picture TEXT,
-        credits INTEGER NOT NULL DEFAULT 50,
+        credits INTEGER NOT NULL DEFAULT 300,
         plan_code TEXT NOT NULL DEFAULT 'normal',
         plan_status TEXT NOT NULL DEFAULT 'active',
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -131,6 +131,45 @@ SCHEMA_SQL = [
         expires_at TEXT NOT NULL,
         credits_used INTEGER NOT NULL DEFAULT 10,
         latency_ms INTEGER,
+        status TEXT NOT NULL DEFAULT 'completed',
+        error_message TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS studio_stt_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        provider_name TEXT NOT NULL,
+        source_audio_filename TEXT NOT NULL,
+        source_language TEXT,
+        duration_seconds REAL,
+        transcribed_text TEXT NOT NULL,
+        credits_used INTEGER NOT NULL DEFAULT 2,
+        latency_ms INTEGER,
+        status TEXT NOT NULL DEFAULT 'completed',
+        error_message TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS studio_clone_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        reference_text TEXT NOT NULL,
+        target_text TEXT NOT NULL,
+        source_mode TEXT NOT NULL,
+        source_audio_filename TEXT NOT NULL,
+        source_language TEXT,
+        chute_slug TEXT NOT NULL,
+        audio_s3_bucket TEXT NOT NULL,
+        audio_s3_key TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        credits_used INTEGER NOT NULL DEFAULT 15,
+        stt_latency_ms INTEGER,
+        clone_latency_ms INTEGER,
         status TEXT NOT NULL DEFAULT 'completed',
         error_message TEXT,
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -258,6 +297,45 @@ SCHEMA_SQL = [
         FOREIGN KEY (api_key_id) REFERENCES api_keys(id) ON DELETE CASCADE
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS studio_voice_design_previews (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        preview_token TEXT NOT NULL UNIQUE,
+        voice_description TEXT NOT NULL,
+        revised_instruction TEXT NOT NULL,
+        sample_script TEXT NOT NULL,
+        miner_hotkey TEXT NOT NULL,
+        model_name TEXT NOT NULL,
+        chute_slug TEXT NOT NULL,
+        audio_a_bucket TEXT NOT NULL,
+        audio_a_key TEXT NOT NULL,
+        audio_b_bucket TEXT NOT NULL,
+        audio_b_key TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS studio_user_designed_voices (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        voice_description TEXT NOT NULL,
+        revised_instruction TEXT NOT NULL,
+        chosen_variant TEXT NOT NULL,
+        ref_script TEXT NOT NULL,
+        miner_hotkey TEXT NOT NULL,
+        model_name TEXT NOT NULL,
+        chute_slug TEXT NOT NULL,
+        audio_s3_bucket TEXT NOT NULL,
+        audio_s3_key TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
+    )
+    """,
 ]
 
 
@@ -267,6 +345,8 @@ INDEX_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_auth_history_user_id ON auth_history (user_id, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_blog_posts_created_at ON blog_posts (created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_studio_tts_history_user_id ON studio_tts_history (user_id, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_studio_stt_history_user_id ON studio_stt_history (user_id, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_studio_clone_history_user_id ON studio_clone_history (user_id, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_payment_sessions_user_id ON payment_sessions (user_id, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_payments_user_id ON payments (user_id, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_payment_sessions_stripe_checkout ON payment_sessions (stripe_checkout_session_id)",
@@ -277,6 +357,8 @@ INDEX_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_api_keys_prefix ON api_keys (key_prefix)",
     "CREATE INDEX IF NOT EXISTS idx_api_request_logs_key_time ON api_request_logs (api_key_id, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_api_request_logs_user_time ON api_request_logs (user_id, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_studio_voice_design_previews_user ON studio_voice_design_previews (user_id, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_studio_user_designed_voices_user ON studio_user_designed_voices (user_id, created_at DESC)",
 ]
 
 
@@ -294,7 +376,7 @@ PLAN_SEEDS = [
         "is_highlighted": 0,
         "features_json": json.dumps(
             [
-                "50 free credits when you register",
+                "300 free credits when you register",
                 "Can experiment with custom voices you describe",
                 "Best for light usage and personal projects",
                 "A simple way to explore prompt-controlled voice generation",
