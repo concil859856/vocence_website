@@ -4,7 +4,7 @@ This document defines the production implementation for:
 
 - Website backend traffic on `backend.vocence.ai`
 - Developer API traffic on `api.vocence.ai`
-- TTS + STT API product (chat/cloning not in this phase)
+- TTS + STT + voice clone API product (voice design / chat not in this phase)
 - Working billing, API keys, usage metering, and docs
 
 This is intentionally focused on **current implementation only**. No future features are included.
@@ -63,6 +63,7 @@ Responsibilities:
 - API key auth
 - `POST /v1/tts/generate`
 - `POST /v1/stt/transcribe`
+- `POST /v1/voice/clone` (reference audio + target text; STT on reference then clone synth)
 - credits validation and deduction
 - request logging/metering
 - provider selection (env-configured chutes)

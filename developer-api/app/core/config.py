@@ -21,6 +21,12 @@ API_RATE_LIMIT_ENABLED = (
 API_RATE_LIMIT_REQUESTS_PER_MINUTE = int(os.environ.get("API_RATE_LIMIT_REQUESTS_PER_MINUTE", "4"))
 API_CREDITS_PER_1M_CHARS = int(os.environ.get("API_CREDITS_PER_1M_CHARS", "2000"))
 API_DEFAULT_STYLE = (os.environ.get("API_DEFAULT_STYLE_INSTRUCTION") or "neutral voice").strip()
-API_STT_CREDITS_COST = int(os.environ.get("API_STT_CREDITS_COST", "2"))
+# Flat credits per TTS request (aligns with Studio). Set to 0 to use character-based metering only.
+API_TTS_CREDITS_PER_REQUEST = int(os.environ.get("API_TTS_CREDITS_PER_REQUEST", "25"))
+API_STT_CREDITS_COST = int(os.environ.get("API_STT_CREDITS_COST", "20"))
 API_STT_MAX_AUDIO_BYTES = int(os.environ.get("API_STT_MAX_AUDIO_BYTES", str(50 * 1024 * 1024)))
+API_VOICE_CLONE_CREDITS = int(os.environ.get("API_VOICE_CLONE_CREDITS", "50"))
+API_CLONE_MAX_REF_AUDIO_BYTES = int(
+    os.environ.get("API_CLONE_MAX_REF_AUDIO_BYTES", str(50 * 1024 * 1024))
+)
 

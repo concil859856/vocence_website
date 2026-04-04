@@ -33,3 +33,22 @@ class SttTranscribeResponse(BaseModel):
     latency_ms: int
     credits_used: int
 
+
+class VoiceCloneRequest(BaseModel):
+    """Reference audio is transcribed server-side (same as Studio); then clone target_text in that voice."""
+
+    reference_audio_b64: str
+    target_text: str
+    language: str | None = None
+
+
+class VoiceCloneResponse(BaseModel):
+    request_id: str
+    audio_url: str
+    reference_text: str
+    language: str | None = None
+    provider: str
+    credits_remaining: int
+    latency_ms: int
+    credits_used: int
+

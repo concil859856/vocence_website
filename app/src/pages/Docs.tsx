@@ -347,10 +347,14 @@ export function Docs() {
             API Reference
           </h1>
           <p className="max-w-2xl text-base leading-relaxed text-zinc-400 md:text-lg">
-            Generate speech with the Vocence Developer API. Keys are created in your account; authenticate with{' '}
-            <code className="rounded bg-white/10 px-1.5 py-0.5 text-sm text-zinc-200">Bearer</code> and call{' '}
-            <code className="rounded bg-white/10 px-1.5 py-0.5 text-sm text-zinc-200">/v1/tts/generate</code> or{' '}
-            <code className="rounded bg-white/10 px-1.5 py-0.5 text-sm text-zinc-200">/v1/stt/transcribe</code>.
+            Use the Vocence Developer API for text-to-speech, speech-to-text, and voice cloning. Keys are created in your
+            account; authenticate with <code className="rounded bg-white/10 px-1.5 py-0.5 text-sm text-zinc-200">Bearer</code>{' '}
+            and call <code className="rounded bg-white/10 px-1.5 py-0.5 text-sm text-zinc-200">/v1/tts/generate</code>,{' '}
+            <code className="rounded bg-white/10 px-1.5 py-0.5 text-sm text-zinc-200">/v1/stt/transcribe</code>, or{' '}
+            <code className="rounded bg-white/10 px-1.5 py-0.5 text-sm text-zinc-200">/v1/voice/clone</code>.{' '}
+            <span className="text-zinc-500">
+              Voice design (guided A/B in Studio) is not available on the Developer API—use Studio for that workflow.
+            </span>
           </p>
         </div>
 
@@ -393,7 +397,7 @@ export function Docs() {
           </div>
           <div className="rounded-xl border border-white/[0.08] bg-white/[0.02] p-4">
             <p className="text-xs font-medium uppercase tracking-wider text-zinc-500">Developer API</p>
-            <p className="mt-2 text-xs text-zinc-500">TTS + STT generation</p>
+            <p className="mt-2 text-xs text-zinc-500">TTS, STT, and voice cloning</p>
             <code className="mt-3 block break-all font-mono text-sm text-emerald-400/90">https://api.vocence.ai</code>
           </div>
         </div>
@@ -460,8 +464,9 @@ export function Docs() {
           </div>
           <div className="space-y-6 p-5">
             <p className="text-sm leading-relaxed text-zinc-400">
-              Generate TTS audio from text and optional style instruction. Credits are deducted from your prepaid balance
-              from character usage (text + style instruction).
+              Generate TTS audio from text and optional style instruction. Credits are deducted per successful request (
+              {CREDIT_TTS} credits, matching Studio). Operators can enable character-based metering instead by setting{' '}
+              <code className="text-zinc-300">API_TTS_CREDITS_PER_REQUEST=0</code> on the API service.
             </p>
 
             <div>
@@ -543,7 +548,7 @@ print(resp.status_code, resp.json())`
   "provider": "PromptTTS API",
   "credits_remaining": 9784,
   "latency_ms": 1420,
-  "credits_used": 1,
+  "credits_used": ${CREDIT_TTS},
   "request_chars": 27
 }`
               )}
@@ -562,7 +567,8 @@ print(resp.status_code, resp.json())`
           </div>
           <div className="space-y-6 p-5">
             <p className="text-sm leading-relaxed text-zinc-400">
-              Transcribe speech to text using Vocence STT. Send base64-encoded audio. Credits are deducted per request.
+              Transcribe speech to text using Vocence STT. Send base64-encoded audio. Credits are deducted per successful
+              request ({CREDIT_STT} credits, matching Studio).
             </p>
 
             <div>
@@ -625,7 +631,94 @@ print(resp.status_code, resp.json())`
   "provider": "Whisper Large v3",
   "credits_remaining": 9782,
   "latency_ms": 1234,
-  "credits_used": 2
+  "credits_used": ${CREDIT_STT}
+}`
+              )}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="space-y-6">
+        <div className="rounded-xl border border-white/[0.08] bg-white/[0.02]">
+          <div className="flex flex-wrap items-center gap-3 border-b border-white/[0.06] px-4 py-3">
+            <span className="rounded-md bg-emerald-500/15 px-2 py-0.5 font-mono text-[11px] font-semibold uppercase tracking-wide text-emerald-400">
+              POST
+            </span>
+            <code className="text-sm text-zinc-200">/v1/voice/clone</code>
+          </div>
+          <div className="space-y-6 p-5">
+            <p className="text-sm leading-relaxed text-zinc-400">
+              Produce speech in the style of a reference clip: the service transcribes your reference audio, then runs
+              voice-clone synthesis for <code className="text-zinc-300">target_text</code>. One charge applies per successful
+              call ({CREDIT_VOICE_CLONE} credits, matching Studio). Requires voice-clone backends to be configured on{' '}
+              <code className="text-zinc-300">api.vocence.ai</code>; otherwise the API returns{' '}
+              <code className="text-zinc-300">503</code>.
+            </p>
+
+            <div>
+              <h3 className="mb-3 text-sm font-semibold text-white">Request body</h3>
+              <ul className="space-y-4 text-sm text-zinc-400">
+                <li>
+                  <code className="rounded bg-white/10 px-1.5 py-0.5 font-mono text-emerald-400/90">
+                    reference_audio_b64
+                  </code>
+                  <span className="mt-1 block">Required. Base64-encoded reference audio (any common format; WAV preferred).</span>
+                </li>
+                <li>
+                  <code className="rounded bg-white/10 px-1.5 py-0.5 font-mono text-emerald-400/90">target_text</code>
+                  <span className="mt-1 block">Required. Text to speak in the cloned voice.</span>
+                </li>
+                <li>
+                  <code className="rounded bg-white/10 px-1.5 py-0.5 font-mono text-emerald-400/90">language</code>
+                  <span className="mt-1 block">
+                    Optional hint for transcribing the reference clip (for example{' '}
+                    <code className="text-zinc-300">en</code>, <code className="text-zinc-300">es</code>).
+                  </span>
+                </li>
+              </ul>
+            </div>
+
+            <div>
+              <h3 className="mb-3 text-sm font-semibold text-white">Examples</h3>
+              {apiCodeBlock(
+                'Python',
+                `import base64
+import requests
+
+with open("reference.wav", "rb") as f:
+    ref_b64 = base64.b64encode(f.read()).decode("utf-8")
+
+resp = requests.post(
+    "https://api.vocence.ai/v1/voice/clone",
+    headers={
+        "Authorization": "Bearer " + API_KEY,
+        "Content-Type": "application/json",
+    },
+    json={
+        "reference_audio_b64": ref_b64,
+        "target_text": "Hello from the cloned voice.",
+        "language": "en",
+    },
+    timeout=300,
+)
+print(resp.status_code, resp.json())`
+              )}
+            </div>
+
+            <div>
+              <h3 className="mb-3 text-sm font-semibold text-white">Response</h3>
+              {apiCodeBlock(
+                'JSON',
+                `{
+  "request_id": "c2a91e…",
+  "audio_url": "https://s3.hippius.com/...",
+  "reference_text": "Transcript of the reference clip…",
+  "language": "en",
+  "provider": "clone.example.com",
+  "credits_remaining": 9700,
+  "latency_ms": 45000,
+  "credits_used": ${CREDIT_VOICE_CLONE}
 }`
               )}
             </div>
@@ -683,7 +776,18 @@ print(resp.status_code, resp.json())`
               <tr>
                 <td className="px-4 py-3 font-mono text-zinc-300">413</td>
                 <td className="px-4 py-3">Payload too large</td>
-                <td className="px-4 py-3">Reduce audio size before sending STT requests.</td>
+                <td className="px-4 py-3">
+                  Reduce audio size for <code className="text-zinc-300">/v1/stt/transcribe</code> and reference audio for{' '}
+                  <code className="text-zinc-300">/v1/voice/clone</code>.
+                </td>
+              </tr>
+              <tr>
+                <td className="px-4 py-3 font-mono text-zinc-300">503</td>
+                <td className="px-4 py-3">Voice clone unavailable</td>
+                <td className="px-4 py-3">
+                  Host has not configured clone inference; use TTS/STT or contact support. Studio may still work if only the
+                  public API is missing clone routing.
+                </td>
               </tr>
               <tr>
                 <td className="px-4 py-3 font-mono text-zinc-300">502</td>
@@ -705,7 +809,11 @@ print(resp.status_code, resp.json())`
             </Link>{' '}
             and store it as a secret.
           </li>
-          <li>Call <code className="text-zinc-300">POST /v1/tts/generate</code> or <code className="text-zinc-300">POST /v1/stt/transcribe</code> with your Bearer token.</li>
+          <li>
+            Call <code className="text-zinc-300">POST /v1/tts/generate</code>,{' '}
+            <code className="text-zinc-300">POST /v1/stt/transcribe</code>, and/or{' '}
+            <code className="text-zinc-300">POST /v1/voice/clone</code> with your Bearer token.
+          </li>
           <li>Monitor usage and rotate keys from Account → Developer if needed.</li>
         </ol>
       </section>
@@ -805,50 +913,60 @@ print(resp.status_code, resp.json())`
             </table>
           </div>
           <p>
-            <span className="text-white font-medium">Developer API metering:</span> <code className="text-white/90">2,000 credits per 1,000,000 characters</code>.
+            <span className="text-white font-medium">Developer API metering</span> (default server configuration, aligned
+            with Studio){' '}
+            <code className="text-white/90">
+              TTS {CREDIT_TTS} credits per request · STT {CREDIT_STT} credits per request · voice clone{' '}
+              {CREDIT_VOICE_CLONE} credits per request
+            </code>
+            . Voice design is <span className="text-white font-medium">not</span> billed on the Developer API (Studio only).
           </p>
-          <p>
-            Character count formula:
-            <code className="text-white/90"> len(text) + len(style_instruction) </code>
-          </p>
-          <p>
-            If <code className="text-white/90">style_instruction</code> is missing, system uses
-            <code className="text-white/90"> "neutral voice" </code>
-            and includes it in character counting.
+          <p className="text-[#A7B0B7] text-sm">
+            TTS can optionally use character-based credits instead: set <code className="text-white/80">API_TTS_CREDITS_PER_REQUEST=0</code>{' '}
+            on the API service; then metering uses{' '}
+            <code className="text-white/80">API_CREDITS_PER_1M_CHARS</code> on{' '}
+            <code className="text-white/80">len(text) + len(style_instruction)</code> (default style{' '}
+            <code className="text-white/80">neutral voice</code> counts toward length).
           </p>
         </div>
       </section>
 
       <section>
-        <h2 className="text-2xl font-semibold mb-4">API Cost Examples</h2>
+        <h2 className="text-2xl font-semibold mb-4">Developer API cost reference</h2>
         <div className="overflow-x-auto border border-white/10 rounded-xl">
           <table className="w-full text-sm">
             <thead className="bg-white/5 text-[#A7B0B7]">
               <tr>
-                <th className="text-left px-4 py-3">Input</th>
-                <th className="text-left px-4 py-3">Character Count</th>
-                <th className="text-left px-4 py-3">Credits Used</th>
+                <th className="text-left px-4 py-3">Endpoint</th>
+                <th className="text-left px-4 py-3">Credits (default)</th>
               </tr>
             </thead>
             <tbody className="text-[#C6CDD4]">
               <tr className="border-t border-white/10">
-                <td className="px-4 py-3">`text=120`, `style_instruction=30`</td>
-                <td className="px-4 py-3">150</td>
-                <td className="px-4 py-3">ceil(150 * 2000 / 1,000,000) = 1</td>
+                <td className="px-4 py-3">
+                  <code className="text-white/90">POST /v1/tts/generate</code>
+                </td>
+                <td className="px-4 py-3">{CREDIT_TTS} per successful response</td>
               </tr>
               <tr className="border-t border-white/10">
-                <td className="px-4 py-3">`text=2,500`, no style provided</td>
-                <td className="px-4 py-3">2,513 (`neutral voice`=13)</td>
-                <td className="px-4 py-3">ceil(2513 * 2000 / 1,000,000) = 6</td>
+                <td className="px-4 py-3">
+                  <code className="text-white/90">POST /v1/stt/transcribe</code>
+                </td>
+                <td className="px-4 py-3">{CREDIT_STT} per successful response</td>
               </tr>
               <tr className="border-t border-white/10">
-                <td className="px-4 py-3">`text + style = 100,000`</td>
-                <td className="px-4 py-3">100,000</td>
-                <td className="px-4 py-3">200</td>
+                <td className="px-4 py-3">
+                  <code className="text-white/90">POST /v1/voice/clone</code>
+                </td>
+                <td className="px-4 py-3">{CREDIT_VOICE_CLONE} per successful response</td>
               </tr>
             </tbody>
           </table>
         </div>
+        <p className="text-[#A7B0B7] text-sm mt-4">
+          With <code className="text-white/80">API_TTS_CREDITS_PER_REQUEST=0</code>, TTS instead uses character-based
+          credits via <code className="text-white/80">API_CREDITS_PER_1M_CHARS</code> (see API Reference above).
+        </p>
       </section>
 
       <section>
@@ -867,10 +985,49 @@ print(resp.status_code, resp.json())`
           <li>Sign in and purchase credits from pricing page (Stripe or Crypto).</li>
           <li>Purchase Premium pack to unlock Developer API.</li>
           <li>Create API key in Account → Developer tab.</li>
-          <li>Call `POST /v1/tts/generate` with Bearer key.</li>
-          <li>Credits reduce based on character usage.</li>
+          <li>
+            Call <code className="text-white/90">POST /v1/tts/generate</code>,{' '}
+            <code className="text-white/90">POST /v1/stt/transcribe</code>, and/or{' '}
+            <code className="text-white/90">POST /v1/voice/clone</code> with the Bearer key.
+          </li>
+          <li>Credits reduce per endpoint rules (flat per request by default; optional char-based TTS for operators).</li>
           <li>View logs and spend in Account → Developer tab.</li>
         </ol>
+      </section>
+    </div>
+  );
+
+  const renderCloning = () => (
+    <div className="space-y-10">
+      <div className="border-b border-white/10 pb-8">
+        <h1 className="text-4xl font-bold mb-4">Voice cloning</h1>
+        <p className="text-xl text-[#A7B0B7] leading-relaxed max-w-3xl">
+          Clone a speaker from a short reference recording, then synthesize new sentences in that voice.
+        </p>
+      </div>
+
+      <section className="space-y-4">
+        <h2 className="text-2xl font-semibold text-white">Studio</h2>
+        <p className="text-[#A7B0B7] leading-7 max-w-3xl">
+          Use <Link to="/studio" className="text-[#DFFF00] hover:underline">Studio</Link> for an interactive clone workflow:
+          upload reference audio, hear outputs, and browse history. Voice design (guided A/B previews before saving a custom
+          voice) stays in Studio only—it is not exposed on the Developer API.
+        </p>
+      </section>
+
+      <section className="space-y-4">
+        <h2 className="text-2xl font-semibold text-white">Developer API</h2>
+        <p className="text-[#A7B0B7] leading-7 max-w-3xl">
+          Integrations can call{' '}
+          <code className="text-white/90 bg-white/5 px-1.5 py-0.5 rounded">POST https://api.vocence.ai/v1/voice/clone</code>{' '}
+          with <code className="text-white/90 bg-white/5 px-1.5 py-0.5 rounded">reference_audio_b64</code> and{' '}
+          <code className="text-white/90 bg-white/5 px-1.5 py-0.5 rounded">target_text</code>. The service transcribes the
+          reference clip server-side, runs clone synthesis, and returns a presigned URL for the WAV output. See the{' '}
+          <Link to="/docs/api" className="text-[#DFFF00] hover:underline">
+            API Reference
+          </Link>{' '}
+          for payloads, errors, and credit costs ({CREDIT_VOICE_CLONE} credits per successful call by default).
+        </p>
       </section>
     </div>
   );
@@ -1346,7 +1503,7 @@ uv run vocence serve`}</pre>
       case 'models':
         return renderDefault('Models', 'Available voice models and their specifications.');
       case 'cloning':
-        return renderDefault('Voice Cloning', 'Learn how to clone voices with the Vocence API.');
+        return renderCloning();
       case 'integration':
         return renderDefault('Integration Guide', 'Step-by-step guide to integrate Vocence into your application.');
       case 'miner':
