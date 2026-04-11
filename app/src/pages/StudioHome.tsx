@@ -326,26 +326,7 @@ export function StudioHome() {
           subtitle="Generate original music from text — pick a genre or describe your own."
           action={{ label: 'Create music', to: '/studio/music' }}
         />
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-          {MUSIC_PRESETS.map((m) => (
-            <div
-              key={m.id}
-              className="rounded-2xl border border-white/10 overflow-hidden hover:border-white/20 hover:-translate-y-0.5 transition-all group"
-            >
-              <div className="relative aspect-square overflow-hidden">
-                <img loading="lazy" src={m.image} alt={m.genre} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-300" />
-                <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent" />
-                <div className="absolute bottom-2 left-2 right-2">
-                  <h3 className="text-white font-semibold text-sm leading-tight">{m.genre}</h3>
-                  <p className="text-[10px] text-white/60">{m.mood}</p>
-                </div>
-                <div className="absolute top-2 right-2">
-                  <PlayBtn src={m.audioSrc} title={m.genre} subtitle={m.mood} image={m.image} />
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
+        <MusicPresetGrid presets={MUSIC_PRESETS} />
       </section>
 
       {/* ================================================================
@@ -444,6 +425,51 @@ export function StudioHome() {
         </section>
       )}
 
+    </div>
+  );
+}
+
+/* ==========================================================================
+   Music preset grid — click card to play
+   ========================================================================== */
+
+function MusicPresetGrid({ presets }: { presets: MusicPresetItem[] }) {
+  const { track, playing, play, pause, resume } = useStudioPlayer();
+
+  return (
+    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+      {presets.map((m) => {
+        const isThis = track?.src === m.audioSrc;
+        const isPlaying = isThis && playing;
+        const handleClick = () => {
+          if (isPlaying) { pause(); return; }
+          if (isThis) { resume(); return; }
+          play({ src: m.audioSrc, title: m.genre, subtitle: m.mood, image: m.image });
+        };
+        return (
+          <div
+            key={m.id}
+            onClick={handleClick}
+            className={`rounded-2xl border overflow-hidden hover:-translate-y-0.5 transition-all group cursor-pointer ${
+              isPlaying ? 'border-[#DFFF00]/50 shadow-[0_0_12px_rgba(223,255,0,0.15)]' : 'border-white/10 hover:border-white/20'
+            }`}
+          >
+            <div className="relative aspect-square overflow-hidden">
+              <img loading="lazy" src={m.image} alt={m.genre} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-300" />
+              <div className={`absolute inset-0 transition-colors ${isPlaying ? 'bg-black/40' : 'bg-gradient-to-t from-black/60 to-transparent'}`} />
+              <div className="absolute bottom-2 left-2 right-2">
+                <h3 className="text-white font-semibold text-sm leading-tight">{m.genre}</h3>
+                <p className="text-[10px] text-white/60">{m.mood}</p>
+              </div>
+              {isPlaying && (
+                <div className="absolute top-2 right-2 w-6 h-6 rounded-full bg-[#DFFF00] flex items-center justify-center">
+                  <Pause size={10} className="text-[#07080A]" />
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
