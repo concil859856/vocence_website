@@ -19,6 +19,8 @@ from schemas import (
     PlaybookTrackResponse,
     PlaybookTracksAddRequest,
     PlaybookUpdateRequest,
+    PublicPlaybookListResponse,
+    PublicPlaybookResponse,
 )
 from studio_tts_service import get_presigned_url, upload_wav_to_hippius, _active_bucket, BUCKET_PROVIDER, R2_PUBLIC_DOMAIN
 
@@ -102,6 +104,45 @@ async def list_playbooks(user_id: str = Depends(require_auth)):
 
     return PlaybookListResponse(
         playbooks=[_playbook_response(r, int(r["track_count"] or 0), float(r["total_duration"] or 0)) for r in rows]
+    )
+
+
+@router.get("/public/browse", response_model=PublicPlaybookListResponse)
+async def list_public_playbooks(limit: int = Query(20, ge=1, le=50)):
+    """Browse public playbooks from all users."""
+    conn = await get_connection()
+    try:
+        rows = await (await conn.execute(
+            """SELECT p.*, u.name AS user_name, u.picture AS user_picture,
+                      (SELECT COUNT(*) FROM playbook_tracks WHERE playbook_id = p.id) AS track_count,
+                      (SELECT COALESCE(SUM(duration_seconds), 0) FROM playbook_tracks WHERE playbook_id = p.id) AS total_duration
+               FROM playbooks p
+               JOIN auth_users u ON u.id = p.user_id
+               WHERE p.visibility = 'public'
+               ORDER BY datetime(p.updated_at) DESC
+               LIMIT ?""",
+            (limit,),
+        )).fetchall()
+    finally:
+        await conn.close()
+
+    return PublicPlaybookListResponse(
+        playbooks=[
+            PublicPlaybookResponse(
+                id=int(r["id"]),
+                title=r["title"] or "Untitled",
+                description=r["description"] or "",
+                cover_image_url=r["cover_image_url"],
+                visibility="public",
+                track_count=int(r["track_count"] or 0),
+                total_duration=float(r["total_duration"] or 0),
+                created_at=str(r["created_at"] or ""),
+                updated_at=str(r["updated_at"] or ""),
+                user_name=r["user_name"] or "Anonymous",
+                user_picture=r["user_picture"],
+            )
+            for r in rows
+        ]
     )
 
 

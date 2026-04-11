@@ -841,6 +841,10 @@ export const dashboardApi = {
     return fetchJson('/api/dashboard/playbooks', { method: 'POST', headers, body: JSON.stringify(body) });
   },
 
+  browsePublicPlaybooks(limit = 20): Promise<{ playbooks: PublicPlaybook[] }> {
+    return fetchJson(`/api/dashboard/playbooks/public/browse?limit=${limit}`);
+  },
+
   listPlaybooks(token: string | null): Promise<{ playbooks: Playbook[] }> {
     const headers: Record<string, string> = {};
     if (token) headers['Authorization'] = `Bearer ${token}`;
@@ -1045,4 +1049,9 @@ export interface Playbook {
 
 export interface PlaybookDetail extends Playbook {
   tracks: PlaybookTrack[];
+}
+
+export interface PublicPlaybook extends Playbook {
+  user_name: string;
+  user_picture: string | null;
 }

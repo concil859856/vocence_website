@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
-  Plus, Play, Pause, Trash2, Upload, Music, Search, X, GripVertical,
-  Shuffle, ListMusic, Globe, Lock, MoreHorizontal, Clock, Check,
+  Plus, Play, Pause, Trash2, Upload, Music, X, GripVertical,
+  Shuffle, ListMusic, Globe, Lock, Check,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useStudioPlayer, type Track } from '../contexts/StudioPlayerContext';
@@ -10,7 +10,7 @@ import {
   dashboardApi,
   type Playbook,
   type PlaybookDetail,
-  type PlaybookTrack,
+  type PublicPlaybook,
   type StudioMusicHistoryItem,
 } from '../services/dashboardApi';
 
@@ -52,16 +52,20 @@ function PlaybookListView() {
   const { user } = useAuth();
   const { playQueue } = useStudioPlayer();
   const [playbooks, setPlaybooks] = useState<Playbook[]>([]);
+  const [publicPlaybooks, setPublicPlaybooks] = useState<PublicPlaybook[]>([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
 
   const token = localStorage.getItem('vocence_token');
 
   const load = useCallback(async () => {
-    if (!token) return;
     try {
-      const res = await dashboardApi.listPlaybooks(token);
-      setPlaybooks(res.playbooks);
+      const [myRes, pubRes] = await Promise.all([
+        token ? dashboardApi.listPlaybooks(token) : Promise.resolve({ playbooks: [] }),
+        dashboardApi.browsePublicPlaybooks(12),
+      ]);
+      setPlaybooks(myRes.playbooks);
+      setPublicPlaybooks(pubRes.playbooks);
     } catch { /* */ }
     finally { setLoading(false); }
   }, [token]);
@@ -154,6 +158,44 @@ function PlaybookListView() {
           ))}
         </div>
       )}
+
+      {/* Public playbooks */}
+      {publicPlaybooks.length > 0 && (
+        <div className="pt-6 border-t border-[#2e2f33]">
+          <div className="flex items-center gap-2 mb-4">
+            <Globe size={14} className="text-[#666]" />
+            <h3 className="text-sm font-semibold text-white">Community Playbooks</h3>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {publicPlaybooks.map((pb) => (
+              <div
+                key={pb.id}
+                onClick={() => navigate(`/studio/playbooks/${pb.id}`)}
+                className="rounded-2xl border border-[#2e2f33] bg-[#111215] p-4 cursor-pointer hover:border-[#444] transition-all group"
+              >
+                <div className="aspect-video rounded-xl bg-gradient-to-br from-[#1c1d21] to-[#111215] mb-3 relative overflow-hidden">
+                  <img loading="lazy" src={`/samples/images/music_${(pb.id % 8) + 1}.webp`} alt="" className="absolute inset-0 w-full h-full object-cover opacity-60 group-hover:scale-105 transition-transform duration-300" />
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handlePlayAll(pb); }}
+                    className="absolute bottom-2 right-2 w-9 h-9 rounded-full bg-[#DFFF00] text-[#07080A] flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all hover:scale-105 shadow-lg"
+                  >
+                    <Play size={14} className="ml-0.5" />
+                  </button>
+                </div>
+                <h3 className="text-sm font-semibold text-white truncate">{pb.title}</h3>
+                <div className="flex items-center gap-2 mt-1">
+                  {pb.user_picture && (
+                    <img src={pb.user_picture} alt="" className="w-4 h-4 rounded-full" />
+                  )}
+                  <span className="text-xs text-[#666] truncate">{pb.user_name}</span>
+                  <span className="text-xs text-[#444]">·</span>
+                  <span className="text-xs text-[#666]">{pb.track_count} track{pb.track_count !== 1 ? 's' : ''}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -163,8 +205,8 @@ function PlaybookListView() {
    ========================================================================== */
 function PlaybookDetailView({ playbookId }: { playbookId: number }) {
   const navigate = useNavigate();
-  const { user } = useAuth();
-  const { track: currentTrack, playing, play: playSingle, pause, resume, playQueue } = useStudioPlayer();
+  useAuth(); // ensure auth context available
+  const { track: currentTrack, playing, pause, resume, playQueue } = useStudioPlayer();
   const [playbook, setPlaybook] = useState<PlaybookDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
@@ -217,11 +259,25 @@ function PlaybookDetailView({ playbookId }: { playbookId: number }) {
     playQueue(tracks, startIdx, playbook.title);
   };
 
+  const [showPublicConfirm, setShowPublicConfirm] = useState(false);
+
   const handleToggleVisibility = async () => {
     if (!token || !playbook) return;
-    const newVis = playbook.visibility === 'public' ? 'private' : 'public';
-    await dashboardApi.updatePlaybook(playbook.id, { visibility: newVis }, token);
-    setPlaybook(p => p ? { ...p, visibility: newVis } : p);
+    if (playbook.visibility === 'private') {
+      // Going public — show confirmation first
+      setShowPublicConfirm(true);
+      return;
+    }
+    // Going private — no confirmation needed
+    await dashboardApi.updatePlaybook(playbook.id, { visibility: 'private' }, token);
+    setPlaybook(p => p ? { ...p, visibility: 'private' } : p);
+  };
+
+  const confirmMakePublic = async () => {
+    if (!token || !playbook) return;
+    await dashboardApi.updatePlaybook(playbook.id, { visibility: 'public' }, token);
+    setPlaybook(p => p ? { ...p, visibility: 'public' } : p);
+    setShowPublicConfirm(false);
   };
 
   if (loading) return <div className="flex items-center justify-center py-20 text-[#666]">Loading...</div>;
@@ -368,6 +424,39 @@ function PlaybookDetailView({ playbookId }: { playbookId: number }) {
       )}
 
       {/* Add tracks modal */}
+      {/* Make Public confirmation */}
+      {showPublicConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60" onClick={() => setShowPublicConfirm(false)}>
+          <div className="bg-[#111215] border border-[#2e2f33] rounded-2xl w-full max-w-md p-6" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-full bg-amber-500/10 flex items-center justify-center">
+                <Globe size={18} className="text-amber-400" />
+              </div>
+              <h3 className="text-base font-semibold text-white">Make Playbook Public?</h3>
+            </div>
+            <div className="space-y-3 text-sm text-[#9ca3af] leading-relaxed mb-6">
+              <p>Once public, <span className="text-white font-medium">everyone</span> will be able to see and listen to this playbook and all its tracks.</p>
+              <p>Please make sure your playbook content complies with our <a href="/terms" target="_blank" className="text-[#DFFF00] hover:underline">Terms of Service</a> and <a href="/privacy" target="_blank" className="text-[#DFFF00] hover:underline">Privacy Policy</a>. Content that violates these policies may be removed.</p>
+              <p className="text-xs text-[#666]">You can switch back to private at any time.</p>
+            </div>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setShowPublicConfirm(false)}
+                className="flex-1 py-2.5 rounded-xl border border-[#2e2f33] text-sm text-[#9ca3af] hover:text-white hover:border-[#444] transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmMakePublic}
+                className="flex-1 py-2.5 rounded-xl bg-[#DFFF00] text-[#07080A] text-sm font-semibold hover:brightness-110 transition-all"
+              >
+                Yes, Make Public
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showAddModal && (
         <AddTracksModal
           playbookId={playbook.id}

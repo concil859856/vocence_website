@@ -700,3 +700,12 @@ class PlaybookDetailResponse(PlaybookResponse):
 
 class PlaybookListResponse(BaseModel):
     playbooks: list[PlaybookResponse]
+
+
+class PublicPlaybookResponse(PlaybookResponse):
+    user_name: str = ""
+    user_picture: str | None = None
+
+
+class PublicPlaybookListResponse(BaseModel):
+    playbooks: list[PublicPlaybookResponse]

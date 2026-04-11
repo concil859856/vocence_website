@@ -69,7 +69,65 @@ export function Terms() {
           </section>
 
           <section>
-            <h2 className="text-xl font-semibold text-white mb-3">5. Intellectual Property</h2>
+            <h2 className="text-xl font-semibold text-white mb-3">5. Public Content &amp; Community Playbooks</h2>
+            <p className="mb-3">
+              Vocence allows you to share Playbooks and other content publicly. When you make a Playbook public,
+              it becomes visible and playable by all users of the platform. You are solely responsible for the
+              content you share publicly and must comply with the following rules:
+            </p>
+            <ul className="list-disc list-inside space-y-2 ml-2 mb-4">
+              <li>
+                <span className="text-white font-medium">No illegal content:</span> Do not share content that
+                violates any applicable law or regulation, including but not limited to copyright, trademark,
+                privacy, or export control laws.
+              </li>
+              <li>
+                <span className="text-white font-medium">No harmful or offensive content:</span> Do not share
+                content that is hateful, violent, sexually explicit, threatening, harassing, discriminatory,
+                or otherwise objectionable. This includes content that promotes self-harm, terrorism, or
+                exploitation of minors.
+              </li>
+              <li>
+                <span className="text-white font-medium">No impersonation:</span> Do not share content that
+                impersonates real individuals, public figures, or brands without explicit authorization. This
+                includes AI-generated voices that could be mistaken for specific real people.
+              </li>
+              <li>
+                <span className="text-white font-medium">No copyrighted material:</span> Do not upload or share
+                audio that infringes on third-party copyrights, including music recordings, samples, or
+                compositions you do not have rights to use.
+              </li>
+              <li>
+                <span className="text-white font-medium">No spam or misleading content:</span> Do not create
+                public Playbooks solely for advertising, spam, or misleading purposes.
+              </li>
+              <li>
+                <span className="text-white font-medium">Respect other users:</span> Do not use public content
+                features to harass, stalk, or target other users of the platform.
+              </li>
+            </ul>
+            <p className="mb-3">
+              <span className="text-white font-medium">Moderation and enforcement:</span> Vocence reserves the
+              right to review, remove, or restrict any public content at any time and without prior notice if we
+              determine, in our sole discretion, that the content violates these Terms, applicable law, or
+              community standards. Repeated or severe violations may result in temporary or permanent suspension
+              of your account.
+            </p>
+            <p className="mb-3">
+              <span className="text-white font-medium">Reporting:</span> If you encounter public content that
+              you believe violates these Terms, please contact us at{' '}
+              <a href="mailto:space@vocence.ai" className="text-[#DFFF00] hover:underline">space@vocence.ai</a>.
+              We will review all reports and take appropriate action.
+            </p>
+            <p>
+              By making content public, you represent and warrant that you have all necessary rights and
+              permissions to share the content and that it complies with these Terms. You acknowledge that
+              public content may be viewed, played, and shared by anyone with access to the platform.
+            </p>
+          </section>
+
+          <section>
+            <h2 className="text-xl font-semibold text-white mb-3">6. Intellectual Property</h2>
             <p>
               The Services, including software, design, text, graphics, and logos, are owned by Vocence or our
               licensors and are protected by intellectual property laws. We grant you a limited, non-exclusive,
@@ -80,7 +138,7 @@ export function Terms() {
           </section>
 
           <section>
-            <h2 className="text-xl font-semibold text-white mb-3">6. Disclaimers</h2>
+            <h2 className="text-xl font-semibold text-white mb-3">7. Disclaimers</h2>
             <p>
               THE SERVICES ARE PROVIDED &quot;AS IS&quot; AND &quot;AS AVAILABLE&quot; WITHOUT WARRANTIES OF ANY KIND,
               EXPRESS OR IMPLIED. WE DISCLAIM ALL WARRANTIES, INCLUDING MERCHANTABILITY, FITNESS FOR A
@@ -90,7 +148,7 @@ export function Terms() {
           </section>
 
           <section>
-            <h2 className="text-xl font-semibold text-white mb-3">7. Limitation of Liability</h2>
+            <h2 className="text-xl font-semibold text-white mb-3">8. Limitation of Liability</h2>
             <p>
               TO THE MAXIMUM EXTENT PERMITTED BY LAW, VOCENCE AND ITS AFFILIATES, OFFICERS, AND EMPLOYEES SHALL
               NOT BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, OR PUNITIVE DAMAGES, OR FOR LOSS
@@ -101,7 +159,7 @@ export function Terms() {
           </section>
 
           <section>
-            <h2 className="text-xl font-semibold text-white mb-3">8. Indemnification</h2>
+            <h2 className="text-xl font-semibold text-white mb-3">9. Indemnification</h2>
             <p>
               You agree to indemnify and hold harmless Vocence and its affiliates from any claims, damages,
               losses, or expenses (including reasonable attorneys&apos; fees) arising from your use of the Services,
@@ -110,7 +168,7 @@ export function Terms() {
           </section>
 
           <section>
-            <h2 className="text-xl font-semibold text-white mb-3">9. Termination</h2>
+            <h2 className="text-xl font-semibold text-white mb-3">10. Termination</h2>
             <p>
               We may suspend or terminate your access to the Services at any time for any reason, including
               breach of these Terms. You may stop using the Services at any time. Upon termination, your right
@@ -120,7 +178,7 @@ export function Terms() {
           </section>
 
           <section>
-            <h2 className="text-xl font-semibold text-white mb-3">10. Governing Law and Disputes</h2>
+            <h2 className="text-xl font-semibold text-white mb-3">11. Governing Law and Disputes</h2>
             <p>
               These Terms are governed by the laws of the jurisdiction in which Vocence operates, without regard
               to conflict of law principles. Any dispute arising from these Terms or the Services shall be resolved
