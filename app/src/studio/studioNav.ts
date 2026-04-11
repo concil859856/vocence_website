@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-react';
-import { Mic, MessageSquare, Users, History, Sparkles, LayoutGrid, Music } from 'lucide-react';
+import { Mic, MessageSquare, Users, History, Sparkles, LayoutGrid, Music, ListMusic } from 'lucide-react';
 
 export type StudioView =
   | 'home'
@@ -10,6 +10,7 @@ export type StudioView =
   | 'voice-design'
   | 'my-voices'
   | 'music'
+  | 'playbooks'
   | 'history';
 
 export const studioSidebarItems: { id: StudioView; label: string; icon: LucideIcon }[] = [
@@ -19,6 +20,7 @@ export const studioSidebarItems: { id: StudioView; label: string; icon: LucideIc
   { id: 'cloning', label: 'Voice Cloning', icon: Users },
   { id: 'music', label: 'Text-to-Music', icon: Music },
   { id: 'my-voices', label: 'My Voices', icon: LayoutGrid },
+  { id: 'playbooks', label: 'Playbooks', icon: ListMusic },
   { id: 'history', label: 'History', icon: History },
   { id: 'chat', label: 'Voice Chat', icon: MessageSquare },
 ];

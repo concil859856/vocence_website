@@ -636,3 +636,67 @@ class StudioMusicHistoryItemResponse(BaseModel):
 
 class StudioMusicHistoryResponse(BaseModel):
     items: list[StudioMusicHistoryItemResponse]
+
+
+# ----- Playbooks -----
+
+
+class PlaybookCreateRequest(BaseModel):
+    title: str = "Untitled Playbook"
+    description: str = ""
+
+
+class PlaybookUpdateRequest(BaseModel):
+    title: str | None = None
+    description: str | None = None
+    visibility: str | None = None
+    cover_image_url: str | None = None
+
+
+class PlaybookTrackAddRequest(BaseModel):
+    title: str
+    subtitle: str = ""
+    audio_url: str
+    image_url: str | None = None
+    source_type: str = "generated"
+    duration_seconds: float | None = None
+
+
+class PlaybookTracksAddRequest(BaseModel):
+    tracks: list[PlaybookTrackAddRequest]
+
+
+class PlaybookTrackReorderRequest(BaseModel):
+    track_ids: list[int]
+
+
+class PlaybookTrackResponse(BaseModel):
+    id: int
+    position: int
+    title: str
+    subtitle: str
+    audio_url: str
+    image_url: str | None
+    source_type: str
+    duration_seconds: float | None
+    added_at: str
+
+
+class PlaybookResponse(BaseModel):
+    id: int
+    title: str
+    description: str
+    cover_image_url: str | None
+    visibility: str
+    track_count: int = 0
+    total_duration: float = 0
+    created_at: str
+    updated_at: str
+
+
+class PlaybookDetailResponse(PlaybookResponse):
+    tracks: list[PlaybookTrackResponse]
+
+
+class PlaybookListResponse(BaseModel):
+    playbooks: list[PlaybookResponse]

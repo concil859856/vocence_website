@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Play, Pause, X, Volume2, VolumeX } from 'lucide-react';
+import { Play, Pause, X, Volume2, VolumeX, SkipBack, SkipForward, Shuffle, Repeat, Repeat1 } from 'lucide-react';
 import { useStudioPlayer } from '../contexts/StudioPlayerContext';
 
 function formatTime(s: number): string {
@@ -10,7 +10,11 @@ function formatTime(s: number): string {
 }
 
 export function StudioPlayerBar() {
-  const { track, playing, progress, duration, pause, resume, stop, seek, setVolume: setAudioVolume } = useStudioPlayer();
+  const {
+    track, playing, progress, duration, pause, resume, stop, seek, setVolume: setAudioVolume,
+    queue, queueIndex, shuffle, repeat, queueSource,
+    next, prev, toggleShuffle, toggleRepeat,
+  } = useStudioPlayer();
   const [volume, setVolume] = useState(1);
   const [prevVolume, setPrevVolume] = useState(1);
   const [visible, setVisible] = useState(false);
@@ -26,6 +30,7 @@ export function StudioPlayerBar() {
 
   const pct = duration > 0 ? (progress / duration) * 100 : 0;
   const initial = track.title?.[0]?.toUpperCase() || '?';
+  const hasQueue = queue.length > 1;
 
   const handleSeek = (e: React.MouseEvent<HTMLDivElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -53,19 +58,72 @@ export function StudioPlayerBar() {
             {playing && <div className="absolute -inset-1 rounded-lg bg-[#DFFF00]/10 animate-pulse" />}
           </div>
 
-          {/* Info + progress */}
-          <div className="flex-1 min-w-0 space-y-1.5">
-            <div className="flex items-center justify-between gap-2">
-              <div className="min-w-0">
-                <p className="text-[13px] text-white font-semibold truncate leading-tight">{track.title}</p>
-                {track.subtitle && <p className="text-[11px] text-white/30 truncate leading-tight">{track.subtitle}</p>}
-              </div>
-              <span className="text-[10px] text-white/25 tabular-nums shrink-0">
-                {formatTime(progress)} / {formatTime(duration)}
-              </span>
-            </div>
-            {/* Rounded progress bar */}
-            <div className="h-[5px] bg-white/[0.06] rounded-full cursor-pointer group" onClick={handleSeek}>
+          {/* Info */}
+          <div className="min-w-0 w-36 shrink-0">
+            <p className="text-[13px] text-white font-semibold truncate leading-tight">{track.title}</p>
+            <p className="text-[11px] text-white/30 truncate leading-tight">
+              {queueSource || track.subtitle || ''}
+              {hasQueue && <span className="ml-1 text-white/20">{queueIndex + 1}/{queue.length}</span>}
+            </p>
+          </div>
+
+          {/* Controls */}
+          <div className="flex items-center gap-1 shrink-0">
+            {/* Shuffle */}
+            {hasQueue && (
+              <button
+                onClick={toggleShuffle}
+                className={`w-7 h-7 rounded-full flex items-center justify-center transition-colors ${
+                  shuffle ? 'text-[#DFFF00]' : 'text-white/20 hover:text-white/50'
+                }`}
+                aria-label="Shuffle"
+              >
+                <Shuffle size={13} />
+              </button>
+            )}
+
+            {/* Prev */}
+            {hasQueue && (
+              <button onClick={prev} className="w-7 h-7 rounded-full flex items-center justify-center text-white/40 hover:text-white transition-colors" aria-label="Previous">
+                <SkipBack size={14} />
+              </button>
+            )}
+
+            {/* Play/Pause */}
+            <button
+              onClick={playing ? pause : resume}
+              className={`w-9 h-9 rounded-full flex items-center justify-center transition-all duration-200 ${
+                playing ? 'bg-white text-[#07080A] hover:bg-white/90' : 'bg-white/10 text-white hover:bg-white/20'
+              }`}
+            >
+              {playing ? <Pause size={14} /> : <Play size={14} className="ml-0.5" />}
+            </button>
+
+            {/* Next */}
+            {hasQueue && (
+              <button onClick={next} className="w-7 h-7 rounded-full flex items-center justify-center text-white/40 hover:text-white transition-colors" aria-label="Next">
+                <SkipForward size={14} />
+              </button>
+            )}
+
+            {/* Repeat */}
+            {hasQueue && (
+              <button
+                onClick={toggleRepeat}
+                className={`w-7 h-7 rounded-full flex items-center justify-center transition-colors ${
+                  repeat !== 'off' ? 'text-[#DFFF00]' : 'text-white/20 hover:text-white/50'
+                }`}
+                aria-label={`Repeat: ${repeat}`}
+              >
+                {repeat === 'one' ? <Repeat1 size={13} /> : <Repeat size={13} />}
+              </button>
+            )}
+          </div>
+
+          {/* Progress */}
+          <div className="flex-1 min-w-0 flex items-center gap-2">
+            <span className="text-[10px] text-white/25 tabular-nums shrink-0 w-8 text-right">{formatTime(progress)}</span>
+            <div className="flex-1 h-[5px] bg-white/[0.06] rounded-full cursor-pointer group" onClick={handleSeek}>
               <div
                 className="h-full rounded-full bg-gradient-to-r from-[#DFFF00] to-[#a3e635] transition-[width] duration-100 relative"
                 style={{ width: `${pct}%` }}
@@ -73,32 +131,21 @@ export function StudioPlayerBar() {
                 <div className="absolute right-0 top-1/2 -translate-y-1/2 w-[11px] h-[11px] rounded-full bg-white shadow-[0_0_8px_rgba(255,255,255,0.3)] opacity-0 group-hover:opacity-100 transition-opacity" />
               </div>
             </div>
+            <span className="text-[10px] text-white/25 tabular-nums shrink-0 w-8">{formatTime(duration)}</span>
           </div>
 
-          {/* Controls */}
-          <div className="flex items-center gap-1 shrink-0 ml-1">
-            <button
-              onClick={playing ? pause : resume}
-              className={`w-9 h-9 rounded-full flex items-center justify-center transition-all duration-200 ${
-                playing
-                  ? 'bg-white text-[#07080A] hover:bg-white/90'
-                  : 'bg-white/10 text-white hover:bg-white/20'
-              }`}
-            >
-              {playing ? <Pause size={14} /> : <Play size={14} className="ml-0.5" />}
-            </button>
+          {/* Volume */}
+          <button onClick={toggleMute} className="text-white/20 hover:text-white/50 transition-colors p-1 shrink-0">
+            {volume === 0 ? <VolumeX size={13} /> : <Volume2 size={13} />}
+          </button>
+          <input type="range" min={0} max={1} step={0.01} value={volume}
+            onChange={(e) => setVolume(Number(e.target.value))}
+            className="w-14 h-[3px] appearance-none bg-white/[0.08] rounded-full cursor-pointer hidden sm:block [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-[10px] [&::-webkit-slider-thumb]:h-[10px] [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white/70" />
 
-            <button onClick={toggleMute} className="text-white/20 hover:text-white/50 transition-colors p-1">
-              {volume === 0 ? <VolumeX size={13} /> : <Volume2 size={13} />}
-            </button>
-            <input type="range" min={0} max={1} step={0.01} value={volume}
-              onChange={(e) => setVolume(Number(e.target.value))}
-              className="w-14 h-[3px] appearance-none bg-white/[0.08] rounded-full cursor-pointer hidden sm:block [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-[10px] [&::-webkit-slider-thumb]:h-[10px] [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white/70" />
-
-            <button onClick={stop} className="text-white/15 hover:text-white/50 transition-colors p-1 ml-0.5" aria-label="Close">
-              <X size={15} />
-            </button>
-          </div>
+          {/* Close */}
+          <button onClick={stop} className="text-white/15 hover:text-white/50 transition-colors p-1 ml-0.5 shrink-0" aria-label="Close">
+            <X size={15} />
+          </button>
         </div>
       </div>
     </div>

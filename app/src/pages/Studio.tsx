@@ -44,6 +44,7 @@ import {
 } from '../services/dashboardApi';
 import { StudioMusic } from './StudioMusic';
 import { StudioHome } from './StudioHome';
+import { StudioPlaybooks } from './StudioPlaybooks';
 import { useStudioPlayer } from '../contexts/StudioPlayerContext';
 import { api } from '../services/api';
 import {
@@ -164,8 +165,8 @@ export function Studio() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { user, isAuthenticated, updateCredits } = useAuth();
-  const routeParams = useParams<{ view?: string }>();
-  const routeViewRaw = (routeParams.view || 'home').toLowerCase();
+  const routeParams = useParams<{ view?: string; playbookId?: string }>();
+  const routeViewRaw = routeParams.playbookId ? 'playbooks' : (routeParams.view || 'home').toLowerCase();
   const activeView: StudioView = STUDIO_VIEWS.includes(routeViewRaw as StudioView)
     ? (routeViewRaw as StudioView)
     : 'home';
@@ -2165,6 +2166,7 @@ export function Studio() {
             {activeView === 'voice-design' && renderVoiceDesignView()}
             {activeView === 'my-voices' && renderMyVoicesView()}
             {activeView === 'music' && <StudioMusic />}
+            {activeView === 'playbooks' && <StudioPlaybooks />}
             {activeView === 'history' && (
               <div className="space-y-6">
                 <div>

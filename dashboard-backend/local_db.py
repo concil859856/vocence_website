@@ -357,6 +357,36 @@ SCHEMA_SQL = [
         FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS playbooks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        title TEXT NOT NULL DEFAULT 'Untitled Playbook',
+        description TEXT NOT NULL DEFAULT '',
+        cover_image_url TEXT,
+        visibility TEXT NOT NULL DEFAULT 'private',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS playbook_tracks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        playbook_id INTEGER NOT NULL,
+        position INTEGER NOT NULL DEFAULT 0,
+        title TEXT NOT NULL,
+        subtitle TEXT NOT NULL DEFAULT '',
+        audio_url TEXT NOT NULL,
+        image_url TEXT,
+        source_type TEXT NOT NULL DEFAULT 'generated',
+        duration_seconds REAL,
+        audio_s3_bucket TEXT,
+        audio_s3_key TEXT,
+        added_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (playbook_id) REFERENCES playbooks(id) ON DELETE CASCADE
+    )
+    """,
 ]
 
 
@@ -381,6 +411,8 @@ INDEX_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_studio_music_history_user_id ON studio_music_history (user_id, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_studio_voice_design_previews_user ON studio_voice_design_previews (user_id, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_studio_user_designed_voices_user ON studio_user_designed_voices (user_id, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_playbooks_user_id ON playbooks (user_id, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_playbook_tracks_playbook_id ON playbook_tracks (playbook_id, position ASC)",
 ]
 
 

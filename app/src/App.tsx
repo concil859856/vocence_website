@@ -57,6 +57,7 @@ function App() {
               <Route path="/studio/result/:id" element={<StudioResult />} />
               <Route path="/studio" element={<Navigate to="/studio/home" replace />} />
               <Route path="/studio/my-voices/:voiceId" element={<StudioDesignedVoiceWorkspace />} />
+              <Route path="/studio/playbooks/:playbookId" element={<Studio />} />
               <Route path="/studio/:view" element={<Studio />} />
               <Route path="/docs" element={<Navigate to="/docs/getting-started" replace />} />
               <Route path="/docs/:section" element={<Docs />} />

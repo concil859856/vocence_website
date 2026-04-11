@@ -34,6 +34,7 @@ from database import (
 )
 from local_db import ensure_tables as ensure_local_tables, migrate_legacy_website_data
 from routers import auth, dashboard, studio
+from routers.playbooks import router as playbooks_router
 
 
 UPLOADS_DIR = Path(__file__).resolve().parent / "uploads"
@@ -103,6 +104,7 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(dashboard.router)
 app.include_router(studio.router, prefix="/api/dashboard")
+app.include_router(playbooks_router, prefix="/api/dashboard")
 app.mount("/api/dashboard/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
 
 

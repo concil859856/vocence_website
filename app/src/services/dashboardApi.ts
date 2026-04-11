@@ -832,6 +832,69 @@ export const dashboardApi = {
       `/api/dashboard/studio/music/history/${historyId}/audio-url?user_id=${encodeURIComponent(userId)}`
     );
   },
+
+  // ----- Playbooks -----
+
+  createPlaybook(body: { title?: string; description?: string }, token: string | null): Promise<Playbook> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson('/api/dashboard/playbooks', { method: 'POST', headers, body: JSON.stringify(body) });
+  },
+
+  listPlaybooks(token: string | null): Promise<{ playbooks: Playbook[] }> {
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson('/api/dashboard/playbooks', { headers });
+  },
+
+  getPlaybook(id: number, token: string | null): Promise<PlaybookDetail> {
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson(`/api/dashboard/playbooks/${id}`, { headers });
+  },
+
+  updatePlaybook(id: number, body: { title?: string; description?: string; visibility?: string }, token: string | null): Promise<Playbook> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson(`/api/dashboard/playbooks/${id}`, { method: 'PATCH', headers, body: JSON.stringify(body) });
+  },
+
+  deletePlaybook(id: number, token: string | null): Promise<{ ok: boolean }> {
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson(`/api/dashboard/playbooks/${id}`, { method: 'DELETE', headers });
+  },
+
+  addPlaybookTracks(
+    id: number,
+    tracks: { title: string; subtitle?: string; audio_url: string; image_url?: string; source_type?: string; duration_seconds?: number }[],
+    token: string | null
+  ): Promise<PlaybookDetail> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson(`/api/dashboard/playbooks/${id}/tracks`, { method: 'POST', headers, body: JSON.stringify({ tracks }) });
+  },
+
+  removePlaybookTrack(playbookId: number, trackId: number, token: string | null): Promise<{ ok: boolean }> {
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson(`/api/dashboard/playbooks/${playbookId}/tracks/${trackId}`, { method: 'DELETE', headers });
+  },
+
+  reorderPlaybookTracks(playbookId: number, trackIds: number[], token: string | null): Promise<{ ok: boolean }> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson(`/api/dashboard/playbooks/${playbookId}/tracks/reorder`, { method: 'PATCH', headers, body: JSON.stringify({ track_ids: trackIds }) });
+  },
+
+  uploadPlaybookTrack(playbookId: number, file: File, title: string, token: string | null): Promise<PlaybookDetail> {
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    const form = new FormData();
+    form.append('title', title);
+    form.append('audio_file', file);
+    return fetchJson(`/api/dashboard/playbooks/${playbookId}/upload`, { method: 'POST', headers, body: form });
+  },
 };
 
 export interface StudioTopModel {
@@ -952,4 +1015,34 @@ export interface StudioDesignedVoiceItem {
   expires_at: string;
   created_at: string;
   expired: boolean;
+}
+
+// ----- Playbooks -----
+
+export interface PlaybookTrack {
+  id: number;
+  position: number;
+  title: string;
+  subtitle: string;
+  audio_url: string;
+  image_url: string | null;
+  source_type: string;
+  duration_seconds: number | null;
+  added_at: string;
+}
+
+export interface Playbook {
+  id: number;
+  title: string;
+  description: string;
+  cover_image_url: string | null;
+  visibility: string;
+  track_count: number;
+  total_duration: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PlaybookDetail extends Playbook {
+  tracks: PlaybookTrack[];
 }
