@@ -1512,6 +1512,7 @@ export function Studio() {
                 >
                   <div className="flex-shrink-0 w-24 h-24 rounded-full overflow-hidden bg-transparent border border-white/10">
                     <img
+                    loading="lazy"
                       src={`/tts-styles/${preset.id}.png`}
                       alt={preset.label}
                       className="w-full h-full object-cover"
@@ -2453,10 +2454,10 @@ export function Studio() {
    ========================================================================== */
 
 const CLONE_SAMPLE_TRACKS = [
-  { id: 'cs1', name: 'Studio Interview', avatar: '/samples/images/clone_1.png', originalAudio: '/samples/audio/clone1_original.wav', clonedAudio: '/samples/audio/clone1_cloned.wav', originalLabel: 'Original Recording', clonedLabel: 'Cloned — New Script' },
-  { id: 'cs2', name: 'Podcast Host', avatar: '/samples/images/clone_2.png', originalAudio: '/samples/audio/clone2_original.wav', clonedAudio: '/samples/audio/clone2_cloned.wav', originalLabel: 'Reference Clip', clonedLabel: 'Cloned Output' },
-  { id: 'cs3', name: 'Voiceover Artist', avatar: '/samples/images/clone_3.png', originalAudio: '/samples/audio/clone3_original.wav', clonedAudio: '/samples/audio/clone3_cloned.wav', originalLabel: 'Original Sample', clonedLabel: 'Cloned — Ad Read' },
-  { id: 'cs4', name: 'Audiobook Narrator', avatar: '/samples/images/clone_4.png', originalAudio: '/samples/audio/clone4_original.wav', clonedAudio: '/samples/audio/clone4_cloned.wav', originalLabel: 'Reference', clonedLabel: 'Cloned — Chapter Read' },
+  { id: 'cs1', name: 'Studio Interview', avatar: '/samples/images/clone_1.webp', originalAudio: '/samples/audio/clone1_original.wav', clonedAudio: '/samples/audio/clone1_cloned.wav', originalLabel: 'Original Recording', clonedLabel: 'Cloned — New Script' },
+  { id: 'cs2', name: 'Podcast Host', avatar: '/samples/images/clone_2.webp', originalAudio: '/samples/audio/clone2_original.wav', clonedAudio: '/samples/audio/clone2_cloned.wav', originalLabel: 'Reference Clip', clonedLabel: 'Cloned Output' },
+  { id: 'cs3', name: 'Voiceover Artist', avatar: '/samples/images/clone_3.webp', originalAudio: '/samples/audio/clone3_original.wav', clonedAudio: '/samples/audio/clone3_cloned.wav', originalLabel: 'Original Sample', clonedLabel: 'Cloned — Ad Read' },
+  { id: 'cs4', name: 'Audiobook Narrator', avatar: '/samples/images/clone_4.webp', originalAudio: '/samples/audio/clone4_original.wav', clonedAudio: '/samples/audio/clone4_cloned.wav', originalLabel: 'Reference', clonedLabel: 'Cloned — Chapter Read' },
 ];
 
 function CloneSamplesSection() {
@@ -2494,7 +2495,7 @@ function CloneSamplesSection() {
           <div key={c.id} className="flex items-center gap-4 px-3 py-3 rounded-xl border border-white/[0.06] bg-white/[0.02] hover:border-white/[0.12] transition-all">
             {/* Avatar */}
             <div className="w-[72px] h-[72px] rounded-xl overflow-hidden shrink-0 group/avatar">
-              <img src={c.avatar} alt={c.name} className="w-full h-full object-cover transition-transform duration-300 group-hover/avatar:scale-110" />
+              <img loading="lazy" src={c.avatar} alt={c.name} className="w-full h-full object-cover transition-transform duration-300 group-hover/avatar:scale-110" />
             </div>
 
             {/* Info + play buttons */}

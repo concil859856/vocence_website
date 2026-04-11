@@ -19,14 +19,14 @@ interface GenrePreset {
 }
 
 const GENRE_PRESETS: GenrePreset[] = [
-  { label: 'Upbeat Pop', value: 'pop, synth, drums, guitar, 120 bpm, upbeat, catchy, vibrant, female vocals, polished vocals', emoji: '🎤', image: '/samples/images/genre_1.png' },
-  { label: 'Hard Rock', value: 'rock, electric guitar, drums, bass, 130 bpm, energetic, rebellious, gritty, male vocals, raw vocals', emoji: '🎸', image: '/samples/images/genre_2.png' },
-  { label: 'Street Rap', value: 'hip hop, 808 bass, hi-hats, synth, 90 bpm, bold, urban, intense, male vocals, rhythmic vocals', emoji: '🎧', image: '/samples/images/genre_3.png' },
-  { label: 'Club EDM', value: 'edm, synth, bass, kick drum, 128 bpm, euphoric, pulsating, energetic, instrumental', emoji: '⚡', image: '/samples/images/genre_4.png' },
-  { label: 'Smooth Jazz', value: 'jazz, saxophone, piano, double bass, 110 bpm, smooth, improvisational, soulful, instrumental', emoji: '🎷', image: '/samples/images/genre_5.png' },
-  { label: 'Orchestral', value: 'classical, orchestral, strings, piano, 60 bpm, elegant, emotive, timeless, instrumental', emoji: '🎻', image: '/samples/images/genre_6.png' },
-  { label: 'Chill Lo-fi', value: 'lo-fi, piano, soft drums, vinyl crackle, 75 bpm, chill, mellow, warm, instrumental', emoji: '☕', image: '/samples/images/genre_7.png' },
-  { label: 'Soulful R&B', value: 'r&b, synth, bass, drums, 85 bpm, sultry, groovy, romantic, female vocals, silky vocals', emoji: '💜', image: '/samples/images/genre_8.png' },
+  { label: 'Upbeat Pop', value: 'pop, synth, drums, guitar, 120 bpm, upbeat, catchy, vibrant, female vocals, polished vocals', emoji: '🎤', image: '/samples/images/genre_1.webp' },
+  { label: 'Hard Rock', value: 'rock, electric guitar, drums, bass, 130 bpm, energetic, rebellious, gritty, male vocals, raw vocals', emoji: '🎸', image: '/samples/images/genre_2.webp' },
+  { label: 'Street Rap', value: 'hip hop, 808 bass, hi-hats, synth, 90 bpm, bold, urban, intense, male vocals, rhythmic vocals', emoji: '🎧', image: '/samples/images/genre_3.webp' },
+  { label: 'Club EDM', value: 'edm, synth, bass, kick drum, 128 bpm, euphoric, pulsating, energetic, instrumental', emoji: '⚡', image: '/samples/images/genre_4.webp' },
+  { label: 'Smooth Jazz', value: 'jazz, saxophone, piano, double bass, 110 bpm, smooth, improvisational, soulful, instrumental', emoji: '🎷', image: '/samples/images/genre_5.webp' },
+  { label: 'Orchestral', value: 'classical, orchestral, strings, piano, 60 bpm, elegant, emotive, timeless, instrumental', emoji: '🎻', image: '/samples/images/genre_6.webp' },
+  { label: 'Chill Lo-fi', value: 'lo-fi, piano, soft drums, vinyl crackle, 75 bpm, chill, mellow, warm, instrumental', emoji: '☕', image: '/samples/images/genre_7.webp' },
+  { label: 'Soulful R&B', value: 'r&b, synth, bass, drums, 85 bpm, sultry, groovy, romantic, female vocals, silky vocals', emoji: '💜', image: '/samples/images/genre_8.webp' },
 ];
 
 const TASK_TABS: { id: MusicTask; label: string; icon: typeof Music; desc: string }[] = [
@@ -258,7 +258,7 @@ Hear the night sing out our song`);
                         : 'border-transparent hover:border-[#444]'
                     }`}
                   >
-                    <img src={g.image} alt="" className="absolute inset-0 w-full h-full object-cover opacity-50" />
+                    <img loading="lazy" src={g.image} alt="" className="absolute inset-0 w-full h-full object-cover opacity-50" />
                     <div className="absolute inset-0 bg-black/30" />
                     <div className="relative z-10">
                       <span className="text-xl">{g.emoji}</span>
@@ -494,14 +494,14 @@ Hear the night sing out our song`);
    ========================================================================== */
 
 const SAMPLE_TRACKS = [
-  { id: 's1', title: 'Neon Nights', style: 'pop, synth, drums, guitar, 120 bpm, upbeat, catchy, vibrant, female vocals, polished vocals', audioSrc: '/samples/audios/pop.wav', image: '/samples/images/music_1.png' },
-  { id: 's2', title: 'Rebel Road', style: 'rock, electric guitar, drums, bass, 130 bpm, energetic, rebellious, gritty, male vocals, raw vocals', audioSrc: '/samples/audios/rock.wav', image: '/samples/images/music_2.png' },
-  { id: 's3', title: 'Urban Flow', style: 'hip hop, 808 bass, hi-hats, synth, 90 bpm, bold, urban, intense, male vocals, rhythmic vocals', audioSrc: '/samples/audios/street.wav', image: '/samples/images/music_3.png' },
-  { id: 's4', title: 'Pulse Drop', style: 'edm, synth, bass, kick drum, 128 bpm, euphoric, pulsating, energetic, instrumental', audioSrc: '/samples/audios/club.wav', image: '/samples/images/music_4.png' },
-  { id: 's5', title: 'Midnight Blues', style: 'jazz, saxophone, piano, double bass, 110 bpm, smooth, improvisational, soulful, instrumental', audioSrc: '/samples/audios/jazz.wav', image: '/samples/images/music_5.png' },
-  { id: 's6', title: 'Final Boss', style: 'classical, orchestral, strings, piano, 60 bpm, elegant, emotive, timeless, instrumental', audioSrc: '/samples/audios/orchestral.wav', image: '/samples/images/music_6.png' },
-  { id: 's7', title: 'Code & Coffee', style: 'lo-fi, piano, soft drums, vinyl crackle, 75 bpm, chill, mellow, warm, instrumental', audioSrc: '/samples/audios/chill.wav', image: '/samples/images/music_7.png' },
-  { id: 's8', title: 'Velvet Touch', style: 'r&b, synth, bass, drums, 85 bpm, sultry, groovy, romantic, female vocals, silky vocals', audioSrc: '/samples/audios/soundful.wav', image: '/samples/images/music_8.png' },
+  { id: 's1', title: 'Neon Nights', style: 'pop, synth, drums, guitar, 120 bpm, upbeat, catchy, vibrant, female vocals, polished vocals', audioSrc: '/samples/audios/pop.wav', image: '/samples/images/music_1.webp' },
+  { id: 's2', title: 'Rebel Road', style: 'rock, electric guitar, drums, bass, 130 bpm, energetic, rebellious, gritty, male vocals, raw vocals', audioSrc: '/samples/audios/rock.wav', image: '/samples/images/music_2.webp' },
+  { id: 's3', title: 'Urban Flow', style: 'hip hop, 808 bass, hi-hats, synth, 90 bpm, bold, urban, intense, male vocals, rhythmic vocals', audioSrc: '/samples/audios/street.wav', image: '/samples/images/music_3.webp' },
+  { id: 's4', title: 'Pulse Drop', style: 'edm, synth, bass, kick drum, 128 bpm, euphoric, pulsating, energetic, instrumental', audioSrc: '/samples/audios/club.wav', image: '/samples/images/music_4.webp' },
+  { id: 's5', title: 'Midnight Blues', style: 'jazz, saxophone, piano, double bass, 110 bpm, smooth, improvisational, soulful, instrumental', audioSrc: '/samples/audios/jazz.wav', image: '/samples/images/music_5.webp' },
+  { id: 's6', title: 'Final Boss', style: 'classical, orchestral, strings, piano, 60 bpm, elegant, emotive, timeless, instrumental', audioSrc: '/samples/audios/orchestral.wav', image: '/samples/images/music_6.webp' },
+  { id: 's7', title: 'Code & Coffee', style: 'lo-fi, piano, soft drums, vinyl crackle, 75 bpm, chill, mellow, warm, instrumental', audioSrc: '/samples/audios/chill.wav', image: '/samples/images/music_7.webp' },
+  { id: 's8', title: 'Velvet Touch', style: 'r&b, synth, bass, drums, 85 bpm, sultry, groovy, romantic, female vocals, silky vocals', audioSrc: '/samples/audios/soundful.wav', image: '/samples/images/music_8.webp' },
 ];
 
 function SampleMusicSection() {
@@ -532,7 +532,7 @@ function SampleMusicSection() {
             >
               {/* Artwork thumbnail */}
               <div className="w-[72px] h-[72px] rounded-xl shrink-0 relative overflow-hidden group/thumb">
-                <img src={t.image} alt={t.title} className="w-full h-full object-cover transition-transform duration-300 group-hover/thumb:scale-110" />
+                <img loading="lazy" src={t.image} alt={t.title} className="w-full h-full object-cover transition-transform duration-300 group-hover/thumb:scale-110" />
                 <div className={`absolute inset-0 flex items-center justify-center transition-all ${
                   isPlaying ? 'bg-black/40' : 'bg-black/0 group-hover/thumb:bg-black/30'
                 }`}>
