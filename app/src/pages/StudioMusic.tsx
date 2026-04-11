@@ -79,15 +79,15 @@ Hear the night sing out our song`);
   // Advanced
   const [omegaScale, setOmegaScale] = useState(10);
   const [guidanceInterval, setGuidanceInterval] = useState(0.5);
-  const [guidanceIntervalDecay, setGuidanceIntervalDecay] = useState(0);
+  const [guidanceIntervalDecay] = useState(0);
   const [minGuidanceScale, setMinGuidanceScale] = useState(3);
-  const [guidanceScaleText, setGuidanceScaleText] = useState(0);
-  const [guidanceScaleLyric, setGuidanceScaleLyric] = useState(0);
+  const [guidanceScaleText] = useState(0);
+  const [guidanceScaleLyric] = useState(0);
   const [useErgTag, setUseErgTag] = useState(true);
   const [useErgLyric, setUseErgLyric] = useState(false);
   const [useErgDiffusion, setUseErgDiffusion] = useState(true);
-  const [ossSteps, setOssSteps] = useState('');
-  const [loraPath, setLoraPath] = useState('none');
+  const [ossSteps] = useState('');
+  const [loraPath] = useState('none');
 
   // Audio tasks
   const [refAudioStrength, setRefAudioStrength] = useState(0.5);
@@ -485,7 +485,7 @@ function SampleMusicSection() {
         <p className="text-xs text-[#9ca3af] mt-0.5">Listen to what Vocence can create. Click any track to preview.</p>
       </div>
       <div className="space-y-1">
-        {SAMPLE_TRACKS.map((t, i) => {
+        {SAMPLE_TRACKS.map((t) => {
           const isThis = track?.src === t.audioSrc;
           const isPlaying = isThis && playing;
           const handleClick = () => {
