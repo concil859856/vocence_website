@@ -136,9 +136,9 @@ function PlaybookListView() {
               onClick={() => navigate(`/studio/playbooks/${pb.id}`)}
               className="rounded-2xl border border-[#2e2f33] bg-[#111215] p-4 cursor-pointer hover:border-[#444] transition-all group"
             >
-              {/* Cover mosaic placeholder */}
+              {/* Cover */}
               <div className="aspect-square rounded-xl bg-gradient-to-br from-[#1c1d21] to-[#111215] mb-3 flex items-center justify-center relative overflow-hidden">
-                <ListMusic size={32} className="text-[#333]" />
+                <img loading="lazy" src={`/samples/images/music_${(pb.id % 8) + 1}.webp`} alt="" className="absolute inset-0 w-full h-full object-cover opacity-60 group-hover:scale-105 transition-transform duration-300" />
                 <button
                   onClick={(e) => { e.stopPropagation(); handlePlayAll(pb); }}
                   className="absolute bottom-2 right-2 w-10 h-10 rounded-full bg-[#DFFF00] text-[#07080A] flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all hover:scale-105 shadow-lg"
@@ -231,8 +231,8 @@ function PlaybookDetailView({ playbookId }: { playbookId: number }) {
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-start gap-5">
-        <div className="w-32 h-32 rounded-xl bg-gradient-to-br from-[#1c1d21] to-[#111215] flex items-center justify-center shrink-0">
-          <ListMusic size={40} className="text-[#333]" />
+        <div className="w-32 h-32 rounded-xl bg-gradient-to-br from-[#1c1d21] to-[#111215] flex items-center justify-center shrink-0 overflow-hidden relative">
+          <img loading="lazy" src={`/samples/images/music_${(playbookId % 8) + 1}.webp`} alt="" className="absolute inset-0 w-full h-full object-cover opacity-70" />
         </div>
         <div className="flex-1 min-w-0 pt-2">
           {editingTitle ? (
