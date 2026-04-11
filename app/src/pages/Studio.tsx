@@ -1512,7 +1512,6 @@ export function Studio() {
                 >
                   <div className="flex-shrink-0 w-24 h-24 rounded-full overflow-hidden bg-transparent border border-white/10">
                     <img
-                    loading="lazy"
                       src={`/tts-styles/${preset.id}.png`}
                       alt={preset.label}
                       className="w-full h-full object-cover"
