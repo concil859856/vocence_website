@@ -52,19 +52,22 @@ interface CloneExampleItem {
 }
 
 const VOICE_DESIGN_SAMPLES: VoiceShowcaseItem[] = [
-  { id: 'vd1', name: 'Aurora', avatar: '/samples/images/aurora.png', tags: ['Warm', 'Narrative', 'Female'], description: 'Soft, warm storytelling voice ideal for audiobooks and meditation guides.', audioSrc: '/samples/audio/aurora.wav' },
-  { id: 'vd2', name: 'Marcus', avatar: '/samples/images/marcus.png', tags: ['Deep', 'Authoritative', 'Male'], description: 'Rich baritone with confident delivery for documentaries and trailers.', audioSrc: '/samples/audio/marcus.wav' },
-  { id: 'vd3', name: 'Yuki', avatar: '/samples/images/yuki.png', tags: ['Bright', 'Energetic', 'Female'], description: 'Cheerful and animated voice perfect for gaming and social media.', audioSrc: '/samples/audio/yuki.wav' },
-  { id: 'vd4', name: 'Rafael', avatar: '/samples/images/rafael.png', tags: ['Smooth', 'Conversational', 'Male'], description: 'Natural, relaxed tone great for podcasts and casual narration.', audioSrc: '/samples/audio/rafael.wav' },
-  { id: 'vd5', name: 'Ember', avatar: '/samples/images/ember.png', tags: ['Dramatic', 'Intense', 'Female'], description: 'Bold and passionate delivery for ads, promos, and dramatic content.', audioSrc: '/samples/audio/ember.wav' },
-  { id: 'vd6', name: 'Kai', avatar: '/samples/images/kai.png', tags: ['Calm', 'Soothing', 'Male'], description: 'Gentle, calming presence ideal for wellness apps and ASMR.', audioSrc: '/samples/audio/kai.wav' },
+  { id: 'vd1', name: 'Aurora', avatar: '/samples/images/voice_1.png', tags: ['Warm', 'Narrative', 'Female'], description: 'Soft, warm storytelling voice ideal for audiobooks and meditation guides.', audioSrc: '/samples/audio/aurora.wav' },
+  { id: 'vd2', name: 'Marcus', avatar: '/samples/images/voice_2.png', tags: ['Deep', 'Authoritative', 'Male'], description: 'Rich baritone with confident delivery for documentaries and trailers.', audioSrc: '/samples/audio/marcus.wav' },
+  { id: 'vd3', name: 'Yuki', avatar: '/samples/images/voice_3.png', tags: ['Bright', 'Energetic', 'Female'], description: 'Cheerful and animated voice perfect for gaming and social media.', audioSrc: '/samples/audio/yuki.wav' },
+  { id: 'vd4', name: 'Rafael', avatar: '/samples/images/voice_4.png', tags: ['Smooth', 'Conversational', 'Male'], description: 'Natural, relaxed tone great for podcasts and casual narration.', audioSrc: '/samples/audio/rafael.wav' },
+  { id: 'vd5', name: 'Ember', avatar: '/samples/images/voice_5.png', tags: ['Dramatic', 'Intense', 'Female'], description: 'Bold and passionate delivery for ads, promos, and dramatic content.', audioSrc: '/samples/audio/ember.wav' },
+  { id: 'vd6', name: 'Kai', avatar: '/samples/images/voice_6.png', tags: ['Calm', 'Soothing', 'Male'], description: 'Gentle, calming presence ideal for wellness apps and ASMR.', audioSrc: '/samples/audio/kai.wav' },
+  { id: 'vd7', name: 'Luna', avatar: '/samples/images/voice_7.png', tags: ['Ethereal', 'Soft', 'Female'], description: 'Dreamy, whispery voice for fantasy narration and ambient content.', audioSrc: '/samples/audio/luna.wav' },
+  { id: 'vd8', name: 'Dante', avatar: '/samples/images/voice_8.png', tags: ['Bold', 'Cinematic', 'Male'], description: 'Powerful voice for movie trailers, epic intros, and announcements.', audioSrc: '/samples/audio/dante.wav' },
+  { id: 'vd9', name: 'Aria', avatar: '/samples/images/voice_9.png', tags: ['Friendly', 'Clear', 'Female'], description: 'Approachable and professional voice for corporate and e-learning.', audioSrc: '/samples/audio/aria.wav' },
 ];
 
 const CLONE_EXAMPLES: CloneExampleItem[] = [
-  { id: 'cl1', name: 'Studio Interview', avatar: '/samples/images/clone1.png', originalLabel: 'Original Recording', originalAudio: '/samples/audio/clone1_original.wav', clonedLabel: 'Cloned — New Script', clonedAudio: '/samples/audio/clone1_cloned.wav' },
-  { id: 'cl2', name: 'Podcast Host', avatar: '/samples/images/clone2.png', originalLabel: 'Reference Clip', originalAudio: '/samples/audio/clone2_original.wav', clonedLabel: 'Cloned Output', clonedAudio: '/samples/audio/clone2_cloned.wav' },
-  { id: 'cl3', name: 'Voiceover Artist', avatar: '/samples/images/clone3.png', originalLabel: 'Original Sample', originalAudio: '/samples/audio/clone3_original.wav', clonedLabel: 'Cloned — Ad Read', clonedAudio: '/samples/audio/clone3_cloned.wav' },
-  { id: 'cl4', name: 'Audiobook Narrator', avatar: '/samples/images/clone4.png', originalLabel: 'Reference', originalAudio: '/samples/audio/clone4_original.wav', clonedLabel: 'Cloned — Chapter Read', clonedAudio: '/samples/audio/clone4_cloned.wav' },
+  { id: 'cl1', name: 'Studio Interview', avatar: '/samples/images/clone_1.png', originalLabel: 'Original Recording', originalAudio: '/samples/audio/clone1_original.wav', clonedLabel: 'Cloned — New Script', clonedAudio: '/samples/audio/clone1_cloned.wav' },
+  { id: 'cl2', name: 'Podcast Host', avatar: '/samples/images/clone_2.png', originalLabel: 'Reference Clip', originalAudio: '/samples/audio/clone2_original.wav', clonedLabel: 'Cloned Output', clonedAudio: '/samples/audio/clone2_cloned.wav' },
+  { id: 'cl3', name: 'Voiceover Artist', avatar: '/samples/images/clone_3.png', originalLabel: 'Original Sample', originalAudio: '/samples/audio/clone3_original.wav', clonedLabel: 'Cloned — Ad Read', clonedAudio: '/samples/audio/clone3_cloned.wav' },
+  { id: 'cl4', name: 'Audiobook Narrator', avatar: '/samples/images/clone_4.png', originalLabel: 'Reference', originalAudio: '/samples/audio/clone4_original.wav', clonedLabel: 'Cloned — Chapter Read', clonedAudio: '/samples/audio/clone4_cloned.wav' },
 ];
 
 const MUSIC_PRESETS: MusicPresetItem[] = [
@@ -89,7 +92,7 @@ const TTS_STYLE_EXAMPLES: StyleExampleItem[] = [
    Play button — triggers the global studio player bar
    ========================================================================== */
 
-function PlayBtn({ src, title, subtitle }: { src: string; title: string; subtitle?: string }) {
+function PlayBtn({ src, title, subtitle, image }: { src: string; title: string; subtitle?: string; image?: string }) {
   const { track, playing, play, pause, resume } = useStudioPlayer();
   const isThis = track?.src === src;
   const isPlaying = isThis && playing;
@@ -98,7 +101,7 @@ function PlayBtn({ src, title, subtitle }: { src: string; title: string; subtitl
     e.stopPropagation();
     if (isPlaying) { pause(); return; }
     if (isThis) { resume(); return; }
-    play({ src, title, subtitle });
+    play({ src, title, subtitle, image });
   };
 
   return (
@@ -181,27 +184,27 @@ export function StudioHome() {
               key={v.id}
               className="rounded-2xl border border-white/10 bg-white/[0.02] p-5 hover:border-white/20 transition-all group"
             >
-              <div className="flex items-center gap-3 mb-3">
-                <div className="w-12 h-12 rounded-full bg-gradient-to-br from-violet-500/30 to-indigo-500/30 overflow-hidden flex items-center justify-center shrink-0">
+              <div className="flex items-center gap-4 mb-3">
+                <div className="w-[72px] h-[72px] rounded-xl bg-gradient-to-br from-violet-500/30 to-indigo-500/30 overflow-hidden flex items-center justify-center shrink-0 relative group/avatar">
                   <img
                     src={v.avatar}
                     alt={v.name}
-                    className="w-full h-full object-cover"
+                    className="w-full h-full object-cover relative z-10 transition-transform duration-300 group-hover/avatar:scale-110"
                     onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
                   />
-                  <span className="text-lg font-bold text-violet-300 absolute">{v.name[0]}</span>
+                  <span className="text-xl font-bold text-violet-300 absolute">{v.name[0]}</span>
                 </div>
                 <div className="min-w-0">
                   <h3 className="text-white font-semibold text-sm">{v.name}</h3>
-                  <div className="flex flex-wrap gap-1 mt-0.5">
+                  <div className="flex flex-wrap gap-1 mt-1">
                     {v.tags.map((tag) => (
                       <span key={tag} className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 text-[#A7B0B7]">{tag}</span>
                     ))}
                   </div>
+                  <p className="text-xs text-[#A7B0B7] leading-relaxed mt-1.5">{v.description}</p>
                 </div>
               </div>
-              <p className="text-xs text-[#A7B0B7] leading-relaxed mb-3">{v.description}</p>
-              <PlayBtn src={v.audioSrc} title={v.name} subtitle={v.tags.join(' · ')} />
+              <PlayBtn src={v.audioSrc} title={v.name} subtitle={v.tags.join(' · ')} image={v.avatar} />
             </div>
           ))}
         </div>
@@ -216,17 +219,21 @@ export function StudioHome() {
           subtitle="Same text, different styles — hear how style control transforms delivery."
           action={{ label: 'Try TTS', to: '/studio/tts' }}
         />
-        <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-5 md:p-6">
-          <p className="text-sm text-[#A7B0B7] italic mb-5 max-w-2xl">
-            "{TTS_STYLE_EXAMPLES[0]?.text}"
-          </p>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-            {TTS_STYLE_EXAMPLES.map((s) => (
-              <div key={s.id} className="rounded-xl border border-white/5 bg-white/[0.02] p-3 flex items-center gap-3">
-                <PlayBtn src={s.audioSrc} title={`TTS — ${s.style}`} subtitle="Style example" />
-                <span className="text-xs font-semibold text-[#DFFF00] uppercase tracking-wider">{s.style}</span>
-              </div>
-            ))}
+        <div className="rounded-2xl border border-white/10 overflow-hidden relative p-5 md:p-6">
+          <img src="/samples/images/tts_bg.png" alt="" className="absolute inset-0 w-full h-full object-cover" />
+          <div className="absolute inset-0 bg-black/60" />
+          <div className="relative z-10">
+            <p className="text-sm text-white/80 italic mb-5 max-w-2xl">
+              "{TTS_STYLE_EXAMPLES[0]?.text}"
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {TTS_STYLE_EXAMPLES.map((s) => (
+                <div key={s.id} className="rounded-xl border border-white/10 bg-black/30 backdrop-blur-sm p-3 flex items-center gap-3">
+                  <PlayBtn src={s.audioSrc} title={`TTS — ${s.style}`} subtitle="Style example" />
+                  <span className="text-xs font-semibold text-[#DFFF00] uppercase tracking-wider">{s.style}</span>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       </section>
@@ -242,21 +249,25 @@ export function StudioHome() {
         />
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {[
-            { id: 'stt1', label: 'English Interview', lang: 'English', transcript: 'The future of artificial intelligence lies not in replacing human creativity, but in amplifying it beyond what we ever thought possible.', audioSrc: '/samples/audio/stt_english.wav' },
-            { id: 'stt2', label: 'Spanish Podcast', lang: 'Spanish', transcript: 'La inteligencia artificial est\u00e1 transformando la manera en que creamos y consumimos contenido de audio en todo el mundo.', audioSrc: '/samples/audio/stt_spanish.wav' },
-            { id: 'stt3', label: 'Meeting Notes', lang: 'English', transcript: 'Let\'s circle back on the Q3 roadmap. I think we need to prioritize the voice agent integration before the API launch.', audioSrc: '/samples/audio/stt_meeting.wav' },
-            { id: 'stt4', label: 'Japanese Narration', lang: 'Japanese', transcript: '\u97f3\u58f0AI\u306e\u6280\u8853\u306f\u3001\u79c1\u305f\u3061\u306e\u30b3\u30df\u30e5\u30cb\u30b1\u30fc\u30b7\u30e7\u30f3\u306e\u3042\u308a\u65b9\u3092\u6839\u672c\u7684\u306b\u5909\u3048\u3088\u3046\u3068\u3057\u3066\u3044\u307e\u3059\u3002', audioSrc: '/samples/audio/stt_japanese.wav' },
+            { id: 'stt1', label: 'English Interview', lang: 'English', transcript: 'The future of artificial intelligence lies not in replacing human creativity, but in amplifying it beyond what we ever thought possible.', audioSrc: '/samples/audio/stt_english.wav', bg: '/samples/images/stt_1.png' },
+            { id: 'stt2', label: 'Spanish Podcast', lang: 'Spanish', transcript: 'La inteligencia artificial est\u00e1 transformando la manera en que creamos y consumimos contenido de audio en todo el mundo.', audioSrc: '/samples/audio/stt_spanish.wav', bg: '/samples/images/stt_2.png' },
+            { id: 'stt3', label: 'Meeting Notes', lang: 'English', transcript: 'Let\'s circle back on the Q3 roadmap. I think we need to prioritize the voice agent integration before the API launch.', audioSrc: '/samples/audio/stt_meeting.wav', bg: '/samples/images/stt_3.png' },
+            { id: 'stt4', label: 'Japanese Narration', lang: 'Japanese', transcript: '\u97f3\u58f0AI\u306e\u6280\u8853\u306f\u3001\u79c1\u305f\u3061\u306e\u30b3\u30df\u30e5\u30cb\u30b1\u30fc\u30b7\u30e7\u30f3\u306e\u3042\u308a\u65b9\u3092\u6839\u672c\u7684\u306b\u5909\u3048\u3088\u3046\u3068\u3057\u3066\u3044\u307e\u3059\u3002', audioSrc: '/samples/audio/stt_japanese.wav', bg: '/samples/images/stt_4.png' },
           ].map((item) => (
-            <div key={item.id} className="rounded-2xl border border-white/10 bg-white/[0.02] p-5 hover:border-white/20 transition-all">
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="text-white font-semibold text-sm">{item.label}</h3>
-                <span className="text-[10px] px-2 py-0.5 rounded bg-green-500/10 text-green-400">{item.lang}</span>
+            <div key={item.id} className="rounded-2xl border border-white/10 overflow-hidden relative p-5 hover:border-white/20 transition-all">
+              <img src={item.bg} alt="" className="absolute inset-0 w-full h-full object-cover" />
+              <div className="absolute inset-0 bg-black/60" />
+              <div className="relative z-10">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-white font-semibold text-sm">{item.label}</h3>
+                  <span className="text-[10px] px-2 py-0.5 rounded bg-green-500/15 text-green-400">{item.lang}</span>
+                </div>
+                <div className="flex items-center gap-3">
+                  <PlayBtn src={item.audioSrc} title={item.label} subtitle={item.lang} />
+                  <span className="text-xs text-white/60">Listen</span>
+                </div>
+                <p className="text-xs text-white/50 mt-3 leading-relaxed italic">"{item.transcript}"</p>
               </div>
-              <div className="flex items-center gap-3">
-                <PlayBtn src={item.audioSrc} title={item.label} subtitle={item.lang} />
-                <span className="text-xs text-[#A7B0B7]">Listen</span>
-              </div>
-              <p className="text-xs text-[#A7B0B7] mt-3 leading-relaxed italic">"{item.transcript}"</p>
             </div>
           ))}
         </div>
@@ -277,15 +288,15 @@ export function StudioHome() {
               key={c.id}
               className="rounded-2xl border border-white/10 bg-white/[0.02] p-5 hover:border-white/20 transition-all"
             >
-              <div className="flex items-center gap-3 mb-4">
-                <div className="w-10 h-10 rounded-full bg-gradient-to-br from-cyan-500/30 to-blue-500/30 overflow-hidden flex items-center justify-center shrink-0">
+              <div className="flex items-center gap-4 mb-4">
+                <div className="w-[72px] h-[72px] rounded-xl bg-gradient-to-br from-cyan-500/30 to-blue-500/30 overflow-hidden flex items-center justify-center shrink-0 relative group/avatar">
                   <img
                     src={c.avatar}
                     alt={c.name}
-                    className="w-full h-full object-cover"
+                    className="w-full h-full object-cover relative z-10 transition-transform duration-300 group-hover/avatar:scale-110"
                     onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
                   />
-                  <span className="text-sm font-bold text-cyan-300 absolute">{c.name[0]}</span>
+                  <span className="text-xl font-bold text-cyan-300 absolute">{c.name[0]}</span>
                 </div>
                 <h3 className="text-white font-semibold text-sm">{c.name}</h3>
               </div>
@@ -320,14 +331,14 @@ export function StudioHome() {
               className="rounded-2xl border border-white/10 overflow-hidden hover:border-white/20 hover:-translate-y-0.5 transition-all group"
             >
               <div className="relative aspect-square overflow-hidden">
-                <img src={m.image} alt={m.genre} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
+                <img src={m.image} alt={m.genre} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-300" />
                 <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent" />
                 <div className="absolute bottom-2 left-2 right-2">
                   <h3 className="text-white font-semibold text-sm leading-tight">{m.genre}</h3>
                   <p className="text-[10px] text-white/60">{m.mood}</p>
                 </div>
                 <div className="absolute top-2 right-2">
-                  <PlayBtn src={m.audioSrc} title={m.genre} subtitle={m.mood} />
+                  <PlayBtn src={m.audioSrc} title={m.genre} subtitle={m.mood} image={m.image} />
                 </div>
               </div>
             </div>

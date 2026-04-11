@@ -103,40 +103,40 @@ export function Docs() {
   }, []);
 
   const renderGettingStarted = () => (
-    <div className="space-y-10">
+    <div className="space-y-8">
       {/* Header */}
-      <div className="border-b border-white/10 pb-8">
-        <div className="flex items-center gap-2 text-sm text-[#666] mb-4">
+      <div className="border-b border-white/[0.06] pb-6">
+        <div className="flex items-center gap-1.5 text-xs text-zinc-500 mb-3">
           <span>Docs</span>
-          <ChevronRight size={14} />
+          <ChevronRight size={12} className="opacity-60" />
           <span>Introduction</span>
-          <ChevronRight size={14} />
-          <span className="text-[#DFFF00]">Getting Started</span>
+          <ChevronRight size={12} className="opacity-60" />
+          <span className="text-zinc-300">Getting Started</span>
         </div>
-        <h1 className="text-4xl font-bold mb-4">Getting Started with Vocence</h1>
-        <p className="text-xl text-[#A7B0B7] leading-relaxed">
+        <h1 className="text-2xl font-semibold mb-2 tracking-tight">Getting Started with Vocence</h1>
+        <p className="text-sm text-zinc-400 leading-relaxed max-w-2xl">
           Introduction to the Vocence Voice Intelligence Layer—a decentralized protocol for PromptTTS, STT, STS, voice cloning, TTM, and voice agents—and its place in the Bittensor ecosystem.
         </p>
       </div>
 
       {/* What is Vocence */}
       <section>
-        <h2 className="text-2xl font-semibold mb-4">What is Vocence?</h2>
-        <p className="text-[#A7B0B7] leading-7 mb-4">
+        <h2 className="text-lg font-semibold mb-3">What is Vocence?</h2>
+        <p className="text-sm text-zinc-400 leading-relaxed mb-4">
           Vocence is a Bittensor subnet focused on the development, training, evaluation, and improvement of a wide range of voice intelligence models: PromptTTS (text-to-speech), STT (speech-to-text), STS (speech-to-speech), voice cloning, TTM (text-to-music), and voice agents. This decentralized network goes beyond traditional voice synthesis by integrating multiple layers of multimodal voice intelligence, enabling dynamic voice agents with advanced control and adaptability.
         </p>
-        <p className="text-[#A7B0B7] leading-7 mb-4">
+        <p className="text-sm text-zinc-400 leading-relaxed mb-4">
           Miners train and serve models that respond to detailed prompts—voice characteristics (gender, age, emotion, tone), speaking style, accent, and environmental factors. Validators assess performance using public evaluation pipelines, ensuring prompt adherence, content accuracy, and environmental consistency across use cases from natural speech to interactive voice agents and music generation.
         </p>
-        <p className="text-[#A7B0B7] leading-7">
+        <p className="text-sm text-zinc-400 leading-relaxed">
           By leveraging a decentralized incentive structure, Vocence fosters an open, permissionless ecosystem where voice models evolve into intelligent, context-aware agents adaptable to a wide array of tasks.
         </p>
       </section>
 
       {/* Whitepaper CTA */}
-      <section className="bg-white/5 border border-white/10 rounded-xl p-6">
-        <h2 className="text-xl font-semibold mb-3">Full technical overview</h2>
-        <p className="text-[#A7B0B7] leading-7 mb-4">
+      <section className="bg-white/[0.03] border border-white/[0.06] rounded-xl p-5">
+        <h2 className="text-base font-semibold mb-2">Full technical overview</h2>
+        <p className="text-sm text-zinc-400 leading-relaxed mb-4">
           For the complete picture—including all voice domains (PromptTTS, STT, STS, voice cloning, TTM, voice agents), evaluation pipeline, roadmap, and governance—see the whitepaper.
         </p>
         <Link
@@ -149,8 +149,8 @@ export function Docs() {
       </section>
 
       {/* Next Steps */}
-      <section className="pt-8 border-t border-white/10">
-        <h2 className="text-2xl font-semibold mb-6">Next Steps</h2>
+      <section className="pt-6 border-t border-white/[0.06]">
+        <h2 className="text-lg font-semibold mb-4">Next Steps</h2>
         <div className="grid md:grid-cols-2 gap-4">
           <Link
             to="/docs/api"
@@ -191,17 +191,17 @@ export function Docs() {
   );
 
   const renderCoreConcepts = () => (
-    <div className="space-y-10">
-      <div className="border-b border-white/10 pb-8">
-        <h1 className="text-4xl font-bold mb-4">Core Concepts</h1>
-        <p className="text-xl text-[#A7B0B7]">
+    <div className="space-y-8">
+      <div className="border-b border-white/[0.06] pb-6">
+        <h1 className="text-2xl font-semibold mb-2 tracking-tight">Core Concepts</h1>
+        <p className="text-sm text-zinc-400">
           Understand the fundamental concepts behind the Vocence Voice Intelligence Layer.
         </p>
       </div>
 
       <section>
-        <h2 className="text-2xl font-semibold mb-4">Voice Intelligence Domains</h2>
-        <p className="text-[#A7B0B7] leading-7 mb-4">
+        <h2 className="text-lg font-semibold mb-3">Voice Intelligence Domains</h2>
+        <p className="text-sm text-zinc-400 leading-relaxed mb-4">
           Vocence spans multiple voice and audio domains: PromptTTS (prompt-based text-to-speech), STT (speech-to-text), STS (speech-to-speech), voice cloning, TTM (text-to-music), and voice agents. Unlike traditional TTS that only converts text to audio, PromptTTS and related models accept rich prompts that specify voice characteristics (gender, age, emotion, tone), speaking style, accent, and environmental context.
         </p>
         <div className="card-vocence p-6 mt-6">
@@ -214,8 +214,8 @@ export function Docs() {
       </section>
 
       <section>
-        <h2 className="text-2xl font-semibold mb-4">Decentralized Training & Evaluation</h2>
-        <p className="text-[#A7B0B7] leading-7 mb-4">
+        <h2 className="text-lg font-semibold mb-3">Decentralized Training & Evaluation</h2>
+        <p className="text-sm text-zinc-400 leading-relaxed mb-4">
           Miners train and serve models across PromptTTS, STT, STS, voice cloning, TTM, and voice agents. Validators assess outputs using public evaluation pipelines—content correctness, audio quality, prompt adherence, and environmental consistency—so the best models are rewarded and the ecosystem improves across all voice intelligence domains.
         </p>
         <div className="grid md:grid-cols-3 gap-4 mt-6">
@@ -236,17 +236,17 @@ export function Docs() {
   );
 
   const renderArchitecture = () => (
-    <div className="space-y-10">
-      <div className="border-b border-white/10 pb-8">
-        <h1 className="text-4xl font-bold mb-4">Architecture</h1>
-        <p className="text-xl text-[#A7B0B7]">
+    <div className="space-y-8">
+      <div className="border-b border-white/[0.06] pb-6">
+        <h1 className="text-2xl font-semibold mb-2 tracking-tight">Architecture</h1>
+        <p className="text-sm text-zinc-400">
           High-level overview of the Vocence Voice Intelligence Layer and how miners, validators, and Chutes interact.
         </p>
       </div>
 
       <section>
-        <h2 className="text-2xl font-semibold mb-4">System Overview</h2>
-        <p className="text-[#A7B0B7] leading-7 mb-6">
+        <h2 className="text-lg font-semibold mb-3">System Overview</h2>
+        <p className="text-sm text-zinc-400 leading-relaxed mb-6">
           Miners train or fine-tune models across PromptTTS, STT, STS, voice cloning, TTM, and voice agents, and deploy them as inference services on Chutes. Models are exposed via a standardized API. Validators interact with deployed models via the Chutes API to submit evaluation tasks, collect generated outputs, and compute scores. Evaluation tasks are continuously sourced from dynamically updated online data streams (e.g. YouTube and other public platforms) to prevent overfitting and ensure robust, generalizable performance.
         </p>
 
@@ -284,8 +284,8 @@ export function Docs() {
       </section>
 
       <section>
-        <h2 className="text-2xl font-semibold mb-4">Evaluation Pipeline</h2>
-        <p className="text-[#A7B0B7] leading-7 mb-4">
+        <h2 className="text-lg font-semibold mb-3">Evaluation Pipeline</h2>
+        <p className="text-sm text-zinc-400 leading-relaxed mb-4">
           Validator scoring focuses on three core dimensions: content correctness, audio quality, and prompt adherence. These are combined into a single reward signal across TTS, STT, STS, voice cloning, TTM, and voice agents. Evaluation code is open source and metrics are reproducible.
         </p>
         <ul className="space-y-3 mt-4">
@@ -335,19 +335,19 @@ export function Docs() {
   );
 
   const renderAPI = () => (
-    <div className="space-y-14">
+    <div className="space-y-8">
       <nav className="flex items-center gap-1.5 text-xs text-zinc-500">
         <span>Documentation</span>
         <ChevronRight size={12} className="opacity-60" aria-hidden />
         <span className="font-medium text-zinc-400">API Reference</span>
       </nav>
 
-      <header className="space-y-6 border-b border-white/[0.06] pb-12">
+      <header className="space-y-6 border-b border-white/[0.06] pb-6">
         <div className="space-y-3">
-          <h1 className="text-3xl font-semibold tracking-tight text-white md:text-[2.25rem] md:leading-tight">
+          <h1 className="text-2xl font-semibold tracking-tight text-white">
             API Reference
           </h1>
-          <p className="max-w-2xl text-base leading-relaxed text-zinc-400 md:text-lg">
+          <p className="max-w-2xl text-sm leading-relaxed text-zinc-400">
             Use the Vocence Developer API for text-to-speech, speech-to-text, voice cloning, and music generation. Keys are created in your
             account; authenticate with <code className="rounded bg-white/10 px-1.5 py-0.5 text-sm text-zinc-200">Bearer</code>{' '}
             and call <code className="rounded bg-white/10 px-1.5 py-0.5 text-sm text-zinc-200">/v1/tts/generate</code>,{' '}
@@ -823,17 +823,17 @@ print(resp.status_code, resp.json())`
   );
 
   const renderPricing = () => (
-    <div className="space-y-10">
-      <div className="border-b border-white/10 pb-8">
-        <h1 className="text-4xl font-bold mb-4">Pricing</h1>
-        <p className="text-xl text-[#A7B0B7]">
+    <div className="space-y-8">
+      <div className="border-b border-white/[0.06] pb-6">
+        <h1 className="text-2xl font-semibold mb-2 tracking-tight">Pricing</h1>
+        <p className="text-sm text-zinc-400">
           Detailed pricing and billing rules for Studio and Developer API.
         </p>
       </div>
 
       <section>
-        <h2 className="text-2xl font-semibold mb-4">Current Plans</h2>
-        <p className="text-[#A7B0B7] mb-6 max-w-3xl leading-7">
+        <h2 className="text-lg font-semibold mb-3">Current Plans</h2>
+        <p className="text-zinc-400 mb-4 max-w-3xl leading-7">
           One-time credit packs are sold through two separate checkouts:{' '}
           <span className="text-white font-medium">Stripe</span> (card) and{' '}
           <span className="text-white font-medium">NOWPayments</span> (crypto). They use{' '}
@@ -841,7 +841,7 @@ print(resp.status_code, resp.json())`
           same plan name (Normal vs Premium). What you pay and what you receive match the button you complete on the
           pricing page. After purchase, credits behave the same for Studio and API usage.
         </p>
-        <div className="overflow-x-auto border border-white/10 rounded-xl mb-6">
+        <div className="overflow-x-auto border border-white/[0.06] rounded-xl mb-6">
           <table className="w-full text-sm">
             <thead className="bg-white/5 text-[#A7B0B7] text-left">
               <tr>
@@ -850,13 +850,13 @@ print(resp.status_code, resp.json())`
                 <th className="px-4 py-3 font-medium">Crypto (NOWPayments)</th>
               </tr>
             </thead>
-            <tbody className="text-[#C6CDD4]">
-              <tr className="border-t border-white/10">
+            <tbody className="text-zinc-300">
+              <tr className="border-t border-white/[0.06]">
                 <td className="px-4 py-3 text-white font-medium">Normal</td>
                 <td className="px-4 py-3">$12 → {formatCreditsCompact(4000)} credits</td>
                 <td className="px-4 py-3">$20 → {formatCreditsCompact(7000)} credits</td>
               </tr>
-              <tr className="border-t border-white/10">
+              <tr className="border-t border-white/[0.06]">
                 <td className="px-4 py-3 text-white font-medium">Premium</td>
                 <td className="px-4 py-3">$24 → {formatCreditsCompact(10000)} credits</td>
                 <td className="px-4 py-3">$40 → {formatCreditsCompact(16000)} credits</td>
@@ -866,8 +866,8 @@ print(resp.status_code, resp.json())`
         </div>
         <div className="grid md:grid-cols-2 gap-4">
           <div className="card-vocence p-6">
-            <h3 className="text-lg font-semibold mb-2">Normal</h3>
-            <p className="text-[#A7B0B7] text-sm mb-3">Best for standard Studio usage.</p>
+            <h3 className="text-base font-semibold mb-2">Normal</h3>
+            <p className="text-zinc-400 text-sm mb-3">Best for standard Studio usage.</p>
             <ul className="space-y-1.5 text-sm text-[#A7B0B7]">
               <li>Generation history saved for <span className="text-white font-medium">7 days</span></li>
               <li>Up to <span className="text-white font-medium">5 custom voices</span> (Voice Design)</li>
@@ -875,8 +875,8 @@ print(resp.status_code, resp.json())`
             </ul>
           </div>
           <div className="card-vocence p-6 border-[#DFFF00]/30">
-            <h3 className="text-lg font-semibold mb-2">Premium</h3>
-            <p className="text-[#A7B0B7] text-sm mb-3">Required to unlock Developer API access.</p>
+            <h3 className="text-base font-semibold mb-2">Premium</h3>
+            <p className="text-zinc-400 text-sm mb-3">Required to unlock Developer API access.</p>
             <ul className="space-y-1.5 text-sm text-[#A7B0B7]">
               <li>Generation history <span className="text-white font-medium">never expires</span></li>
               <li><span className="text-white font-medium">Unlimited</span> custom voices (Voice Design)</li>
@@ -888,12 +888,12 @@ print(resp.status_code, resp.json())`
       </section>
 
       <section>
-        <h2 className="text-2xl font-semibold mb-4">How Credits Are Used</h2>
-        <div className="space-y-3 text-[#A7B0B7] leading-7">
+        <h2 className="text-lg font-semibold mb-3">How Credits Are Used</h2>
+        <div className="space-y-3 text-sm text-zinc-400 leading-relaxed">
           <p>
             <span className="text-white font-medium">New accounts:</span> {CREDIT_SIGNUP_BONUS} free credits at signup.
           </p>
-          <div className="overflow-x-auto border border-white/10 rounded-xl my-4">
+          <div className="overflow-x-auto border border-white/[0.06] rounded-xl my-4">
             <table className="w-full text-sm">
               <thead className="bg-white/5 text-[#A7B0B7] text-left">
                 <tr>
@@ -901,28 +901,28 @@ print(resp.status_code, resp.json())`
                   <th className="px-4 py-3 font-medium">Credits</th>
                 </tr>
               </thead>
-              <tbody className="text-[#C6CDD4]">
-                <tr className="border-t border-white/10">
+              <tbody className="text-zinc-300">
+                <tr className="border-t border-white/[0.06]">
                   <td className="px-4 py-3 text-white font-medium">Text-to-Speech</td>
                   <td className="px-4 py-3">{CREDIT_TTS} per generation</td>
                 </tr>
-                <tr className="border-t border-white/10">
+                <tr className="border-t border-white/[0.06]">
                   <td className="px-4 py-3 text-white font-medium">Speech-to-Text</td>
                   <td className="px-4 py-3">{CREDIT_STT} per transcription</td>
                 </tr>
-                <tr className="border-t border-white/10">
+                <tr className="border-t border-white/[0.06]">
                   <td className="px-4 py-3 text-white font-medium">Voice cloning</td>
                   <td className="px-4 py-3">{CREDIT_VOICE_CLONE} per generation</td>
                 </tr>
-                <tr className="border-t border-white/10">
+                <tr className="border-t border-white/[0.06]">
                   <td className="px-4 py-3 text-white font-medium">Voice design (A/B preview → save)</td>
                   <td className="px-4 py-3">{CREDIT_VOICE_DESIGN_PREVIEW} for preview; saving the voice has no extra charge</td>
                 </tr>
-                <tr className="border-t border-white/10">
+                <tr className="border-t border-white/[0.06]">
                   <td className="px-4 py-3 text-white font-medium">My voice (designed) — generate speech</td>
                   <td className="px-4 py-3">{CREDIT_MY_VOICE_GENERATE} per generation</td>
                 </tr>
-                <tr className="border-t border-white/10">
+                <tr className="border-t border-white/[0.06]">
                   <td className="px-4 py-3 text-white font-medium">Music generation (Text-to-Music)</td>
                   <td className="px-4 py-3">{CREDIT_MUSIC} per generation</td>
                 </tr>
@@ -938,7 +938,7 @@ print(resp.status_code, resp.json())`
             </code>
             . Voice design is <span className="text-white font-medium">not</span> billed on the Developer API (Studio only).
           </p>
-          <p className="text-[#A7B0B7] text-sm">
+          <p className="text-zinc-400 text-sm">
             TTS can optionally use character-based credits instead: set <code className="text-white/80">API_TTS_CREDITS_PER_REQUEST=0</code>{' '}
             on the API service; then metering uses{' '}
             <code className="text-white/80">API_CREDITS_PER_1M_CHARS</code> on{' '}
@@ -949,8 +949,8 @@ print(resp.status_code, resp.json())`
       </section>
 
       <section>
-        <h2 className="text-2xl font-semibold mb-4">Developer API cost reference</h2>
-        <div className="overflow-x-auto border border-white/10 rounded-xl">
+        <h2 className="text-lg font-semibold mb-3">Developer API cost reference</h2>
+        <div className="overflow-x-auto border border-white/[0.06] rounded-xl">
           <table className="w-full text-sm">
             <thead className="bg-white/5 text-[#A7B0B7]">
               <tr>
@@ -958,26 +958,26 @@ print(resp.status_code, resp.json())`
                 <th className="text-left px-4 py-3">Credits (default)</th>
               </tr>
             </thead>
-            <tbody className="text-[#C6CDD4]">
-              <tr className="border-t border-white/10">
+            <tbody className="text-zinc-300">
+              <tr className="border-t border-white/[0.06]">
                 <td className="px-4 py-3">
                   <code className="text-white/90">POST /v1/tts/generate</code>
                 </td>
                 <td className="px-4 py-3">{CREDIT_TTS} per successful response</td>
               </tr>
-              <tr className="border-t border-white/10">
+              <tr className="border-t border-white/[0.06]">
                 <td className="px-4 py-3">
                   <code className="text-white/90">POST /v1/stt/transcribe</code>
                 </td>
                 <td className="px-4 py-3">{CREDIT_STT} per successful response</td>
               </tr>
-              <tr className="border-t border-white/10">
+              <tr className="border-t border-white/[0.06]">
                 <td className="px-4 py-3">
                   <code className="text-white/90">POST /v1/voice/clone</code>
                 </td>
                 <td className="px-4 py-3">{CREDIT_VOICE_CLONE} per successful response</td>
               </tr>
-              <tr className="border-t border-white/10">
+              <tr className="border-t border-white/[0.06]">
                 <td className="px-4 py-3">
                   <code className="text-white/90">POST /v1/music/generate</code>
                 </td>
@@ -986,15 +986,15 @@ print(resp.status_code, resp.json())`
             </tbody>
           </table>
         </div>
-        <p className="text-[#A7B0B7] text-sm mt-4">
+        <p className="text-zinc-400 text-sm mt-4">
           With <code className="text-white/80">API_TTS_CREDITS_PER_REQUEST=0</code>, TTS instead uses character-based
           credits via <code className="text-white/80">API_CREDITS_PER_1M_CHARS</code> (see API Reference above).
         </p>
       </section>
 
       <section>
-        <h2 className="text-2xl font-semibold mb-4">Access Rules</h2>
-        <ul className="space-y-2 text-[#A7B0B7] leading-7">
+        <h2 className="text-lg font-semibold mb-3">Access Rules</h2>
+        <ul className="space-y-2 text-sm text-zinc-400 leading-relaxed">
           <li>Developer API access requires at least one successful Premium purchase.</li>
           <li>User creates API key after Premium purchase.</li>
           <li>All API keys have same limit: 4 requests per minute per key.</li>
@@ -1003,8 +1003,8 @@ print(resp.status_code, resp.json())`
       </section>
 
       <section>
-        <h2 className="text-2xl font-semibold mb-4">Billing Flow (End-to-End)</h2>
-        <ol className="space-y-2 text-[#A7B0B7] leading-7 list-decimal list-inside">
+        <h2 className="text-lg font-semibold mb-3">Billing Flow (End-to-End)</h2>
+        <ol className="space-y-2 text-sm text-zinc-400 leading-relaxed list-decimal list-inside">
           <li>Sign in and purchase credits from pricing page (Stripe or Crypto).</li>
           <li>Purchase Premium pack to unlock Developer API.</li>
           <li>Create API key in Account → Developer tab.</li>
@@ -1022,17 +1022,17 @@ print(resp.status_code, resp.json())`
   );
 
   const renderCloning = () => (
-    <div className="space-y-10">
-      <div className="border-b border-white/10 pb-8">
-        <h1 className="text-4xl font-bold mb-4">Voice cloning</h1>
-        <p className="text-xl text-[#A7B0B7] leading-relaxed max-w-3xl">
+    <div className="space-y-8">
+      <div className="border-b border-white/[0.06] pb-6">
+        <h1 className="text-2xl font-semibold mb-2 tracking-tight">Voice cloning</h1>
+        <p className="text-sm text-zinc-400 leading-relaxed max-w-3xl">
           Clone a speaker from a short reference recording, then synthesize new sentences in that voice.
         </p>
       </div>
 
       <section className="space-y-4">
         <h2 className="text-2xl font-semibold text-white">Studio</h2>
-        <p className="text-[#A7B0B7] leading-7 max-w-3xl">
+        <p className="text-sm text-zinc-400 leading-relaxed max-w-3xl">
           Use <Link to="/studio" className="text-[#DFFF00] hover:underline">Studio</Link> for an interactive clone workflow:
           upload reference audio, hear outputs, and browse history. Voice design (guided A/B previews before saving a custom
           voice) stays in Studio only—it is not exposed on the Developer API.
@@ -1041,7 +1041,7 @@ print(resp.status_code, resp.json())`
 
       <section className="space-y-4">
         <h2 className="text-2xl font-semibold text-white">Developer API</h2>
-        <p className="text-[#A7B0B7] leading-7 max-w-3xl">
+        <p className="text-sm text-zinc-400 leading-relaxed max-w-3xl">
           Integrations can call{' '}
           <code className="text-white/90 bg-white/5 px-1.5 py-0.5 rounded">POST https://api.vocence.ai/v1/voice/clone</code>{' '}
           with <code className="text-white/90 bg-white/5 px-1.5 py-0.5 rounded">reference_audio_b64</code> and{' '}
@@ -1057,8 +1057,8 @@ print(resp.status_code, resp.json())`
   );
 
   const renderMinerSetup = () => (
-    <div className="space-y-10">
-      <div className="border-b border-white/10 pb-8">
+    <div className="space-y-8">
+      <div className="border-b border-white/[0.06] pb-6">
         <div className="flex items-center gap-2 text-sm text-[#666] mb-4">
           <span>Docs</span>
           <ChevronRight size={14} />
@@ -1066,8 +1066,8 @@ print(resp.status_code, resp.json())`
           <ChevronRight size={14} />
           <span className="text-[#DFFF00]">Miner Setup</span>
         </div>
-        <h1 className="text-4xl font-bold mb-4">Miner setup</h1>
-        <p className="text-xl text-[#A7B0B7] leading-relaxed">
+        <h1 className="text-2xl font-semibold mb-2 tracking-tight">Miner setup</h1>
+        <p className="text-sm text-zinc-400 leading-relaxed">
           Run a Vocence subnet miner by publishing a PromptTTS model on Hugging Face and serving it on{' '}
           <a href="https://chutes.ai" target="_blank" rel="noopener noreferrer" className="text-[#DFFF00] hover:underline">
             Chutes
@@ -1079,23 +1079,23 @@ print(resp.status_code, resp.json())`
       </div>
 
       <section>
-        <h2 className="text-2xl font-semibold mb-4">What miners do</h2>
-        <p className="text-[#A7B0B7] leading-7 mb-4">
+        <h2 className="text-lg font-semibold mb-3">What miners do</h2>
+        <p className="text-sm text-zinc-400 leading-relaxed mb-4">
           Miners train and deploy voice models that expose a single{' '}
           <code className="text-white/90 bg-white/10 px-1.5 py-0.5 rounded text-sm">POST /speak</code> API: natural-language{' '}
           <strong className="text-white/90">instruction</strong> plus <strong className="text-white/90">text</strong> → WAV
           audio. In the current quarter the subnet focuses on <strong className="text-white/90">PromptTTS</strong>; the same
           interface will extend to other voice tasks over time.
         </p>
-        <p className="text-[#A7B0B7] leading-7">
+        <p className="text-sm text-zinc-400 leading-relaxed">
           Validators call your Chute, score outputs (content, quality, prompt adherence), and incentives follow subnet
           rules. The owner verifies wrapper integrity and participant metadata via the gateway API described in the repo.
         </p>
       </section>
 
       <section>
-        <h2 className="text-2xl font-semibold mb-4">Prerequisites</h2>
-        <ul className="list-disc pl-5 space-y-2 text-[#A7B0B7] leading-7">
+        <h2 className="text-lg font-semibold mb-3">Prerequisites</h2>
+        <ul className="list-disc pl-5 space-y-2 text-sm text-zinc-400 leading-relaxed">
           <li>
             <strong className="text-white/90">Chutes</strong> developer account (build & deploy your chute).
           </li>
@@ -1110,14 +1110,14 @@ print(resp.status_code, resp.json())`
       </section>
 
       <section>
-        <h2 className="text-2xl font-semibold mb-4">Repository layout on Hugging Face</h2>
-        <p className="text-[#A7B0B7] leading-7 mb-4">
+        <h2 className="text-lg font-semibold mb-3">Repository layout on Hugging Face</h2>
+        <p className="text-sm text-zinc-400 leading-relaxed mb-4">
           Your HF repo must include the files below. See{' '}
           <RepoFileLink path="miner_sample/example_repo/README.md" label="miner_sample/example_repo/README.md" /> and{' '}
           <RepoFileLink path="miner_sample/example_repo/miner.py" label="miner_sample/example_repo/miner.py" /> for a mock
           layout you replace with a real engine.
         </p>
-        <div className="overflow-x-auto border border-white/10 rounded-xl">
+        <div className="overflow-x-auto border border-white/[0.06] rounded-xl">
           <table className="w-full text-sm">
             <thead className="bg-white/5 text-[#A7B0B7]">
               <tr>
@@ -1126,8 +1126,8 @@ print(resp.status_code, resp.json())`
                 <th className="text-left px-4 py-3">Role</th>
               </tr>
             </thead>
-            <tbody className="text-[#C6CDD4]">
-              <tr className="border-t border-white/10">
+            <tbody className="text-zinc-300">
+              <tr className="border-t border-white/[0.06]">
                 <td className="px-4 py-3">
                   <code className="text-[#DFFF00]">miner.py</code>
                 </td>
@@ -1137,14 +1137,14 @@ print(resp.status_code, resp.json())`
                   <code className="text-white/80">generate_wav(instruction, text)</code> → mono float32 PCM + sample rate.
                 </td>
               </tr>
-              <tr className="border-t border-white/10">
+              <tr className="border-t border-white/[0.06]">
                 <td className="px-4 py-3">
                   <code className="text-[#DFFF00]">chute_config.yml</code>
                 </td>
                 <td className="px-4 py-3">Yes</td>
                 <td className="px-4 py-3">Image, GPU node selector, Chute metadata for build.</td>
               </tr>
-              <tr className="border-t border-white/10">
+              <tr className="border-t border-white/[0.06]">
                 <td className="px-4 py-3">
                   <code className="text-[#DFFF00]">vocence_config.yaml</code>
                 </td>
@@ -1154,15 +1154,15 @@ print(resp.status_code, resp.json())`
             </tbody>
           </table>
         </div>
-        <p className="text-[#A7B0B7] leading-7 mt-4">
+        <p className="text-sm text-zinc-400 leading-relaxed mt-4">
           All engine logic must stay in <code className="text-white/90">miner.py</code>; only the Python stdlib and
           installed packages may be imported—no importing other files from the repo in the engine.
         </p>
       </section>
 
       <section>
-        <h2 className="text-2xl font-semibold mb-4">Canonical Chute wrapper &amp; approved variables</h2>
-        <p className="text-[#A7B0B7] leading-7 mb-4">
+        <h2 className="text-lg font-semibold mb-3">Canonical Chute wrapper &amp; approved variables</h2>
+        <p className="text-sm text-zinc-400 leading-relaxed mb-4">
           Deployment uses the Jinja2 template in{' '}
           <RepoFileLink
             path="miner_sample/chute_template/vocence_chute.py.jinja2"
@@ -1170,7 +1170,7 @@ print(resp.status_code, resp.json())`
           />
           . You may change <strong className="text-white/90">only</strong> these four values when rendering the script:
         </p>
-        <ul className="list-disc pl-5 space-y-2 text-[#A7B0B7] leading-7 mb-4">
+        <ul className="list-disc pl-5 space-y-2 text-sm text-zinc-400 leading-relaxed mb-4">
           <li>
             <code className="text-white/90">VOCENCE_REPO</code> — Hugging Face repo ID (e.g. <code className="text-white/80">user/model</code>).
           </li>
@@ -1187,14 +1187,14 @@ print(resp.status_code, resp.json())`
             The on-chain Chute UUID is separate and is <em>not</em> checked for that substring.
           </li>
         </ul>
-        <p className="text-[#A7B0B7] leading-7">
+        <p className="text-sm text-zinc-400 leading-relaxed">
           Full step-by-step: <RepoFileLink path="miner_sample/MINER_GUIDE.md" label="miner_sample/MINER_GUIDE.md" />.
         </p>
       </section>
 
       <section>
-        <h2 className="text-2xl font-semibold mb-4">Build, deploy, and register</h2>
-        <ol className="list-decimal list-inside space-y-3 text-[#A7B0B7] leading-7">
+        <h2 className="text-lg font-semibold mb-3">Build, deploy, and register</h2>
+        <ol className="list-decimal list-inside space-y-3 text-sm text-zinc-400 leading-relaxed">
           <li>
             Render the template with your four variables (placeholders are documented in the guide).
           </li>
@@ -1213,11 +1213,11 @@ print(resp.status_code, resp.json())`
       </section>
 
       <section>
-        <h2 className="text-2xl font-semibold mb-4">Vocence CLI (optional automation)</h2>
-        <p className="text-[#A7B0B7] leading-7 mb-4">
+        <h2 className="text-lg font-semibold mb-3">Vocence CLI (optional automation)</h2>
+        <p className="text-sm text-zinc-400 leading-relaxed mb-4">
           From a clone of the repo, install dependencies (e.g. <code className="text-white/90">uv sync</code>) and use:
         </p>
-        <ul className="list-disc pl-5 space-y-2 text-[#A7B0B7] leading-7">
+        <ul className="list-disc pl-5 space-y-2 text-sm text-zinc-400 leading-relaxed">
           <li>
             <code className="text-white/90">vocence miner push</code> — deploy HF model to Chutes (
             <code className="text-white/80">--model-name</code>, <code className="text-white/80">--model-revision</code>).
@@ -1226,7 +1226,7 @@ print(resp.status_code, resp.json())`
             <code className="text-white/90">vocence miner commit</code> — commit model name, revision, and Chute ID to the chain.
           </li>
         </ul>
-        <p className="text-[#A7B0B7] leading-7 mt-4">
+        <p className="text-sm text-zinc-400 leading-relaxed mt-4">
           Complete flags and env:{' '}
           <RepoFileLink path="docs/CLI.md" label="docs/CLI.md" /> (section &quot;Miner commands&quot;). Example env keys for local
           tooling: <RepoFileLink path="env.example" label="env.example" />.
@@ -1234,8 +1234,8 @@ print(resp.status_code, resp.json())`
       </section>
 
       <section>
-        <h2 className="text-2xl font-semibold mb-4">HTTP API your Chute must expose</h2>
-        <ul className="list-disc pl-5 space-y-2 text-[#A7B0B7] leading-7">
+        <h2 className="text-lg font-semibold mb-3">HTTP API your Chute must expose</h2>
+        <ul className="list-disc pl-5 space-y-2 text-sm text-zinc-400 leading-relaxed">
           <li>
             <code className="text-white/90">GET /health</code> — status, HF repo/revision, load state, sample rate, adapter.
           </li>
@@ -1246,15 +1246,15 @@ print(resp.status_code, resp.json())`
         </ul>
       </section>
 
-      <section className="bg-white/5 border border-white/10 rounded-xl p-6">
-        <h2 className="text-xl font-semibold mb-3">Wrapper integrity (owner check)</h2>
-        <p className="text-[#A7B0B7] leading-7 mb-4">
+      <section className="bg-white/5 border border-white/[0.06] rounded-xl p-6">
+        <h2 className="text-base font-semibold mb-3">Wrapper integrity (owner check)</h2>
+        <p className="text-sm text-zinc-400 leading-relaxed mb-4">
           The <strong className="text-white/90">owner</strong> (not validators) fetches your deploy script from the Chutes
           API, masks the four approved variables, normalizes the AST, and compares a hash to the canonical template. Mismatch
           or fetch failure marks the participant invalid. Validators only call <code className="text-white/90">/health</code> and{' '}
           <code className="text-white/90">/speak</code> for scoring—keep the wrapper unchanged except for those variables.
         </p>
-        <p className="text-[#A7B0B7] leading-7">
+        <p className="text-sm text-zinc-400 leading-relaxed">
           Details: <RepoFileLink path="miner_sample/MINER_GUIDE.md" label="MINER_GUIDE.md § Wrapper integrity" /> ·{' '}
           <RepoFileLink path="docs/base-model-protocol.md" label="Base model &amp; burn protocol" /> (how reference models and
           burn behave in scoring).
@@ -1262,8 +1262,8 @@ print(resp.status_code, resp.json())`
       </section>
 
       <section>
-        <h2 className="text-2xl font-semibold mb-4">Scoring context</h2>
-        <p className="text-[#A7B0B7] leading-7">
+        <h2 className="text-lg font-semibold mb-3">Scoring context</h2>
+        <p className="text-sm text-zinc-400 leading-relaxed">
           To understand what validators optimize for (task generation from corpus audio, global aggregation, eligibility
           thresholds), read{' '}
           <RepoFileLink path="docs/scoring.md" label="docs/scoring.md" />.
@@ -1273,8 +1273,8 @@ print(resp.status_code, resp.json())`
   );
 
   const renderValidatorSetup = () => (
-    <div className="space-y-10">
-      <div className="border-b border-white/10 pb-8">
+    <div className="space-y-8">
+      <div className="border-b border-white/[0.06] pb-6">
         <div className="flex items-center gap-2 text-sm text-[#666] mb-4">
           <span>Docs</span>
           <ChevronRight size={14} />
@@ -1282,8 +1282,8 @@ print(resp.status_code, resp.json())`
           <ChevronRight size={14} />
           <span className="text-[#DFFF00]">Validator Setup</span>
         </div>
-        <h1 className="text-4xl font-bold mb-4">Validator setup</h1>
-        <p className="text-xl text-[#A7B0B7] leading-relaxed">
+        <h1 className="text-2xl font-semibold mb-2 tracking-tight">Validator setup</h1>
+        <p className="text-sm text-zinc-400 leading-relaxed">
           Validators run the subnet evaluation loop: sample generation from the shared corpus, miner queries via Chutes,
           uploads to your Hippius bucket, metadata to the owner API, and on-chain weights using{' '}
           <strong className="text-white/90">global consensus scoring</strong>. This mirrors{' '}
@@ -1293,7 +1293,7 @@ print(resp.status_code, resp.json())`
       </div>
 
       <section className="bg-amber-500/10 border border-amber-500/25 rounded-xl p-6">
-        <h2 className="text-xl font-semibold mb-3 text-amber-100">Contact the Vocence team first</h2>
+        <h2 className="text-base font-semibold mb-3 text-amber-100">Contact the Vocence team first</h2>
         <p className="text-[#E8DDD0] leading-7">
           You need team-provided access before a validator can run in production:{' '}
           <strong className="text-white">Chutes permission</strong> (validators call miners&apos; chutes),{' '}
@@ -1305,12 +1305,12 @@ print(resp.status_code, resp.json())`
       </section>
 
       <section>
-        <h2 className="text-2xl font-semibold mb-4">Credentials at a glance</h2>
-        <p className="text-[#A7B0B7] leading-7 mb-4">
+        <h2 className="text-lg font-semibold mb-3">Credentials at a glance</h2>
+        <p className="text-sm text-zinc-400 leading-relaxed mb-4">
           Align your <code className="text-white/90">.env</code> with{' '}
           <RepoFileLink path="env.example" label="env.example" />. Typical validator variables include:
         </p>
-        <ul className="list-disc pl-5 space-y-2 text-[#A7B0B7] leading-7">
+        <ul className="list-disc pl-5 space-y-2 text-sm text-zinc-400 leading-relaxed">
           <li>
             <strong className="text-white/90">Bittensor:</strong>{' '}
             <code className="text-white/80">NETWORK</code>, <code className="text-white/80">NETUID</code> (mainnet subnet{' '}
@@ -1356,8 +1356,8 @@ print(resp.status_code, resp.json())`
       </section>
 
       <section>
-        <h2 className="text-2xl font-semibold mb-4">Recommended: Docker + Watchtower</h2>
-        <p className="text-[#A7B0B7] leading-7 mb-4">
+        <h2 className="text-lg font-semibold mb-3">Recommended: Docker + Watchtower</h2>
+        <p className="text-sm text-zinc-400 leading-relaxed mb-4">
           The team publishes a validator image; Watchtower pulls new tags so your node stays current without manual restarts.
           Full walkthrough (Docker install, wallet mounts, <code className="text-white/80">logs/</code> permissions, compose
           commands, troubleshooting):
@@ -1367,7 +1367,7 @@ print(resp.status_code, resp.json())`
           <RepoFileLink path="docker-compose.yml" label="docker-compose.yml" /> ·{' '}
           <RepoFileLink path="docs/cicd-pipeline.md" label="docs/cicd-pipeline.md" /> (how images are built and published).
         </p>
-        <div className="mt-6 rounded-xl border border-white/10 bg-[#0a0a0a] p-4 font-mono text-sm text-[#C6CDD4] overflow-x-auto">
+        <div className="mt-6 rounded-xl border border-white/10 bg-[#0a0a0a] p-4 font-mono text-sm text-zinc-300 overflow-x-auto">
           <pre className="whitespace-pre-wrap">{`git clone ${GH}.git
 cd vocence
 cp env.example .env
@@ -1375,19 +1375,19 @@ cp env.example .env
 mkdir -p logs && sudo chown 1000:1000 logs
 docker compose up -d`}</pre>
         </div>
-        <p className="text-[#A7B0B7] leading-7 mt-4 text-sm">
+        <p className="text-sm text-zinc-400 leading-relaxed mt-4 text-sm">
           Mount <code className="text-white/90">~/.bittensor/wallets</code> per the compose file; if wallets live under root,
           fix ownership so UID 1000 can read them (documented in validator-setup).
         </p>
       </section>
 
       <section>
-        <h2 className="text-2xl font-semibold mb-4">Alternative: run from source</h2>
-        <div className="rounded-xl border border-white/10 bg-[#0a0a0a] p-4 font-mono text-sm text-[#C6CDD4] overflow-x-auto mb-4">
+        <h2 className="text-lg font-semibold mb-3">Alternative: run from source</h2>
+        <div className="rounded-xl border border-white/10 bg-[#0a0a0a] p-4 font-mono text-sm text-zinc-300 overflow-x-auto mb-4">
           <pre className="whitespace-pre-wrap">{`uv sync
 uv run vocence serve`}</pre>
         </div>
-        <p className="text-[#A7B0B7] leading-7">
+        <p className="text-sm text-zinc-400 leading-relaxed">
           <code className="text-white/90">vocence serve</code> runs sample generation and weight setting in one process. To split
           generator vs weight-setter for scaling, see{' '}
           <RepoFileLink path="docs/CLI.md" label="docs/CLI.md — Validator commands" /> (
@@ -1397,8 +1397,8 @@ uv run vocence serve`}</pre>
       </section>
 
       <section>
-        <h2 className="text-2xl font-semibold mb-4">How weight setting works (summary)</h2>
-        <p className="text-[#A7B0B7] leading-7 mb-4">
+        <h2 className="text-lg font-semibold mb-3">How weight setting works (summary)</h2>
+        <p className="text-sm text-zinc-400 leading-relaxed mb-4">
           Each validator still generates its own samples locally. When setting weights, it pulls the valid miner list and
           active validator list from the owner API, intersects with <code className="text-white/80">VALIDATOR_BUCKETS_JSON</code>, reads recent
           evaluation windows from those buckets, and aggregates miner performance with <strong className="text-white/90">stake-weighted</strong>{' '}
@@ -1406,7 +1406,7 @@ uv run vocence serve`}</pre>
           validator buckets to be globally eligible; the winner must beat earlier eligible commitments (including the owner base
           model when configured) by the threshold margin, or the subnet burns weight on UID 0.
         </p>
-        <p className="text-[#A7B0B7] leading-7">
+        <p className="text-sm text-zinc-400 leading-relaxed">
           Exact thresholds, tie-breaks, and task generation:{' '}
           <RepoFileLink path="docs/scoring.md" label="docs/scoring.md" /> · base model behavior:{' '}
           <RepoFileLink path="docs/base-model-protocol.md" label="docs/base-model-protocol.md" />.
@@ -1414,16 +1414,16 @@ uv run vocence serve`}</pre>
       </section>
 
       <section>
-        <h2 className="text-2xl font-semibold mb-4">Owner / API database (operators only)</h2>
-        <p className="text-[#A7B0B7] leading-7">
+        <h2 className="text-lg font-semibold mb-3">Owner / API database (operators only)</h2>
+        <p className="text-sm text-zinc-400 leading-relaxed">
           If you operate the centralized gateway stack (Postgres, API, corpus downloader), see{' '}
           <RepoFileLink path="docs/setup-postgres-vocence.md" label="docs/setup-postgres-vocence.md" /> and owner sections in{' '}
           <RepoFileLink path="docs/CLI.md" label="docs/CLI.md" />. This is separate from the typical validator quick start.
         </p>
       </section>
 
-      <section className="bg-white/5 border border-white/10 rounded-xl p-6">
-        <h2 className="text-xl font-semibold mb-3">Clone the repository</h2>
+      <section className="bg-white/5 border border-white/[0.06] rounded-xl p-6">
+        <h2 className="text-base font-semibold mb-3">Clone the repository</h2>
         <a
           href={GH}
           target="_blank"
@@ -1461,10 +1461,10 @@ uv run vocence serve`}</pre>
       },
     ];
     return (
-      <div className="space-y-10">
-        <div className="border-b border-white/10 pb-8">
-          <h1 className="text-4xl font-bold mb-4">FAQ</h1>
-          <p className="text-xl text-[#A7B0B7]">
+      <div className="space-y-8">
+        <div className="border-b border-white/[0.06] pb-6">
+          <h1 className="text-2xl font-semibold mb-2 tracking-tight">FAQ</h1>
+          <p className="text-sm text-zinc-400">
             Frequently asked questions about Vocence.
           </p>
         </div>
@@ -1473,10 +1473,10 @@ uv run vocence serve`}</pre>
           {faqs.map((item, index) => (
             <div
               key={index}
-              className="border border-white/10 rounded-xl p-6 bg-white/[0.02] hover:border-white/20 transition-colors"
+              className="border border-white/[0.06] rounded-xl p-6 bg-white/[0.02] hover:border-white/20 transition-colors"
             >
               <h3 className="text-lg font-semibold text-white mb-3">Q: {item.q}</h3>
-              <p className="text-[#A7B0B7] leading-7">A: {item.a}</p>
+              <p className="text-sm text-zinc-400 leading-relaxed">A: {item.a}</p>
             </div>
           ))}
         </section>
@@ -1485,17 +1485,17 @@ uv run vocence serve`}</pre>
   };
 
   const renderDefault = (title: string, description: string) => (
-    <div className="space-y-10">
-      <div className="border-b border-white/10 pb-8">
-        <h1 className="text-4xl font-bold mb-4">{title}</h1>
-        <p className="text-xl text-[#A7B0B7]">{description}</p>
+    <div className="space-y-8">
+      <div className="border-b border-white/[0.06] pb-6">
+        <h1 className="text-2xl font-semibold mb-2 tracking-tight">{title}</h1>
+        <p className="text-sm text-zinc-400">{description}</p>
       </div>
 
       <div className="card-vocence p-12 text-center">
         <div className="w-16 h-16 rounded-full bg-[#DFFF00]/10 flex items-center justify-center mx-auto mb-4">
           <Terminal size={28} className="text-[#DFFF00]" />
         </div>
-        <h2 className="text-xl font-semibold mb-2">Coming Soon</h2>
+        <h2 className="text-base font-semibold mb-2">Coming Soon</h2>
         <p className="text-[#A7B0B7]">
           This documentation section is being updated. Check back soon for the latest
           content.
@@ -1589,7 +1589,7 @@ uv run vocence serve`}</pre>
 
         <main className="docs-content min-h-[calc(100vh-4.5rem)] flex-1 border-l border-transparent lg:border-l-0">
           <div
-            className={`mx-auto px-5 py-8 sm:px-8 sm:py-12 lg:px-14 lg:py-14 ${
+            className={`mx-auto px-5 py-6 sm:px-8 sm:py-8 lg:px-12 lg:py-10 ${
               activeSection === 'api' || activeSection === 'miner' || activeSection === 'validator'
                 ? 'max-w-4xl'
                 : 'max-w-3xl'

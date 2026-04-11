@@ -44,6 +44,7 @@ import {
 } from '../services/dashboardApi';
 import { StudioMusic } from './StudioMusic';
 import { StudioHome } from './StudioHome';
+import { useStudioPlayer } from '../contexts/StudioPlayerContext';
 import { api } from '../services/api';
 import {
   Select,
@@ -2066,6 +2067,9 @@ export function Studio() {
           </div>
         </div>
       )}
+
+      {/* Sample clones */}
+      <CloneSamplesSection />
     </div>
   );
 
@@ -2441,5 +2445,75 @@ export function Studio() {
         onClose={() => setIsAuthModalOpen(false)}
       />
     </div>
+  );
+}
+
+/* ==========================================================================
+   Clone samples section — shown at bottom of voice cloning page
+   ========================================================================== */
+
+const CLONE_SAMPLE_TRACKS = [
+  { id: 'cs1', name: 'Studio Interview', avatar: '/samples/images/clone_1.png', originalAudio: '/samples/audio/clone1_original.wav', clonedAudio: '/samples/audio/clone1_cloned.wav', originalLabel: 'Original Recording', clonedLabel: 'Cloned — New Script' },
+  { id: 'cs2', name: 'Podcast Host', avatar: '/samples/images/clone_2.png', originalAudio: '/samples/audio/clone2_original.wav', clonedAudio: '/samples/audio/clone2_cloned.wav', originalLabel: 'Reference Clip', clonedLabel: 'Cloned Output' },
+  { id: 'cs3', name: 'Voiceover Artist', avatar: '/samples/images/clone_3.png', originalAudio: '/samples/audio/clone3_original.wav', clonedAudio: '/samples/audio/clone3_cloned.wav', originalLabel: 'Original Sample', clonedLabel: 'Cloned — Ad Read' },
+  { id: 'cs4', name: 'Audiobook Narrator', avatar: '/samples/images/clone_4.png', originalAudio: '/samples/audio/clone4_original.wav', clonedAudio: '/samples/audio/clone4_cloned.wav', originalLabel: 'Reference', clonedLabel: 'Cloned — Chapter Read' },
+];
+
+function CloneSamplesSection() {
+  const { track, playing, play, pause, resume } = useStudioPlayer();
+
+  const PlayBtn = ({ src, title, subtitle, image }: { src: string; title: string; subtitle?: string; image?: string }) => {
+    const isThis = track?.src === src;
+    const isPlaying = isThis && playing;
+    return (
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          if (isPlaying) { pause(); return; }
+          if (isThis) { resume(); return; }
+          play({ src, title, subtitle, image });
+        }}
+        className={`w-9 h-9 rounded-full flex items-center justify-center shrink-0 transition-colors ${
+          isPlaying ? 'bg-[#DFFF00] text-[#07080A]' : 'bg-white/10 text-white hover:bg-white/20'
+        }`}
+        aria-label={isPlaying ? 'Pause' : 'Play'}
+      >
+        {isPlaying ? <Pause size={14} /> : <Play size={14} className="ml-0.5" />}
+      </button>
+    );
+  };
+
+  return (
+    <section className="pt-4">
+      <div className="mb-4">
+        <h3 className="text-sm font-semibold text-white">Sample Clones</h3>
+        <p className="text-xs text-[#A7B0B7] mt-0.5">Hear the original and the cloned result side by side.</p>
+      </div>
+      <div className="space-y-2">
+        {CLONE_SAMPLE_TRACKS.map((c) => (
+          <div key={c.id} className="flex items-center gap-4 px-3 py-3 rounded-xl border border-white/[0.06] bg-white/[0.02] hover:border-white/[0.12] transition-all">
+            {/* Avatar */}
+            <div className="w-[72px] h-[72px] rounded-xl overflow-hidden shrink-0 group/avatar">
+              <img src={c.avatar} alt={c.name} className="w-full h-full object-cover transition-transform duration-300 group-hover/avatar:scale-110" />
+            </div>
+
+            {/* Info + play buttons */}
+            <div className="flex-1 min-w-0">
+              <h4 className="text-sm text-white font-medium mb-2">{c.name}</h4>
+              <div className="space-y-1.5">
+                <div className="flex items-center gap-2">
+                  <PlayBtn src={c.originalAudio} title={`${c.name} — Original`} subtitle={c.originalLabel} image={c.avatar} />
+                  <span className="text-xs text-[#A7B0B7]">{c.originalLabel}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <PlayBtn src={c.clonedAudio} title={`${c.name} — Cloned`} subtitle={c.clonedLabel} image={c.avatar} />
+                  <span className="text-xs text-[#A7B0B7]">{c.clonedLabel}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }

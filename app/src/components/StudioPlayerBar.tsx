@@ -41,12 +41,16 @@ export function StudioPlayerBar() {
     <div className={`fixed bottom-5 left-4 lg:left-[calc(256px+16px)] right-4 z-[60] transition-all duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] ${visible ? 'translate-y-0 opacity-100' : 'translate-y-12 opacity-0 pointer-events-none'}`}>
       <div className="max-w-5xl mx-auto rounded-[20px] bg-[#111215]/90 backdrop-blur-2xl border border-white/[0.06] shadow-[0_8px_60px_rgba(0,0,0,0.6),0_0_0_1px_rgba(255,255,255,0.03)] p-3 pr-4">
         <div className="flex items-center gap-3">
-          {/* Artwork circle */}
+          {/* Artwork */}
           <div className="relative shrink-0">
-            <div className={`w-12 h-12 rounded-2xl bg-gradient-to-br from-[#DFFF00]/25 via-emerald-500/20 to-cyan-500/20 flex items-center justify-center transition-transform duration-700 ${playing ? 'scale-100' : 'scale-95'}`}>
-              <span className="text-base font-bold text-white/80">{initial}</span>
+            <div className={`w-12 h-12 rounded-lg overflow-hidden bg-gradient-to-br from-[#DFFF00]/25 via-emerald-500/20 to-cyan-500/20 flex items-center justify-center transition-transform duration-700 ${playing ? 'scale-100' : 'scale-95'}`}>
+              {track.image ? (
+                <img src={track.image} alt="" className="w-full h-full object-cover" />
+              ) : (
+                <span className="text-base font-bold text-white/80">{initial}</span>
+              )}
             </div>
-            {playing && <div className="absolute -inset-1 rounded-2xl bg-[#DFFF00]/10 animate-pulse" />}
+            {playing && <div className="absolute -inset-1 rounded-lg bg-[#DFFF00]/10 animate-pulse" />}
           </div>
 
           {/* Info + progress */}
@@ -84,14 +88,12 @@ export function StudioPlayerBar() {
               {playing ? <Pause size={14} /> : <Play size={14} className="ml-0.5" />}
             </button>
 
-            <div className="hidden sm:flex items-center gap-1 ml-1">
-              <button onClick={toggleMute} className="text-white/20 hover:text-white/50 transition-colors p-1">
-                {volume === 0 ? <VolumeX size={13} /> : <Volume2 size={13} />}
-              </button>
-              <input type="range" min={0} max={1} step={0.01} value={volume}
-                onChange={(e) => setVolume(Number(e.target.value))}
-                className="w-14 h-[3px] appearance-none bg-white/[0.08] rounded-full cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-[10px] [&::-webkit-slider-thumb]:h-[10px] [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white/70" />
-            </div>
+            <button onClick={toggleMute} className="text-white/20 hover:text-white/50 transition-colors p-1">
+              {volume === 0 ? <VolumeX size={13} /> : <Volume2 size={13} />}
+            </button>
+            <input type="range" min={0} max={1} step={0.01} value={volume}
+              onChange={(e) => setVolume(Number(e.target.value))}
+              className="w-14 h-[3px] appearance-none bg-white/[0.08] rounded-full cursor-pointer hidden sm:block [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-[10px] [&::-webkit-slider-thumb]:h-[10px] [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white/70" />
 
             <button onClick={stop} className="text-white/15 hover:text-white/50 transition-colors p-1 ml-0.5" aria-label="Close">
               <X size={15} />

@@ -66,8 +66,8 @@ export function StudioShell({ activeView, children, mainClassName = '' }: Props)
           </div>
         </aside>
 
-        <div className="lg:hidden fixed bottom-0 left-0 right-0 bg-[#07080A] border-t border-white/5 p-2 z-50">
-          <div className="flex justify-around">
+        <div className="lg:hidden fixed bottom-0 left-0 right-0 bg-[#07080A] border-t border-white/5 p-2 z-50 overflow-x-auto">
+          <div className="flex gap-1 min-w-max px-1">
             <button
               type="button"
               onClick={() => navigate('/studio/home')}

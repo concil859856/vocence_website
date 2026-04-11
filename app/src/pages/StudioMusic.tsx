@@ -15,18 +15,18 @@ interface GenrePreset {
   label: string;
   value: string;
   emoji: string;
-  color: string;
+  image: string;
 }
 
 const GENRE_PRESETS: GenrePreset[] = [
-  { label: 'Upbeat Pop', value: 'pop, synth, drums, guitar, 120 bpm, upbeat, catchy, vibrant, female vocals, polished vocals', emoji: '🎤', color: 'from-pink-400/40 to-rose-500/15' },
-  { label: 'Hard Rock', value: 'rock, electric guitar, drums, bass, 130 bpm, energetic, rebellious, gritty, male vocals, raw vocals', emoji: '🎸', color: 'from-red-400/40 to-red-500/15' },
-  { label: 'Street Rap', value: 'hip hop, 808 bass, hi-hats, synth, 90 bpm, bold, urban, intense, male vocals, rhythmic vocals', emoji: '🎧', color: 'from-amber-400/40 to-amber-500/15' },
-  { label: 'Club EDM', value: 'edm, synth, bass, kick drum, 128 bpm, euphoric, pulsating, energetic, instrumental', emoji: '⚡', color: 'from-cyan-400/40 to-cyan-500/15' },
-  { label: 'Smooth Jazz', value: 'jazz, saxophone, piano, double bass, 110 bpm, smooth, improvisational, soulful, instrumental', emoji: '🎷', color: 'from-orange-400/40 to-orange-500/15' },
-  { label: 'Orchestral', value: 'classical, orchestral, strings, piano, 60 bpm, elegant, emotive, timeless, instrumental', emoji: '🎻', color: 'from-violet-400/40 to-violet-500/15' },
-  { label: 'Chill Lo-fi', value: 'lo-fi, piano, soft drums, vinyl crackle, 75 bpm, chill, mellow, warm, instrumental', emoji: '☕', color: 'from-sky-400/40 to-indigo-500/15' },
-  { label: 'Soulful R&B', value: 'r&b, synth, bass, drums, 85 bpm, sultry, groovy, romantic, female vocals, silky vocals', emoji: '💜', color: 'from-purple-400/40 to-fuchsia-500/15' },
+  { label: 'Upbeat Pop', value: 'pop, synth, drums, guitar, 120 bpm, upbeat, catchy, vibrant, female vocals, polished vocals', emoji: '🎤', image: '/samples/images/genre_1.png' },
+  { label: 'Hard Rock', value: 'rock, electric guitar, drums, bass, 130 bpm, energetic, rebellious, gritty, male vocals, raw vocals', emoji: '🎸', image: '/samples/images/genre_2.png' },
+  { label: 'Street Rap', value: 'hip hop, 808 bass, hi-hats, synth, 90 bpm, bold, urban, intense, male vocals, rhythmic vocals', emoji: '🎧', image: '/samples/images/genre_3.png' },
+  { label: 'Club EDM', value: 'edm, synth, bass, kick drum, 128 bpm, euphoric, pulsating, energetic, instrumental', emoji: '⚡', image: '/samples/images/genre_4.png' },
+  { label: 'Smooth Jazz', value: 'jazz, saxophone, piano, double bass, 110 bpm, smooth, improvisational, soulful, instrumental', emoji: '🎷', image: '/samples/images/genre_5.png' },
+  { label: 'Orchestral', value: 'classical, orchestral, strings, piano, 60 bpm, elegant, emotive, timeless, instrumental', emoji: '🎻', image: '/samples/images/genre_6.png' },
+  { label: 'Chill Lo-fi', value: 'lo-fi, piano, soft drums, vinyl crackle, 75 bpm, chill, mellow, warm, instrumental', emoji: '☕', image: '/samples/images/genre_7.png' },
+  { label: 'Soulful R&B', value: 'r&b, synth, bass, drums, 85 bpm, sultry, groovy, romantic, female vocals, silky vocals', emoji: '💜', image: '/samples/images/genre_8.png' },
 ];
 
 const TASK_TABS: { id: MusicTask; label: string; icon: typeof Music; desc: string }[] = [
@@ -52,7 +52,7 @@ export function StudioMusic() {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Text2Music
-  const [prompt, setPrompt] = useState('');
+  const [prompt, setPrompt] = useState(GENRE_PRESETS[0].value);
   const [lyrics, setLyrics] = useState(`[verse]
 Neon lights they flicker bright
 City hums in dead of night
@@ -63,10 +63,28 @@ Lost in echoes of refrains
 Turn it up and let it flow
 Feel the fire let it grow
 In this rhythm we belong
+Hear the night sing out our song
+
+[verse]
+Shadows dance on broken walls
+Whispered secrets down the halls
+Every heartbeat tells a tale
+Chasing thunder through the gale
+
+[bridge]
+We are the sound that never fades
+Burning through the barricades
+Electric souls and midnight dreams
+Nothing's ever what it seems
+
+[chorus]
+Turn it up and let it flow
+Feel the fire let it grow
+In this rhythm we belong
 Hear the night sing out our song`);
-  const [duration, setDuration] = useState(60);
+  const [duration, setDuration] = useState(90);
   const [format, setFormat] = useState('wav');
-  const [selectedGenre, setSelectedGenre] = useState<string | null>(null);
+  const [selectedGenre, setSelectedGenre] = useState<string | null>(GENRE_PRESETS[0].label);
 
   // Basic
   const [showSettings, setShowSettings] = useState(false);
@@ -171,7 +189,14 @@ Hear the night sing out our song`);
           return (
             <button
               key={tab.id}
-              onClick={() => { setActiveTask(tab.id); setStatus(null); setResultAudioUrl(null); }}
+              onClick={() => {
+                if (tab.id !== 'text2music') {
+                  setStatus({ type: 'info', message: `${tab.label} is currently under development. Stay tuned!` });
+                  setResultAudioUrl(null);
+                  return;
+                }
+                setActiveTask(tab.id); setStatus(null); setResultAudioUrl(null);
+              }}
               className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all ${
                 active
                   ? 'bg-white text-[#07080A]'
@@ -222,19 +247,23 @@ Hear the night sing out our song`);
           {activeTask === 'text2music' && (
             <div>
               <label className={labelCls}>Genre</label>
-              <div className="grid grid-cols-4 sm:grid-cols-8 gap-1.5 mt-2">
+              <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-1.5 mt-2">
                 {GENRE_PRESETS.map((g) => (
                   <button
                     key={g.label}
                     onClick={() => { setPrompt(g.value); setSelectedGenre(g.label); }}
-                    className={`rounded-lg px-2 py-1.5 text-center transition-all border ${
+                    className={`rounded-lg px-2 py-1.5 text-center transition-all border-2 relative overflow-hidden ${
                       selectedGenre === g.label
-                        ? 'border-white/40 bg-white/[0.08]'
-                        : `border-[#2e2f33] bg-gradient-to-b ${g.color} hover:border-[#444]`
+                        ? 'border-[#DFFF00] shadow-[0_0_8px_rgba(223,255,0,0.25)]'
+                        : 'border-transparent hover:border-[#444]'
                     }`}
                   >
-                    <span className="text-sm">{g.emoji}</span>
-                    <p className="text-[10px] text-white/70 font-medium leading-tight mt-0.5">{g.label}</p>
+                    <img src={g.image} alt="" className="absolute inset-0 w-full h-full object-cover opacity-50" />
+                    <div className="absolute inset-0 bg-black/30" />
+                    <div className="relative z-10">
+                      <span className="text-xl">{g.emoji}</span>
+                      <p className="text-xs text-white font-medium leading-tight mt-0.5">{g.label}</p>
+                    </div>
                   </button>
                 ))}
               </div>
@@ -279,14 +308,14 @@ Hear the night sing out our song`);
           )}
 
           {activeTask === 'retake' && (
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <Field label="Variance"><input type="number" className={inputCls} value={retakeVariance} onChange={(e) => setRetakeVariance(Number(e.target.value))} min={0} max={1} step={0.05} /></Field>
               <Field label="Seeds"><input type="text" className={inputCls} value={retakeSeeds} onChange={(e) => setRetakeSeeds(e.target.value)} placeholder="e.g. 42" /></Field>
             </div>
           )}
 
           {activeTask === 'repaint' && (
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <Field label="Start (sec)"><input type="number" className={inputCls} value={repaintStart} onChange={(e) => setRepaintStart(Number(e.target.value))} min={0} step={0.5} /></Field>
               <Field label="End (sec)"><input type="number" className={inputCls} value={repaintEnd} onChange={(e) => setRepaintEnd(Number(e.target.value))} min={0} step={0.5} /></Field>
               <Field label="Variance"><input type="number" className={inputCls} value={retakeVariance} onChange={(e) => setRetakeVariance(Number(e.target.value))} min={0} max={1} step={0.05} /></Field>
@@ -298,7 +327,7 @@ Hear the night sing out our song`);
               <p className="text-[11px] text-[#DFFF00] uppercase tracking-wider font-semibold">Target output</p>
               <Field label="Target Prompt"><input type="text" className={inputCls} value={editTargetPrompt} onChange={(e) => setEditTargetPrompt(e.target.value)} /></Field>
               <Field label="Target Lyrics"><textarea rows={3} className={`${inputCls} resize-y`} value={editTargetLyrics} onChange={(e) => setEditTargetLyrics(e.target.value)} /></Field>
-              <div className="grid grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <Field label="Type">
                   <CustomSelect value="only_lyrics" onChange={(v) => { if (v === 'only_lyrics') { setEditNMin(0.6); setEditNMax(1.0); } else { setEditNMin(0.2); setEditNMax(0.4); } }}
                     options={[{ value: 'only_lyrics', label: 'Lyrics only' }, { value: 'remix', label: 'Remix' }]} />
@@ -310,7 +339,7 @@ Hear the night sing out our song`);
           )}
 
           {activeTask === 'extend' && (
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <Field label="Left (sec)"><input type="number" className={inputCls} value={leftExtend} onChange={(e) => setLeftExtend(Number(e.target.value))} min={0} max={240} /></Field>
               <Field label="Right (sec)"><input type="number" className={inputCls} value={rightExtend} onChange={(e) => setRightExtend(Number(e.target.value))} min={0} max={240} /></Field>
               <Field label="Seeds"><input type="text" className={inputCls} value={extendSeeds} onChange={(e) => setExtendSeeds(e.target.value)} placeholder="e.g. 42" /></Field>
@@ -491,7 +520,7 @@ function SampleMusicSection() {
           const handleClick = () => {
             if (isPlaying) { pause(); return; }
             if (isThis) { resume(); return; }
-            play({ src: t.audioSrc, title: t.title, subtitle: t.style.slice(0, 60) });
+            play({ src: t.audioSrc, title: t.title, subtitle: t.style.slice(0, 60), image: t.image });
           };
           return (
             <button
@@ -502,8 +531,8 @@ function SampleMusicSection() {
               }`}
             >
               {/* Artwork thumbnail */}
-              <div className="w-12 h-12 rounded-lg shrink-0 relative overflow-hidden group/thumb">
-                <img src={t.image} alt={t.title} className="w-full h-full object-cover" />
+              <div className="w-[72px] h-[72px] rounded-xl shrink-0 relative overflow-hidden group/thumb">
+                <img src={t.image} alt={t.title} className="w-full h-full object-cover transition-transform duration-300 group-hover/thumb:scale-110" />
                 <div className={`absolute inset-0 flex items-center justify-center transition-all ${
                   isPlaying ? 'bg-black/40' : 'bg-black/0 group-hover/thumb:bg-black/30'
                 }`}>
@@ -516,10 +545,10 @@ function SampleMusicSection() {
               </div>
 
               {/* Title */}
-              <span className={`text-sm font-medium w-32 shrink-0 truncate ${isThis ? 'text-[#DFFF00]' : 'text-white/80'}`}>{t.title}</span>
+              <span className={`text-sm font-medium w-24 sm:w-32 shrink-0 truncate ${isThis ? 'text-[#DFFF00]' : 'text-white/80'}`}>{t.title}</span>
 
               {/* Style prompt */}
-              <span className="text-xs text-[#666] flex-1 truncate">{t.style}</span>
+              <span className="text-xs text-[#666] flex-1 truncate hidden sm:block">{t.style}</span>
             </button>
           );
         })}

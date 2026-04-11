@@ -5,6 +5,7 @@ interface Track {
   src: string;
   title: string;
   subtitle?: string;
+  image?: string;
 }
 
 interface StudioPlayerState {
