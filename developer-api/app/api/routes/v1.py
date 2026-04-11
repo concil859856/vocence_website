@@ -10,6 +10,7 @@ from app.core.auth import require_api_key
 from app.core.config import (
     API_CLONE_MAX_REF_AUDIO_BYTES,
     API_DEFAULT_STYLE,
+    API_MUSIC_CREDITS_PER_REQUEST,
     API_STT_CREDITS_COST,
     API_STT_MAX_AUDIO_BYTES,
     API_TTS_CREDITS_PER_REQUEST,
@@ -17,6 +18,8 @@ from app.core.config import (
 )
 from app.db.connection import get_db, refresh_daily_usage_for_today
 from app.schemas.api import (
+    MusicGenerateRequest,
+    MusicGenerateResponse,
     SttTranscribeRequest,
     SttTranscribeResponse,
     TtsGenerateRequest,
@@ -27,6 +30,7 @@ from app.schemas.api import (
 from app.services.audio_provider import get_presigned_url, synthesize_speak, transcribe_audio, upload_wav_to_hippius
 from app.services.providers import select_api_tts_provider
 from app.services.usage import credits_for_chars, enforce_rate_limit, log_api_request
+from app.services.music_provider import generate_text2music as music_text2music, music_gen_configured
 from app.services.voice_clone_client import (
     voice_clone_chute_configured,
     voice_clone_endpoint_label,
@@ -127,7 +131,7 @@ async def tts_generate(body: TtsGenerateRequest, auth_ctx: dict = Depends(requir
             await conn.commit()
             raise HTTPException(status_code=502, detail=f"TTS provider failed: {err or 'unknown'}")
 
-        bucket, key, expires_at = upload_wav_to_hippius(auth_ctx["user_id"], wav_bytes)
+        bucket, key, expires_at = upload_wav_to_hippius(auth_ctx["user_id"], wav_bytes, subdir="tts")
         audio_url = get_presigned_url(bucket, key, expires_at) or ""
         new_credits = credits_before - credits_needed
 
@@ -461,7 +465,7 @@ async def voice_clone(body: VoiceCloneRequest, auth_ctx: dict = Depends(require_
             await conn.commit()
             raise HTTPException(status_code=502, detail=f"Voice clone failed: {clone_err or 'unknown'}")
 
-        bucket, key, expires_at = upload_wav_to_hippius(auth_ctx["user_id"], out_bytes)
+        bucket, key, expires_at = upload_wav_to_hippius(auth_ctx["user_id"], out_bytes, subdir="clone")
         audio_url = get_presigned_url(bucket, key, expires_at) or ""
         new_credits = credits_before - credits_needed
 
@@ -517,6 +521,110 @@ async def voice_clone(body: VoiceCloneRequest, auth_ctx: dict = Depends(require_
             credits_remaining=new_credits,
             latency_ms=latency_ms,
             credits_used=credits_needed,
+        )
+    finally:
+        await conn.close()
+
+
+@router.post("/v1/music/generate", response_model=MusicGenerateResponse)
+async def music_generate(body: MusicGenerateRequest, auth_ctx: dict = Depends(require_api_key)):
+    """Generate music from text prompt + lyrics via ACE-Step."""
+    if not music_gen_configured():
+        raise HTTPException(status_code=503, detail="Music generation not configured (MUSIC_GEN_API_URL).")
+
+    prompt = (body.prompt or "").strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="prompt is required")
+
+    provider_name = "ACE-Step"
+    credits_needed = max(1, int(API_MUSIC_CREDITS_PER_REQUEST))
+    started = time.perf_counter()
+    request_id = uuid.uuid4().hex
+
+    conn = await get_db()
+    try:
+        await _ensure_premium(conn, auth_ctx["user_id"])
+        await enforce_rate_limit(conn, auth_ctx["api_key_id"], auth_ctx["rate_limit_rpm"])
+        credits_before = await _get_user_credits(conn, auth_ctx["user_id"])
+        if credits_before < credits_needed:
+            await log_api_request(
+                conn, request_id=request_id, user_id=auth_ctx["user_id"],
+                api_key_id=auth_ctx["api_key_id"], endpoint="/v1/music/generate",
+                provider=provider_name, status="rejected", http_status=402,
+                credits_used=0, request_chars=len(prompt),
+                latency_ms=int((time.perf_counter() - started) * 1000),
+                error_code="insufficient_credits",
+                error_message=f"Need {credits_needed}, have {credits_before}",
+            )
+            await conn.commit()
+            raise HTTPException(status_code=402, detail=f"Insufficient credits. Need {credits_needed}, have {credits_before}")
+
+        wav_bytes, err = await music_text2music(
+            prompt=prompt,
+            lyrics=body.lyrics,
+            audio_duration=body.audio_duration,
+            format=body.format,
+            infer_step=body.infer_step,
+            guidance_scale=body.guidance_scale,
+        )
+        if not wav_bytes:
+            latency_ms = int((time.perf_counter() - started) * 1000)
+            await log_api_request(
+                conn, request_id=request_id, user_id=auth_ctx["user_id"],
+                api_key_id=auth_ctx["api_key_id"], endpoint="/v1/music/generate",
+                provider=provider_name, status="error", http_status=502,
+                credits_used=0, request_chars=len(prompt),
+                latency_ms=latency_ms, error_code="provider_error",
+                error_message=err or "provider failed",
+            )
+            await conn.commit()
+            raise HTTPException(status_code=502, detail=f"Music generation failed: {err or 'unknown'}")
+
+        bucket, key, expires_at = upload_wav_to_hippius(auth_ctx["user_id"], wav_bytes, subdir="music")
+        audio_url = get_presigned_url(bucket, key, expires_at) or ""
+        new_credits = credits_before - credits_needed
+
+        await conn.execute(
+            "UPDATE auth_users SET credits = ?, updated_at = datetime('now') WHERE id = ?",
+            (new_credits, auth_ctx["user_id"]),
+        )
+        await conn.execute(
+            """
+            INSERT INTO credit_transactions
+            (id, user_id, transaction_type, amount, balance_after, description, reference_type, reference_id, metadata_json, created_at)
+            VALUES (?, ?, 'api_music_generation', ?, ?, ?, 'api_request', ?, ?, datetime('now'))
+            """,
+            (
+                uuid.uuid4().hex, auth_ctx["user_id"], -credits_needed, new_credits,
+                f"Developer API music via {provider_name}", request_id,
+                '{"source":"developer-api"}',
+            ),
+        )
+        await conn.execute(
+            "UPDATE api_keys SET last_used_at = datetime('now'), updated_at = datetime('now') WHERE id = ?",
+            (auth_ctx["api_key_id"],),
+        )
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        await log_api_request(
+            conn, request_id=request_id, user_id=auth_ctx["user_id"],
+            api_key_id=auth_ctx["api_key_id"], endpoint="/v1/music/generate",
+            provider=provider_name, status="success", http_status=200,
+            credits_used=credits_needed, request_chars=len(prompt),
+            latency_ms=latency_ms,
+        )
+        try:
+            await refresh_daily_usage_for_today(conn)
+        except Exception as e:
+            print(f"[developer-api] daily usage refresh failed: {e}")
+        await conn.commit()
+        return MusicGenerateResponse(
+            request_id=request_id,
+            audio_url=audio_url,
+            provider=provider_name,
+            credits_remaining=new_credits,
+            latency_ms=latency_ms,
+            credits_used=credits_needed,
+            task="text2music",
         )
     finally:
         await conn.close()

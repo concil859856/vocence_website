@@ -105,16 +105,36 @@ def _chute_voice_clone_url(slug: str) -> str:
 
 
 STUDIO_TTS_BUCKET = os.environ.get("STUDIO_TTS_BUCKET", "studio-tts")
-# Hippius S3: s3.hippius.com, secure, region decentralized (owner bucket)
-HIPPIUS_ENDPOINT = os.environ.get("HIPPIUS_ENDPOINT", "s3.hippius.com")
-HIPPIUS_OWNER_ACCESS_KEY = os.environ.get("HIPPIUS_OWNER_ACCESS_KEY") or os.environ.get("HIPPIUS_ACCESS_KEY", "")
-HIPPIUS_OWNER_SECRET_KEY = os.environ.get("HIPPIUS_OWNER_SECRET_KEY") or os.environ.get("HIPPIUS_SECRET_KEY", "")
 STUDIO_TTS_EXPIRY_DAYS = int(os.environ.get("STUDIO_TTS_EXPIRY_DAYS", "7"))
 PRESIGNED_EXPIRY_SECONDS = min(7 * 24 * 3600, STUDIO_TTS_EXPIRY_DAYS * 24 * 3600)
 
+# ---------- Bucket provider: "r2" (default) or "hippius" ----------
+BUCKET_PROVIDER = (os.environ.get("BUCKET_PROVIDER") or "r2").strip().lower()
+
+# Cloudflare R2 (S3-compatible)
+R2_ACCOUNT_ID = (os.environ.get("R2_ACCOUNT_ID") or "").strip()
+R2_ACCESS_KEY_ID = (os.environ.get("R2_ACCESS_KEY_ID") or "").strip()
+R2_SECRET_ACCESS_KEY = (os.environ.get("R2_SECRET_ACCESS_KEY") or "").strip()
+R2_BUCKET_NAME = (os.environ.get("R2_BUCKET_NAME") or STUDIO_TTS_BUCKET).strip()
+R2_PUBLIC_DOMAIN = (os.environ.get("R2_PUBLIC_DOMAIN") or "").strip()  # e.g. audio.vocence.ai
+
+# Hippius S3 (legacy)
+HIPPIUS_ENDPOINT = os.environ.get("HIPPIUS_ENDPOINT", "s3.hippius.com")
+HIPPIUS_OWNER_ACCESS_KEY = os.environ.get("HIPPIUS_OWNER_ACCESS_KEY") or os.environ.get("HIPPIUS_ACCESS_KEY", "")
+HIPPIUS_OWNER_SECRET_KEY = os.environ.get("HIPPIUS_OWNER_SECRET_KEY") or os.environ.get("HIPPIUS_SECRET_KEY", "")
+
 
 def _minio_client() -> Minio:
-    """Minio client for Hippius (owner credentials, s3.hippius.com)."""
+    """S3-compatible client — points to R2 or Hippius based on BUCKET_PROVIDER."""
+    if BUCKET_PROVIDER == "r2":
+        endpoint = f"{R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+        return Minio(
+            endpoint,
+            access_key=R2_ACCESS_KEY_ID or "",
+            secret_key=R2_SECRET_ACCESS_KEY or "",
+            secure=True,
+            region="auto",
+        )
     return Minio(
         HIPPIUS_ENDPOINT,
         access_key=HIPPIUS_OWNER_ACCESS_KEY or "",
@@ -122,6 +142,13 @@ def _minio_client() -> Minio:
         secure=True,
         region="decentralized",
     )
+
+
+def _active_bucket() -> str:
+    """Return the active bucket name based on provider."""
+    if BUCKET_PROVIDER == "r2":
+        return R2_BUCKET_NAME
+    return STUDIO_TTS_BUCKET
 
 
 async def fetch_chute_slug(chute_id: str) -> str | None:
@@ -714,65 +741,85 @@ def copy_wav_in_bucket(user_id: str, src_bucket: str, src_key: str, dest_key_pre
     data = download_object_bytes(src_bucket, src_key)
     if not data:
         return None
+    bucket = _active_bucket()
     client = _minio_client()
-    ensure_bucket(client, STUDIO_TTS_BUCKET)
+    ensure_bucket(client, bucket)
     new_key = f"{user_id}/{dest_key_prefix}/{uuid.uuid4().hex}.wav"
     expires_at = datetime.now(timezone.utc) + timedelta(days=STUDIO_TTS_EXPIRY_DAYS)
 
     client.put_object(
-        STUDIO_TTS_BUCKET,
+        bucket,
         new_key,
         BytesIO(data),
         length=len(data),
         content_type="audio/wav",
     )
-    return STUDIO_TTS_BUCKET, new_key, expires_at
+    return bucket, new_key, expires_at
 
 
 def ensure_bucket(client: Minio, bucket: str) -> None:
-    """Create bucket if it does not exist (Hippius/S3)."""
+    """Create bucket if it does not exist. Skipped for R2 (buckets created via dashboard)."""
+    if BUCKET_PROVIDER == "r2":
+        return  # R2 buckets are created in Cloudflare dashboard
     if not client.bucket_exists(bucket):
         client.make_bucket(bucket)
 
 
 def upload_wav_preview(user_id: str, preview_token: str, variant: str, wav_bytes: bytes) -> tuple[str, str, datetime]:
     """Short-TTL preview WAV under voice-design/preview/. Returns (bucket, key, expires_at)."""
+    bucket = _active_bucket()
     client = _minio_client()
-    ensure_bucket(client, STUDIO_TTS_BUCKET)
+    ensure_bucket(client, bucket)
     key = f"{user_id}/voice-design/preview/{preview_token}/{variant}.wav"
     expires_at = datetime.now(timezone.utc) + timedelta(hours=VOICE_DESIGN_PREVIEW_EXPIRY_HOURS)
     client.put_object(
-        STUDIO_TTS_BUCKET,
+        bucket,
         key,
         BytesIO(wav_bytes),
         length=len(wav_bytes),
         content_type="audio/wav",
     )
-    return STUDIO_TTS_BUCKET, key, expires_at
+    return bucket, key, expires_at
 
 
-def upload_wav_to_hippius(user_id: str, wav_bytes: bytes) -> tuple[str, str, datetime]:
-    """Upload WAV bytes to Hippius studio bucket. Key: {user_id}/{uuid}.wav. Returns (bucket, key, expires_at)."""
+def upload_wav_to_hippius(user_id: str, wav_bytes: bytes, subdir: str = "") -> tuple[str, str, datetime]:
+    """Upload WAV bytes to the active bucket (R2 or Hippius). Returns (bucket, key, expires_at).
+
+    Args:
+        subdir: Optional subdirectory under user_id, e.g. "tts", "music", "clone".
+                Produces key: {user_id}/{subdir}/{uuid}.wav
+    """
+    bucket = _active_bucket()
     client = _minio_client()
-    ensure_bucket(client, STUDIO_TTS_BUCKET)
-    key = f"{user_id}/{uuid.uuid4().hex}.wav"
+    ensure_bucket(client, bucket)
+    if subdir:
+        key = f"{user_id}/{subdir}/{uuid.uuid4().hex}.wav"
+    else:
+        key = f"{user_id}/{uuid.uuid4().hex}.wav"
     expires_at = datetime.now(timezone.utc) + timedelta(days=STUDIO_TTS_EXPIRY_DAYS)
     client.put_object(
-        STUDIO_TTS_BUCKET,
+        bucket,
         key,
         BytesIO(wav_bytes),
         length=len(wav_bytes),
         content_type="audio/wav",
     )
-    return STUDIO_TTS_BUCKET, key, expires_at
+    return bucket, key, expires_at
 
 
-def get_presigned_url(bucket: str, key: str, expires_at: datetime) -> str | None:
-    """Generate presigned GET URL; validity capped by expires_at (7 days from creation).
+def get_presigned_url(bucket: str, key: str, expires_at: datetime, *, public: bool = False) -> str | None:
+    """Return a URL for the audio object.
 
-    We also force browsers to treat the response as a download by setting
-    Content-Disposition=attachment via S3 response headers in the presigned URL.
+    Args:
+        public: If True AND R2 public domain is configured, returns a direct
+                public URL that never expires. Used for premium Studio users only.
+                Developer API and normal users always get presigned URLs.
     """
+    # Public URL path — premium Studio users only
+    if public and BUCKET_PROVIDER == "r2" and R2_PUBLIC_DOMAIN:
+        return f"https://{R2_PUBLIC_DOMAIN}/{key}"
+
+    # Presigned URL path (all API users, normal Studio users, or Hippius)
     if expires_at.tzinfo is None:
         expires_at = expires_at.replace(tzinfo=timezone.utc)
     client = _minio_client()
@@ -784,14 +831,12 @@ def get_presigned_url(bucket: str, key: str, expires_at: datetime) -> str | None
     if expiry_sec <= 0:
         return None
     try:
-        # Derive a friendly filename from the object key (last path segment).
         filename = PurePosixPath(key).name or "vocence-tts.wav"
         return client.presigned_get_object(
             bucket,
             key,
             expires=timedelta(seconds=expiry_sec),
             response_headers={
-                # This becomes response-content-disposition in the S3 query params.
                 "response-content-disposition": f'attachment; filename="{filename}"',
             },
         )

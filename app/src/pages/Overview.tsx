@@ -443,8 +443,8 @@ export function Overview() {
               },
               {
                 icon: MessageSquare,
-                title: 'STT STS TTM Cloning',
-                description: 'Transcribe speech clone voices or generate music. Full voice stack.',
+                title: 'STT, Cloning & Music',
+                description: 'Transcribe speech, clone voices, design custom voices, and generate music. Full voice and audio stack.',
                 image: '/stt_sts_cloning_image.png',
               },
               {

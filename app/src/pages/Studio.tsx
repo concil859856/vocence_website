@@ -42,6 +42,8 @@ import {
   type StudioVoiceDesignConfig,
   type StudioVoiceDesignPreviewResponse,
 } from '../services/dashboardApi';
+import { StudioMusic } from './StudioMusic';
+import { StudioHome } from './StudioHome';
 import { api } from '../services/api';
 import {
   Select,
@@ -162,10 +164,10 @@ export function Studio() {
   const [searchParams] = useSearchParams();
   const { user, isAuthenticated, updateCredits } = useAuth();
   const routeParams = useParams<{ view?: string }>();
-  const routeViewRaw = (routeParams.view || 'tts').toLowerCase();
+  const routeViewRaw = (routeParams.view || 'home').toLowerCase();
   const activeView: StudioView = STUDIO_VIEWS.includes(routeViewRaw as StudioView)
     ? (routeViewRaw as StudioView)
-    : 'tts';
+    : 'home';
   const [topModels, setTopModels] = useState<StudioTopModel[]>([]);
   const [topModelsLoading, setTopModelsLoading] = useState(false);
   const [selectedModel, setSelectedModel] = useState<StudioTopModel | null>(null);
@@ -174,7 +176,7 @@ export function Studio() {
   const [studioHistoryLoading, setStudioHistoryLoading] = useState(false);
   const [studioHistorySearch, setStudioHistorySearch] = useState('');
   const [studioHistoryCategory, setStudioHistoryCategory] = useState<
-    'all' | 'tts' | 'stt' | 'clone' | 'voice_design'
+    'all' | 'tts' | 'stt' | 'clone' | 'voice_design' | 'music'
   >('all');
   const [studioHistoryPage, setStudioHistoryPage] = useState(1);
   const [resultOverlay, setResultOverlay] = useState<{
@@ -2151,19 +2153,21 @@ export function Studio() {
 
       <StudioShell activeView={activeView}>
         <div className="max-w-6xl mx-auto">
+            {activeView === 'home' && <StudioHome />}
             {activeView === 'tts' && renderTTSView()}
             {activeView === 'stt' && renderSTTView()}
             {activeView === 'chat' && renderChatView()}
             {activeView === 'cloning' && renderCloningView()}
             {activeView === 'voice-design' && renderVoiceDesignView()}
             {activeView === 'my-voices' && renderMyVoicesView()}
+            {activeView === 'music' && <StudioMusic />}
             {activeView === 'history' && (
               <div className="space-y-6">
                 <div>
                   <h2 className="text-2xl font-semibold mb-2">History</h2>
                   <p className="text-[#A7B0B7]">
-                    View and manage your Studio activity: TTS, STT, voice cloning, and My voice (Voice Design) generations.
-                    Audio is available for 7 days.
+                    View and manage your Studio activity: TTS, STT, voice cloning, music generation, and My voice (Voice Design) generations.
+                    Audio is available for 7 days for Normal users. Premium users enjoy never-expiring history.
                   </p>
                 </div>
                 {!user ? (
@@ -2206,6 +2210,7 @@ export function Studio() {
                             <SelectItem value="stt">Speech-to-Text</SelectItem>
                             <SelectItem value="clone">Voice clone</SelectItem>
                             <SelectItem value="voice_design">My voice (Voice Design)</SelectItem>
+                            <SelectItem value="music">Music Generation</SelectItem>
                           </SelectContent>
                         </Select>
                       </div>
@@ -2290,12 +2295,16 @@ export function Studio() {
                                       ? '?entry_type=clone'
                                       : item.entry_type === 'voice_design'
                                         ? '?entry_type=voice_design'
-                                        : '';
+                                        : item.entry_type === 'music'
+                                          ? '?entry_type=music'
+                                          : '';
                                   const dlName = isCloneLike
                                     ? item.entry_type === 'voice_design'
                                       ? `vocence-voice-design-${item.id}.wav`
                                       : `vocence-clone-${item.id}.wav`
-                                    : `vocence-tts-${item.id}.wav`;
+                                    : item.entry_type === 'music'
+                                      ? `vocence-music-${item.id}.wav`
+                                      : `vocence-tts-${item.id}.wav`;
                                   return (
                                     <tr key={`${item.entry_type}-${item.id}`} className="hover:bg-white/5 transition-colors">
                                       <td className="px-4 py-4">

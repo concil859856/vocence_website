@@ -131,7 +131,12 @@ export function Pricing() {
             <span className="label-mono mb-4 block text-[10px] tracking-[0.2em]">Pricing</span>
             <h1 className="text-2xl md:text-3xl font-semibold text-white leading-tight">Vocence Pricing</h1>
             <p className="mt-4 max-w-xl text-sm leading-relaxed text-[#A7B0B7] md:text-base">
-              We are currently supporting <span className="font-medium text-white">PromptTTS</span> only.
+              Studio features: <span className="font-medium text-white">Text-to-Speech</span>,{' '}
+              <span className="font-medium text-white">Speech-to-Text</span>,{' '}
+              <span className="font-medium text-white">Voice Cloning</span>,{' '}
+              <span className="font-medium text-white">Voice Design</span>, and{' '}
+              <span className="font-medium text-white">Music Generation</span>.{' '}
+              Premium users get never-expiring history and unlimited custom voices.
             </p>
             <Link
               to="/docs/pricing"

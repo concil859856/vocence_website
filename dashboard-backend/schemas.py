@@ -583,3 +583,56 @@ class StudioDesignedVoiceSpeakRequest(BaseModel):
     user_id: str
     voice_id: int
     target_text: str
+
+
+# ----- Studio Music Generation (ACE-Step proxy) -----
+
+
+class StudioMusicText2MusicRequest(BaseModel):
+    user_id: str
+    prompt: str
+    lyrics: str = ""
+    audio_duration: float = 60.0
+    format: str = "wav"
+    infer_step: int = 60
+    guidance_scale: float = 15.0
+    scheduler_type: str = "euler"
+    cfg_type: str = "apg"
+    omega_scale: float = 10.0
+    manual_seeds: str = ""
+    guidance_interval: float = 0.5
+    guidance_interval_decay: float = 0.0
+    min_guidance_scale: float = 3.0
+    use_erg_tag: bool = True
+    use_erg_lyric: bool = False
+    use_erg_diffusion: bool = True
+    oss_steps: str = ""
+    guidance_scale_text: float = 0.0
+    guidance_scale_lyric: float = 0.0
+    lora_name_or_path: str = "none"
+
+
+class StudioMusicGenerateResponse(BaseModel):
+    id: int
+    audio_url: str
+    expires_at: str
+    credits: int
+    task: str = "text2music"
+
+
+class StudioMusicHistoryItemResponse(BaseModel):
+    id: int
+    entry_type: str = "music"
+    task: str
+    prompt_text: str
+    lyrics: str
+    audio_duration: float
+    audio_url: str | None
+    expires_at: str
+    created_at: str
+    expired: bool
+    metadata_json: str = "{}"
+
+
+class StudioMusicHistoryResponse(BaseModel):
+    items: list[StudioMusicHistoryItemResponse]

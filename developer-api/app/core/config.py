@@ -30,3 +30,8 @@ API_CLONE_MAX_REF_AUDIO_BYTES = int(
     os.environ.get("API_CLONE_MAX_REF_AUDIO_BYTES", str(50 * 1024 * 1024))
 )
 
+# Music generation (ACE-Step proxy)
+API_MUSIC_CREDITS_PER_REQUEST = int(os.environ.get("API_MUSIC_CREDITS_PER_REQUEST", "50"))
+MUSIC_GEN_API_URL = (os.environ.get("MUSIC_GEN_API_URL") or "").strip()
+MUSIC_GEN_TIMEOUT_SEC = int(os.environ.get("MUSIC_GEN_TIMEOUT_SEC", "300"))
+

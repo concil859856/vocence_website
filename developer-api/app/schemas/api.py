@@ -52,3 +52,22 @@ class VoiceCloneResponse(BaseModel):
     latency_ms: int
     credits_used: int
 
+
+class MusicGenerateRequest(BaseModel):
+    prompt: str
+    lyrics: str = ""
+    audio_duration: float = 60.0
+    format: str = "wav"
+    infer_step: int = 60
+    guidance_scale: float = 15.0
+
+
+class MusicGenerateResponse(BaseModel):
+    request_id: str
+    audio_url: str
+    provider: str
+    credits_remaining: int
+    latency_ms: int
+    credits_used: int
+    task: str = "text2music"
+

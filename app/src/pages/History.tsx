@@ -133,7 +133,9 @@ export function History() {
                 ? '?entry_type=clone'
                 : item.entry_type === 'voice_design'
                   ? '?entry_type=voice_design'
-                  : '',
+                  : item.entry_type === 'music'
+                    ? '?entry_type=music'
+                    : '',
           };
         });
         setHistory(items);

@@ -298,6 +298,27 @@ SCHEMA_SQL = [
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS studio_music_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        task TEXT NOT NULL DEFAULT 'text2music',
+        prompt_text TEXT NOT NULL,
+        lyrics TEXT NOT NULL DEFAULT '',
+        audio_duration REAL NOT NULL DEFAULT 60,
+        audio_format TEXT NOT NULL DEFAULT 'wav',
+        audio_s3_bucket TEXT NOT NULL,
+        audio_s3_key TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        credits_used INTEGER NOT NULL DEFAULT 50,
+        latency_ms INTEGER,
+        status TEXT NOT NULL DEFAULT 'completed',
+        error_message TEXT,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS studio_voice_design_previews (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id TEXT NOT NULL,
@@ -357,6 +378,7 @@ INDEX_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_api_keys_prefix ON api_keys (key_prefix)",
     "CREATE INDEX IF NOT EXISTS idx_api_request_logs_key_time ON api_request_logs (api_key_id, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_api_request_logs_user_time ON api_request_logs (user_id, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_studio_music_history_user_id ON studio_music_history (user_id, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_studio_voice_design_previews_user ON studio_voice_design_previews (user_id, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_studio_user_designed_voices_user ON studio_user_designed_voices (user_id, created_at DESC)",
 ]
@@ -377,9 +399,10 @@ PLAN_SEEDS = [
         "features_json": json.dumps(
             [
                 "300 free credits when you register",
-                "Can experiment with custom voices you describe",
+                "TTS, STT, Voice Cloning, Music Generation",
+                "Up to 5 custom voices (Voice Design)",
+                "Generation history saved for 7 days",
                 "Best for light usage and personal projects",
-                "A simple way to explore prompt-controlled voice generation",
             ]
         ),
         "cta_label": "Buy credits",
@@ -399,10 +422,11 @@ PLAN_SEEDS = [
         "is_highlighted": 1,
         "features_json": json.dumps(
             [
-                "Best value for heavy Text-to-Speech usage",
-                "Larger one-time balance for uninterrupted generation",
+                "Everything in Normal, plus:",
+                "Generation history never expires",
+                "Unlimited custom voices (Voice Design)",
+                "Developer API access (TTS, STT, Clone, Music)",
                 "Ideal for teams, creators, and production workflows",
-                "Required plan to unlock Developer API access",
             ]
         ),
         "cta_label": "Buy Premium Pack",

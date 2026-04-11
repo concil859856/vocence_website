@@ -26,6 +26,10 @@ from schemas import (
     StudioGenerateResponse,
     StudioHistoryItemResponse,
     StudioHistoryResponse,
+    StudioMusicGenerateResponse,
+    StudioMusicHistoryItemResponse,
+    StudioMusicHistoryResponse,
+    StudioMusicText2MusicRequest,
     StudioTranscribeResponse,
     StudioTopModelResponse,
     StudioTopModelsResponse,
@@ -34,6 +38,15 @@ from schemas import (
     StudioVoiceDesignPreviewResponse,
     StudioVoiceDesignSaveRequest,
     StudioVoiceDesignSaveResponse,
+)
+from studio_music_service import (
+    generate_audio2audio as music_audio2audio,
+    generate_edit as music_edit,
+    generate_extend as music_extend,
+    generate_repaint as music_repaint,
+    generate_retake as music_retake,
+    generate_text2music as music_text2music,
+    music_gen_configured,
 )
 from studio_tts_service import (
     VOICE_DESIGN_SAMPLE_WORDS_MAX,
@@ -56,6 +69,26 @@ from studio_tts_service import (
 
 router = APIRouter(prefix="/studio", tags=["studio"])
 logger = logging.getLogger(__name__)
+
+
+async def _is_premium_user(user_id: str) -> bool:
+    """Check if user has premium plan (paid premium at least once)."""
+    conn = await get_connection()
+    try:
+        row = await (await conn.execute(
+            """
+            SELECT COUNT(*) AS n FROM payments
+            WHERE user_id = ? AND status IN ('paid', 'completed')
+              AND credits_granted > 0
+              AND LOWER(COALESCE(plan_code, '')) = 'premium'
+            """,
+            (user_id,),
+        )).fetchone()
+        return int(row["n"] or 0) > 0
+    except Exception:
+        return False
+    finally:
+        await conn.close()
 
 
 def _main_validator_hotkey(validators_rows: list) -> str | None:
@@ -164,6 +197,8 @@ CLONE_CREDITS_COST = int(os.environ.get("STUDIO_CLONE_CREDITS_COST", "50"))
 CLONE_MAX_REF_AUDIO_BYTES = int(os.environ.get("STUDIO_CLONE_MAX_REF_AUDIO_BYTES", str(50 * 1024 * 1024)))
 VOICE_DESIGN_PREVIEW_CREDITS = int(os.environ.get("STUDIO_VOICE_DESIGN_PREVIEW_CREDITS", "120"))
 VOICE_DESIGN_SPEAK_CREDITS = int(os.environ.get("STUDIO_VOICE_DESIGN_SPEAK_CREDITS", "25"))
+MUSIC_CREDITS_COST = int(os.environ.get("STUDIO_MUSIC_CREDITS_COST", "50"))
+MUSIC_MAX_UPLOAD_BYTES = int(os.environ.get("STUDIO_MUSIC_MAX_UPLOAD_BYTES", str(100 * 1024 * 1024)))
 
 
 async def _resolve_studio_tts_chute(
@@ -238,7 +273,7 @@ async def generate_tts(body: StudioGenerateRequest, user_id: str = Depends(requi
             detail += f" ({err_msg})"
         raise HTTPException(status_code=502, detail=detail)
 
-    bucket, key, expires_at = upload_wav_to_hippius(body.user_id, wav_bytes)
+    bucket, key, expires_at = upload_wav_to_hippius(body.user_id, wav_bytes, subdir="tts")
 
     conn = await get_connection()
     try:
@@ -285,7 +320,8 @@ async def generate_tts(body: StudioGenerateRequest, user_id: str = Depends(requi
     finally:
         await conn.close()
 
-    audio_url = get_presigned_url(bucket, key, expires_at_val)
+    is_premium = await _is_premium_user(user_id)
+    audio_url = get_presigned_url(bucket, key, expires_at_val, public=is_premium)
     if not audio_url:
         audio_url = ""
 
@@ -492,7 +528,7 @@ async def clone_voice(
             detail += f" ({clone_err})"
         raise HTTPException(status_code=502, detail=detail)
 
-    bucket, key, expires_at = upload_wav_to_hippius(user_id, out_bytes)
+    bucket, key, expires_at = upload_wav_to_hippius(user_id, out_bytes, subdir="clone")
 
     conn = await get_connection()
     try:
@@ -544,7 +580,8 @@ async def clone_voice(
     finally:
         await conn.close()
 
-    audio_url = get_presigned_url(bucket, key, expires_at) or ""
+    is_premium = await _is_premium_user(user_id)
+    audio_url = get_presigned_url(bucket, key, expires_at, public=is_premium) or ""
     return StudioCloneResponse(
         id=history_id,
         audio_url=audio_url,
@@ -695,8 +732,8 @@ async def voice_design_preview(body: StudioVoiceDesignPreviewRequest, user_id: s
     finally:
         await conn.close()
 
-    url_a = get_presigned_url(bucket_a, key_a, expires_at) or ""
-    url_b = get_presigned_url(bucket_b, key_b, expires_at) or ""
+    url_a = get_presigned_url(bucket_a, key_a, expires_at, public=True) or ""
+    url_b = get_presigned_url(bucket_b, key_b, expires_at, public=True) or ""
     return StudioVoiceDesignPreviewResponse(
         preview_token=preview_token,
         sample_script=sample_script,
@@ -728,6 +765,26 @@ async def voice_design_save(body: StudioVoiceDesignSaveRequest, user_id: str = D
     token = (body.preview_token or "").strip()
     if not token:
         raise HTTPException(status_code=400, detail="preview_token is required")
+
+    # Normal users: max 5 saved voices. Premium: unlimited.
+    NORMAL_VOICE_LIMIT = int(os.environ.get("STUDIO_NORMAL_VOICE_LIMIT", "5"))
+    is_premium = await _is_premium_user(user_id)
+    if not is_premium:
+        conn = await get_connection()
+        try:
+            count_row = await (await conn.execute(
+                "SELECT COUNT(*) AS n FROM studio_user_designed_voices WHERE user_id = ?",
+                (user_id,),
+            )).fetchone()
+            voice_count = int(count_row["n"] or 0) if count_row else 0
+            if voice_count >= NORMAL_VOICE_LIMIT:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Normal plan allows up to {NORMAL_VOICE_LIMIT} saved voices. "
+                           f"Upgrade to Premium for unlimited voices, or delete an existing voice to save a new one.",
+                )
+        finally:
+            await conn.close()
 
     conn = await get_connection()
     try:
@@ -798,7 +855,8 @@ async def voice_design_save(body: StudioVoiceDesignSaveRequest, user_id: str = D
     delete_object(row["audio_a_bucket"], row["audio_a_key"])
     delete_object(row["audio_b_bucket"], row["audio_b_key"])
 
-    audio_url = get_presigned_url(new_bucket, new_key, saved_expires) or ""
+    is_premium = await _is_premium_user(user_id)
+    audio_url = get_presigned_url(new_bucket, new_key, saved_expires, public=is_premium) or ""
     return StudioVoiceDesignSaveResponse(
         voice_id=voice_id,
         audio_url=audio_url,
@@ -829,13 +887,14 @@ async def list_designed_voices(user_id: str = Depends(require_auth)):
         await conn.close()
 
     now = datetime.now(timezone.utc)
+    is_premium = await _is_premium_user(user_id)
     voices: list[StudioDesignedVoiceItem] = []
     for r in rows:
         exp = datetime.fromisoformat(str(r["expires_at"]).replace("Z", "+00:00")) if r["expires_at"] else None
-        expired = exp is not None and exp <= now
+        expired = exp is not None and exp <= now if not is_premium else False
         url = None
         if not expired and r["audio_s3_bucket"] and r["audio_s3_key"]:
-            url = get_presigned_url(r["audio_s3_bucket"], r["audio_s3_key"], exp)
+            url = get_presigned_url(r["audio_s3_bucket"], r["audio_s3_key"], exp, public=is_premium)
         voices.append(
             StudioDesignedVoiceItem(
                 id=int(r["id"]),
@@ -949,7 +1008,7 @@ async def designed_voice_speak(body: StudioDesignedVoiceSpeakRequest, user_id: s
             detail += f" ({clone_err})"
         raise HTTPException(status_code=502, detail=detail)
 
-    bucket, key, expires_out = upload_wav_to_hippius(user_id, out_bytes)
+    bucket, key, expires_out = upload_wav_to_hippius(user_id, out_bytes, subdir="voice-design/speak")
 
     conn = await get_connection()
     try:
@@ -1004,7 +1063,8 @@ async def designed_voice_speak(body: StudioDesignedVoiceSpeakRequest, user_id: s
     finally:
         await conn.close()
 
-    audio_url = get_presigned_url(bucket, key, expires_out) or ""
+    is_premium = await _is_premium_user(user_id)
+    audio_url = get_presigned_url(bucket, key, expires_out, public=is_premium) or ""
     return StudioCloneResponse(
         id=history_id,
         audio_url=audio_url,
@@ -1044,17 +1104,26 @@ async def get_history(user_id: str = Query(..., description="Website user id (e.
             ORDER BY datetime(created_at) DESC
             LIMIT 100
         """, (user_id,))).fetchall()
+        music_rows = await (await conn.execute("""
+            SELECT id, task, prompt_text, lyrics, audio_duration,
+                   audio_s3_bucket, audio_s3_key, expires_at, created_at
+            FROM studio_music_history
+            WHERE user_id = ?
+            ORDER BY datetime(created_at) DESC
+            LIMIT 100
+        """, (user_id,))).fetchall()
     finally:
         await conn.close()
 
+    is_premium = await _is_premium_user(user_id)
     now = datetime.now(timezone.utc)
     items: list[StudioHistoryItemResponse] = []
     for r in tts_rows:
         expires_at = datetime.fromisoformat(str(r["expires_at"]).replace("Z", "+00:00")) if r["expires_at"] else None
-        expired = expires_at is not None and expires_at <= now
+        expired = expires_at is not None and expires_at <= now if not is_premium else False
         audio_url = None
         if not expired and r["audio_s3_bucket"] and r["audio_s3_key"]:
-            audio_url = get_presigned_url(r["audio_s3_bucket"], r["audio_s3_key"], expires_at)
+            audio_url = get_presigned_url(r["audio_s3_bucket"], r["audio_s3_key"], expires_at, public=is_premium)
 
         items.append(
             StudioHistoryItemResponse(
@@ -1093,10 +1162,10 @@ async def get_history(user_id: str = Query(..., description="Website user id (e.
         )
     for r in clone_rows:
         expires_at = datetime.fromisoformat(str(r["expires_at"]).replace("Z", "+00:00")) if r["expires_at"] else None
-        expired = expires_at is not None and expires_at <= now
+        expired = expires_at is not None and expires_at <= now if not is_premium else False
         audio_url = None
         if not expired and r["audio_s3_bucket"] and r["audio_s3_key"]:
-            audio_url = get_presigned_url(r["audio_s3_bucket"], r["audio_s3_key"], expires_at)
+            audio_url = get_presigned_url(r["audio_s3_bucket"], r["audio_s3_key"], expires_at, public=is_premium)
         source_mode = (r["source_mode"] or "").strip().lower()
         if source_mode == "designed_voice":
             items.append(
@@ -1142,6 +1211,28 @@ async def get_history(user_id: str = Query(..., description="Website user id (e.
                     clone_source=r["source_mode"] or "",
                 )
             )
+    for r in music_rows:
+        expires_at = datetime.fromisoformat(str(r["expires_at"]).replace("Z", "+00:00")) if r["expires_at"] else None
+        expired = expires_at is not None and expires_at <= now if not is_premium else False
+        audio_url = None
+        if not expired and r["audio_s3_bucket"] and r["audio_s3_key"]:
+            audio_url = get_presigned_url(r["audio_s3_bucket"], r["audio_s3_key"], expires_at, public=is_premium)
+        task_label = (r["task"] or "text2music").replace("2", " to ").replace("_", " ").title()
+        items.append(
+            StudioHistoryItemResponse(
+                id=int(r["id"]),
+                entry_type="music",
+                miner_hotkey="",
+                model_name="Music Generation",
+                display_name=f"Music · {task_label}",
+                prompt_text=r["prompt_text"] or "",
+                style_instruction=r["task"] or "text2music",
+                audio_url=audio_url,
+                expires_at=expires_at.isoformat() if expires_at else "",
+                created_at=str(r["created_at"] or ""),
+                expired=expired,
+            )
+        )
     items.sort(key=lambda x: x.created_at, reverse=True)
     items = items[:100]
     return StudioHistoryResponse(items=items)
@@ -1157,6 +1248,8 @@ async def get_history_audio_url(
     kind = (entry_type or "tts").strip().lower()
     if kind in ("clone", "voice_design", "designed_voice"):
         table = "studio_clone_history"
+    elif kind == "music":
+        table = "studio_music_history"
     else:
         table = "studio_tts_history"
     conn = await get_connection()
@@ -1173,10 +1266,632 @@ async def get_history_audio_url(
         await conn.close()
     if not row:
         raise HTTPException(status_code=404, detail="Not found")
+    is_premium = await _is_premium_user(user_id)
     expires_at = datetime.fromisoformat(str(row["expires_at"]).replace("Z", "+00:00")) if row["expires_at"] else None
-    if expires_at and expires_at <= datetime.now(timezone.utc):
+    if not is_premium and expires_at and expires_at <= datetime.now(timezone.utc):
         raise HTTPException(status_code=410, detail="Audio has expired (7-day retention).")
-    url = get_presigned_url(row["audio_s3_bucket"], row["audio_s3_key"], expires_at)
+    url = get_presigned_url(row["audio_s3_bucket"], row["audio_s3_key"], expires_at, public=is_premium)
+    if not url:
+        raise HTTPException(status_code=410, detail="Audio expired.")
+    return {"audio_url": url}
+
+
+# ---------------------------------------------------------------------------
+# Music Generation (ACE-Step proxy)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/music/text2music", response_model=StudioMusicGenerateResponse)
+async def music_generate_text2music(body: StudioMusicText2MusicRequest, user_id: str = Depends(require_auth)):
+    """Generate music from text prompt + lyrics via ACE-Step API."""
+    if body.user_id != user_id:
+        raise HTTPException(status_code=403, detail="user_id does not match authenticated user")
+    if not music_gen_configured():
+        raise HTTPException(status_code=503, detail="Music generation is not configured (MUSIC_GEN_API_URL).")
+
+    prompt = (body.prompt or "").strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="prompt is required")
+
+    conn = await get_connection()
+    try:
+        cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
+        row = await cursor.fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        credits = int(row["credits"])
+        if credits < MUSIC_CREDITS_COST:
+            raise HTTPException(
+                status_code=402,
+                detail=f"Insufficient credits. Need {MUSIC_CREDITS_COST} for music generation. You have {credits}.",
+            )
+    finally:
+        await conn.close()
+
+    started = time.perf_counter()
+    wav_bytes, audio_path, err_msg = await music_text2music(
+        prompt=prompt,
+        lyrics=body.lyrics,
+        audio_duration=body.audio_duration,
+        format=body.format,
+        infer_step=body.infer_step,
+        guidance_scale=body.guidance_scale,
+        scheduler_type=body.scheduler_type,
+        cfg_type=body.cfg_type,
+        omega_scale=body.omega_scale,
+        manual_seeds=body.manual_seeds,
+        guidance_interval=body.guidance_interval,
+        guidance_interval_decay=body.guidance_interval_decay,
+        min_guidance_scale=body.min_guidance_scale,
+        use_erg_tag=body.use_erg_tag,
+        use_erg_lyric=body.use_erg_lyric,
+        use_erg_diffusion=body.use_erg_diffusion,
+        oss_steps=body.oss_steps,
+        guidance_scale_text=body.guidance_scale_text,
+        guidance_scale_lyric=body.guidance_scale_lyric,
+        lora_name_or_path=body.lora_name_or_path,
+    )
+    latency_ms = int((time.perf_counter() - started) * 1000)
+
+    if not wav_bytes:
+        detail = "Music generation failed."
+        if err_msg:
+            detail += f" ({err_msg})"
+        raise HTTPException(status_code=502, detail=detail)
+
+    bucket, key, expires_at = upload_wav_to_hippius(user_id, wav_bytes, subdir="music")
+
+    import json as _json
+
+    conn = await get_connection()
+    try:
+        cursor = await conn.execute(
+            """
+            INSERT INTO studio_music_history
+            (user_id, task, prompt_text, lyrics, audio_duration, audio_format,
+             audio_s3_bucket, audio_s3_key, expires_at, credits_used, latency_ms, status, metadata_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, datetime('now'))
+            """,
+            (
+                user_id,
+                "text2music",
+                prompt,
+                body.lyrics,
+                body.audio_duration,
+                body.format,
+                bucket,
+                key,
+                expires_at.isoformat(),
+                MUSIC_CREDITS_COST,
+                latency_ms,
+                _json.dumps({"guidance_scale": body.guidance_scale, "scheduler_type": body.scheduler_type}),
+            ),
+        )
+        history_id = int(cursor.lastrowid)
+        await conn.execute(
+            "UPDATE auth_users SET credits = credits - ?, updated_at = datetime('now') WHERE id = ?",
+            (MUSIC_CREDITS_COST, user_id),
+        )
+        credit_cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
+        new_row = await credit_cursor.fetchone()
+        new_credits = int(new_row["credits"]) if new_row else credits - MUSIC_CREDITS_COST
+        await record_credit_transaction(
+            conn,
+            user_id=user_id,
+            transaction_type="music_generation",
+            amount=-MUSIC_CREDITS_COST,
+            balance_after=new_credits,
+            description=f"Music generation (text2music)",
+            reference_type="studio_music_history",
+            reference_id=str(history_id),
+            metadata={"task": "text2music", "prompt_length": len(prompt)},
+        )
+        await refresh_daily_usage_for_day(conn, datetime.now(timezone.utc).date().isoformat())
+        await conn.commit()
+    finally:
+        await conn.close()
+
+    is_premium = await _is_premium_user(user_id)
+    audio_url = get_presigned_url(bucket, key, expires_at, public=is_premium) or ""
+    return StudioMusicGenerateResponse(
+        id=history_id,
+        audio_url=audio_url,
+        expires_at=expires_at.isoformat() if expires_at else "",
+        credits=new_credits,
+        task="text2music",
+    )
+
+
+@router.post("/music/audio2audio", response_model=StudioMusicGenerateResponse)
+async def music_generate_audio2audio(
+    user_id_form: str = Form(..., alias="user_id"),
+    prompt: str = Form(...),
+    lyrics: str = Form(""),
+    audio_duration: float = Form(60.0),
+    ref_audio_strength: float = Form(0.5),
+    format: str = Form("wav"),
+    infer_step: int = Form(60),
+    guidance_scale: float = Form(15.0),
+    ref_audio: UploadFile = File(...),
+    user_id: str = Depends(require_auth),
+):
+    """Audio-to-Audio style transfer via ACE-Step."""
+    if user_id_form != user_id:
+        raise HTTPException(status_code=403, detail="user_id does not match authenticated user")
+    if not music_gen_configured():
+        raise HTTPException(status_code=503, detail="Music generation is not configured.")
+
+    raw = await ref_audio.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Empty audio file")
+    if len(raw) > MUSIC_MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Audio file too large")
+
+    conn = await get_connection()
+    try:
+        cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
+        row = await cursor.fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        credits = int(row["credits"])
+        if credits < MUSIC_CREDITS_COST:
+            raise HTTPException(status_code=402, detail=f"Need {MUSIC_CREDITS_COST} credits. Have {credits}.")
+    finally:
+        await conn.close()
+
+    started = time.perf_counter()
+    wav_bytes, audio_path, err_msg = await music_audio2audio(
+        ref_audio_bytes=raw,
+        ref_audio_filename=ref_audio.filename or "reference.wav",
+        prompt=prompt,
+        lyrics=lyrics,
+        audio_duration=audio_duration,
+        ref_audio_strength=ref_audio_strength,
+        format=format,
+        infer_step=infer_step,
+        guidance_scale=guidance_scale,
+    )
+    latency_ms = int((time.perf_counter() - started) * 1000)
+
+    if not wav_bytes:
+        raise HTTPException(status_code=502, detail=f"Audio2Audio failed: {err_msg or 'unknown'}")
+
+    bucket, key, expires_at = upload_wav_to_hippius(user_id, wav_bytes, subdir="music")
+
+    import json as _json
+
+    conn = await get_connection()
+    try:
+        cursor = await conn.execute(
+            """
+            INSERT INTO studio_music_history
+            (user_id, task, prompt_text, lyrics, audio_duration, audio_format,
+             audio_s3_bucket, audio_s3_key, expires_at, credits_used, latency_ms, status, metadata_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, datetime('now'))
+            """,
+            (user_id, "audio2audio", prompt, lyrics, audio_duration, format,
+             bucket, key, expires_at.isoformat(), MUSIC_CREDITS_COST, latency_ms,
+             _json.dumps({"ref_audio_strength": ref_audio_strength})),
+        )
+        history_id = int(cursor.lastrowid)
+        await conn.execute(
+            "UPDATE auth_users SET credits = credits - ?, updated_at = datetime('now') WHERE id = ?",
+            (MUSIC_CREDITS_COST, user_id),
+        )
+        credit_cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
+        new_row = await credit_cursor.fetchone()
+        new_credits = int(new_row["credits"]) if new_row else credits - MUSIC_CREDITS_COST
+        await record_credit_transaction(
+            conn, user_id=user_id, transaction_type="music_generation",
+            amount=-MUSIC_CREDITS_COST, balance_after=new_credits,
+            description="Music generation (audio2audio)",
+            reference_type="studio_music_history", reference_id=str(history_id),
+            metadata={"task": "audio2audio"},
+        )
+        await refresh_daily_usage_for_day(conn, datetime.now(timezone.utc).date().isoformat())
+        await conn.commit()
+    finally:
+        await conn.close()
+
+    is_premium = await _is_premium_user(user_id)
+    audio_url = get_presigned_url(bucket, key, expires_at, public=is_premium) or ""
+    return StudioMusicGenerateResponse(
+        id=history_id, audio_url=audio_url,
+        expires_at=expires_at.isoformat() if expires_at else "",
+        credits=new_credits, task="audio2audio",
+    )
+
+
+@router.post("/music/retake", response_model=StudioMusicGenerateResponse)
+async def music_generate_retake(
+    user_id_form: str = Form(..., alias="user_id"),
+    prompt: str = Form(...),
+    lyrics: str = Form(""),
+    retake_variance: float = Form(0.2),
+    retake_seeds: str = Form(""),
+    format: str = Form("wav"),
+    infer_step: int = Form(60),
+    guidance_scale: float = Form(15.0),
+    src_audio: UploadFile = File(...),
+    user_id: str = Depends(require_auth),
+):
+    """Generate variation of existing audio via ACE-Step retake."""
+    if user_id_form != user_id:
+        raise HTTPException(status_code=403, detail="user_id mismatch")
+    if not music_gen_configured():
+        raise HTTPException(status_code=503, detail="Music generation is not configured.")
+
+    raw = await src_audio.read()
+    if not raw or len(raw) > MUSIC_MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=400, detail="Invalid audio file")
+
+    conn = await get_connection()
+    try:
+        cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
+        row = await cursor.fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        credits = int(row["credits"])
+        if credits < MUSIC_CREDITS_COST:
+            raise HTTPException(status_code=402, detail=f"Need {MUSIC_CREDITS_COST} credits. Have {credits}.")
+    finally:
+        await conn.close()
+
+    started = time.perf_counter()
+    wav_bytes, _, err_msg = await music_retake(
+        src_audio_bytes=raw, src_audio_filename=src_audio.filename or "source.wav",
+        prompt=prompt, lyrics=lyrics, retake_variance=retake_variance,
+        retake_seeds=retake_seeds, format=format, infer_step=infer_step, guidance_scale=guidance_scale,
+    )
+    latency_ms = int((time.perf_counter() - started) * 1000)
+
+    if not wav_bytes:
+        raise HTTPException(status_code=502, detail=f"Retake failed: {err_msg or 'unknown'}")
+
+    bucket, key, expires_at = upload_wav_to_hippius(user_id, wav_bytes, subdir="music")
+
+    conn = await get_connection()
+    try:
+        cursor = await conn.execute(
+            """INSERT INTO studio_music_history
+            (user_id, task, prompt_text, lyrics, audio_duration, audio_format,
+             audio_s3_bucket, audio_s3_key, expires_at, credits_used, latency_ms, status, created_at)
+            VALUES (?, 'retake', ?, ?, 0, ?, ?, ?, ?, ?, ?, 'completed', datetime('now'))""",
+            (user_id, prompt, lyrics, format, bucket, key, expires_at.isoformat(), MUSIC_CREDITS_COST, latency_ms),
+        )
+        history_id = int(cursor.lastrowid)
+        await conn.execute("UPDATE auth_users SET credits = credits - ?, updated_at = datetime('now') WHERE id = ?",
+                           (MUSIC_CREDITS_COST, user_id))
+        credit_cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
+        new_row = await credit_cursor.fetchone()
+        new_credits = int(new_row["credits"]) if new_row else credits - MUSIC_CREDITS_COST
+        await record_credit_transaction(conn, user_id=user_id, transaction_type="music_generation",
+                                        amount=-MUSIC_CREDITS_COST, balance_after=new_credits,
+                                        description="Music generation (retake)",
+                                        reference_type="studio_music_history", reference_id=str(history_id),
+                                        metadata={"task": "retake"})
+        await refresh_daily_usage_for_day(conn, datetime.now(timezone.utc).date().isoformat())
+        await conn.commit()
+    finally:
+        await conn.close()
+
+    is_premium = await _is_premium_user(user_id)
+    audio_url = get_presigned_url(bucket, key, expires_at, public=is_premium) or ""
+    return StudioMusicGenerateResponse(
+        id=history_id, audio_url=audio_url, expires_at=expires_at.isoformat() if expires_at else "",
+        credits=new_credits, task="retake",
+    )
+
+
+@router.post("/music/repaint", response_model=StudioMusicGenerateResponse)
+async def music_generate_repaint(
+    user_id_form: str = Form(..., alias="user_id"),
+    prompt: str = Form(...),
+    lyrics: str = Form(""),
+    repaint_start: float = Form(0.0),
+    repaint_end: float = Form(30.0),
+    retake_variance: float = Form(0.2),
+    format: str = Form("wav"),
+    infer_step: int = Form(60),
+    guidance_scale: float = Form(15.0),
+    src_audio: UploadFile = File(...),
+    user_id: str = Depends(require_auth),
+):
+    """Regenerate a region of audio via ACE-Step repaint."""
+    if user_id_form != user_id:
+        raise HTTPException(status_code=403, detail="user_id mismatch")
+    if not music_gen_configured():
+        raise HTTPException(status_code=503, detail="Music generation is not configured.")
+
+    raw = await src_audio.read()
+    if not raw or len(raw) > MUSIC_MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=400, detail="Invalid audio file")
+
+    conn = await get_connection()
+    try:
+        cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
+        row = await cursor.fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        credits = int(row["credits"])
+        if credits < MUSIC_CREDITS_COST:
+            raise HTTPException(status_code=402, detail=f"Need {MUSIC_CREDITS_COST} credits. Have {credits}.")
+    finally:
+        await conn.close()
+
+    started = time.perf_counter()
+    wav_bytes, _, err_msg = await music_repaint(
+        src_audio_bytes=raw, src_audio_filename=src_audio.filename or "source.wav",
+        prompt=prompt, lyrics=lyrics, repaint_start=repaint_start, repaint_end=repaint_end,
+        retake_variance=retake_variance, format=format, infer_step=infer_step, guidance_scale=guidance_scale,
+    )
+    latency_ms = int((time.perf_counter() - started) * 1000)
+
+    if not wav_bytes:
+        raise HTTPException(status_code=502, detail=f"Repaint failed: {err_msg or 'unknown'}")
+
+    bucket, key, expires_at = upload_wav_to_hippius(user_id, wav_bytes, subdir="music")
+
+    conn = await get_connection()
+    try:
+        cursor = await conn.execute(
+            """INSERT INTO studio_music_history
+            (user_id, task, prompt_text, lyrics, audio_duration, audio_format,
+             audio_s3_bucket, audio_s3_key, expires_at, credits_used, latency_ms, status, created_at)
+            VALUES (?, 'repaint', ?, ?, 0, ?, ?, ?, ?, ?, ?, 'completed', datetime('now'))""",
+            (user_id, prompt, lyrics, format, bucket, key, expires_at.isoformat(), MUSIC_CREDITS_COST, latency_ms),
+        )
+        history_id = int(cursor.lastrowid)
+        await conn.execute("UPDATE auth_users SET credits = credits - ?, updated_at = datetime('now') WHERE id = ?",
+                           (MUSIC_CREDITS_COST, user_id))
+        credit_cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
+        new_row = await credit_cursor.fetchone()
+        new_credits = int(new_row["credits"]) if new_row else credits - MUSIC_CREDITS_COST
+        await record_credit_transaction(conn, user_id=user_id, transaction_type="music_generation",
+                                        amount=-MUSIC_CREDITS_COST, balance_after=new_credits,
+                                        description="Music generation (repaint)",
+                                        reference_type="studio_music_history", reference_id=str(history_id),
+                                        metadata={"task": "repaint"})
+        await refresh_daily_usage_for_day(conn, datetime.now(timezone.utc).date().isoformat())
+        await conn.commit()
+    finally:
+        await conn.close()
+
+    is_premium = await _is_premium_user(user_id)
+    audio_url = get_presigned_url(bucket, key, expires_at, public=is_premium) or ""
+    return StudioMusicGenerateResponse(
+        id=history_id, audio_url=audio_url, expires_at=expires_at.isoformat() if expires_at else "",
+        credits=new_credits, task="repaint",
+    )
+
+
+@router.post("/music/edit", response_model=StudioMusicGenerateResponse)
+async def music_generate_edit(
+    user_id_form: str = Form(..., alias="user_id"),
+    prompt: str = Form(...),
+    lyrics: str = Form(""),
+    edit_target_prompt: str = Form(...),
+    edit_target_lyrics: str = Form(""),
+    edit_n_min: float = Form(0.6),
+    edit_n_max: float = Form(1.0),
+    retake_seeds: str = Form(""),
+    format: str = Form("wav"),
+    infer_step: int = Form(60),
+    guidance_scale: float = Form(15.0),
+    src_audio: UploadFile = File(...),
+    user_id: str = Depends(require_auth),
+):
+    """Edit lyrics/tags of existing audio via ACE-Step."""
+    if user_id_form != user_id:
+        raise HTTPException(status_code=403, detail="user_id mismatch")
+    if not music_gen_configured():
+        raise HTTPException(status_code=503, detail="Music generation is not configured.")
+
+    raw = await src_audio.read()
+    if not raw or len(raw) > MUSIC_MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=400, detail="Invalid audio file")
+
+    conn = await get_connection()
+    try:
+        cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
+        row = await cursor.fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        credits = int(row["credits"])
+        if credits < MUSIC_CREDITS_COST:
+            raise HTTPException(status_code=402, detail=f"Need {MUSIC_CREDITS_COST} credits. Have {credits}.")
+    finally:
+        await conn.close()
+
+    started = time.perf_counter()
+    wav_bytes, _, err_msg = await music_edit(
+        src_audio_bytes=raw, src_audio_filename=src_audio.filename or "source.wav",
+        prompt=prompt, lyrics=lyrics, edit_target_prompt=edit_target_prompt,
+        edit_target_lyrics=edit_target_lyrics, edit_n_min=edit_n_min, edit_n_max=edit_n_max,
+        retake_seeds=retake_seeds, format=format, infer_step=infer_step, guidance_scale=guidance_scale,
+    )
+    latency_ms = int((time.perf_counter() - started) * 1000)
+
+    if not wav_bytes:
+        raise HTTPException(status_code=502, detail=f"Edit failed: {err_msg or 'unknown'}")
+
+    bucket, key, expires_at = upload_wav_to_hippius(user_id, wav_bytes, subdir="music")
+
+    conn = await get_connection()
+    try:
+        cursor = await conn.execute(
+            """INSERT INTO studio_music_history
+            (user_id, task, prompt_text, lyrics, audio_duration, audio_format,
+             audio_s3_bucket, audio_s3_key, expires_at, credits_used, latency_ms, status, created_at)
+            VALUES (?, 'edit', ?, ?, 0, ?, ?, ?, ?, ?, ?, 'completed', datetime('now'))""",
+            (user_id, prompt, lyrics, format, bucket, key, expires_at.isoformat(), MUSIC_CREDITS_COST, latency_ms),
+        )
+        history_id = int(cursor.lastrowid)
+        await conn.execute("UPDATE auth_users SET credits = credits - ?, updated_at = datetime('now') WHERE id = ?",
+                           (MUSIC_CREDITS_COST, user_id))
+        credit_cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
+        new_row = await credit_cursor.fetchone()
+        new_credits = int(new_row["credits"]) if new_row else credits - MUSIC_CREDITS_COST
+        await record_credit_transaction(conn, user_id=user_id, transaction_type="music_generation",
+                                        amount=-MUSIC_CREDITS_COST, balance_after=new_credits,
+                                        description="Music generation (edit)",
+                                        reference_type="studio_music_history", reference_id=str(history_id),
+                                        metadata={"task": "edit"})
+        await refresh_daily_usage_for_day(conn, datetime.now(timezone.utc).date().isoformat())
+        await conn.commit()
+    finally:
+        await conn.close()
+
+    is_premium = await _is_premium_user(user_id)
+    audio_url = get_presigned_url(bucket, key, expires_at, public=is_premium) or ""
+    return StudioMusicGenerateResponse(
+        id=history_id, audio_url=audio_url, expires_at=expires_at.isoformat() if expires_at else "",
+        credits=new_credits, task="edit",
+    )
+
+
+@router.post("/music/extend", response_model=StudioMusicGenerateResponse)
+async def music_generate_extend(
+    user_id_form: str = Form(..., alias="user_id"),
+    prompt: str = Form(...),
+    lyrics: str = Form(""),
+    left_extend_length: float = Form(0.0),
+    right_extend_length: float = Form(30.0),
+    extend_seeds: str = Form(""),
+    format: str = Form("wav"),
+    infer_step: int = Form(60),
+    guidance_scale: float = Form(15.0),
+    src_audio: UploadFile = File(...),
+    user_id: str = Depends(require_auth),
+):
+    """Extend/lengthen audio via ACE-Step."""
+    if user_id_form != user_id:
+        raise HTTPException(status_code=403, detail="user_id mismatch")
+    if not music_gen_configured():
+        raise HTTPException(status_code=503, detail="Music generation is not configured.")
+
+    raw = await src_audio.read()
+    if not raw or len(raw) > MUSIC_MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=400, detail="Invalid audio file")
+
+    conn = await get_connection()
+    try:
+        cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
+        row = await cursor.fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        credits = int(row["credits"])
+        if credits < MUSIC_CREDITS_COST:
+            raise HTTPException(status_code=402, detail=f"Need {MUSIC_CREDITS_COST} credits. Have {credits}.")
+    finally:
+        await conn.close()
+
+    started = time.perf_counter()
+    wav_bytes, _, err_msg = await music_extend(
+        src_audio_bytes=raw, src_audio_filename=src_audio.filename or "source.wav",
+        prompt=prompt, lyrics=lyrics, left_extend_length=left_extend_length,
+        right_extend_length=right_extend_length, extend_seeds=extend_seeds,
+        format=format, infer_step=infer_step, guidance_scale=guidance_scale,
+    )
+    latency_ms = int((time.perf_counter() - started) * 1000)
+
+    if not wav_bytes:
+        raise HTTPException(status_code=502, detail=f"Extend failed: {err_msg or 'unknown'}")
+
+    bucket, key, expires_at = upload_wav_to_hippius(user_id, wav_bytes, subdir="music")
+
+    conn = await get_connection()
+    try:
+        cursor = await conn.execute(
+            """INSERT INTO studio_music_history
+            (user_id, task, prompt_text, lyrics, audio_duration, audio_format,
+             audio_s3_bucket, audio_s3_key, expires_at, credits_used, latency_ms, status, created_at)
+            VALUES (?, 'extend', ?, ?, 0, ?, ?, ?, ?, ?, ?, 'completed', datetime('now'))""",
+            (user_id, prompt, lyrics, format, bucket, key, expires_at.isoformat(), MUSIC_CREDITS_COST, latency_ms),
+        )
+        history_id = int(cursor.lastrowid)
+        await conn.execute("UPDATE auth_users SET credits = credits - ?, updated_at = datetime('now') WHERE id = ?",
+                           (MUSIC_CREDITS_COST, user_id))
+        credit_cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
+        new_row = await credit_cursor.fetchone()
+        new_credits = int(new_row["credits"]) if new_row else credits - MUSIC_CREDITS_COST
+        await record_credit_transaction(conn, user_id=user_id, transaction_type="music_generation",
+                                        amount=-MUSIC_CREDITS_COST, balance_after=new_credits,
+                                        description="Music generation (extend)",
+                                        reference_type="studio_music_history", reference_id=str(history_id),
+                                        metadata={"task": "extend"})
+        await refresh_daily_usage_for_day(conn, datetime.now(timezone.utc).date().isoformat())
+        await conn.commit()
+    finally:
+        await conn.close()
+
+    is_premium = await _is_premium_user(user_id)
+    audio_url = get_presigned_url(bucket, key, expires_at, public=is_premium) or ""
+    return StudioMusicGenerateResponse(
+        id=history_id, audio_url=audio_url, expires_at=expires_at.isoformat() if expires_at else "",
+        credits=new_credits, task="extend",
+    )
+
+
+@router.get("/music/history", response_model=StudioMusicHistoryResponse)
+async def get_music_history(user_id: str = Query(...)):
+    """List music generation history for a user."""
+    conn = await get_connection()
+    try:
+        rows = await (await conn.execute("""
+            SELECT id, task, prompt_text, lyrics, audio_duration, audio_format,
+                   audio_s3_bucket, audio_s3_key, expires_at, metadata_json, created_at
+            FROM studio_music_history
+            WHERE user_id = ?
+            ORDER BY datetime(created_at) DESC
+            LIMIT 100
+        """, (user_id,))).fetchall()
+    finally:
+        await conn.close()
+
+    is_premium = await _is_premium_user(user_id)
+    now = datetime.now(timezone.utc)
+    items: list[StudioMusicHistoryItemResponse] = []
+    for r in rows:
+        expires_at = datetime.fromisoformat(str(r["expires_at"]).replace("Z", "+00:00")) if r["expires_at"] else None
+        expired = expires_at is not None and expires_at <= now if not is_premium else False
+        audio_url = None
+        if not expired and r["audio_s3_bucket"] and r["audio_s3_key"]:
+            audio_url = get_presigned_url(r["audio_s3_bucket"], r["audio_s3_key"], expires_at, public=is_premium)
+        items.append(StudioMusicHistoryItemResponse(
+            id=int(r["id"]),
+            entry_type="music",
+            task=r["task"] or "text2music",
+            prompt_text=r["prompt_text"] or "",
+            lyrics=r["lyrics"] or "",
+            audio_duration=float(r["audio_duration"]) if r["audio_duration"] else 0,
+            audio_url=audio_url,
+            expires_at=expires_at.isoformat() if expires_at else "",
+            created_at=str(r["created_at"] or ""),
+            expired=expired,
+            metadata_json=r["metadata_json"] or "{}",
+        ))
+    return StudioMusicHistoryResponse(items=items)
+
+
+@router.get("/music/history/{history_id}/audio-url")
+async def get_music_history_audio_url(history_id: int, user_id: str = Query(...)):
+    """Get a fresh presigned audio URL for a music history entry."""
+    conn = await get_connection()
+    try:
+        row = await (await conn.execute(
+            "SELECT audio_s3_bucket, audio_s3_key, expires_at FROM studio_music_history WHERE id = ? AND user_id = ?",
+            (history_id, user_id),
+        )).fetchone()
+    finally:
+        await conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="Not found")
+    is_premium = await _is_premium_user(user_id)
+    expires_at = datetime.fromisoformat(str(row["expires_at"]).replace("Z", "+00:00")) if row["expires_at"] else None
+    if not is_premium and expires_at and expires_at <= datetime.now(timezone.utc):
+        raise HTTPException(status_code=410, detail="Audio has expired.")
+    url = get_presigned_url(row["audio_s3_bucket"], row["audio_s3_key"], expires_at, public=is_premium)
     if not url:
         raise HTTPException(status_code=410, detail="Audio expired.")
     return {"audio_url": url}

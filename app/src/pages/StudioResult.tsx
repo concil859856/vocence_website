@@ -14,9 +14,10 @@ function formatTime(s: number) {
   return `${m}:${sec.toString().padStart(2, '0')}`;
 }
 
-function entryTypeQuery(et: StudioHistoryItem['entry_type']): 'tts' | 'clone' | 'voice_design' {
+function entryTypeQuery(et: StudioHistoryItem['entry_type']): 'tts' | 'clone' | 'voice_design' | 'music' {
   if (et === 'clone') return 'clone';
   if (et === 'voice_design') return 'voice_design';
+  if (et === 'music') return 'music';
   return 'tts';
 }
 
@@ -30,6 +31,8 @@ function typeBadgeClass(et: StudioHistoryItem['entry_type']): string {
       return 'bg-cyan-500/15 text-cyan-400';
     case 'voice_design':
       return 'bg-violet-500/15 text-violet-300';
+    case 'music':
+      return 'bg-indigo-500/15 text-indigo-300';
   }
 }
 
@@ -43,6 +46,8 @@ function typeBadgeLabel(et: StudioHistoryItem['entry_type']): string {
       return 'CLONE';
     case 'voice_design':
       return 'MY VOICE';
+    case 'music':
+      return 'MUSIC';
   }
 }
 
@@ -59,6 +64,9 @@ function previewLine(item: StudioHistoryItem): string {
       ''
     ).trim();
   }
+  if (item.entry_type === 'music') {
+    return (item.prompt_text || item.display_name || 'Music generation').trim();
+  }
   return (item.prompt_text || item.display_name || '').trim();
 }
 
@@ -68,12 +76,14 @@ export function StudioResult() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const rawEntry = (searchParams.get('entry_type') || 'tts').toLowerCase();
-  const historyEntryType: 'tts' | 'clone' | 'voice_design' =
+  const historyEntryType: 'tts' | 'clone' | 'voice_design' | 'music' =
     rawEntry === 'clone'
       ? 'clone'
       : rawEntry === 'voice_design' || rawEntry === 'designed_voice'
         ? 'voice_design'
-        : 'tts';
+        : rawEntry === 'music'
+          ? 'music'
+          : 'tts';
 
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -243,7 +253,9 @@ export function StudioResult() {
         ? `vocence-clone-${id}.wav`
         : historyEntryType === 'voice_design'
           ? `vocence-voice-design-${id}.wav`
-          : `vocence-tts-${id}.wav`;
+          : historyEntryType === 'music'
+            ? `vocence-music-${id}.wav`
+            : `vocence-tts-${id}.wav`;
     void triggerBrowserDownload(audioUrl, filename);
   };
 
@@ -272,7 +284,7 @@ export function StudioResult() {
         <div className="max-w-md text-center px-6">
           <p className="text-red-400 mb-4">{error || 'Audio not found or expired.'}</p>
           <p className="text-[#A7B0B7] text-sm mb-6">
-            Audio is available for 7 days. You can generate a new one from Studio.
+            Audio is available for 7 days (Normal plan) or permanently (Premium plan). You can generate a new one from Studio.
           </p>
           <button onClick={() => navigate('/studio/tts')} className="btn-primary inline-flex items-center gap-2">
             <ArrowLeft size={18} />

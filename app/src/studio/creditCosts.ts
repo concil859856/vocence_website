@@ -9,4 +9,6 @@ export const CREDIT_VOICE_CLONE = 50;
 export const CREDIT_VOICE_DESIGN_PREVIEW = 120;
 /** Generating speech from a saved “My voice” in Studio. */
 export const CREDIT_MY_VOICE_GENERATE = 25;
+/** Music generation via ACE-Step (text2music, audio2audio, retake, repaint, edit, extend). */
+export const CREDIT_MUSIC = 50;
 export const CREDIT_SIGNUP_BONUS = 300;

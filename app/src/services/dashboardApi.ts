@@ -692,14 +692,16 @@ export const dashboardApi = {
   getStudioHistoryAudioUrl(
     historyId: number,
     userId: string,
-    entryType: 'tts' | 'clone' | 'voice_design' = 'tts'
+    entryType: 'tts' | 'clone' | 'voice_design' | 'music' = 'tts'
   ): Promise<{ audio_url: string }> {
     const et =
       entryType === 'clone'
         ? '&entry_type=clone'
         : entryType === 'voice_design'
           ? '&entry_type=voice_design'
-          : '';
+          : entryType === 'music'
+            ? '&entry_type=music'
+            : '';
     return fetchJson(
       `/api/dashboard/studio/history/${historyId}/audio-url?user_id=${encodeURIComponent(userId)}${et}`
     );
@@ -769,6 +771,67 @@ export const dashboardApi = {
       body: JSON.stringify(body),
     });
   },
+
+  // ----- Studio Music -----
+
+  generateStudioMusicText2Music(
+    body: {
+      user_id: string;
+      prompt: string;
+      lyrics?: string;
+      audio_duration?: number;
+      format?: string;
+      infer_step?: number;
+      guidance_scale?: number;
+      scheduler_type?: string;
+      cfg_type?: string;
+      omega_scale?: number;
+      manual_seeds?: string;
+      guidance_interval?: number;
+      guidance_interval_decay?: number;
+      min_guidance_scale?: number;
+      use_erg_tag?: boolean;
+      use_erg_lyric?: boolean;
+      use_erg_diffusion?: boolean;
+      oss_steps?: string;
+      guidance_scale_text?: number;
+      guidance_scale_lyric?: number;
+      lora_name_or_path?: string;
+    },
+    token: string | null
+  ): Promise<StudioMusicGenerateResponse> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson('/api/dashboard/studio/music/text2music', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+  },
+
+  generateStudioMusicWithAudio(
+    endpoint: 'audio2audio' | 'retake' | 'repaint' | 'edit' | 'extend',
+    formData: FormData,
+    token: string | null
+  ): Promise<StudioMusicGenerateResponse> {
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson(`/api/dashboard/studio/music/${endpoint}`, {
+      method: 'POST',
+      headers,
+      body: formData,
+    });
+  },
+
+  getStudioMusicHistory(userId: string): Promise<{ items: StudioMusicHistoryItem[] }> {
+    return fetchJson(`/api/dashboard/studio/music/history?user_id=${encodeURIComponent(userId)}`);
+  },
+
+  getStudioMusicHistoryAudioUrl(historyId: number, userId: string): Promise<{ audio_url: string }> {
+    return fetchJson(
+      `/api/dashboard/studio/music/history/${historyId}/audio-url?user_id=${encodeURIComponent(userId)}`
+    );
+  },
 };
 
 export interface StudioTopModel {
@@ -803,9 +866,31 @@ export interface StudioCloneResponse {
   detected_language?: string | null;
 }
 
+export interface StudioMusicGenerateResponse {
+  id: number;
+  audio_url: string;
+  expires_at: string;
+  credits: number;
+  task: string;
+}
+
+export interface StudioMusicHistoryItem {
+  id: number;
+  entry_type: 'music';
+  task: string;
+  prompt_text: string;
+  lyrics: string;
+  audio_duration: number;
+  audio_url: string | null;
+  expires_at: string;
+  created_at: string;
+  expired: boolean;
+  metadata_json: string;
+}
+
 export interface StudioHistoryItem {
   id: number;
-  entry_type: 'tts' | 'stt' | 'clone' | 'voice_design';
+  entry_type: 'tts' | 'stt' | 'clone' | 'voice_design' | 'music';
   miner_hotkey: string;
   model_name: string;
   display_name: string;

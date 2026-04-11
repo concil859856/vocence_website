@@ -14,6 +14,7 @@ import {
 import gsap from 'gsap';
 import { formatCreditsCompact } from '../utils/formatCredits';
 import {
+  CREDIT_MUSIC,
   CREDIT_MY_VOICE_GENERATE,
   CREDIT_SIGNUP_BONUS,
   CREDIT_STT,
@@ -347,11 +348,12 @@ export function Docs() {
             API Reference
           </h1>
           <p className="max-w-2xl text-base leading-relaxed text-zinc-400 md:text-lg">
-            Use the Vocence Developer API for text-to-speech, speech-to-text, and voice cloning. Keys are created in your
+            Use the Vocence Developer API for text-to-speech, speech-to-text, voice cloning, and music generation. Keys are created in your
             account; authenticate with <code className="rounded bg-white/10 px-1.5 py-0.5 text-sm text-zinc-200">Bearer</code>{' '}
             and call <code className="rounded bg-white/10 px-1.5 py-0.5 text-sm text-zinc-200">/v1/tts/generate</code>,{' '}
-            <code className="rounded bg-white/10 px-1.5 py-0.5 text-sm text-zinc-200">/v1/stt/transcribe</code>, or{' '}
-            <code className="rounded bg-white/10 px-1.5 py-0.5 text-sm text-zinc-200">/v1/voice/clone</code>.{' '}
+            <code className="rounded bg-white/10 px-1.5 py-0.5 text-sm text-zinc-200">/v1/stt/transcribe</code>,{' '}
+            <code className="rounded bg-white/10 px-1.5 py-0.5 text-sm text-zinc-200">/v1/voice/clone</code>, or{' '}
+            <code className="rounded bg-white/10 px-1.5 py-0.5 text-sm text-zinc-200">/v1/music/generate</code>.{' '}
             <span className="text-zinc-500">
               Voice design (guided A/B in Studio) is not available on the Developer API—use Studio for that workflow.
             </span>
@@ -865,11 +867,22 @@ print(resp.status_code, resp.json())`
         <div className="grid md:grid-cols-2 gap-4">
           <div className="card-vocence p-6">
             <h3 className="text-lg font-semibold mb-2">Normal</h3>
-            <p className="text-[#A7B0B7] text-sm">Best for standard Studio usage.</p>
+            <p className="text-[#A7B0B7] text-sm mb-3">Best for standard Studio usage.</p>
+            <ul className="space-y-1.5 text-sm text-[#A7B0B7]">
+              <li>Generation history saved for <span className="text-white font-medium">7 days</span></li>
+              <li>Up to <span className="text-white font-medium">5 custom voices</span> (Voice Design)</li>
+              <li>All Studio features (TTS, STT, Clone, Music)</li>
+            </ul>
           </div>
           <div className="card-vocence p-6 border-[#DFFF00]/30">
             <h3 className="text-lg font-semibold mb-2">Premium</h3>
-            <p className="text-[#A7B0B7] text-sm">Required to unlock Developer API access (after a successful Premium purchase via either checkout).</p>
+            <p className="text-[#A7B0B7] text-sm mb-3">Required to unlock Developer API access.</p>
+            <ul className="space-y-1.5 text-sm text-[#A7B0B7]">
+              <li>Generation history <span className="text-white font-medium">never expires</span></li>
+              <li><span className="text-white font-medium">Unlimited</span> custom voices (Voice Design)</li>
+              <li>Developer API access (TTS, STT, Clone, Music)</li>
+              <li>All Studio features</li>
+            </ul>
           </div>
         </div>
       </section>
@@ -909,6 +922,10 @@ print(resp.status_code, resp.json())`
                   <td className="px-4 py-3 text-white font-medium">My voice (designed) — generate speech</td>
                   <td className="px-4 py-3">{CREDIT_MY_VOICE_GENERATE} per generation</td>
                 </tr>
+                <tr className="border-t border-white/10">
+                  <td className="px-4 py-3 text-white font-medium">Music generation (Text-to-Music)</td>
+                  <td className="px-4 py-3">{CREDIT_MUSIC} per generation</td>
+                </tr>
               </tbody>
             </table>
           </div>
@@ -917,7 +934,7 @@ print(resp.status_code, resp.json())`
             with Studio){' '}
             <code className="text-white/90">
               TTS {CREDIT_TTS} credits per request · STT {CREDIT_STT} credits per request · voice clone{' '}
-              {CREDIT_VOICE_CLONE} credits per request
+              {CREDIT_VOICE_CLONE} credits per request · music generation {CREDIT_MUSIC} credits per request
             </code>
             . Voice design is <span className="text-white font-medium">not</span> billed on the Developer API (Studio only).
           </p>
@@ -960,6 +977,12 @@ print(resp.status_code, resp.json())`
                 </td>
                 <td className="px-4 py-3">{CREDIT_VOICE_CLONE} per successful response</td>
               </tr>
+              <tr className="border-t border-white/10">
+                <td className="px-4 py-3">
+                  <code className="text-white/90">POST /v1/music/generate</code>
+                </td>
+                <td className="px-4 py-3">{CREDIT_MUSIC} per successful response</td>
+              </tr>
             </tbody>
           </table>
         </div>
@@ -987,8 +1010,9 @@ print(resp.status_code, resp.json())`
           <li>Create API key in Account → Developer tab.</li>
           <li>
             Call <code className="text-white/90">POST /v1/tts/generate</code>,{' '}
-            <code className="text-white/90">POST /v1/stt/transcribe</code>, and/or{' '}
-            <code className="text-white/90">POST /v1/voice/clone</code> with the Bearer key.
+            <code className="text-white/90">POST /v1/stt/transcribe</code>,{' '}
+            <code className="text-white/90">POST /v1/voice/clone</code>, and/or{' '}
+            <code className="text-white/90">POST /v1/music/generate</code> with the Bearer key.
           </li>
           <li>Credits reduce per endpoint rules (flat per request by default; optional char-based TTS for operators).</li>
           <li>View logs and spend in Account → Developer tab.</li>
