@@ -696,6 +696,7 @@ class PlaybookResponse(BaseModel):
 
 class PlaybookDetailResponse(PlaybookResponse):
     tracks: list[PlaybookTrackResponse]
+    is_owner: bool = True
 
 
 class PlaybookListResponse(BaseModel):

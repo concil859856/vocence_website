@@ -150,9 +150,14 @@ async def list_public_playbooks(limit: int = Query(20, ge=1, le=50)):
 async def get_playbook(playbook_id: int, user_id: str = Depends(require_auth)):
     conn = await get_connection()
     try:
+        # Try owned first, then public
         pb = await (await conn.execute(
             "SELECT * FROM playbooks WHERE id = ? AND user_id = ?", (playbook_id, user_id)
         )).fetchone()
+        if not pb:
+            pb = await (await conn.execute(
+                "SELECT * FROM playbooks WHERE id = ? AND visibility = 'public'", (playbook_id,)
+            )).fetchone()
         if not pb:
             raise HTTPException(status_code=404, detail="Playbook not found")
 
@@ -177,6 +182,7 @@ async def get_playbook(playbook_id: int, user_id: str = Depends(require_auth)):
         created_at=str(pb["created_at"] or ""),
         updated_at=str(pb["updated_at"] or ""),
         tracks=tracks,
+        is_owner=(pb["user_id"] == user_id),
     )
 
 

@@ -1049,6 +1049,7 @@ export interface Playbook {
 
 export interface PlaybookDetail extends Playbook {
   tracks: PlaybookTrack[];
+  is_owner: boolean;
 }
 
 export interface PublicPlaybook extends Playbook {

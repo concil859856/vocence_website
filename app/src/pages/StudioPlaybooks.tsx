@@ -291,7 +291,7 @@ function PlaybookDetailView({ playbookId }: { playbookId: number }) {
           <img loading="lazy" src={`/samples/images/music_${(playbookId % 8) + 1}.webp`} alt="" className="absolute inset-0 w-full h-full object-cover opacity-70" />
         </div>
         <div className="flex-1 min-w-0 pt-2">
-          {editingTitle ? (
+          {editingTitle && playbook.is_owner ? (
             <input
               ref={titleRef}
               value={titleVal}
@@ -302,8 +302,8 @@ function PlaybookDetailView({ playbookId }: { playbookId: number }) {
             />
           ) : (
             <h2
-              className="text-2xl font-bold cursor-pointer hover:text-[#DFFF00] transition-colors"
-              onClick={() => setEditingTitle(true)}
+              className={`text-2xl font-bold ${playbook.is_owner ? 'cursor-pointer hover:text-[#DFFF00]' : ''} transition-colors`}
+              onClick={() => playbook.is_owner && setEditingTitle(true)}
             >
               {playbook.title}
             </h2>
@@ -326,16 +326,27 @@ function PlaybookDetailView({ playbookId }: { playbookId: number }) {
             >
               <Shuffle size={14} /> Shuffle
             </button>
-            <button onClick={() => setShowAddModal(true)} className="flex items-center gap-2 px-4 py-2 rounded-xl border border-[#2e2f33] text-sm text-[#9ca3af] hover:text-white hover:border-[#444] transition-colors">
-              <Plus size={14} /> Add Tracks
-            </button>
-            <button onClick={handleToggleVisibility} className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-[#2e2f33] text-xs text-[#666] hover:text-white hover:border-[#444] transition-colors">
-              {playbook.visibility === 'public' ? <Globe size={12} /> : <Lock size={12} />}
-              {playbook.visibility === 'public' ? 'Public' : 'Private'}
-            </button>
-            <button onClick={handleDelete} className="p-2 rounded-xl border border-[#2e2f33] text-[#666] hover:text-red-400 hover:border-red-400/30 transition-colors ml-auto">
-              <Trash2 size={14} />
-            </button>
+            {playbook.is_owner && (
+              <button onClick={() => setShowAddModal(true)} className="flex items-center gap-2 px-4 py-2 rounded-xl border border-[#2e2f33] text-sm text-[#9ca3af] hover:text-white hover:border-[#444] transition-colors">
+                <Plus size={14} /> Add Tracks
+              </button>
+            )}
+            {playbook.is_owner && (
+              <button onClick={handleToggleVisibility} className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-[#2e2f33] text-xs text-[#666] hover:text-white hover:border-[#444] transition-colors">
+                {playbook.visibility === 'public' ? <Globe size={12} /> : <Lock size={12} />}
+                {playbook.visibility === 'public' ? 'Public' : 'Private'}
+              </button>
+            )}
+            {!playbook.is_owner && (
+              <span className="flex items-center gap-1.5 px-3 py-2 text-xs text-[#666]">
+                <Globe size={12} /> Public Playbook
+              </span>
+            )}
+            {playbook.is_owner && (
+              <button onClick={handleDelete} className="p-2 rounded-xl border border-[#2e2f33] text-[#666] hover:text-red-400 hover:border-red-400/30 transition-colors ml-auto">
+                <Trash2 size={14} />
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -345,12 +356,14 @@ function PlaybookDetailView({ playbookId }: { playbookId: number }) {
         <div className="text-center py-16 border border-dashed border-[#2e2f33] rounded-2xl">
           <Music size={32} className="mx-auto text-[#333] mb-3" />
           <p className="text-[#666] mb-4">No tracks yet</p>
-          <button
-            onClick={() => setShowAddModal(true)}
-            className="px-5 py-2 rounded-xl bg-white text-[#07080A] text-sm font-semibold hover:bg-white/90"
-          >
-            Add Tracks
-          </button>
+          {playbook.is_owner && (
+            <button
+              onClick={() => setShowAddModal(true)}
+              className="px-5 py-2 rounded-xl bg-white text-[#07080A] text-sm font-semibold hover:bg-white/90"
+            >
+              Add Tracks
+            </button>
+          )}
         </div>
       ) : (
         <div className="space-y-1">
@@ -365,9 +378,11 @@ function PlaybookDetailView({ playbookId }: { playbookId: number }) {
                 }`}
               >
                 {/* Drag handle */}
-                <div className="text-[#333] opacity-0 group-hover:opacity-100 cursor-grab shrink-0">
-                  <GripVertical size={14} />
-                </div>
+                {playbook.is_owner && (
+                  <div className="text-[#333] opacity-0 group-hover:opacity-100 cursor-grab shrink-0">
+                    <GripVertical size={14} />
+                  </div>
+                )}
 
                 {/* Number / play */}
                 <button
@@ -411,12 +426,14 @@ function PlaybookDetailView({ playbookId }: { playbookId: number }) {
                 </span>
 
                 {/* Remove */}
-                <button
-                  onClick={() => handleRemoveTrack(t.id)}
-                  className="text-[#333] hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all shrink-0"
-                >
-                  <X size={14} />
-                </button>
+                {playbook.is_owner && (
+                  <button
+                    onClick={() => handleRemoveTrack(t.id)}
+                    className="text-[#333] hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all shrink-0"
+                  >
+                    <X size={14} />
+                  </button>
+                )}
               </div>
             );
           })}
