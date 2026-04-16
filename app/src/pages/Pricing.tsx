@@ -39,6 +39,8 @@ export function Pricing() {
   const normalPlan = plans.find((p) => p.code === 'normal');
   const premiumPlan = plans.find((p) => p.code === 'premium');
 
+  // Stripe checkout logic — kept for when card payments go live.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const startStripeCheckout = async (planCode: string) => {
     const token = localStorage.getItem('vocence_token');
     if (!token) {
@@ -60,6 +62,7 @@ export function Pricing() {
       setCheckoutLoading(null);
     }
   };
+  void startStripeCheckout;
 
   const startCryptoCheckout = async (planCode: string, payCurrency?: string) => {
     const token = localStorage.getItem('vocence_token');
