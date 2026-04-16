@@ -31,7 +31,7 @@ import { LiveSubnetMap } from '../components/LiveSubnetMap';
 
 gsap.registerPlugin(ScrollTrigger);
 
-const SUBNET_ID = 102;
+const SUBNET_ID = 78;
 const ACCENT = '#D1F840';
 
 /** Mock by default. Set VITE_USE_MOCK_DASHBOARD=false in .env to reveal real dashboard. */

@@ -306,6 +306,25 @@ export function StudioResult() {
 
   return (
     <div className="min-h-screen bg-[#07080A] text-white pt-24 pb-14 px-4 sm:px-6">
+      {/* Coming-soon overlay */}
+      <div className="fixed inset-0 z-[60] flex items-center justify-center bg-[#07080A]">
+        <div className="text-center px-6 max-w-lg">
+          <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-full bg-[#DFFF00]/10 border border-[#DFFF00]/20">
+            <Sparkles size={36} className="text-[#DFFF00]" />
+          </div>
+          <h1 className="text-3xl md:text-4xl font-semibold text-white mb-3">Studio Coming Soon</h1>
+          <p className="text-sm md:text-base text-[#A7B0B7] leading-relaxed mb-8">
+            We're putting the finishing touches on Vocence Studio — Text-to-Speech, Speech-to-Text, Voice Cloning, Voice Design, Music Generation, and more. Stay tuned!
+          </p>
+          <a
+            href="/"
+            className="inline-flex items-center justify-center rounded-xl bg-[#DFFF00] px-6 py-3 text-sm font-semibold text-[#07080A] transition-opacity hover:opacity-90"
+          >
+            Back to Home
+          </a>
+        </div>
+      </div>
+
       <div className="max-w-[1200px] mx-auto">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
           <button

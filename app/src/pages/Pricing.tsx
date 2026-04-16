@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ArrowLeft, X } from 'lucide-react';
+import { ArrowLeft, CreditCard, X } from 'lucide-react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { PricingPlans } from '../components/PricingPlans';
 import { useAuth } from '../contexts/AuthContext';
@@ -19,6 +19,7 @@ export function Pricing() {
     selected: string;
   } | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [stripeComingSoon, setStripeComingSoon] = useState(false);
 
   useEffect(() => {
     api
@@ -196,6 +197,42 @@ export function Pricing() {
           </div>
         ) : null}
 
+        {stripeComingSoon ? (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="stripe-coming-soon-title"
+          >
+            <div className="relative w-full max-w-sm rounded-[28px] border border-white/10 bg-[#0c0d10] p-8 shadow-[0_0_60px_rgba(0,0,0,0.5)] text-center">
+              <button
+                type="button"
+                onClick={() => setStripeComingSoon(false)}
+                className="absolute right-4 top-4 rounded-lg p-1 text-[#A7B0B7] hover:bg-white/10 hover:text-white"
+                aria-label="Close"
+              >
+                <X size={20} />
+              </button>
+              <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-[#DFFF00]/10 border border-[#DFFF00]/20">
+                <CreditCard size={24} className="text-[#DFFF00]" />
+              </div>
+              <h2 id="stripe-coming-soon-title" className="text-lg font-semibold text-white">
+                Coming Soon
+              </h2>
+              <p className="mt-2 text-sm text-[#A7B0B7]">
+                Stripe card payments are currently under development. Please use crypto checkout in the meantime.
+              </p>
+              <button
+                type="button"
+                onClick={() => setStripeComingSoon(false)}
+                className="mt-6 w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm font-semibold text-white hover:bg-white/10"
+              >
+                Got it
+              </button>
+            </div>
+          </div>
+        ) : null}
+
         {cryptoPicker ? (
           <div
             className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4"
@@ -294,11 +331,10 @@ export function Pricing() {
               <div className="grid gap-3 sm:grid-cols-2">
                 <button
                   type="button"
-                  onClick={() => startStripeCheckout(planCode)}
-                  disabled={checkoutLoading === `stripe:${planCode}`}
-                  className="inline-flex items-center justify-center rounded-xl bg-[#DFFF00] px-4 py-2.5 text-sm font-semibold text-[#07080A] transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                  onClick={() => setStripeComingSoon(true)}
+                  className="inline-flex items-center justify-center rounded-xl bg-[#DFFF00] px-4 py-2.5 text-sm font-semibold text-[#07080A] transition-opacity hover:opacity-90"
                 >
-                  {checkoutLoading === `stripe:${planCode}` ? 'Preparing...' : 'Credit Card'}
+                  Credit Card
                 </button>
                 <button
                   type="button"

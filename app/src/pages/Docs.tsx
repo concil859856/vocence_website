@@ -1314,7 +1314,7 @@ print(resp.status_code, resp.json())`
           <li>
             <strong className="text-white/90">Bittensor:</strong>{' '}
             <code className="text-white/80">NETWORK</code>, <code className="text-white/80">NETUID</code> (mainnet subnet{' '}
-            <code className="text-white/80">102</code> in docs), <code className="text-white/80">WALLET_NAME</code>,{' '}
+            <code className="text-white/80">78</code> in docs), <code className="text-white/80">WALLET_NAME</code>,{' '}
             <code className="text-white/80">HOTKEY_NAME</code>.
           </li>
           <li>
