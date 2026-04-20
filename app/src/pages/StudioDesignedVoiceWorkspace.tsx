@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Download, Play, Sparkles } from 'lucide-react';
+import { ArrowLeft, Download, Play } from 'lucide-react';
 import { StudioShell } from '../components/StudioShell';
 import { VoiceDesignWavePlayer } from '../components/VoiceDesignWavePlayer';
 import { AuthModal } from '../components/AuthModal';
@@ -141,25 +141,6 @@ export function StudioDesignedVoiceWorkspace() {
 
   return (
     <div className="min-h-screen bg-[#07080A] pt-20">
-      {/* Coming-soon overlay */}
-      <div className="fixed inset-0 z-[60] flex items-center justify-center bg-[#07080A]">
-        <div className="text-center px-6 max-w-lg">
-          <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-full bg-[#DFFF00]/10 border border-[#DFFF00]/20">
-            <Sparkles size={36} className="text-[#DFFF00]" />
-          </div>
-          <h1 className="text-3xl md:text-4xl font-semibold text-white mb-3">Studio Coming Soon</h1>
-          <p className="text-sm md:text-base text-[#A7B0B7] leading-relaxed mb-8">
-            We're putting the finishing touches on Vocence Studio — Text-to-Speech, Speech-to-Text, Voice Cloning, Voice Design, Music Generation, and more. Stay tuned!
-          </p>
-          <a
-            href="/"
-            className="inline-flex items-center justify-center rounded-xl bg-[#DFFF00] px-6 py-3 text-sm font-semibold text-[#07080A] transition-opacity hover:opacity-90"
-          >
-            Back to Home
-          </a>
-        </div>
-      </div>
-
       <AuthModal isOpen={isAuthModalOpen} onClose={() => setIsAuthModalOpen(false)} />
       <StudioShell activeView="my-voices" mainClassName="flex flex-col min-h-[calc(100vh-5rem)]">
         <div className="flex flex-col flex-1 min-h-0 max-w-4xl mx-auto w-full gap-6">
