@@ -5,6 +5,19 @@ import { API_ORIGIN_BASE } from './baseUrl';
 
 const DASHBOARD_BASE = API_ORIGIN_BASE;
 
+/**
+ * Build the Authorization header for admin-only dashboard calls.
+ *
+ * Admin auth on the backend is gated by `require_admin_session`, which
+ * verifies a JWT from `Authorization: Bearer <token>` and checks the decoded
+ * email matches `ADMIN_EMAIL`. The token is the same one the website issues
+ * after Google OAuth login, stored under `vocence_token` in localStorage.
+ */
+function adminAuthHeaders(): Record<string, string> {
+  const token = typeof window !== 'undefined' ? window.localStorage.getItem('vocence_token') || '' : '';
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
   const url = `${DASHBOARD_BASE}${path}`;
   let res: Response;
@@ -177,7 +190,22 @@ export interface RecentEvaluation {
   reasoning?: string | null;
   original_audio_url?: string | null;
   generated_audio_url?: string | null;
+  score?: number | null;
+  element_scores?: Record<string, number> | null;
 }
+
+/** Canonical element order for rendering per-element score breakdowns. */
+export const EVALUATION_ELEMENT_ORDER = [
+  "script",
+  "naturalness",
+  "gender",
+  "speed",
+  "emotion",
+  "age_group",
+  "pitch",
+  "accent",
+  "tone",
+] as const;
 
 /** One pending evaluation (validator started, not yet submitted). */
 export interface LivePendingItem {
@@ -431,7 +459,7 @@ export const dashboardApi = {
     if (opts?.q?.trim()) params.set('q', opts.q.trim());
     const qs = params.toString();
     return fetchJson(`/api/dashboard/users${qs ? `?${qs}` : ''}`, {
-      headers: { 'X-Admin-Email': adminEmail },
+      headers: adminAuthHeaders(),
     });
   },
 
@@ -445,7 +473,7 @@ export const dashboardApi = {
     if (opts?.q?.trim()) params.set('q', opts.q.trim());
     if (opts?.user_id?.trim()) params.set('user_id', opts.user_id.trim());
     return fetchJson(`/api/dashboard/admin/website-usage/tts?${params.toString()}`, {
-      headers: { 'X-Admin-Email': adminEmail },
+      headers: adminAuthHeaders(),
     });
   },
 
@@ -459,7 +487,7 @@ export const dashboardApi = {
     if (opts?.q?.trim()) params.set('q', opts.q.trim());
     if (opts?.user_id?.trim()) params.set('user_id', opts.user_id.trim());
     return fetchJson(`/api/dashboard/admin/website-usage/credits?${params.toString()}`, {
-      headers: { 'X-Admin-Email': adminEmail },
+      headers: adminAuthHeaders(),
     });
   },
 
@@ -473,7 +501,7 @@ export const dashboardApi = {
     if (opts?.q?.trim()) params.set('q', opts.q.trim());
     if (opts?.user_id?.trim()) params.set('user_id', opts.user_id.trim());
     return fetchJson(`/api/dashboard/admin/website-usage/payments?${params.toString()}`, {
-      headers: { 'X-Admin-Email': adminEmail },
+      headers: adminAuthHeaders(),
     });
   },
 
@@ -487,19 +515,19 @@ export const dashboardApi = {
     if (opts?.q?.trim()) params.set('q', opts.q.trim());
     if (opts?.user_id?.trim()) params.set('user_id', opts.user_id.trim());
     return fetchJson(`/api/dashboard/admin/website-usage/auth-history?${params.toString()}`, {
-      headers: { 'X-Admin-Email': adminEmail },
+      headers: adminAuthHeaders(),
     });
   },
 
   getAdminUserActivitySummary(adminEmail: string, userId: string): Promise<AdminUserActivitySummary> {
     return fetchJson(`/api/dashboard/admin/website-usage/user/${encodeURIComponent(userId)}/summary`, {
-      headers: { 'X-Admin-Email': adminEmail },
+      headers: adminAuthHeaders(),
     });
   },
 
   getWebsiteOverview(adminEmail: string): Promise<WebsiteOverview> {
     return fetchJson('/api/dashboard/website-overview', {
-      headers: { 'X-Admin-Email': adminEmail },
+      headers: adminAuthHeaders(),
     });
   },
 
@@ -509,7 +537,7 @@ export const dashboardApi = {
   ): Promise<DashboardValidator> {
     return fetchJson('/api/dashboard/validators', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Admin-Email': adminEmail },
+      headers: { 'Content-Type': 'application/json', ...adminAuthHeaders() },
       body: JSON.stringify({
         uid: data.uid,
         hotkey: data.hotkey,
@@ -522,7 +550,7 @@ export const dashboardApi = {
   removeValidator(uid: number, adminEmail: string): Promise<{ ok: boolean }> {
     return fetchJson(`/api/dashboard/validators/${uid}`, {
       method: 'DELETE',
-      headers: { 'X-Admin-Email': adminEmail },
+      headers: adminAuthHeaders(),
     });
   },
 
@@ -533,7 +561,7 @@ export const dashboardApi = {
   addBlocklist(hotkey: string, adminEmail: string): Promise<{ hotkeys: string[] }> {
     return fetchJson('/api/dashboard/blocklist', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Admin-Email': adminEmail },
+      headers: { 'Content-Type': 'application/json', ...adminAuthHeaders() },
       body: JSON.stringify({ hotkey }),
     });
   },
@@ -541,7 +569,7 @@ export const dashboardApi = {
   removeBlocklist(hotkey: string, adminEmail: string): Promise<{ ok: boolean }> {
     return fetchJson(`/api/dashboard/blocklist/${encodeURIComponent(hotkey)}`, {
       method: 'DELETE',
-      headers: { 'X-Admin-Email': adminEmail },
+      headers: adminAuthHeaders(),
     });
   },
 
@@ -559,7 +587,7 @@ export const dashboardApi = {
     form.append('file', file);
     return fetch(`${DASHBOARD_BASE}/api/dashboard/blog/upload`, {
       method: 'POST',
-      headers: { 'X-Admin-Email': adminEmail },
+      headers: adminAuthHeaders(),
       body: form,
     }).then(async (res) => {
       if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
@@ -573,7 +601,7 @@ export const dashboardApi = {
   ): Promise<BlogPost> {
     return fetchJson('/api/dashboard/blog', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Admin-Email': adminEmail },
+      headers: { 'Content-Type': 'application/json', ...adminAuthHeaders() },
       body: JSON.stringify({
         title: data.title,
         excerpt: data.excerpt,
@@ -593,7 +621,7 @@ export const dashboardApi = {
   ): Promise<BlogPost> {
     return fetchJson(`/api/dashboard/blog/${id}`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', 'X-Admin-Email': adminEmail },
+      headers: { 'Content-Type': 'application/json', ...adminAuthHeaders() },
       body: JSON.stringify({
         title: data.title,
         excerpt: data.excerpt,
@@ -609,7 +637,7 @@ export const dashboardApi = {
   deleteBlogPost(id: string, adminEmail: string): Promise<{ ok: boolean }> {
     return fetchJson(`/api/dashboard/blog/${id}`, {
       method: 'DELETE',
-      headers: { 'X-Admin-Email': adminEmail },
+      headers: adminAuthHeaders(),
     });
   },
 

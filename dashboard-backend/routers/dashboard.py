@@ -16,6 +16,7 @@ from ranking import (
     get_ranked_miner_stats_for_validator,
     sort_miners_for_display,
 )
+from routers.auth import require_admin_session
 from schemas import (
     ADMIN_EMAIL,
     ActivityBucketResponse,
@@ -67,10 +68,8 @@ def _clamp_page_size(page_size: int, default: int = 20, max_size: int = 100) -> 
     return min(page_size, max_size)
 
 
-def require_admin_email(x_admin_email: str | None = Header(None, alias="X-Admin-Email")):
-    if x_admin_email != ADMIN_EMAIL:
-        raise HTTPException(status_code=403, detail="Admin access required")
-    return x_admin_email
+# Admin endpoints require a valid JWT session (Authorization: Bearer <token>) where
+# the decoded email matches ADMIN_EMAIL — see routers.auth.require_admin_session.
 
 
 @router.get("/overview", response_model=OverviewResponse)
@@ -323,7 +322,7 @@ async def get_validators():
 @router.post("/validators", response_model=ValidatorResponse)
 async def add_validator(
     body: AddValidatorRequest,
-    _: str = Depends(require_admin_email),
+    _: str = Depends(require_admin_session),
 ):
     """Add a validator to validator_registry (admin only)."""
     hotkey = (body.hotkey or "").strip()
@@ -366,7 +365,7 @@ async def add_validator(
 @router.delete("/validators/{uid:int}")
 async def remove_validator(
     uid: int,
-    _: str = Depends(require_admin_email),
+    _: str = Depends(require_admin_session),
 ):
     """Remove a validator from validator_registry by UID (admin only)."""
     async with acquire() as conn:
@@ -387,6 +386,31 @@ async def remove_validator(
     return {"ok": True, "message": "Validator removed"}
 
 
+def _decode_element_scores(raw) -> dict[str, float] | None:
+    """Decode the JSON-encoded element_scores column into a {element: float} dict."""
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        src = raw
+    elif isinstance(raw, (str, bytes)):
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(parsed, dict):
+            return None
+        src = parsed
+    else:
+        return None
+    out: dict[str, float] = {}
+    for k, v in src.items():
+        try:
+            out[str(k)] = float(v)
+        except (TypeError, ValueError):
+            continue
+    return out or None
+
+
 def _evaluations_from_rows(rows) -> list:
     return [
         RecentEvaluationResponse(
@@ -400,6 +424,8 @@ def _evaluations_from_rows(rows) -> list:
             reasoning=r.get("reasoning"),
             original_audio_url=r.get("original_audio_url"),
             generated_audio_url=r.get("generated_audio_url"),
+            score=float(r["score"]) if r.get("score") is not None else None,
+            element_scores=_decode_element_scores(r.get("element_scores")),
         )
         for r in rows
     ]
@@ -457,7 +483,8 @@ async def get_validation_status(
             eval_rows = await conn.fetch(
                 """
                 SELECT id, validator_hotkey, evaluation_id, miner_hotkey, wins, evaluated_at,
-                       prompt, reasoning, original_audio_url, generated_audio_url
+                       prompt, reasoning, original_audio_url, generated_audio_url,
+                       score, element_scores
                 FROM validator_evaluations
                 WHERE validator_hotkey = $1
                 ORDER BY evaluated_at DESC
@@ -467,7 +494,22 @@ async def get_validation_status(
                 limit_evaluations,
             )
         except Exception:
-            eval_rows = []
+            # Fallback for older DBs missing score/element_scores columns
+            try:
+                eval_rows = await conn.fetch(
+                    """
+                    SELECT id, validator_hotkey, evaluation_id, miner_hotkey, wins, evaluated_at,
+                           prompt, reasoning, original_audio_url, generated_audio_url
+                    FROM validator_evaluations
+                    WHERE validator_hotkey = $1
+                    ORDER BY evaluated_at DESC
+                    LIMIT $2
+                    """,
+                    owner_hotkey,
+                    limit_evaluations,
+                )
+            except Exception:
+                eval_rows = []
 
     pending = []
     for r in pending_rows:
@@ -505,7 +547,8 @@ async def get_recent_evaluations(
             total_count = int(total_row["n"] or 0)
             sel = f"""
                 SELECT id, validator_hotkey, evaluation_id, miner_hotkey, wins, evaluated_at,
-                       prompt, reasoning, original_audio_url, generated_audio_url
+                       prompt, reasoning, original_audio_url, generated_audio_url,
+                       score, element_scores
                 FROM validator_evaluations
                 {where}
                 ORDER BY evaluated_at DESC
@@ -555,7 +598,8 @@ async def get_all_evaluations(
             rows = await conn.fetch(
                 f"""
                 SELECT id, validator_hotkey, evaluation_id, miner_hotkey, wins, evaluated_at,
-                       prompt, reasoning, original_audio_url, generated_audio_url
+                       prompt, reasoning, original_audio_url, generated_audio_url,
+                       score, element_scores
                 FROM validator_evaluations
                 {where}
                 ORDER BY evaluated_at DESC
@@ -664,7 +708,7 @@ async def register_user(body: RegisteredUserRegisterRequest):
 
 @router.get("/users", response_model=RegisteredUsersListResponse)
 async def list_registered_users(
-    _: str = Depends(require_admin_email),
+    _: str = Depends(require_admin_session),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     q: str = Query("", max_length=200),
@@ -731,7 +775,7 @@ async def list_registered_users(
 
 
 @router.get("/website-overview", response_model=WebsiteOverviewResponse)
-async def get_website_overview(_: str = Depends(require_admin_email)):
+async def get_website_overview(_: str = Depends(require_admin_session)):
     """Website-only admin metrics from website.db."""
     await ensure_tables()
     conn = await get_connection()
@@ -826,7 +870,7 @@ async def get_website_overview(_: str = Depends(require_admin_email)):
 
 @router.get("/admin/website-usage/tts", response_model=AdminPaginatedTtsResponse)
 async def admin_website_usage_tts(
-    _: str = Depends(require_admin_email),
+    _: str = Depends(require_admin_session),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     q: str = Query("", max_length=300),
@@ -904,7 +948,7 @@ async def admin_website_usage_tts(
 
 @router.get("/admin/website-usage/credits", response_model=AdminPaginatedCreditsResponse)
 async def admin_website_usage_credits(
-    _: str = Depends(require_admin_email),
+    _: str = Depends(require_admin_session),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     q: str = Query("", max_length=300),
@@ -981,7 +1025,7 @@ async def admin_website_usage_credits(
 
 @router.get("/admin/website-usage/payments", response_model=AdminPaginatedPaymentsResponse)
 async def admin_website_usage_payments(
-    _: str = Depends(require_admin_email),
+    _: str = Depends(require_admin_session),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     q: str = Query("", max_length=300),
@@ -1060,7 +1104,7 @@ async def admin_website_usage_payments(
 
 @router.get("/admin/website-usage/auth-history", response_model=AdminPaginatedAuthHistoryResponse)
 async def admin_website_usage_auth_history(
-    _: str = Depends(require_admin_email),
+    _: str = Depends(require_admin_session),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     q: str = Query("", max_length=300),
@@ -1136,7 +1180,7 @@ async def admin_website_usage_auth_history(
 @router.get("/admin/website-usage/user/{user_id}/summary", response_model=AdminUserActivitySummary)
 async def admin_website_usage_user_summary(
     user_id: str,
-    _: str = Depends(require_admin_email),
+    _: str = Depends(require_admin_session),
 ):
     """Per-user rollup for admin drill-down."""
     await ensure_tables()
@@ -1212,7 +1256,7 @@ async def get_blocklist():
 @router.post("/blocklist", response_model=BlocklistResponse)
 async def add_to_blocklist(
     body: BlocklistAddRequest,
-    _: str = Depends(require_admin_email),
+    _: str = Depends(require_admin_session),
 ):
     """Add a hotkey to the blocklist. Requires admin email header."""
     hotkey = (body.hotkey or "").strip()
@@ -1244,7 +1288,7 @@ async def add_to_blocklist(
 @router.delete("/blocklist/{hotkey:path}")
 async def remove_from_blocklist(
     hotkey: str,
-    _: str = Depends(require_admin_email),
+    _: str = Depends(require_admin_session),
 ):
     """Remove a hotkey from the blocklist. Requires admin email header."""
     async with acquire() as conn:
@@ -1343,7 +1387,7 @@ async def get_blog_post(post_id: str):
 @router.post("/blog/upload")
 async def upload_blog_image(
     file: UploadFile,
-    _: str = Depends(require_admin_email),
+    _: str = Depends(require_admin_session),
 ):
     """Upload an image for a blog post. Returns the URL path to use in POST /blog."""
     if not file.content_type or not file.content_type.startswith("image/"):
@@ -1359,7 +1403,7 @@ async def upload_blog_image(
 @router.post("/blog", response_model=BlogPostResponse)
 async def create_blog_post(
     body: BlogPostCreateRequest,
-    admin_email: str = Depends(require_admin_email),
+    admin_email: str = Depends(require_admin_session),
 ):
     """Create a blog post. Requires admin email header."""
     now = datetime.now(timezone.utc)
@@ -1414,7 +1458,7 @@ async def create_blog_post(
 async def update_blog_post(
     post_id: str,
     body: BlogPostUpdateRequest,
-    admin_email: str = Depends(require_admin_email),
+    admin_email: str = Depends(require_admin_session),
 ):
     """Update a blog post. Date and created_at are left unchanged (published date preserved)."""
     await ensure_tables()
@@ -1475,7 +1519,7 @@ async def update_blog_post(
 @router.delete("/blog/{post_id}")
 async def delete_blog_post(
     post_id: str,
-    admin_email: str = Depends(require_admin_email),
+    admin_email: str = Depends(require_admin_session),
 ):
     """Delete a blog post. Requires admin email header."""
     await ensure_tables()

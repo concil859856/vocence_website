@@ -8,6 +8,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { useStudioPlayer } from '../contexts/StudioPlayerContext';
 import { dashboardApi, type StudioMusicGenerateResponse } from '../services/dashboardApi';
 import { CREDIT_MUSIC } from '../studio/creditCosts';
+import { asset } from '../data/assets';
 
 type MusicTask = 'text2music' | 'audio2audio' | 'retake' | 'repaint' | 'edit' | 'extend';
 
@@ -494,14 +495,14 @@ Hear the night sing out our song`);
    ========================================================================== */
 
 const SAMPLE_TRACKS = [
-  { id: 's1', title: 'Neon Nights', style: 'pop, synth, drums, guitar, 120 bpm, upbeat, catchy, vibrant, female vocals, polished vocals', audioSrc: '/samples/audios/pop.wav', image: '/samples/images/music_1.webp' },
-  { id: 's2', title: 'Rebel Road', style: 'rock, electric guitar, drums, bass, 130 bpm, energetic, rebellious, gritty, male vocals, raw vocals', audioSrc: '/samples/audios/rock.wav', image: '/samples/images/music_2.webp' },
-  { id: 's3', title: 'Urban Flow', style: 'hip hop, 808 bass, hi-hats, synth, 90 bpm, bold, urban, intense, male vocals, rhythmic vocals', audioSrc: '/samples/audios/street.wav', image: '/samples/images/music_3.webp' },
-  { id: 's4', title: 'Pulse Drop', style: 'edm, synth, bass, kick drum, 128 bpm, euphoric, pulsating, energetic, instrumental', audioSrc: '/samples/audios/club.wav', image: '/samples/images/music_4.webp' },
-  { id: 's5', title: 'Midnight Blues', style: 'jazz, saxophone, piano, double bass, 110 bpm, smooth, improvisational, soulful, instrumental', audioSrc: '/samples/audios/jazz.wav', image: '/samples/images/music_5.webp' },
-  { id: 's6', title: 'Final Boss', style: 'classical, orchestral, strings, piano, 60 bpm, elegant, emotive, timeless, instrumental', audioSrc: '/samples/audios/orchestral.wav', image: '/samples/images/music_6.webp' },
-  { id: 's7', title: 'Code & Coffee', style: 'lo-fi, piano, soft drums, vinyl crackle, 75 bpm, chill, mellow, warm, instrumental', audioSrc: '/samples/audios/chill.wav', image: '/samples/images/music_7.webp' },
-  { id: 's8', title: 'Velvet Touch', style: 'r&b, synth, bass, drums, 85 bpm, sultry, groovy, romantic, female vocals, silky vocals', audioSrc: '/samples/audios/soundful.wav', image: '/samples/images/music_8.webp' },
+  { id: 's1', title: 'Neon Nights', style: 'pop, synth, drums, guitar, 120 bpm, upbeat, catchy, vibrant, female vocals, polished vocals', audioSrc: asset('music.pop'), image: '/samples/images/music_1.webp' },
+  { id: 's2', title: 'Rebel Road', style: 'rock, electric guitar, drums, bass, 130 bpm, energetic, rebellious, gritty, male vocals, raw vocals', audioSrc: asset('music.rock'), image: '/samples/images/music_2.webp' },
+  { id: 's3', title: 'Urban Flow', style: 'hip hop, 808 bass, hi-hats, synth, 90 bpm, bold, urban, intense, male vocals, rhythmic vocals', audioSrc: asset('music.street'), image: '/samples/images/music_3.webp' },
+  { id: 's4', title: 'Pulse Drop', style: 'edm, synth, bass, kick drum, 128 bpm, euphoric, pulsating, energetic, instrumental', audioSrc: asset('music.club'), image: '/samples/images/music_4.webp' },
+  { id: 's5', title: 'Midnight Blues', style: 'jazz, saxophone, piano, double bass, 110 bpm, smooth, improvisational, soulful, instrumental', audioSrc: asset('music.jazz'), image: '/samples/images/music_5.webp' },
+  { id: 's6', title: 'Final Boss', style: 'classical, orchestral, strings, piano, 60 bpm, elegant, emotive, timeless, instrumental', audioSrc: asset('music.orchestral'), image: '/samples/images/music_6.webp' },
+  { id: 's7', title: 'Code & Coffee', style: 'lo-fi, piano, soft drums, vinyl crackle, 75 bpm, chill, mellow, warm, instrumental', audioSrc: asset('music.chill'), image: '/samples/images/music_7.webp' },
+  { id: 's8', title: 'Velvet Touch', style: 'r&b, synth, bass, drums, 85 bpm, sultry, groovy, romantic, female vocals, silky vocals', audioSrc: asset('music.soundful'), image: '/samples/images/music_8.webp' },
 ];
 
 function SampleMusicSection() {

@@ -17,6 +17,7 @@ import gsap from 'gsap';
 import { ScrollTrigger } from 'gsap/ScrollTrigger';
 import {
   dashboardApi,
+  EVALUATION_ELEMENT_ORDER,
   type DashboardOverview,
   type DashboardMiner,
   type DashboardValidator,
@@ -120,6 +121,16 @@ function formatStartEnd(str: string | null | undefined, start: number, end: numb
   if (!str) return '—';
   if (str.length <= start + end) return str;
   return `${str.slice(0, start)}…${str.slice(-end)}`;
+}
+
+function formatElementLabel(key: string) {
+  return key.replace(/_/g, ' ');
+}
+
+function scoreToneClass(score: number) {
+  if (score >= 0.8) return 'text-[#4ade80]';
+  if (score >= 0.5) return 'text-amber-400';
+  return 'text-red-400';
 }
 
 function formatTimeAgo(iso: string | null): string {
@@ -1151,8 +1162,39 @@ export function Dashboard() {
                     <span className={`text-xs font-bold px-2 py-1 rounded ${selectedValidationDetail.evaluation.wins ? 'text-[#4ade80] bg-[#4ade80]/15' : 'text-red-500 bg-red-500/15'}`}>
                       {selectedValidationDetail.evaluation.wins ? 'WIN' : 'LOSE'}
                     </span>
+                    {typeof selectedValidationDetail.evaluation.score === 'number' && (
+                      <span
+                        className={`text-xs font-mono font-semibold px-2 py-1 rounded bg-[#1a1a1a] border border-[#27272a] ${scoreToneClass(selectedValidationDetail.evaluation.score)}`}
+                        title="Total weighted score"
+                      >
+                        {selectedValidationDetail.evaluation.score.toFixed(2)}
+                      </span>
+                    )}
                     <span className="text-gray-500 text-xs">Evaluated {formatTimeAgo(selectedValidationDetail.evaluation.evaluated_at)}</span>
                   </div>
+                  {selectedValidationDetail.evaluation.element_scores &&
+                    Object.keys(selectedValidationDetail.evaluation.element_scores).length > 0 && (
+                      <div>
+                        <p className="text-[10px] font-medium text-gray-500 uppercase tracking-wider mb-2">Element scores</p>
+                        <div className="grid grid-cols-3 gap-1.5">
+                          {EVALUATION_ELEMENT_ORDER.filter(
+                            (k) => selectedValidationDetail.evaluation!.element_scores && k in selectedValidationDetail.evaluation!.element_scores,
+                          ).map((key) => {
+                            const s = selectedValidationDetail.evaluation!.element_scores![key];
+                            return (
+                              <div
+                                key={key}
+                                className="rounded border border-[#27272a] bg-[#141414] px-2 py-1.5 text-center"
+                                title={`${formatElementLabel(key)}: ${s.toFixed(3)}`}
+                              >
+                                <div className="text-[9px] uppercase tracking-wider text-gray-500">{formatElementLabel(key)}</div>
+                                <div className={`text-sm font-mono font-semibold ${scoreToneClass(s)}`}>{s.toFixed(2)}</div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
                   {selectedValidationDetail.evaluation.prompt && (
                     <div>
                       <p className="text-[10px] font-medium text-gray-500 uppercase tracking-wider mb-1">Prompt</p>

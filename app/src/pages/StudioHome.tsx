@@ -9,6 +9,7 @@ import {
 import { useAuth } from '../contexts/AuthContext';
 import { useStudioPlayer } from '../contexts/StudioPlayerContext';
 import { dashboardApi, type StudioHistoryItem } from '../services/dashboardApi';
+import { asset } from '../data/assets';
 
 /* ==========================================================================
    Placeholder data — replace with real content later.
@@ -36,9 +37,12 @@ interface MusicPresetItem {
 
 interface StyleExampleItem {
   id: string;
-  style: string;
+  name: string;
+  tags: string[];
+  description: string;
   text: string;
   audioSrc: string;
+  avatar: string;
 }
 
 interface CloneExampleItem {
@@ -80,12 +84,60 @@ const MUSIC_PRESETS: MusicPresetItem[] = [
 ];
 
 const TTS_STYLE_EXAMPLES: StyleExampleItem[] = [
-  { id: 'ts1', style: 'Neutral', text: 'The quarterly results exceeded all expectations, showing a 15% increase in revenue.', audioSrc: '/samples/audio/style_neutral.wav' },
-  { id: 'ts2', style: 'Whisper', text: 'The quarterly results exceeded all expectations, showing a 15% increase in revenue.', audioSrc: '/samples/audio/style_whisper.wav' },
-  { id: 'ts3', style: 'Dramatic', text: 'The quarterly results exceeded all expectations, showing a 15% increase in revenue.', audioSrc: '/samples/audio/style_dramatic.wav' },
-  { id: 'ts4', style: 'Cheerful', text: 'The quarterly results exceeded all expectations, showing a 15% increase in revenue.', audioSrc: '/samples/audio/style_cheerful.wav' },
-  { id: 'ts5', style: 'News Anchor', text: 'The quarterly results exceeded all expectations, showing a 15% increase in revenue.', audioSrc: '/samples/audio/style_news.wav' },
-  { id: 'ts6', style: 'Storyteller', text: 'The quarterly results exceeded all expectations, showing a 15% increase in revenue.', audioSrc: '/samples/audio/style_storyteller.wav' },
+  {
+    id: 'neutral-male',
+    name: 'Neutral Male',
+    tags: ['Calm', 'Natural', 'Male'],
+    description: 'Versatile everyday voice for narration, dialogue, and conversational delivery.',
+    text: "The best part of a morning run isn't the exercise — it's the ten minutes afterwards when everything feels quiet, and you remember why you started.",
+    audioSrc: asset('tts-demo.neutral-male'),
+    avatar: asset('tts-style.neutral-male'),
+  },
+  {
+    id: 'epic-warrior',
+    name: 'Epic Warrior',
+    tags: ['Heroic', 'Shouting', 'Male'],
+    description: 'Cinematic battle voice — loud, aggressive, high energy. Perfect for action scenes.',
+    text: 'For every brother we have lost, a thousand of theirs will fall! Raise your shields! Tonight — we end this war!',
+    audioSrc: asset('tts-demo.epic-warrior'),
+    avatar: asset('tts-style.epic-warrior'),
+  },
+  {
+    id: 'friendly-ai-assistant',
+    name: 'AI Assistant',
+    tags: ['Polite', 'Clear', 'Female'],
+    description: 'Friendly digital assistant — precise, professional, slightly robotic.',
+    text: "Of course — I've rescheduled your meeting to Thursday at 3 PM and notified your team. Would you like a summary of tomorrow's agenda?",
+    audioSrc: asset('tts-demo.friendly-ai-assistant'),
+    avatar: asset('tts-style.friendly-ai-assistant'),
+  },
+  {
+    id: 'military-commander',
+    name: 'Military Commander',
+    tags: ['Authoritative', 'Tactical', 'Male'],
+    description: 'Commanding battlefield voice — strong, confident, radio-clear delivery.',
+    text: 'All units, hold position and await my signal. Recon reports hostiles two klicks east. On my mark — we move fast, we move clean. Execute.',
+    audioSrc: asset('tts-demo.military-commander'),
+    avatar: asset('tts-style.military-commander'),
+  },
+  {
+    id: 'little-girl',
+    name: 'Little Girl',
+    tags: ['Cheerful', 'Playful', 'Child'],
+    description: 'Cute, high-pitched, innocent voice — youthful and expressive.',
+    text: 'Look at my dragon drawing! He breathes rainbow fire, and his name is Mister Sparkles. Isn\u2019t he the best?',
+    audioSrc: asset('tts-demo.little-girl'),
+    avatar: asset('tts-style.little-girl'),
+  },
+  {
+    id: 'happy-female',
+    name: 'Happy Female',
+    tags: ['Bright', 'Upbeat', 'Female'],
+    description: 'Warm, cheerful, energetic — natural smile-in-the-voice delivery.',
+    text: "Oh my god, you got the job?! I'm so proud of you — we are absolutely going out to celebrate tonight, my treat, no arguments!",
+    audioSrc: asset('tts-demo.happy-female'),
+    avatar: asset('tts-style.neutral-female'),
+  },
 ];
 
 /* ==========================================================================
@@ -217,25 +269,42 @@ export function StudioHome() {
       <section>
         <SectionHeading
           title="Text-to-Speech"
-          subtitle="Same text, different styles — hear how style control transforms delivery."
+          subtitle="Style-controlled speech — the same model, six very different deliveries."
           action={{ label: 'Try TTS', to: '/studio/tts' }}
         />
-        <div className="rounded-2xl border border-white/10 overflow-hidden relative p-5 md:p-6">
-          <img loading="lazy" src="/samples/images/tts_bg.webp" alt="" className="absolute inset-0 w-full h-full object-cover" />
-          <div className="absolute inset-0 bg-black/60" />
-          <div className="relative z-10">
-            <p className="text-sm text-white/80 italic mb-5 max-w-2xl">
-              "{TTS_STYLE_EXAMPLES[0]?.text}"
-            </p>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              {TTS_STYLE_EXAMPLES.map((s) => (
-                <div key={s.id} className="rounded-xl border border-white/10 bg-black/30 backdrop-blur-sm p-3 flex items-center gap-3">
-                  <PlayBtn src={s.audioSrc} title={`TTS — ${s.style}`} subtitle="Style example" />
-                  <span className="text-xs font-semibold text-[#DFFF00] uppercase tracking-wider">{s.style}</span>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {TTS_STYLE_EXAMPLES.map((s) => (
+            <div
+              key={s.id}
+              className="rounded-2xl border border-white/10 bg-white/[0.02] p-5 hover:border-white/20 transition-all group flex flex-col"
+            >
+              <div className="flex items-center gap-4 mb-3">
+                <div className="w-[72px] h-[72px] rounded-xl bg-gradient-to-br from-[#DFFF00]/20 to-emerald-500/20 overflow-hidden flex items-center justify-center shrink-0 relative group/avatar">
+                  <img
+                    loading="lazy"
+                    src={s.avatar}
+                    alt={s.name}
+                    className="w-full h-full object-cover relative z-10 transition-transform duration-300 group-hover/avatar:scale-110"
+                    onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                  />
+                  <span className="text-xl font-bold text-[#DFFF00]/80 absolute">{s.name[0]}</span>
                 </div>
-              ))}
+                <div className="min-w-0">
+                  <h3 className="text-white font-semibold text-sm">{s.name}</h3>
+                  <div className="flex flex-wrap gap-1 mt-1">
+                    {s.tags.map((tag) => (
+                      <span key={tag} className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 text-[#A7B0B7]">{tag}</span>
+                    ))}
+                  </div>
+                  <p className="text-xs text-[#A7B0B7] leading-relaxed mt-1.5">{s.description}</p>
+                </div>
+              </div>
+              <p className="text-xs italic text-white/60 leading-relaxed mb-3 flex-1 line-clamp-3">
+                &ldquo;{s.text}&rdquo;
+              </p>
+              <PlayBtn src={s.audioSrc} title={s.name} subtitle={s.tags.join(' · ')} image={s.avatar} />
             </div>
-          </div>
+          ))}
         </div>
       </section>
 

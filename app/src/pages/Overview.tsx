@@ -6,6 +6,7 @@ import { ScrollTrigger } from 'gsap/ScrollTrigger';
 import { dashboardApi, type DashboardOverview, type BlogPost } from '../services/dashboardApi';
 import { PricingPlans } from '../components/PricingPlans';
 import { API_ORIGIN_BASE } from '../services/baseUrl';
+import { asset } from '../data/assets';
 
 gsap.registerPlugin(ScrollTrigger);
 
@@ -538,7 +539,7 @@ export function Overview() {
                     playsInline
                     className="w-full h-full object-cover"
                   >
-                    <source src="/demo.mp4" type="video/mp4" />
+                    <source src={asset('video.demo')} type="video/mp4" />
                     Your browser does not support the video tag.
                   </video>
                 </div>
@@ -707,7 +708,7 @@ export function Overview() {
             </div>
 
             <div className="card-vocence p-6">
-              <audio ref={sampleAudioRef} src="/generated_audio.wav" preload="metadata" />
+              <audio ref={sampleAudioRef} src={asset('audio.homepage_demo')} preload="metadata" />
               <div className="flex items-center justify-between mb-4">
                 <span className="text-xs font-mono text-[#666]">Example prompt</span>
                 <button
@@ -755,10 +756,10 @@ export function Overview() {
 
           <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-6">
             {[
-              { title: 'AI Agents', image: '/usecase_agents.jpg', video: '/ai_agents.mp4', icon: Cpu },
-              { title: 'Accessibility', image: '/usecase_accessibility.jpg', video: '/accessibility.mp4', icon: Mic },
-              { title: 'Gaming & Characters', image: '/usecase_gaming.jpg', video: '/gaming_characters.mp4', icon: Zap },
-              { title: 'Content & Dubbing', image: '/usecase_dubbing.jpg', video: '/content_dubbing.mp4', icon: Globe },
+              { title: 'AI Agents', image: '/usecase_agents.jpg', video: asset('video.ai_agents'), icon: Cpu },
+              { title: 'Accessibility', image: '/usecase_accessibility.jpg', video: asset('video.accessibility'), icon: Mic },
+              { title: 'Gaming & Characters', image: '/usecase_gaming.jpg', video: asset('video.gaming_characters'), icon: Zap },
+              { title: 'Content & Dubbing', image: '/usecase_dubbing.jpg', video: asset('video.content_dubbing'), icon: Globe },
             ].map((usecase, index) => (
               <div
                 key={index}

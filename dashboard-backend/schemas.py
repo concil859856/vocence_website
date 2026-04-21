@@ -396,6 +396,8 @@ class RecentEvaluationResponse(BaseModel):
     reasoning: str | None = None
     original_audio_url: str | None = None
     generated_audio_url: str | None = None
+    score: float | None = None
+    element_scores: dict[str, float] | None = None
 
 
 class RecentEvaluationsResponse(BaseModel):

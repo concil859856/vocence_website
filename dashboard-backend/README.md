@@ -5,7 +5,7 @@ Single **Python FastAPI** backend for the Vocence website: **dashboard** (owner 
 ## Requirements
 
 - Python 3.11+
-- Access to the Vocence owner database (PostgreSQL) — same `registered_miners`, `performance_metrics`, `validator_evaluations`, `validator_registry` tables used by the Vocence service.
+- Access to the Vocence owner database (PostgreSQL) — same `registered_miners`, `validator_evaluations`, `validator_registry`, `global_scoring_snapshots` tables used by the Vocence service.
 
 ## Setup
 

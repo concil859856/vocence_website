@@ -27,6 +27,7 @@ import { MyVoiceCardArt } from '../components/MyVoiceCardArt';
 import { StudioShell } from '../components/StudioShell';
 import { STUDIO_VIEWS, type StudioView } from '../studio/studioNav';
 import { DEFAULT_ABSTRACT_CARD_IMAGES } from '../data/abstractCardImages';
+import { asset } from '../data/assets';
 import {
   CREDIT_STT,
   CREDIT_TTS,
@@ -332,20 +333,9 @@ export function Studio() {
   }, [studioHistoryFiltered, studioHistoryEffectivePage]);
 
   useEffect(() => {
-    let cancelled = false;
-    fetch('/abstract/manifest.json')
-      .then((r) => r.json())
-      .then((data: { images?: string[] }) => {
-        if (!cancelled && Array.isArray(data.images) && data.images.length > 0) {
-          setAbstractImagePool(data.images);
-        }
-      })
-      .catch(() => {
-        /** Keep bundled default URLs on failure */
-      });
-    return () => {
-      cancelled = true;
-    };
+    if (DEFAULT_ABSTRACT_CARD_IMAGES.length > 0) {
+      setAbstractImagePool(DEFAULT_ABSTRACT_CARD_IMAGES);
+    }
   }, []);
 
   useEffect(() => {
@@ -377,7 +367,7 @@ export function Studio() {
     if (typeof window === 'undefined') return;
     TTS_STYLE_PRESETS.slice(0, PRIORITY_PRESET_COUNT).forEach((preset) => {
       const img = new Image();
-      img.src = `/tts-styles/${preset.id}.png`;
+      img.src = asset(`tts-style.${preset.id}`);
       img.decoding = 'async';
     });
   }, []);
@@ -1513,7 +1503,7 @@ export function Studio() {
                 >
                   <div className="flex-shrink-0 w-24 h-24 rounded-full overflow-hidden bg-transparent border border-white/10">
                     <img
-                      src={`/tts-styles/${preset.id}.png`}
+                      src={asset(`tts-style.${preset.id}`)}
                       alt={preset.label}
                       className="w-full h-full object-cover"
                       loading={index < PRIORITY_PRESET_COUNT ? 'eager' : 'lazy'}

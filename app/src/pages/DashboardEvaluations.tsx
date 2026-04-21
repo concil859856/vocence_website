@@ -1,7 +1,12 @@
 import { useEffect, useState, useCallback, Fragment, useRef } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, RefreshCw, ChevronDown, ChevronRight, Copy } from 'lucide-react';
-import { dashboardApi, type RecentEvaluation, type DashboardValidator } from '../services/dashboardApi';
+import {
+  dashboardApi,
+  EVALUATION_ELEMENT_ORDER,
+  type RecentEvaluation,
+  type DashboardValidator,
+} from '../services/dashboardApi';
 import { AudioPlayerBar } from '../components/AudioPlayerBar';
 
 const ACCENT = '#D1F840';
@@ -9,6 +14,16 @@ const ACCENT = '#D1F840';
 function formatHotkey(hotkey: string) {
   if (!hotkey || hotkey.length < 12) return hotkey;
   return `${hotkey.slice(0, 6)}...${hotkey.slice(-4)}`;
+}
+
+function formatElementLabel(key: string) {
+  return key.replace(/_/g, ' ');
+}
+
+function scoreToneClass(score: number) {
+  if (score >= 0.8) return 'text-[#4ade80]';
+  if (score >= 0.5) return 'text-amber-400';
+  return 'text-red-400';
 }
 
 function formatTimeAgo(iso: string | null): string {
@@ -312,9 +327,19 @@ export function DashboardEvaluations() {
                           </span>
                         </td>
                         <td className="py-3 px-4">
-                          <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium ${e.wins ? 'text-[#4ade80] bg-[#1a2e1a]' : 'text-red-400 bg-red-500/10'}`}>
-                            {e.wins ? 'WIN' : 'LOSE'}
-                          </span>
+                          <div className="flex items-center gap-2">
+                            <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium ${e.wins ? 'text-[#4ade80] bg-[#1a2e1a]' : 'text-red-400 bg-red-500/10'}`}>
+                              {e.wins ? 'WIN' : 'LOSE'}
+                            </span>
+                            {typeof e.score === 'number' && (
+                              <span
+                                className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono font-medium bg-[#1a1a1a] border border-[#27272a] ${scoreToneClass(e.score)}`}
+                                title="Total weighted score"
+                              >
+                                {e.score.toFixed(2)}
+                              </span>
+                            )}
+                          </div>
                         </td>
                         <td className="py-3 px-4 text-xs text-gray-500">{e.evaluated_at ? formatTimeAgo(e.evaluated_at) : '—'}</td>
                         <td className="py-3 px-4">
@@ -332,6 +357,35 @@ export function DashboardEvaluations() {
                         <tr key={`${e.id}-detail`} className="bg-[#0f0f0f] border-b border-[#27272a]">
                           <td colSpan={8} className="py-4 px-4">
                             <div className="space-y-4">
+                              {e.element_scores && Object.keys(e.element_scores).length > 0 && (
+                                <div>
+                                  <p className="text-[10px] font-semibold text-gray-500 uppercase mb-2">Element scores</p>
+                                  <div className="grid grid-cols-3 sm:grid-cols-5 lg:grid-cols-9 gap-2">
+                                    {EVALUATION_ELEMENT_ORDER.filter((k) => e.element_scores && k in e.element_scores).map((key) => {
+                                      const s = e.element_scores?.[key] ?? 0;
+                                      return (
+                                        <div
+                                          key={key}
+                                          className="rounded border border-[#27272a] bg-[#141414] px-2 py-1.5 text-center"
+                                          title={`${formatElementLabel(key)}: ${s.toFixed(3)}`}
+                                        >
+                                          <div className="text-[9px] uppercase tracking-wider text-gray-500">{formatElementLabel(key)}</div>
+                                          <div className={`text-sm font-mono font-semibold ${scoreToneClass(s)}`}>{s.toFixed(2)}</div>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                  <div className="mt-2 flex items-center gap-3 text-xs">
+                                    <span className="text-gray-500">Total</span>
+                                    <span className={`font-mono font-semibold ${typeof e.score === 'number' ? scoreToneClass(e.score) : 'text-gray-400'}`}>
+                                      {typeof e.score === 'number' ? e.score.toFixed(3) : '—'}
+                                    </span>
+                                    <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium ${e.wins ? 'text-[#4ade80] bg-[#1a2e1a]' : 'text-red-400 bg-red-500/10'}`}>
+                                      {e.wins ? 'WIN' : 'LOSE'}
+                                    </span>
+                                  </div>
+                                </div>
+                              )}
                               <div>
                                 <p className="text-[10px] font-semibold text-gray-500 uppercase mb-1">Prompt</p>
                                 <p className="text-sm text-gray-300 whitespace-pre-wrap break-words">{e.prompt || '—'}</p>

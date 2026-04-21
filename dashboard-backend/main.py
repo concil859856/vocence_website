@@ -17,6 +17,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -42,10 +43,16 @@ UPLOADS_DIR.mkdir(exist_ok=True)
 
 
 def _cors_allow_origins() -> list[str]:
-    """Explicit origins (required when allow_credentials=True). Never use '*' with credentials."""
+    """Explicit origins (required when allow_credentials=True). Never use '*' with credentials.
+
+    Production default: vocence.ai only. Override via CORS_ORIGIN env var
+    (comma-separated) for dev/staging.
+    """
     raw = (os.environ.get("CORS_ORIGIN") or "").strip()
     if not raw:
         return [
+            "https://vocence.ai",
+            "https://www.vocence.ai",
             "http://localhost:5173",
             "http://127.0.0.1:5173",
             "http://localhost:3000",
@@ -97,9 +104,26 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_allow_origins(),
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=[
+        "Content-Type",
+        "Accept",
+        "Authorization",
+    ],
 )
+
+# TrustedHost: reject requests whose Host header isn't one we proxy to.
+_trusted_hosts_env = (os.environ.get("TRUSTED_HOSTS") or "").strip()
+_trusted_hosts = (
+    [h.strip() for h in _trusted_hosts_env.split(",") if h.strip()]
+    if _trusted_hosts_env
+    else [
+        "backend.vocence.ai",
+        "localhost",
+        "127.0.0.1",
+    ]
+)
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=_trusted_hosts)
 
 app.include_router(auth.router)
 app.include_router(dashboard.router)

@@ -1,6 +1,8 @@
 """
 PostgreSQL connection pool for Vocence owner database.
-Uses same DB as Vocence API (registered_miners, performance_metrics, etc.).
+Uses same DB as Vocence API (registered_miners, validator_evaluations,
+validator_registry, global_scoring_snapshots, graph_activity_leases,
+live_evaluation_pending, blocked_entities).
 """
 
 import os
@@ -20,7 +22,7 @@ def _build_connection_params() -> dict:
         "host": os.environ.get("POSTGRES_HOST", "localhost"),
         "port": int(os.environ.get("POSTGRES_PORT", "5432")),
         "user": os.environ.get("POSTGRES_USER", "vocence"),
-        "password": os.environ.get("POSTGRES_PASSWORD", "vocence"),
+        "password": os.environ.get("POSTGRES_PASSWORD", ""),
         "database": os.environ.get("POSTGRES_DB", "vocence"),
     }
 
@@ -64,28 +66,6 @@ async def health_check() -> bool:
         return False
 
 
-BLOG_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS blog_posts (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    title TEXT NOT NULL,
-    excerpt TEXT NOT NULL,
-    category TEXT NOT NULL DEFAULT 'Updates',
-    date TEXT NOT NULL,
-    read_time TEXT NOT NULL DEFAULT '5 min read',
-    image TEXT NOT NULL,
-    content TEXT NOT NULL,
-    featured BOOLEAN NOT NULL DEFAULT FALSE,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-"""
-
-
-async def ensure_blog_table() -> None:
-    """Create blog_posts table if it does not exist."""
-    async with acquire() as conn:
-        await conn.execute(BLOG_TABLE_SQL)
-
-
 async def ensure_evaluations_audio_columns() -> None:
     """Add original_audio_url and generated_audio_url to validator_evaluations if missing (e.g. existing DBs)."""
     async with acquire() as conn:
@@ -120,33 +100,6 @@ async def ensure_live_evaluation_pending_table() -> None:
     async with acquire() as conn:
         try:
             await conn.execute(LIVE_EVALUATION_PENDING_TABLE_SQL)
-        except Exception:
-            pass
-
-
-STUDIO_TTS_HISTORY_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS studio_tts_history (
-    id SERIAL PRIMARY KEY,
-    user_id VARCHAR(255) NOT NULL,
-    miner_hotkey VARCHAR(64) NOT NULL,
-    model_name VARCHAR(255) NOT NULL,
-    prompt_text TEXT NOT NULL,
-    style_instruction TEXT NOT NULL DEFAULT 'neutral voice',
-    audio_s3_bucket VARCHAR(128) NOT NULL,
-    audio_s3_key VARCHAR(512) NOT NULL,
-    expires_at TIMESTAMPTZ NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-CREATE INDEX IF NOT EXISTS idx_studio_tts_history_user_id ON studio_tts_history (user_id);
-CREATE INDEX IF NOT EXISTS idx_studio_tts_history_created_at ON studio_tts_history (created_at DESC);
-"""
-
-
-async def ensure_studio_tts_history_table() -> None:
-    """Create studio_tts_history table if it does not exist (Studio TTS feature)."""
-    async with acquire() as conn:
-        try:
-            await conn.execute(STUDIO_TTS_HISTORY_TABLE_SQL)
         except Exception:
             pass
 

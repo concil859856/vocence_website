@@ -283,6 +283,28 @@ def require_auth(authorization: str | None = Header(None, alias="Authorization")
     return decoded["userId"]
 
 
+def require_admin_session(authorization: str | None = Header(None, alias="Authorization")) -> str:
+    """Session-backed admin guard.
+
+    Requires a valid JWT issued by Google OAuth login AND that the decoded
+    email matches ADMIN_EMAIL. Replaces the weak ``X-Admin-Email`` header check
+    (anyone who knew the admin email could forge it).
+
+    Returns the verified admin email.
+    """
+    admin_email = (os.environ.get("ADMIN_EMAIL") or "").strip().lower()
+    if not admin_email:
+        raise HTTPException(status_code=503, detail="Admin email not configured")
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="No token provided")
+    token = authorization.split(" ", 1)[1]
+    decoded = _decode_token(token)
+    email = (decoded.get("email") or "").strip().lower()
+    if not email or email != admin_email:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return email
+
+
 async def _get_plan(conn, plan_code: str) -> PricingPlanOut | None:
     cursor = await conn.execute(
         """
