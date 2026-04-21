@@ -450,7 +450,7 @@ export const dashboardApi = {
   },
 
   getRegisteredUsers(
-    adminEmail: string,
+    _adminEmail: string,
     opts?: { page?: number; page_size?: number; q?: string }
   ): Promise<RegisteredUsersListResult> {
     const params = new URLSearchParams();
@@ -464,7 +464,7 @@ export const dashboardApi = {
   },
 
   getAdminWebsiteUsageTts(
-    adminEmail: string,
+    _adminEmail: string,
     opts?: { page?: number; page_size?: number; q?: string; user_id?: string | null }
   ): Promise<AdminPaginated<AdminTtsHistoryRow>> {
     const params = new URLSearchParams();
@@ -478,7 +478,7 @@ export const dashboardApi = {
   },
 
   getAdminWebsiteUsageCredits(
-    adminEmail: string,
+    _adminEmail: string,
     opts?: { page?: number; page_size?: number; q?: string; user_id?: string | null }
   ): Promise<AdminPaginated<AdminCreditTransactionRow>> {
     const params = new URLSearchParams();
@@ -492,7 +492,7 @@ export const dashboardApi = {
   },
 
   getAdminWebsiteUsagePayments(
-    adminEmail: string,
+    _adminEmail: string,
     opts?: { page?: number; page_size?: number; q?: string; user_id?: string | null }
   ): Promise<AdminPaginated<AdminPaymentRow>> {
     const params = new URLSearchParams();
@@ -506,7 +506,7 @@ export const dashboardApi = {
   },
 
   getAdminWebsiteUsageAuthHistory(
-    adminEmail: string,
+    _adminEmail: string,
     opts?: { page?: number; page_size?: number; q?: string; user_id?: string | null }
   ): Promise<AdminPaginated<AdminAuthHistoryRow>> {
     const params = new URLSearchParams();
@@ -519,13 +519,13 @@ export const dashboardApi = {
     });
   },
 
-  getAdminUserActivitySummary(adminEmail: string, userId: string): Promise<AdminUserActivitySummary> {
+  getAdminUserActivitySummary(_adminEmail: string, userId: string): Promise<AdminUserActivitySummary> {
     return fetchJson(`/api/dashboard/admin/website-usage/user/${encodeURIComponent(userId)}/summary`, {
       headers: adminAuthHeaders(),
     });
   },
 
-  getWebsiteOverview(adminEmail: string): Promise<WebsiteOverview> {
+  getWebsiteOverview(_adminEmail: string): Promise<WebsiteOverview> {
     return fetchJson('/api/dashboard/website-overview', {
       headers: adminAuthHeaders(),
     });
@@ -533,7 +533,7 @@ export const dashboardApi = {
 
   addValidator(
     data: { uid: number; hotkey: string; stake?: number; s3_bucket?: string },
-    adminEmail: string
+    _adminEmail: string
   ): Promise<DashboardValidator> {
     return fetchJson('/api/dashboard/validators', {
       method: 'POST',
@@ -547,7 +547,7 @@ export const dashboardApi = {
     });
   },
 
-  removeValidator(uid: number, adminEmail: string): Promise<{ ok: boolean }> {
+  removeValidator(uid: number, _adminEmail: string): Promise<{ ok: boolean }> {
     return fetchJson(`/api/dashboard/validators/${uid}`, {
       method: 'DELETE',
       headers: adminAuthHeaders(),
@@ -558,7 +558,7 @@ export const dashboardApi = {
     return fetchJson('/api/dashboard/blocklist');
   },
 
-  addBlocklist(hotkey: string, adminEmail: string): Promise<{ hotkeys: string[] }> {
+  addBlocklist(hotkey: string, _adminEmail: string): Promise<{ hotkeys: string[] }> {
     return fetchJson('/api/dashboard/blocklist', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...adminAuthHeaders() },
@@ -566,7 +566,7 @@ export const dashboardApi = {
     });
   },
 
-  removeBlocklist(hotkey: string, adminEmail: string): Promise<{ ok: boolean }> {
+  removeBlocklist(hotkey: string, _adminEmail: string): Promise<{ ok: boolean }> {
     return fetchJson(`/api/dashboard/blocklist/${encodeURIComponent(hotkey)}`, {
       method: 'DELETE',
       headers: adminAuthHeaders(),
@@ -582,7 +582,7 @@ export const dashboardApi = {
     return fetchJson(`/api/dashboard/blog/${id}`);
   },
 
-  uploadBlogImage(file: File, adminEmail: string): Promise<{ url: string }> {
+  uploadBlogImage(file: File, _adminEmail: string): Promise<{ url: string }> {
     const form = new FormData();
     form.append('file', file);
     return fetch(`${DASHBOARD_BASE}/api/dashboard/blog/upload`, {
@@ -597,7 +597,7 @@ export const dashboardApi = {
 
   createBlogPost(
     data: { title: string; excerpt: string; category: string; read_time?: string; image: string; content: string; featured?: boolean },
-    adminEmail: string
+    _adminEmail: string
   ): Promise<BlogPost> {
     return fetchJson('/api/dashboard/blog', {
       method: 'POST',
@@ -617,7 +617,7 @@ export const dashboardApi = {
   updateBlogPost(
     id: string,
     data: { title: string; excerpt: string; category: string; read_time?: string; image: string; content: string; featured?: boolean },
-    adminEmail: string
+    _adminEmail: string
   ): Promise<BlogPost> {
     return fetchJson(`/api/dashboard/blog/${id}`, {
       method: 'PATCH',
@@ -634,7 +634,7 @@ export const dashboardApi = {
     });
   },
 
-  deleteBlogPost(id: string, adminEmail: string): Promise<{ ok: boolean }> {
+  deleteBlogPost(id: string, _adminEmail: string): Promise<{ ok: boolean }> {
     return fetchJson(`/api/dashboard/blog/${id}`, {
       method: 'DELETE',
       headers: adminAuthHeaders(),
