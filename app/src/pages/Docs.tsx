@@ -50,7 +50,7 @@ const docLinks: DocLink[] = [
 const DOC_SECTIONS: DocSection[] = ['getting-started', 'core-concepts', 'architecture', 'api', 'pricing', 'sdk', 'models', 'cloning', 'integration', 'miner', 'validator', 'faq', 'troubleshooting'];
 
 /** Stable links to the open-source subnet repo (paths use `master` branch). */
-const GH = 'https://github.com/vocence-bt/vocence';
+const GH = 'https://github.com/vocence-78/vocence';
 const ghBlob = (path: string) => `${GH}/blob/master/${path}`;
 
 function RepoFileLink({ path, label }: { path: string; label: string }) {
@@ -1430,7 +1430,7 @@ uv run vocence serve`}</pre>
           rel="noopener noreferrer"
           className="inline-flex items-center gap-2 text-[#DFFF00] hover:underline font-medium"
         >
-          github.com/vocence-bt/vocence
+          github.com/vocence-78/vocence
           <ExternalLink size={16} />
         </a>
       </section>

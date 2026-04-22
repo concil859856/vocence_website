@@ -4,7 +4,7 @@ import { TELEGRAM_INVITE_URL } from '../config/socialLinks';
 
 const SOCIAL_LINKS = [
   { href: 'https://x.com/vocence_bt', label: 'Twitter / X', icon: Twitter },
-  { href: 'https://github.com/vocence-bt', label: 'GitHub', icon: Github },
+  { href: 'https://github.com/vocence-78/vocence', label: 'GitHub', icon: Github },
   { href: 'https://discord.gg/TWmfwJAtXG', label: 'Discord', icon: 'discord' as const },
   { href: TELEGRAM_INVITE_URL, label: 'Telegram', icon: Send },
 ] as const;
@@ -34,7 +34,7 @@ export function Footer() {
     product: [
       { label: 'Pricing', href: '/pricing' },
       { label: 'Integrations', href: '#' },
-      { label: 'Changelog', href: 'https://github.com/Vocence-bt/vocence/blob/master/CHANGELOG.md' },
+      { label: 'Changelog', href: 'https://github.com/vocence-78/vocence/blob/master/CHANGELOG.md' },
       { label: 'Documentation', href: '/docs/getting-started' },
       { label: 'Status', href: '#' },
     ],
@@ -165,10 +165,9 @@ export function Footer() {
           <p className="text-sm text-[#666]">
             © 2026 Vocence. Powered by Bittensor.
           </p>
-          <div className="flex items-center gap-2 px-3 py-1.5 rounded-full border border-white/10 bg-white/5">
-            <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-            <span className="text-xs font-mono text-[#A7B0B7]">Mainnet</span>
-          </div>
+          <p className="text-xs text-[#666]">
+            All rights reserved. Vocence and the Vocence logo are trademarks of Vocence.
+          </p>
         </div>
       </div>
     </footer>

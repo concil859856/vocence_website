@@ -18,7 +18,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import gsap from 'gsap';
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { AuthModal } from '../components/AuthModal';
 import { VoiceDesignWavePlayer } from '../components/VoiceDesignWavePlayer';
@@ -58,6 +58,44 @@ import {
 import { cn } from '@/lib/utils';
 
 const USER_FACING_TRY_AGAIN = 'Something went wrong. Please try again later.';
+
+// Temporary flag: while launching, only Text-to-Speech is enabled in Studio.
+// Flip back to `true` to re-enable the other Studio views.
+const ENABLE_NON_TTS_STUDIO_VIEWS = false;
+
+const STUDIO_VIEW_LABELS: Record<StudioView, string> = {
+  home: 'Studio Home',
+  tts: 'Text-to-Speech',
+  stt: 'Speech-to-Text',
+  chat: 'Voice Chat',
+  cloning: 'Voice Cloning',
+  'voice-design': 'Voice Design',
+  'my-voices': 'My Voices',
+  music: 'Text-to-Music',
+  playbooks: 'Playbooks',
+  history: 'History',
+};
+
+function ComingSoonView({ view }: { view: StudioView }) {
+  const label = STUDIO_VIEW_LABELS[view] ?? 'This feature';
+  return (
+    <div className="flex min-h-[60vh] items-center justify-center">
+      <div className="card-vocence max-w-md w-full p-10 text-center">
+        <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-[#DFFF00]/30 bg-[#DFFF00]/10 text-[#DFFF00] text-xs font-medium tracking-wide mb-5">
+          Coming soon
+        </div>
+        <h2 className="text-2xl font-semibold mb-3">{label}</h2>
+        <p className="text-sm text-[#A7B0B7]">
+          We're putting the finishing touches on this feature. In the meantime,
+          try out Text-to-Speech — it's live now.
+        </p>
+        <Link to="/studio/tts" className="btn-primary inline-flex mt-6">
+          Go to Text-to-Speech
+        </Link>
+      </div>
+    </div>
+  );
+}
 
 function userFacingApiError(_e: unknown): string {
   return USER_FACING_TRY_AGAIN;
@@ -2148,16 +2186,17 @@ export function Studio() {
 
       <StudioShell activeView={activeView}>
         <div className="max-w-6xl mx-auto">
-            {activeView === 'home' && <StudioHome />}
+            {activeView !== 'tts' && <ComingSoonView view={activeView} />}
+            {ENABLE_NON_TTS_STUDIO_VIEWS && activeView === 'home' && <StudioHome />}
             {activeView === 'tts' && renderTTSView()}
-            {activeView === 'stt' && renderSTTView()}
-            {activeView === 'chat' && renderChatView()}
-            {activeView === 'cloning' && renderCloningView()}
-            {activeView === 'voice-design' && renderVoiceDesignView()}
-            {activeView === 'my-voices' && renderMyVoicesView()}
-            {activeView === 'music' && <StudioMusic />}
-            {activeView === 'playbooks' && <StudioPlaybooks />}
-            {activeView === 'history' && (
+            {ENABLE_NON_TTS_STUDIO_VIEWS && activeView === 'stt' && renderSTTView()}
+            {ENABLE_NON_TTS_STUDIO_VIEWS && activeView === 'chat' && renderChatView()}
+            {ENABLE_NON_TTS_STUDIO_VIEWS && activeView === 'cloning' && renderCloningView()}
+            {ENABLE_NON_TTS_STUDIO_VIEWS && activeView === 'voice-design' && renderVoiceDesignView()}
+            {ENABLE_NON_TTS_STUDIO_VIEWS && activeView === 'my-voices' && renderMyVoicesView()}
+            {ENABLE_NON_TTS_STUDIO_VIEWS && activeView === 'music' && <StudioMusic />}
+            {ENABLE_NON_TTS_STUDIO_VIEWS && activeView === 'playbooks' && <StudioPlaybooks />}
+            {ENABLE_NON_TTS_STUDIO_VIEWS && activeView === 'history' && (
               <div className="space-y-6">
                 <div>
                   <h2 className="text-2xl font-semibold mb-2">History</h2>

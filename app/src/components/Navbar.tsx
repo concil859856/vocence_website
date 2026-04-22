@@ -25,7 +25,7 @@ export function Navbar() {
   const navLinks = [
     { path: '/', label: 'Overview' },
     { path: '/dashboard', label: 'Dashboard' },
-    { path: '/studio/home', label: 'Studio' },
+    { path: '/studio/tts', label: 'Studio' },
     { path: '/docs/getting-started', label: 'Docs' },
     { path: '/blog', label: 'Blog' },
     ...(isAdmin
