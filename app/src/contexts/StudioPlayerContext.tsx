@@ -6,6 +6,9 @@ export interface Track {
   title: string;
   subtitle?: string;
   image?: string;
+  /** Set for user-generated audio (TTS/STT/clone/voice-design results, history items).
+   *  When present, the StudioPlayerBar exposes a Download button. Demo samples omit this. */
+  downloadFilename?: string;
 }
 
 type RepeatMode = 'off' | 'all' | 'one';

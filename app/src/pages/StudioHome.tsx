@@ -56,15 +56,15 @@ interface CloneExampleItem {
 }
 
 const VOICE_DESIGN_SAMPLES: VoiceShowcaseItem[] = [
-  { id: 'vd1', name: 'Aurora', avatar: '/samples/images/voice_1.webp', tags: ['Warm', 'Narrative', 'Female'], description: 'Soft, warm storytelling voice ideal for audiobooks and meditation guides.', audioSrc: '/samples/audio/aurora.wav' },
-  { id: 'vd2', name: 'Marcus', avatar: '/samples/images/voice_2.webp', tags: ['Deep', 'Authoritative', 'Male'], description: 'Rich baritone with confident delivery for documentaries and trailers.', audioSrc: '/samples/audio/marcus.wav' },
-  { id: 'vd3', name: 'Yuki', avatar: '/samples/images/voice_3.webp', tags: ['Bright', 'Energetic', 'Female'], description: 'Cheerful and animated voice perfect for gaming and social media.', audioSrc: '/samples/audio/yuki.wav' },
-  { id: 'vd4', name: 'Rafael', avatar: '/samples/images/voice_4.webp', tags: ['Smooth', 'Conversational', 'Male'], description: 'Natural, relaxed tone great for podcasts and casual narration.', audioSrc: '/samples/audio/rafael.wav' },
-  { id: 'vd5', name: 'Ember', avatar: '/samples/images/voice_5.webp', tags: ['Dramatic', 'Intense', 'Female'], description: 'Bold and passionate delivery for ads, promos, and dramatic content.', audioSrc: '/samples/audio/ember.wav' },
-  { id: 'vd6', name: 'Kai', avatar: '/samples/images/voice_6.webp', tags: ['Calm', 'Soothing', 'Male'], description: 'Gentle, calming presence ideal for wellness apps and ASMR.', audioSrc: '/samples/audio/kai.wav' },
-  { id: 'vd7', name: 'Luna', avatar: '/samples/images/voice_7.webp', tags: ['Ethereal', 'Soft', 'Female'], description: 'Dreamy, whispery voice for fantasy narration and ambient content.', audioSrc: '/samples/audio/luna.wav' },
-  { id: 'vd8', name: 'Dante', avatar: '/samples/images/voice_8.webp', tags: ['Bold', 'Cinematic', 'Male'], description: 'Powerful voice for movie trailers, epic intros, and announcements.', audioSrc: '/samples/audio/dante.wav' },
-  { id: 'vd9', name: 'Aria', avatar: '/samples/images/voice_9.webp', tags: ['Friendly', 'Clear', 'Female'], description: 'Approachable and professional voice for corporate and e-learning.', audioSrc: '/samples/audio/aria.wav' },
+  { id: 'vd1', name: 'Aurora', avatar: asset('voice-design.aurora'), tags: ['Warm', 'Narrative', 'Female'], description: 'Soft, warm storytelling voice ideal for audiobooks and meditation guides.', audioSrc: asset('voice-design-audio.aurora') },
+  { id: 'vd2', name: 'Marcus', avatar: asset('voice-design.marcus'), tags: ['Deep', 'Authoritative', 'Male'], description: 'Rich baritone with confident delivery for documentaries and trailers.', audioSrc: asset('voice-design-audio.marcus') },
+  { id: 'vd3', name: 'Yuki', avatar: asset('voice-design.yuki'), tags: ['Bright', 'Energetic', 'Female'], description: 'Cheerful and animated voice perfect for gaming and social media.', audioSrc: asset('voice-design-audio.yuki') },
+  { id: 'vd4', name: 'Rafael', avatar: asset('voice-design.rafael'), tags: ['Smooth', 'Conversational', 'Male'], description: 'Natural, relaxed tone great for podcasts and casual narration.', audioSrc: asset('voice-design-audio.rafael') },
+  { id: 'vd5', name: 'Ember', avatar: asset('voice-design.ember'), tags: ['Dramatic', 'Intense', 'Female'], description: 'Bold and passionate delivery for ads, promos, and dramatic content.', audioSrc: asset('voice-design-audio.ember') },
+  { id: 'vd6', name: 'Kai', avatar: asset('voice-design.kai'), tags: ['Calm', 'Soothing', 'Male'], description: 'Gentle, calming presence ideal for wellness apps and ASMR.', audioSrc: asset('voice-design-audio.kai') },
+  { id: 'vd7', name: 'Luna', avatar: asset('voice-design.luna'), tags: ['Ethereal', 'Soft', 'Female'], description: 'Dreamy, whispery voice for fantasy narration and ambient content.', audioSrc: asset('voice-design-audio.luna') },
+  { id: 'vd8', name: 'Dante', avatar: asset('voice-design.dante'), tags: ['Bold', 'Cinematic', 'Male'], description: 'Powerful voice for movie trailers, epic intros, and announcements.', audioSrc: asset('voice-design-audio.dante') },
+  { id: 'vd9', name: 'Aria', avatar: asset('voice-design.aria'), tags: ['Friendly', 'Clear', 'Female'], description: 'Approachable and professional voice for corporate and e-learning.', audioSrc: asset('voice-design-audio.aria') },
 ];
 
 const CLONE_EXAMPLES: CloneExampleItem[] = [

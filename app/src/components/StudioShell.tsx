@@ -1,8 +1,6 @@
 import { Link, useNavigate } from 'react-router-dom';
 import { Home } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
-import { StudioPlayerProvider } from '../contexts/StudioPlayerContext';
-import { StudioPlayerBar } from './StudioPlayerBar';
 import { studioSidebarItems, type StudioView } from '../studio/studioNav';
 
 type Props = {
@@ -17,7 +15,6 @@ export function StudioShell({ activeView, children, mainClassName = '' }: Props)
   const { user } = useAuth();
 
   return (
-    <StudioPlayerProvider>
       <div className="flex">
         <aside className="studio-sidebar w-64 border-r border-white/5 bg-[#07080A] h-screen sticky top-0 p-4 hidden lg:flex lg:flex-col overflow-y-auto">
           <button
@@ -90,8 +87,5 @@ export function StudioShell({ activeView, children, mainClassName = '' }: Props)
 
         <main className={`studio-content flex-1 p-6 lg:p-10 pb-24 lg:pb-10 ${mainClassName}`.trim()}>{children}</main>
       </div>
-
-      <StudioPlayerBar />
-    </StudioPlayerProvider>
   );
 }

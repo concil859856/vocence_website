@@ -1,6 +1,24 @@
 import { useState, useEffect } from 'react';
-import { Play, Pause, X, Volume2, VolumeX, SkipBack, SkipForward, Shuffle, Repeat, Repeat1 } from 'lucide-react';
+import { Play, Pause, X, Volume2, VolumeX, SkipBack, SkipForward, Shuffle, Repeat, Repeat1, Download } from 'lucide-react';
 import { useStudioPlayer } from '../contexts/StudioPlayerContext';
+
+async function downloadTrack(url: string, filename: string) {
+  try {
+    const res = await fetch(url, { mode: 'cors' });
+    const blob = await res.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = objectUrl;
+    a.download = filename;
+    a.rel = 'noopener';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 5000);
+  } catch {
+    window.open(url, '_blank', 'noopener,noreferrer');
+  }
+}
 
 function formatTime(s: number): string {
   if (!isFinite(s) || s < 0) return '0:00';
@@ -141,6 +159,18 @@ export function StudioPlayerBar() {
           <input type="range" min={0} max={1} step={0.01} value={volume}
             onChange={(e) => setVolume(Number(e.target.value))}
             className="w-14 h-[3px] appearance-none bg-white/[0.08] rounded-full cursor-pointer hidden sm:block [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-[10px] [&::-webkit-slider-thumb]:h-[10px] [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white/70" />
+
+          {/* Download (only for user-generated audio) */}
+          {track.downloadFilename && (
+            <button
+              onClick={() => void downloadTrack(track.src, track.downloadFilename!)}
+              className="text-white/20 hover:text-white/70 transition-colors p-1 ml-1 shrink-0"
+              aria-label="Download"
+              title="Download"
+            >
+              <Download size={13} />
+            </button>
+          )}
 
           {/* Close */}
           <button onClick={stop} className="text-white/15 hover:text-white/50 transition-colors p-1 ml-0.5 shrink-0" aria-label="Close">

@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Download, Play } from 'lucide-react';
+import { ArrowLeft, Download, Play, Pause } from 'lucide-react';
 import { StudioShell } from '../components/StudioShell';
-import { VoiceDesignWavePlayer } from '../components/VoiceDesignWavePlayer';
 import { AuthModal } from '../components/AuthModal';
 import { useAuth } from '../contexts/AuthContext';
+import { useStudioPlayer } from '../contexts/StudioPlayerContext';
 import { dashboardApi, type StudioDesignedVoiceItem } from '../services/dashboardApi';
 import { CREDIT_MY_VOICE_GENERATE } from '../studio/creditCosts';
 const USER_FACING_TRY_AGAIN = 'Something went wrong. Please try again later.';
@@ -33,6 +33,7 @@ async function triggerBrowserDownload(url: string | null, filename: string) {
 }
 
 export function StudioDesignedVoiceWorkspace() {
+  const player = useStudioPlayer();
   const { voiceId: voiceIdParam } = useParams<{ voiceId: string }>();
   const navigate = useNavigate();
   const { user, isAuthenticated, updateCredits } = useAuth();
@@ -224,7 +225,35 @@ export function StudioDesignedVoiceWorkspace() {
                 </h2>
                 {result ? (
                   <div className="space-y-4">
-                    <VoiceDesignWavePlayer src={result.audioUrl} variantKey={`workspace-out-${result.id}`} />
+                    {(() => {
+                      const isThis = player.track?.src === result.audioUrl;
+                      const isPlaying = isThis && player.playing;
+                      const onPlayPause = () => {
+                        if (isPlaying) { player.pause(); return; }
+                        if (isThis) { player.resume(); return; }
+                        player.play({
+                          src: result.audioUrl,
+                          title: 'Designed voice',
+                          subtitle: 'Generated audio',
+                          downloadFilename: `vocence-designed-${result.id}.wav`,
+                        });
+                      };
+                      return (
+                        <div className="flex items-center gap-3">
+                          <button
+                            type="button"
+                            onClick={onPlayPause}
+                            className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 transition-colors ${
+                              isPlaying ? 'bg-[#DFFF00] text-[#07080A]' : 'bg-white/10 text-white hover:bg-white/20'
+                            }`}
+                            aria-label={isPlaying ? 'Pause' : 'Play'}
+                          >
+                            {isPlaying ? <Pause size={18} fill="currentColor" /> : <Play size={18} className="ml-0.5" fill="currentColor" />}
+                          </button>
+                          <span className="text-xs text-[#666]">Plays in the bottom player.</span>
+                        </div>
+                      );
+                    })()}
                     <div className="flex flex-wrap gap-2">
                       <button
                         type="button"

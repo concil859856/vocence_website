@@ -1,11 +1,13 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
+import { useStudioPlayer } from '../contexts/StudioPlayerContext';
 import {
   ArrowLeft,
   Search,
   Copy,
   Play,
+  Pause,
   Download,
   MoreHorizontal,
 } from 'lucide-react';
@@ -40,6 +42,7 @@ interface HistoryItem {
 export function History() {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const player = useStudioPlayer();
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterType, setFilterType] = useState<string>('all');
@@ -338,18 +341,42 @@ export function History() {
                         <div className="flex items-center justify-end gap-2">
                           {item.audioUrl != null && !item.expired ? (
                             <>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  navigate(
-                                    `/studio/result/${item.id.replace(/^api-/, '')}${item.resultQuery || ''}`
-                                  )
-                                }
-                                className="p-1.5 text-[#666] hover:text-white"
-                                title="Play"
-                              >
-                                <Play size={16} />
-                              </button>
+                              {(() => {
+                                const isThis = !!item.audioUrl && player.track?.src === item.audioUrl;
+                                const isPlaying = isThis && player.playing;
+                                const onPlayPause = () => {
+                                  if (!item.audioUrl) return;
+                                  if (isPlaying) { player.pause(); return; }
+                                  if (isThis) { player.resume(); return; }
+                                  const rawId = item.id.replace(/^api-/, '');
+                                  const ext = getFilenameFromAudioUrl(item.audioUrl);
+                                  const downloadFilename =
+                                    item.type === 'cloning'
+                                      ? `vocence-clone-${rawId}.${ext}`
+                                      : item.type === 'voice_design'
+                                        ? `vocence-voice-design-${rawId}.${ext}`
+                                        : `vocence-${item.type}-${rawId}.${ext}`;
+                                  player.play({
+                                    src: item.audioUrl,
+                                    title: item.content?.slice(0, 80) || `${item.type.toUpperCase()} result`,
+                                    subtitle: item.model,
+                                    downloadFilename,
+                                  });
+                                };
+                                return (
+                                  <button
+                                    type="button"
+                                    onClick={onPlayPause}
+                                    className={`p-1.5 transition-colors ${
+                                      isPlaying ? 'text-[#DFFF00]' : 'text-[#666] hover:text-white'
+                                    }`}
+                                    title={isPlaying ? 'Pause' : 'Play'}
+                                    aria-label={isPlaying ? 'Pause' : 'Play'}
+                                  >
+                                    {isPlaying ? <Pause size={16} /> : <Play size={16} />}
+                                  </button>
+                                );
+                              })()}
                               <button
                                 type="button"
                                 className="p-1.5 text-[#666] hover:text-white"

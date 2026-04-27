@@ -5,8 +5,6 @@ import {
   Play,
   Pause,
   Download,
-  Volume2,
-  X,
   Send,
   Square,
   Search,
@@ -21,7 +19,6 @@ import gsap from 'gsap';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { AuthModal } from '../components/AuthModal';
-import { VoiceDesignWavePlayer } from '../components/VoiceDesignWavePlayer';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { MyVoiceCardArt } from '../components/MyVoiceCardArt';
 import { StudioShell } from '../components/StudioShell';
@@ -61,7 +58,7 @@ const USER_FACING_TRY_AGAIN = 'Something went wrong. Please try again later.';
 
 // Temporary flag: while launching, only Text-to-Speech is enabled in Studio.
 // Flip back to `true` to re-enable the other Studio views.
-const ENABLE_NON_TTS_STUDIO_VIEWS = false;
+const ENABLE_VOICE_CHAT = false;
 
 const STUDIO_VIEW_LABELS: Record<StudioView, string> = {
   home: 'Studio Home',
@@ -204,6 +201,7 @@ export function Studio() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { user, isAuthenticated, updateCredits } = useAuth();
+  const player = useStudioPlayer();
   const routeParams = useParams<{ view?: string; playbookId?: string }>();
   const routeViewRaw = routeParams.playbookId ? 'playbooks' : (routeParams.view || 'home').toLowerCase();
   const activeView: StudioView = STUDIO_VIEWS.includes(routeViewRaw as StudioView)
@@ -220,13 +218,6 @@ export function Studio() {
     'all' | 'tts' | 'stt' | 'clone' | 'voice_design' | 'music'
   >('all');
   const [studioHistoryPage, setStudioHistoryPage] = useState(1);
-  const [resultOverlay, setResultOverlay] = useState<{
-    id: number;
-    audioUrl: string;
-    promptText: string;
-    styleInstruction: string;
-    modelName: string;
-  } | null>(null);
   const [chatMessages, setChatMessages] = useState([
     { role: 'ai', content: "Hello! I'm your Vocence voice assistant. How can I help you today?" },
     { role: 'user', content: 'Tell me about the Bittensor network rewards for this subnet.' },
@@ -289,11 +280,6 @@ export function Studio() {
   const studioRef = useRef<HTMLDivElement>(null);
   const sttFileInputRef = useRef<HTMLInputElement>(null);
   const cloningFileInputRef = useRef<HTMLInputElement>(null);
-  const cloneAudioRef = useRef<HTMLAudioElement>(null);
-  const overlayAudioRef = useRef<HTMLAudioElement>(null);
-  const [overlayPlaying, setOverlayPlaying] = useState(false);
-  const [overlayCurrentTime, setOverlayCurrentTime] = useState(0);
-  const [overlayDuration, setOverlayDuration] = useState(0);
 
   useEffect(() => {
     gsap.fromTo(
@@ -307,13 +293,6 @@ export function Studio() {
       { opacity: 1, y: 0, duration: 0.5, delay: 0.2 }
     );
   }, []);
-
-  useEffect(() => {
-    if (resultOverlay) {
-      setOverlayCurrentTime(0);
-      setOverlayDuration(0);
-    }
-  }, [resultOverlay?.id]);
 
   useEffect(() => {
     if (activeView === 'history' && user) {
@@ -591,37 +570,6 @@ export function Studio() {
     });
   };
 
-  const formatTime = (sec: number) => {
-    const m = Math.floor(sec / 60);
-    const s = Math.floor(sec % 60);
-    return `${m}:${s.toString().padStart(2, '0')}`;
-  };
-
-  const handleOverlayPlayPause = () => {
-    const el = overlayAudioRef.current;
-    if (!el) return;
-    if (el.paused) {
-      el.play();
-      setOverlayPlaying(true);
-    } else {
-      el.pause();
-      setOverlayPlaying(false);
-    }
-  };
-
-  const handleOverlaySeek = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const el = overlayAudioRef.current;
-    if (!el) return;
-    const v = parseFloat(e.target.value);
-    el.currentTime = v;
-    setOverlayCurrentTime(v);
-  };
-
-  const handleOverlayVolume = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const v = parseFloat(e.target.value);
-    if (overlayAudioRef.current) overlayAudioRef.current.volume = v;
-  };
-
   const triggerBrowserDownload = async (url: string | null, filename: string) => {
     if (!url?.trim()) return;
     try {
@@ -641,11 +589,6 @@ export function Studio() {
       // Fallback: open in new tab if fetch or download fails
       window.open(url, '_blank', 'noopener,noreferrer');
     }
-  };
-
-  const handleOverlayDownload = () => {
-    if (!resultOverlay?.audioUrl) return;
-    void triggerBrowserDownload(resultOverlay.audioUrl, `vocence-tts-${resultOverlay.id}.wav`);
   };
 
   const saveToHistory = (item: Omit<HistoryItem, 'id' | 'timestamp' | 'date'>) => {
@@ -719,12 +662,11 @@ export function Studio() {
           token
         )
         .then((res) => {
-          setResultOverlay({
-            id: res.id,
-            audioUrl: res.audio_url,
-            promptText: ttsText.trim(),
-            styleInstruction: (ttsStylePrompt.trim() || 'neutral voice'),
-            modelName: selectedModel.display_name,
+          player.play({
+            src: res.audio_url,
+            title: ttsText.trim().slice(0, 80) || 'Generated audio',
+            subtitle: (ttsStylePrompt.trim() || 'neutral voice'),
+            downloadFilename: `vocence-tts-${res.id}.wav`,
           });
           setStudioHistory((prev) => [
             {
@@ -1188,9 +1130,35 @@ export function Studio() {
                         </span>
                       </div>
                       <p className="text-sm text-[#A7B0B7] leading-relaxed line-clamp-4 mb-4">{opt.instruction}</p>
-                      {opt.url ? (
-                        <VoiceDesignWavePlayer src={opt.url} variantKey={opt.key} />
-                      ) : (
+                      {opt.url ? (() => {
+                        const isThis = player.track?.src === opt.url;
+                        const isPlaying = isThis && player.playing;
+                        const onPlayPause = (e: React.MouseEvent) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          if (isPlaying) { player.pause(); return; }
+                          if (isThis) { player.resume(); return; }
+                          player.play({
+                            src: opt.url,
+                            title: `Voice option ${opt.key}`,
+                            subtitle: opt.instruction.slice(0, 80),
+                            downloadFilename: `vocence-voice-design-${opt.key}.wav`,
+                          });
+                        };
+                        return (
+                          <button
+                            type="button"
+                            onClick={onPlayPause}
+                            className={`inline-flex items-center gap-2 px-3 py-2 rounded-full text-xs font-medium transition-colors ${
+                              isPlaying ? 'bg-[#DFFF00] text-[#07080A]' : 'bg-white/10 text-white hover:bg-white/20'
+                            }`}
+                            aria-label={isPlaying ? 'Pause' : 'Play'}
+                          >
+                            {isPlaying ? <Pause size={14} fill="currentColor" /> : <Play size={14} className="ml-0.5" fill="currentColor" />}
+                            {isPlaying ? 'Playing' : 'Play preview'}
+                          </button>
+                        );
+                      })() : (
                         <p className="text-xs text-red-300/90">Audio unavailable.</p>
                       )}
                     </label>
@@ -1365,9 +1333,34 @@ export function Studio() {
                         </p>
                         <p className="text-sm text-[#C5CAD1] leading-relaxed line-clamp-3">“{v.ref_script}”</p>
                       </div>
-                      {v.audio_url && !v.expired ? (
-                        <VoiceDesignWavePlayer src={v.audio_url} variantKey={`my-voice-${v.id}`} />
-                      ) : (
+                      {v.audio_url && !v.expired ? (() => {
+                        const isThis = player.track?.src === v.audio_url;
+                        const isPlaying = isThis && player.playing;
+                        const onPlayPause = (e: React.MouseEvent) => {
+                          e.stopPropagation();
+                          if (isPlaying) { player.pause(); return; }
+                          if (isThis) { player.resume(); return; }
+                          player.play({
+                            src: v.audio_url ?? '',
+                            title: v.display_name || `My Voice ${v.id}`,
+                            subtitle: v.ref_script?.slice(0, 80),
+                            downloadFilename: `vocence-voice-design-${v.id}.wav`,
+                          });
+                        };
+                        return (
+                          <button
+                            type="button"
+                            onClick={onPlayPause}
+                            className={`inline-flex items-center gap-2 px-3 py-2 rounded-full text-xs font-medium transition-colors ${
+                              isPlaying ? 'bg-[#DFFF00] text-[#07080A]' : 'bg-white/10 text-white hover:bg-white/20'
+                            }`}
+                            aria-label={isPlaying ? 'Pause' : 'Play'}
+                          >
+                            {isPlaying ? <Pause size={14} fill="currentColor" /> : <Play size={14} className="ml-0.5" fill="currentColor" />}
+                            {isPlaying ? 'Playing' : 'Play sample'}
+                          </button>
+                        );
+                      })() : (
                         <p className="text-xs text-amber-200/85 rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2">
                           Sample audio is no longer available. Create a new voice in Voice Design.
                         </p>
@@ -2070,7 +2063,34 @@ export function Studio() {
               <p className="text-xs text-[#666] mt-2">Language: {cloneResult.language}</p>
             )}
           </div>
-          <audio ref={cloneAudioRef} src={cloneResult.audioUrl} className="w-full" controls />
+          {(() => {
+            const isThis = player.track?.src === cloneResult.audioUrl;
+            const isPlaying = isThis && player.playing;
+            const onPlayPause = () => {
+              if (isPlaying) { player.pause(); return; }
+              if (isThis) { player.resume(); return; }
+              player.play({
+                src: cloneResult.audioUrl,
+                title: cloneResult.referenceText.slice(0, 80) || 'Cloned voice',
+                subtitle: 'Voice clone result',
+                downloadFilename: `vocence-clone-${cloneResult.id}.wav`,
+              });
+            };
+            return (
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={onPlayPause}
+                  className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 transition-colors ${
+                    isPlaying ? 'bg-[#DFFF00] text-[#07080A]' : 'bg-white/10 text-white hover:bg-white/20'
+                  }`}
+                  aria-label={isPlaying ? 'Pause' : 'Play'}
+                >
+                  {isPlaying ? <Pause size={18} fill="currentColor" /> : <Play size={18} className="ml-0.5" fill="currentColor" />}
+                </button>
+                <span className="text-xs text-[#666]">Plays in the bottom player.</span>
+              </div>
+            );
+          })()}
           <div className="flex flex-wrap gap-3">
             <button
               type="button"
@@ -2104,99 +2124,19 @@ export function Studio() {
 
   return (
     <div ref={studioRef} className="min-h-screen bg-[#07080A] pt-20">
-      {/* TTS result overlay – raised panel with prompt + capsule player */}
-      {resultOverlay && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60" onClick={() => setResultOverlay(null)}>
-          <div
-            className="bg-[#0f1114] border border-white/10 rounded-2xl shadow-2xl max-w-lg w-full overflow-hidden"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="p-6">
-              <div className="flex items-start justify-between gap-4 mb-4">
-                <h3 className="text-lg font-semibold text-white">Your generated audio</h3>
-                <button
-                  onClick={() => setResultOverlay(null)}
-                  className="p-1.5 rounded-lg text-[#666] hover:text-white hover:bg-white/10 transition-colors"
-                  aria-label="Close"
-                >
-                  <X size={20} />
-                </button>
-              </div>
-              <div className="space-y-2 mb-4">
-                <p className="text-sm text-[#A7B0B7]">
-                  <span className="text-[#666]">Content:</span> {resultOverlay.promptText}
-                </p>
-                <p className="text-sm text-[#A7B0B7]">
-                  <span className="text-[#666]">Style:</span> {resultOverlay.styleInstruction}
-                </p>
-                <p className="text-xs text-[#666]">Model: {resultOverlay.modelName}</p>
-              </div>
-              <audio
-                ref={overlayAudioRef}
-                src={resultOverlay.audioUrl}
-                onLoadedMetadata={() => setOverlayDuration(overlayAudioRef.current?.duration ?? 0)}
-                onTimeUpdate={() => setOverlayCurrentTime(overlayAudioRef.current?.currentTime ?? 0)}
-                onEnded={() => setOverlayPlaying(false)}
-                onPlay={() => setOverlayPlaying(true)}
-                onPause={() => setOverlayPlaying(false)}
-              />
-              {/* Capsule-style player: play, time, progress, volume, download */}
-              <div className="flex items-center gap-3 p-3 rounded-full bg-[#0a0a0a] border border-white/10">
-                <button
-                  onClick={handleOverlayPlayPause}
-                  className="w-10 h-10 rounded-full bg-white/10 flex items-center justify-center text-white hover:bg-white/20 shrink-0"
-                  aria-label={overlayPlaying ? 'Pause' : 'Play'}
-                >
-                  {overlayPlaying ? <Pause size={18} fill="currentColor" /> : <Play size={18} className="ml-0.5" fill="currentColor" />}
-                </button>
-                <span className="text-sm text-white tabular-nums shrink-0">
-                  {formatTime(overlayCurrentTime)} / {formatTime(overlayDuration)}
-                </span>
-                <input
-                  type="range"
-                  min={0}
-                  max={overlayDuration || 1}
-                  step={0.1}
-                  value={overlayCurrentTime}
-                  onChange={handleOverlaySeek}
-                  className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer bg-white/10 accent-[#DFFF00]"
-                />
-                <Volume2 size={18} className="text-[#A7B0B7] shrink-0" />
-                <input
-                  type="range"
-                  min={0}
-                  max={1}
-                  step={0.05}
-                  defaultValue={1}
-                  onChange={handleOverlayVolume}
-                  className="w-16 h-1.5 rounded-full appearance-none cursor-pointer bg-white/10 accent-[#DFFF00] shrink-0"
-                />
-                <button
-                  onClick={handleOverlayDownload}
-                  className="w-10 h-10 rounded-full bg-white/10 flex items-center justify-center text-white hover:bg-white/20 shrink-0"
-                  aria-label="Download"
-                >
-                  <Download size={18} />
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
       <StudioShell activeView={activeView}>
         <div className="max-w-6xl mx-auto">
-            {activeView !== 'tts' && <ComingSoonView view={activeView} />}
-            {ENABLE_NON_TTS_STUDIO_VIEWS && activeView === 'home' && <StudioHome />}
+            {activeView === 'chat' && !ENABLE_VOICE_CHAT && <ComingSoonView view={activeView} />}
+            {activeView === 'home' && <StudioHome />}
             {activeView === 'tts' && renderTTSView()}
-            {ENABLE_NON_TTS_STUDIO_VIEWS && activeView === 'stt' && renderSTTView()}
-            {ENABLE_NON_TTS_STUDIO_VIEWS && activeView === 'chat' && renderChatView()}
-            {ENABLE_NON_TTS_STUDIO_VIEWS && activeView === 'cloning' && renderCloningView()}
-            {ENABLE_NON_TTS_STUDIO_VIEWS && activeView === 'voice-design' && renderVoiceDesignView()}
-            {ENABLE_NON_TTS_STUDIO_VIEWS && activeView === 'my-voices' && renderMyVoicesView()}
-            {ENABLE_NON_TTS_STUDIO_VIEWS && activeView === 'music' && <StudioMusic />}
-            {ENABLE_NON_TTS_STUDIO_VIEWS && activeView === 'playbooks' && <StudioPlaybooks />}
-            {ENABLE_NON_TTS_STUDIO_VIEWS && activeView === 'history' && (
+            {activeView === 'stt' && renderSTTView()}
+            {ENABLE_VOICE_CHAT && activeView === 'chat' && renderChatView()}
+            {activeView === 'cloning' && renderCloningView()}
+            {activeView === 'voice-design' && renderVoiceDesignView()}
+            {activeView === 'my-voices' && renderMyVoicesView()}
+            {activeView === 'music' && <StudioMusic />}
+            {activeView === 'playbooks' && <StudioPlaybooks />}
+            {activeView === 'history' && (
               <div className="space-y-6">
                 <div>
                   <h2 className="text-2xl font-semibold mb-2">History</h2>

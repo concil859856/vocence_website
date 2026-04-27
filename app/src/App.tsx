@@ -2,9 +2,11 @@ import { Suspense, lazy } from 'react';
 import { Navigate, Routes, Route } from 'react-router-dom';
 import { GoogleOAuthProvider } from '@react-oauth/google';
 import { AuthProvider } from './contexts/AuthContext';
+import { StudioPlayerProvider } from './contexts/StudioPlayerContext';
 import { Navbar } from './components/Navbar';
 import { Footer } from './components/Footer';
 import { ScrollToTop } from './components/ScrollToTop';
+import { StudioPlayerBar } from './components/StudioPlayerBar';
 import { Overview } from './pages/Overview';
 
 // Route-level code splitting: heavy pages load only when visited (named exports → default for lazy)
@@ -45,6 +47,7 @@ function App() {
   // Wrap app content - if no clientId, still render but Google OAuth won't work
   const AppContent = () => (
     <AuthProvider>
+      <StudioPlayerProvider>
       <ScrollToTop />
       <div className="min-h-screen bg-[#07080A] text-[#F5F7FF]">
         <Navbar />
@@ -78,7 +81,9 @@ function App() {
           </Suspense>
         </main>
         <Footer />
+        <StudioPlayerBar />
       </div>
+      </StudioPlayerProvider>
     </AuthProvider>
   );
 
