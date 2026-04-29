@@ -26,7 +26,7 @@ function DiscordIcon({ size = 18 }: { size?: number }) {
 export function Footer() {
   const footerLinks = {
     features: [
-      { label: 'Studio', href: '/studio/tts' },
+      { label: 'Studio', href: '/studio/home' },
       { label: 'API', href: '/docs/api' },
       { label: 'Models', comingSoon: true },
       { label: 'Analytics', href: '/dashboard' },

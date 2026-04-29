@@ -349,10 +349,34 @@ class AdminUserActivitySummary(BaseModel):
 class WebsiteUsageDayResponse(BaseModel):
     day: str
     tts_generation_count: int
+    stt_count: int = 0
+    clone_count: int = 0
+    voice_design_count: int = 0
+    music_count: int = 0
     unique_users: int
     credits_used: int
     revenue_usd: float
     credits_purchased: int
+
+
+class UserRecentActivityItem(BaseModel):
+    id: int
+    type: str  # 'tts' | 'stt' | 'clone' | 'voice_design' | 'music'
+    created_at: str
+    title: str  # short content snippet for display
+    detail: str | None = None  # secondary line (model, language, prompt fragment)
+    credits_used: int = 0
+    status: str | None = None
+    audio_url: str | None = None
+    user_id: str | None = None
+    user_email: str | None = None
+    user_name: str | None = None
+
+
+class UserRecentActivityResponse(BaseModel):
+    user_id: str | None = None  # null when this is a global feed
+    items: list[UserRecentActivityItem]
+    by_day: list[dict]  # [{day: 'YYYY-MM-DD', tts: N, stt: N, ...}]
 
 
 class PlanDistributionResponse(BaseModel):

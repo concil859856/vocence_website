@@ -1,7 +1,10 @@
 import { Link, useNavigate } from 'react-router-dom';
-import { Home } from 'lucide-react';
+import { AlertTriangle, Home } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { studioSidebarItems, type StudioView } from '../studio/studioNav';
+import { ActiveJobsPill } from './ActiveJobsPill';
+
+const LOW_CREDIT_THRESHOLD = 50;
 
 type Props = {
   activeView: StudioView | 'home';
@@ -61,6 +64,10 @@ export function StudioShell({ activeView, children, mainClassName = '' }: Props)
               Add Credits
             </Link>
           </div>
+
+          <div className="mt-3">
+            <ActiveJobsPill />
+          </div>
         </aside>
 
         <div className="lg:hidden fixed bottom-0 left-0 right-0 bg-[#07080A] border-t border-white/5 p-2 z-50 overflow-x-auto">
@@ -85,7 +92,29 @@ export function StudioShell({ activeView, children, mainClassName = '' }: Props)
           </div>
         </div>
 
-        <main className={`studio-content flex-1 p-6 lg:p-10 pb-24 lg:pb-10 ${mainClassName}`.trim()}>{children}</main>
+        <main className={`studio-content flex-1 p-6 lg:p-10 pb-24 lg:pb-10 ${mainClassName}`.trim()}>
+          {user && (user.credits ?? 0) <= LOW_CREDIT_THRESHOLD && (
+            <div className={`mb-6 rounded-xl border px-4 py-3 text-sm flex flex-wrap items-center gap-3 ${
+              (user.credits ?? 0) === 0
+                ? 'border-red-400/40 bg-red-500/10 text-red-100'
+                : 'border-amber-300/30 bg-amber-400/[0.08] text-amber-100'
+            }`}>
+              <AlertTriangle size={16} className="shrink-0" />
+              <span className="flex-1">
+                {(user.credits ?? 0) === 0
+                  ? 'You’re out of credits. Top up to keep generating.'
+                  : <>Only <span className="font-semibold">{user.credits} credits</span> left. Generations will fail soon.</>}
+              </span>
+              <Link
+                to="/pricing"
+                className="inline-flex items-center gap-1.5 rounded-lg bg-[#DFFF00] text-[#07080A] px-3 py-1.5 text-xs font-semibold hover:brightness-110"
+              >
+                Get more credits
+              </Link>
+            </div>
+          )}
+          {children}
+        </main>
       </div>
   );
 }

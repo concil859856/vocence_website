@@ -450,6 +450,7 @@ async def clone_voice(
     target_text: str = Form(...),
     ref_source: str = Form(..., description="upload or record"),
     language: str | None = Form(None),
+    reference_text: str | None = Form(None, description="Optional manual transcript of the reference clip; skips STT when provided"),
     audio_file: UploadFile = File(...),
     user_id: str = Depends(require_auth),
 ):
@@ -496,24 +497,30 @@ async def clone_voice(
     lang = (language or "").strip() or None
     clone_endpoint_label = voice_clone_endpoint_label()
 
-    stt_started = time.perf_counter()
-    stt_result, stt_err = await transcribe_audio(audio_bytes=raw_ref, language=lang)
-    stt_latency_ms = int((time.perf_counter() - stt_started) * 1000)
-    if not stt_result:
-        detail = "Could not transcribe reference audio for cloning."
-        if stt_err:
-            detail += f" ({stt_err})"
-        raise HTTPException(status_code=502, detail=detail)
-
-    reference_text = str(stt_result.get("text") or "").strip()
-    if not reference_text:
-        raise HTTPException(
-            status_code=400,
-            detail="Reference audio transcribed to empty text; use clearer reference audio or check language.",
-        )
-    detected_language = stt_result.get("language")
-    if not isinstance(detected_language, str):
-        detected_language = lang
+    # If the user supplied an explicit reference transcript, skip STT entirely.
+    user_supplied_ref = (reference_text or "").strip()
+    detected_language: str | None = lang
+    stt_latency_ms = 0
+    if user_supplied_ref:
+        ref_text = user_supplied_ref
+    else:
+        stt_started = time.perf_counter()
+        stt_result, stt_err = await transcribe_audio(audio_bytes=raw_ref, language=lang)
+        stt_latency_ms = int((time.perf_counter() - stt_started) * 1000)
+        if not stt_result:
+            detail = "Could not transcribe reference audio for cloning."
+            if stt_err:
+                detail += f" ({stt_err})"
+            raise HTTPException(status_code=502, detail=detail)
+        ref_text = str(stt_result.get("text") or "").strip()
+        if not ref_text:
+            raise HTTPException(
+                status_code=400,
+                detail="Reference audio transcribed to empty text; use clearer reference audio or check language.",
+            )
+        if isinstance(stt_result.get("language"), str):
+            detected_language = stt_result.get("language")
+    reference_text = ref_text
 
     clone_started = time.perf_counter()
     out_bytes, clone_err = await voice_clone_synthesize(
@@ -1236,6 +1243,51 @@ async def get_history(user_id: str = Query(..., description="Website user id (e.
     items.sort(key=lambda x: x.created_at, reverse=True)
     items = items[:100]
     return StudioHistoryResponse(items=items)
+
+
+@router.post("/history/delete")
+async def delete_history_items(
+    body: dict,
+    user_id: str = Depends(require_auth),
+):
+    """Bulk-delete user's own studio history rows.
+
+    Body: {items: [{type: 'tts'|'stt'|'clone'|'voice_design'|'music', id: int}, ...]}
+    Owner-scoped: only deletes rows whose user_id matches the authenticated user.
+    """
+    raw_items = body.get("items") if isinstance(body, dict) else None
+    if not isinstance(raw_items, list) or not raw_items:
+        raise HTTPException(status_code=400, detail="items is required")
+    table_for = {
+        "tts": "studio_tts_history",
+        "stt": "studio_stt_history",
+        "clone": "studio_clone_history",
+        "voice_design": "studio_clone_history",  # voice_design rows live here too
+        "music": "studio_music_history",
+    }
+    conn = await get_connection()
+    deleted = 0
+    try:
+        for it in raw_items:
+            if not isinstance(it, dict):
+                continue
+            t = str(it.get("type") or "").lower()
+            tbl = table_for.get(t)
+            try:
+                hid = int(it.get("id"))
+            except (TypeError, ValueError):
+                continue
+            if not tbl or hid <= 0:
+                continue
+            cur = await conn.execute(
+                f"DELETE FROM {tbl} WHERE id = ? AND user_id = ?",
+                (hid, user_id),
+            )
+            deleted += cur.rowcount or 0
+        await conn.commit()
+    finally:
+        await conn.close()
+    return {"deleted": deleted}
 
 
 @router.get("/history/{history_id}/audio-url")

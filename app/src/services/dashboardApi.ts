@@ -18,6 +18,63 @@ function adminAuthHeaders(): Record<string, string> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+/**
+ * Error thrown by `fetchJson` for non-2xx responses (or network failures).
+ * `userMessage` is sanitized for display to end users; `detail` carries the
+ * raw server detail (or stack/text) for telemetry/console logging.
+ */
+export class ApiError extends Error {
+  status: number;
+  userMessage: string;
+  detail: string;
+  constructor(opts: { status: number; userMessage: string; detail: string }) {
+    super(opts.userMessage);
+    this.name = 'ApiError';
+    this.status = opts.status;
+    this.userMessage = opts.userMessage;
+    this.detail = opts.detail;
+  }
+}
+
+function _genericForStatus(status: number): string {
+  if (status === 0) return "Couldn't reach the server. Check your connection and try again.";
+  if (status === 401) return 'Please sign in and try again.';
+  if (status === 403) return 'You don\'t have permission to do that.';
+  if (status === 404) return 'That resource is no longer available.';
+  if (status === 408) return 'The request took too long. Please try again.';
+  if (status === 413) return 'That file is too large.';
+  if (status === 415) return 'That file type isn\'t supported.';
+  if (status === 429) return 'Too many requests. Please wait a moment and try again.';
+  if (status >= 500 && status < 600) return 'Something went wrong on our side. Please try again.';
+  return 'Something went wrong. Please try again.';
+}
+
+/** Pull a clean, user-safe message from a raw response body. */
+function _extractUserMessage(status: number, text: string): { userMessage: string; detail: string } {
+  const detail = (text || '').trim();
+  // For server errors, never echo the raw detail (tracebacks, internal IDs).
+  if (status >= 500 || status === 0) {
+    return { userMessage: _genericForStatus(status), detail };
+  }
+  // 4xx: try to surface a JSON `detail` field if it looks like a clean sentence.
+  if (detail.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(detail) as { detail?: unknown; message?: unknown };
+      const candidate = typeof parsed.detail === 'string' ? parsed.detail
+        : typeof parsed.message === 'string' ? parsed.message
+        : '';
+      if (candidate && candidate.length < 240 && !candidate.includes('Traceback')) {
+        return { userMessage: candidate, detail };
+      }
+    } catch { /* fall through */ }
+  }
+  // Plain string body, short and sane?
+  if (detail && detail.length < 240 && !detail.includes('Traceback') && !detail.startsWith('<')) {
+    return { userMessage: detail, detail };
+  }
+  return { userMessage: _genericForStatus(status), detail };
+}
+
 async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
   const url = `${DASHBOARD_BASE}${path}`;
   let res: Response;
@@ -27,18 +84,32 @@ async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
       headers: { Accept: 'application/json', ...options?.headers },
     });
   } catch (e) {
-    if (e instanceof TypeError) {
-      throw new Error(
-        `Network error (${e.message}). Request: ${url}. In dev, either leave VITE_API_URL unset (Vite proxies /api) or set it to your backend and add your exact browser origin (localhost vs 127.0.0.1) to backend CORS_ORIGIN.`
-      );
-    }
-    throw e;
+    // Log the raw cause for the developer console; surface a clean message.
+    if (typeof console !== 'undefined') console.warn('[fetchJson]', url, e);
+    throw new ApiError({
+      status: 0,
+      userMessage: _genericForStatus(0),
+      detail: e instanceof Error ? `${e.name}: ${e.message}` : String(e),
+    });
   }
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Dashboard API ${res.status}: ${text || res.statusText}`);
+    const text = await res.text().catch(() => '');
+    if (typeof console !== 'undefined') console.warn('[fetchJson]', url, res.status, text);
+    const { userMessage, detail } = _extractUserMessage(res.status, text);
+    throw new ApiError({ status: res.status, userMessage, detail });
   }
   return res.json();
+}
+
+/** Convenience: pull a display-safe message from any thrown error. */
+export function humanizeApiError(e: unknown, fallback = 'Something went wrong. Please try again.'): string {
+  if (e instanceof ApiError) return e.userMessage || fallback;
+  if (typeof e === 'object' && e && 'message' in e && typeof (e as { message: unknown }).message === 'string') {
+    const msg = (e as { message: string }).message;
+    if (msg.includes('Traceback') || msg.length > 240) return fallback;
+    return msg;
+  }
+  return fallback;
 }
 
 export interface DashboardOverview {
@@ -238,10 +309,53 @@ export interface RegisteredUser {
 export interface WebsiteUsageDay {
   day: string;
   tts_generation_count: number;
+  stt_count: number;
+  clone_count: number;
+  voice_design_count: number;
+  music_count: number;
   unique_users: number;
   credits_used: number;
   revenue_usd: number;
   credits_purchased: number;
+}
+
+export interface UserRecentActivityItem {
+  id: number;
+  type: 'tts' | 'stt' | 'clone' | 'voice_design' | 'music';
+  created_at: string;
+  title: string;
+  detail?: string | null;
+  credits_used: number;
+  status?: string | null;
+  audio_url?: string | null;
+  user_id?: string | null;
+  user_email?: string | null;
+  user_name?: string | null;
+}
+
+export type JobStatus = 'pending' | 'processing' | 'completed' | 'failed' | 'timeout' | 'cancelled';
+
+export interface JobStatusResponse {
+  id: string;
+  user_id: string;
+  type: 'tts' | 'stt' | 'clone' | 'voice_design' | 'music';
+  status: JobStatus;
+  phase: string | null;
+  payload: Record<string, unknown>;
+  result: Record<string, unknown> | null;
+  error_message: string | null;
+  pod_url: string | null;
+  credits_charged: number;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  queue_position: number;
+}
+
+export interface UserRecentActivityResponse {
+  user_id: string | null;
+  items: UserRecentActivityItem[];
+  by_day: Array<{ day: string; tts: number; stt: number; clone: number; voice_design: number; music: number }>;
 }
 
 export interface PlanDistribution {
@@ -525,6 +639,30 @@ export const dashboardApi = {
     });
   },
 
+  getAdminUserRecentActivity(
+    _adminEmail: string,
+    userId: string,
+    limit = 100,
+  ): Promise<UserRecentActivityResponse> {
+    return fetchJson(
+      `/api/dashboard/admin/website-usage/user/${encodeURIComponent(userId)}/recent-activity?limit=${limit}`,
+      { headers: adminAuthHeaders() },
+    );
+  },
+
+  getAdminRecentActivity(
+    _adminEmail: string,
+    opts?: { limit?: number; user_id?: string | null },
+  ): Promise<UserRecentActivityResponse> {
+    const params = new URLSearchParams();
+    if (opts?.limit != null) params.set('limit', String(opts.limit));
+    if (opts?.user_id?.trim()) params.set('user_id', opts.user_id.trim());
+    const qs = params.toString();
+    return fetchJson(`/api/dashboard/admin/recent-activity${qs ? `?${qs}` : ''}`, {
+      headers: adminAuthHeaders(),
+    });
+  },
+
   getWebsiteOverview(_adminEmail: string): Promise<WebsiteOverview> {
     return fetchJson('/api/dashboard/website-overview', {
       headers: adminAuthHeaders(),
@@ -693,6 +831,7 @@ export const dashboardApi = {
       ref_source: 'upload' | 'record';
       language?: string | null;
       audio_file: File;
+      reference_text?: string | null;
     },
     token: string | null
   ): Promise<StudioCloneResponse> {
@@ -705,6 +844,9 @@ export const dashboardApi = {
     if (body.language?.trim()) {
       form.append('language', body.language.trim());
     }
+    if (body.reference_text?.trim()) {
+      form.append('reference_text', body.reference_text.trim());
+    }
     form.append('audio_file', body.audio_file);
     return fetchJson('/api/dashboard/studio/clone', {
       method: 'POST',
@@ -715,6 +857,19 @@ export const dashboardApi = {
 
   getStudioHistory(userId: string): Promise<{ items: StudioHistoryItem[] }> {
     return fetchJson(`/api/dashboard/studio/history?user_id=${encodeURIComponent(userId)}`);
+  },
+
+  deleteStudioHistory(
+    items: Array<{ id: number; type: 'tts' | 'stt' | 'clone' | 'voice_design' | 'music' }>,
+    token: string | null,
+  ): Promise<{ deleted: number }> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson('/api/dashboard/studio/history/delete', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ items }),
+    });
   },
 
   getStudioHistoryAudioUrl(
@@ -885,10 +1040,50 @@ export const dashboardApi = {
     return fetchJson(`/api/dashboard/playbooks/${id}`, { headers });
   },
 
-  updatePlaybook(id: number, body: { title?: string; description?: string; visibility?: string }, token: string | null): Promise<Playbook> {
+  updatePlaybook(id: number, body: { title?: string; description?: string; visibility?: string; cover_image_url?: string | null }, token: string | null): Promise<Playbook> {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (token) headers['Authorization'] = `Bearer ${token}`;
     return fetchJson(`/api/dashboard/playbooks/${id}`, { method: 'PATCH', headers, body: JSON.stringify(body) });
+  },
+
+  uploadPlaybookCover(id: number, blob: Blob, token: string | null): Promise<Playbook> {
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    const form = new FormData();
+    form.append('image', blob, 'cover.png');
+    return fetchJson(`/api/dashboard/playbooks/${id}/cover`, { method: 'POST', headers, body: form });
+  },
+
+  // ─── Generation jobs (queued, polled) ──────────────────────────────────
+  startJob(
+    body: { type: 'tts' | 'stt' | 'clone' | 'voice_design' | 'music'; payload: Record<string, unknown>; credits?: number },
+    token: string | null,
+  ): Promise<{ job_id: string; status: string; queue_position: number; load_warning: boolean; pool_snapshots: Record<string, unknown> }> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson('/api/dashboard/jobs/start', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+  },
+
+  getJob(jobId: string, token: string | null): Promise<JobStatusResponse> {
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson(`/api/dashboard/jobs/${encodeURIComponent(jobId)}`, { headers });
+  },
+
+  cancelJob(jobId: string, token: string | null): Promise<{ cancelled: boolean }> {
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson(`/api/dashboard/jobs/${encodeURIComponent(jobId)}`, { method: 'DELETE', headers });
+  },
+
+  listUserJobs(token: string | null, limit = 50): Promise<{ items: JobStatusResponse[] }> {
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson(`/api/dashboard/jobs?limit=${limit}`, { headers });
   },
 
   deletePlaybook(id: number, token: string | null): Promise<{ ok: boolean }> {

@@ -6,7 +6,8 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useStudioPlayer } from '../contexts/StudioPlayerContext';
-import { dashboardApi, type StudioMusicGenerateResponse } from '../services/dashboardApi';
+import { dashboardApi, humanizeApiError } from '../services/dashboardApi';
+import { useGenerations } from '../contexts/GenerationsContext';
 import { CREDIT_MUSIC } from '../studio/creditCosts';
 import { asset } from '../data/assets';
 
@@ -30,6 +31,10 @@ const GENRE_PRESETS: GenrePreset[] = [
   { label: 'Soulful R&B', value: 'r&b, synth, bass, drums, 85 bpm, sultry, groovy, romantic, female vocals, silky vocals', emoji: '💜', image: '/samples/images/genre_8.webp' },
 ];
 
+function slugify(s: string): string {
+  return s.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60);
+}
+
 const TASK_TABS: { id: MusicTask; label: string; icon: typeof Music; desc: string }[] = [
   { id: 'text2music', label: 'Text to Music', icon: Wand2, desc: 'Create original music from a text description and lyrics' },
   { id: 'audio2audio', label: 'Style Transfer', icon: Disc3, desc: 'Transform existing audio into a new style' },
@@ -44,6 +49,7 @@ interface StatusMsg { type: 'success' | 'error' | 'info'; message: string; }
 export function StudioMusic() {
   const { user, isAuthenticated, updateCredits } = useAuth();
   const { play: playAudio } = useStudioPlayer();
+  const generations = useGenerations();
 
   const [activeTask, setActiveTask] = useState<MusicTask>('text2music');
   const [loading, setLoading] = useState(false);
@@ -53,6 +59,8 @@ export function StudioMusic() {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Text2Music
+  const [title, setTitle] = useState('');
+  const [titleInvalid, setTitleInvalid] = useState(false);
   const [prompt, setPrompt] = useState(GENRE_PRESETS[0].value);
   const [lyrics, setLyrics] = useState(`[verse]
 Neon lights they flicker bright
@@ -131,43 +139,112 @@ Hear the night sing out our song`);
 
   const handleGenerate = async () => {
     if (!isAuthenticated || !user) { setStatus({ type: 'error', message: 'Please sign in to generate music.' }); return; }
+    if (!title.trim()) { setTitleInvalid(true); setStatus({ type: 'error', message: 'Please enter a title.' }); return; }
+    setTitleInvalid(false);
     if (needsAudioFile && !audioFile) { setStatus({ type: 'error', message: 'Please select a source audio file.' }); return; }
     if (!prompt.trim()) { setStatus({ type: 'error', message: 'Please enter a prompt.' }); return; }
+    if (activeTask !== 'text2music') {
+      setStatus({ type: 'error', message: `${activeTask} is not yet supported via the queued backend. Coming soon.` });
+      return;
+    }
+
+    if (generations.hasPending('music')) {
+      const ok = window.confirm('You already have a music generation in progress. Start another anyway?');
+      if (!ok) return;
+    }
 
     setStatus(null); setResultAudioUrl(null); setLoading(true); startTimer();
     const token = localStorage.getItem('vocence_token');
-
     try {
-      let res: StudioMusicGenerateResponse;
-      if (activeTask === 'text2music') {
-        res = await dashboardApi.generateStudioMusicText2Music({
-          user_id: user.id, prompt, lyrics, audio_duration: duration, format,
-          infer_step: inferStep, guidance_scale: guidanceScale, scheduler_type: schedulerType,
-          cfg_type: cfgType, omega_scale: omegaScale, manual_seeds: manualSeeds,
-          guidance_interval: guidanceInterval, guidance_interval_decay: guidanceIntervalDecay,
-          min_guidance_scale: minGuidanceScale, use_erg_tag: useErgTag, use_erg_lyric: useErgLyric,
-          use_erg_diffusion: useErgDiffusion, oss_steps: ossSteps,
-          guidance_scale_text: guidanceScaleText, guidance_scale_lyric: guidanceScaleLyric,
+      const submission = await dashboardApi.startJob({
+        type: 'music',
+        credits: CREDIT_MUSIC,
+        payload: {
+          title: title.trim(),
+          prompt,
+          lyrics,
+          audio_duration: duration,
+          format,
+          infer_step: inferStep,
+          guidance_scale: guidanceScale,
+          scheduler_type: schedulerType,
+          cfg_type: cfgType,
+          omega_scale: omegaScale,
+          manual_seeds: manualSeeds,
+          guidance_interval: guidanceInterval,
+          guidance_interval_decay: guidanceIntervalDecay,
+          min_guidance_scale: minGuidanceScale,
+          use_erg_tag: useErgTag,
+          use_erg_lyric: useErgLyric,
+          use_erg_diffusion: useErgDiffusion,
+          oss_steps: ossSteps,
+          guidance_scale_text: guidanceScaleText,
+          guidance_scale_lyric: guidanceScaleLyric,
           lora_name_or_path: loraPath,
-        }, token);
-      } else {
-        const fd = new FormData();
-        fd.append('user_id', user.id); fd.append('prompt', prompt); fd.append('lyrics', lyrics);
-        fd.append('format', format); fd.append('infer_step', String(inferStep)); fd.append('guidance_scale', String(guidanceScale));
-        if (activeTask === 'audio2audio') { fd.append('ref_audio', audioFile!); fd.append('audio_duration', String(duration)); fd.append('ref_audio_strength', String(refAudioStrength)); }
-        else if (activeTask === 'retake') { fd.append('src_audio', audioFile!); fd.append('retake_variance', String(retakeVariance)); fd.append('retake_seeds', retakeSeeds); }
-        else if (activeTask === 'repaint') { fd.append('src_audio', audioFile!); fd.append('repaint_start', String(repaintStart)); fd.append('repaint_end', String(repaintEnd)); fd.append('retake_variance', String(retakeVariance)); }
-        else if (activeTask === 'edit') { fd.append('src_audio', audioFile!); fd.append('edit_target_prompt', editTargetPrompt); fd.append('edit_target_lyrics', editTargetLyrics); fd.append('edit_n_min', String(editNMin)); fd.append('edit_n_max', String(editNMax)); fd.append('retake_seeds', retakeSeeds); }
-        else if (activeTask === 'extend') { fd.append('src_audio', audioFile!); fd.append('left_extend_length', String(leftExtend)); fd.append('right_extend_length', String(rightExtend)); fd.append('extend_seeds', extendSeeds); }
-        res = await dashboardApi.generateStudioMusicWithAudio(activeTask, fd, token);
-      }
-      updateCredits(res.credits);
-      setResultAudioUrl(res.audio_url);
-      setStatus({ type: 'success', message: 'Music generated successfully!' });
-      playAudio({ src: res.audio_url, title: prompt.slice(0, 60), subtitle: `Music · ${activeTask}` });
+        },
+      }, token);
+      updateCredits((user.credits ?? 0) - CREDIT_MUSIC);
+      setStatus({
+        type: submission.load_warning ? 'info' : 'success',
+        message: submission.load_warning
+          ? `Queued (position ${submission.queue_position}). Capacity is heavy right now — this may take roughly 2× as long as usual.`
+          : `Queued (position ${submission.queue_position}). Generating…`,
+      });
+      generations.trackServerJob({
+        serverJobId: submission.job_id,
+        type: 'music',
+        label: title.trim() || prompt.slice(0, 60),
+        toastResult: {
+          navigateTo: '/studio/music',
+          playerTitle: title.trim() || prompt.slice(0, 60),
+          playerSubtitle: `Music · ${activeTask}`,
+          downloadFilename: `${slugify(title)}-${Date.now()}.${format}`,
+        },
+      });
+      // The result will be set by the polling helper below
+      void pollMusicJobUntilDone(submission.job_id);
     } catch (e: unknown) {
-      setStatus({ type: 'error', message: e instanceof Error ? e.message : 'Something went wrong.' });
+      const msg = humanizeApiError(e, 'Music generation failed. Please try again.');
+      setStatus({ type: 'error', message: msg });
     } finally { setLoading(false); stopTimer(); }
+  };
+
+  /** Mirror the job's progress into the local Result card (separate from the global pill). */
+  const pollMusicJobUntilDone = async (jobId: string) => {
+    const token = localStorage.getItem('vocence_token');
+    while (true) {
+      await new Promise((r) => setTimeout(r, 2000));
+      try {
+        const job = await dashboardApi.getJob(jobId, token);
+        if (job.status === 'completed') {
+          const audioUrl = (job.result?.audio_url as string | undefined) || '';
+          setResultAudioUrl(audioUrl);
+          setStatus({ type: 'success', message: 'Music ready.' });
+          if (audioUrl) {
+            playAudio({
+              src: audioUrl,
+              title: title.trim() || prompt.slice(0, 60),
+              subtitle: `Music · ${activeTask}`,
+              downloadFilename: `${slugify(title)}-${Date.now()}.${format}`,
+            });
+          }
+          return;
+        }
+        if (job.status === 'failed' || job.status === 'timeout' || job.status === 'cancelled') {
+          setStatus({ type: 'error', message: job.error_message || 'Music generation failed.' });
+          return;
+        }
+        // pending or processing — keep polling. Surface phase + queue position.
+        const sub = job.phase
+          ? job.phase
+          : job.status === 'pending'
+            ? `Queued (position ${job.queue_position})`
+            : 'Generating…';
+        setStatus({ type: 'info', message: sub });
+      } catch {
+        // transient — keep polling
+      }
+    }
   };
 
   const activeTabInfo = TASK_TABS.find(t => t.id === activeTask)!;
@@ -270,6 +347,20 @@ Hear the night sing out our song`);
               </div>
             </div>
           )}
+
+          {/* Title (required) */}
+          <div>
+            <label className={labelCls}>Title <span className="text-red-400">*</span></label>
+            <input
+              type="text"
+              className={`${inputCls} mt-1.5 ${titleInvalid ? 'border-red-500/60' : ''}`}
+              value={title}
+              onChange={(e) => { setTitle(e.target.value); if (titleInvalid && e.target.value.trim()) setTitleInvalid(false); }}
+              placeholder="Name this track…"
+              maxLength={120}
+            />
+            {titleInvalid ? <p className="text-[11px] text-red-400 mt-1">Title is required.</p> : null}
+          </div>
 
           {/* Prompt */}
           <div>
@@ -428,6 +519,12 @@ Hear the night sing out our song`);
               Balance: <span className="text-[#9ca3af]">{user.credits?.toLocaleString() ?? 0} credits</span>
             </p>
           )}
+
+          {loading && (
+            <p className="text-center text-xs text-[#A7B0B7] mt-1">
+              This might take a few minutes — feel free to leave the page open.
+            </p>
+          )}
         </div>
       </div>
 
@@ -446,14 +543,15 @@ Hear the night sing out our song`);
       {/* Result */}
       {resultAudioUrl && (
         <div className="rounded-2xl border border-[#2e2f33] bg-[#1c1d21] p-5">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-white font-medium">{prompt.slice(0, 80)}{prompt.length > 80 ? '...' : ''}</p>
-              <p className="text-xs text-[#9ca3af] mt-0.5 flex items-center gap-1"><Clock size={11} /> Generated in {elapsed}s</p>
+          <div className="flex items-center justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-sm text-white font-medium truncate">{title.trim() || prompt.slice(0, 80) || 'Generated track'}</p>
+              <p className="text-xs text-[#9ca3af] mt-0.5 flex items-center gap-1"><Clock size={11} /> Generated in {elapsed}s · plays in the bottom player</p>
             </div>
             <button
               onClick={async () => {
                 const url = resultAudioUrl!;
+                const filename = `${slugify(title) || 'vocence-music'}-${Date.now()}.${format}`;
                 try {
                   const resp = await fetch(url);
                   if (!resp.ok) throw new Error('fetch failed');
@@ -461,7 +559,7 @@ Hear the night sing out our song`);
                   const blobUrl = URL.createObjectURL(blob);
                   const a = document.createElement('a');
                   a.href = blobUrl;
-                  a.download = `vocence-${Date.now()}.${format}`;
+                  a.download = filename;
                   a.style.display = 'none';
                   document.body.appendChild(a);
                   a.click();
@@ -475,9 +573,9 @@ Hear the night sing out our song`);
                   a.click();
                 }
               }}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#2e2f33] text-xs text-[#9ca3af] hover:text-white hover:bg-[#3a3b3f] transition-colors"
+              className="shrink-0 inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-[#DFFF00] text-[#07080A] text-sm font-semibold hover:brightness-110 transition-all"
             >
-              <Download size={13} />
+              <Download size={16} />
               Download
             </button>
           </div>

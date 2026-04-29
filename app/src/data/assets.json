@@ -1,7 +1,7 @@
 {
   "version": 1,
   "baseUrl": "https://audio.vocence.ai",
-  "generatedAt": "2026-04-20T16:35:33+00:00",
+  "generatedAt": "2026-04-28T16:19:54+00:00",
   "assets": {
     "music.chill": {
       "url": "https://audio.vocence.ai/static/samples/audios/chill-73b1cccc49.opus",
@@ -450,6 +450,713 @@
       "size": 70299,
       "originalSize": 591404,
       "source": "aria.wav"
+    },
+    "clone-audio.clone_const": {
+      "url": "https://audio.vocence.ai/static/clone-demos-audio/clone_const-0d6671d83c.opus",
+      "type": "audio/opus",
+      "size": 111023,
+      "originalSize": 295724,
+      "source": "clone_const.wav"
+    },
+    "clone-audio.clone_mark": {
+      "url": "https://audio.vocence.ai/static/clone-demos-audio/clone_mark-1f14df3cd8.opus",
+      "type": "audio/opus",
+      "size": 80052,
+      "originalSize": 211244,
+      "source": "clone_mark.wav"
+    },
+    "clone-audio.clone_micaela": {
+      "url": "https://audio.vocence.ai/static/clone-demos-audio/clone_micaela-ed561dcc4f.opus",
+      "type": "audio/opus",
+      "size": 120376,
+      "originalSize": 326444,
+      "source": "clone_micaela.wav"
+    },
+    "clone-audio.clone_sophia": {
+      "url": "https://audio.vocence.ai/static/clone-demos-audio/clone_sophia-cc98d5ef32.opus",
+      "type": "audio/opus",
+      "size": 163322,
+      "originalSize": 433964,
+      "source": "clone_sophia.wav"
+    },
+    "clone-audio.const": {
+      "url": "https://audio.vocence.ai/static/clone-demos-audio/const-3b60536a9f.opus",
+      "type": "audio/opus",
+      "size": 128869,
+      "originalSize": 1443310,
+      "source": "const.wav"
+    },
+    "clone-audio.mark_jeffery": {
+      "url": "https://audio.vocence.ai/static/clone-demos-audio/mark_jeffery-5e42fa8b08.opus",
+      "type": "audio/opus",
+      "size": 128267,
+      "originalSize": 1396814,
+      "source": "mark_jeffery.wav"
+    },
+    "clone-audio.micaela": {
+      "url": "https://audio.vocence.ai/static/clone-demos-audio/micaela-e174ee9248.opus",
+      "type": "audio/opus",
+      "size": 145857,
+      "originalSize": 1544270,
+      "source": "micaela.wav"
+    },
+    "clone-audio.sophia": {
+      "url": "https://audio.vocence.ai/static/clone-demos-audio/sophia-d2ed3e3ab9.opus",
+      "type": "audio/opus",
+      "size": 106547,
+      "originalSize": 483918,
+      "source": "sophia.wav"
+    },
+    "clone.const": {
+      "url": "https://audio.vocence.ai/static/clone-demos/const-7bf387f93f.webp",
+      "type": "image/webp",
+      "size": 60334,
+      "originalSize": 1733392,
+      "source": "const.png"
+    },
+    "clone.mark_jeffery": {
+      "url": "https://audio.vocence.ai/static/clone-demos/mark_jeffery-14a44e48d9.webp",
+      "type": "image/webp",
+      "size": 77838,
+      "originalSize": 1941813,
+      "source": "mark_jeffery.png"
+    },
+    "clone.micaela": {
+      "url": "https://audio.vocence.ai/static/clone-demos/micaela-44d445dd6b.webp",
+      "type": "image/webp",
+      "size": 48634,
+      "originalSize": 1662834,
+      "source": "micaela.png"
+    },
+    "clone.sophia": {
+      "url": "https://audio.vocence.ai/static/clone-demos/sophia-e42158e46c.webp",
+      "type": "image/webp",
+      "size": 5394,
+      "originalSize": 5394,
+      "source": "sophia.webp"
+    },
+    "playbook.cover-01": {
+      "url": "https://audio.vocence.ai/static/playbook-covers/cover-01-74ab0518a5.webp",
+      "type": "image/webp",
+      "size": 58314,
+      "originalSize": 1523351,
+      "source": "cover-01.png"
+    },
+    "playbook.cover-02": {
+      "url": "https://audio.vocence.ai/static/playbook-covers/cover-02-15deb73d42.webp",
+      "type": "image/webp",
+      "size": 41612,
+      "originalSize": 1363777,
+      "source": "cover-02.png"
+    },
+    "playbook.cover-03": {
+      "url": "https://audio.vocence.ai/static/playbook-covers/cover-03-6c684df876.webp",
+      "type": "image/webp",
+      "size": 84376,
+      "originalSize": 1663382,
+      "source": "cover-03.png"
+    },
+    "playbook.cover-04": {
+      "url": "https://audio.vocence.ai/static/playbook-covers/cover-04-340c922d08.webp",
+      "type": "image/webp",
+      "size": 70528,
+      "originalSize": 1677492,
+      "source": "cover-04.png"
+    },
+    "playbook.cover-05": {
+      "url": "https://audio.vocence.ai/static/playbook-covers/cover-05-025657cccc.webp",
+      "type": "image/webp",
+      "size": 83652,
+      "originalSize": 1701230,
+      "source": "cover-05.png"
+    },
+    "playbook.cover-06": {
+      "url": "https://audio.vocence.ai/static/playbook-covers/cover-06-6027a93fe4.webp",
+      "type": "image/webp",
+      "size": 66416,
+      "originalSize": 1605547,
+      "source": "cover-06.png"
+    },
+    "playbook.cover-07": {
+      "url": "https://audio.vocence.ai/static/playbook-covers/cover-07-d35c974a8c.webp",
+      "type": "image/webp",
+      "size": 55520,
+      "originalSize": 1476538,
+      "source": "cover-07.png"
+    },
+    "playbook.cover-08": {
+      "url": "https://audio.vocence.ai/static/playbook-covers/cover-08-47f17130da.webp",
+      "type": "image/webp",
+      "size": 59598,
+      "originalSize": 1517037,
+      "source": "cover-08.png"
+    },
+    "playbook.cover-09": {
+      "url": "https://audio.vocence.ai/static/playbook-covers/cover-09-6fc5838746.webp",
+      "type": "image/webp",
+      "size": 57734,
+      "originalSize": 1479444,
+      "source": "cover-09.png"
+    },
+    "playbook.cover-10": {
+      "url": "https://audio.vocence.ai/static/playbook-covers/cover-10-e3ed3a1d0d.webp",
+      "type": "image/webp",
+      "size": 63286,
+      "originalSize": 1555952,
+      "source": "cover-10.png"
+    },
+    "playbook.cover-11": {
+      "url": "https://audio.vocence.ai/static/playbook-covers/cover-11-da6da3af3e.webp",
+      "type": "image/webp",
+      "size": 64492,
+      "originalSize": 1579506,
+      "source": "cover-11.png"
+    },
+    "playbook.cover-12": {
+      "url": "https://audio.vocence.ai/static/playbook-covers/cover-12-86f8b697ae.webp",
+      "type": "image/webp",
+      "size": 61438,
+      "originalSize": 1488178,
+      "source": "cover-12.png"
+    },
+    "playbook.cover-13": {
+      "url": "https://audio.vocence.ai/static/playbook-covers/cover-13-2c6d0f5a18.webp",
+      "type": "image/webp",
+      "size": 77750,
+      "originalSize": 1592524,
+      "source": "cover-13.png"
+    },
+    "playbook.cover-14": {
+      "url": "https://audio.vocence.ai/static/playbook-covers/cover-14-0536f497af.webp",
+      "type": "image/webp",
+      "size": 85328,
+      "originalSize": 1677871,
+      "source": "cover-14.png"
+    },
+    "playbook.cover-15": {
+      "url": "https://audio.vocence.ai/static/playbook-covers/cover-15-9bd8ac610e.webp",
+      "type": "image/webp",
+      "size": 82226,
+      "originalSize": 1547681,
+      "source": "cover-15.png"
+    },
+    "playbook.cover-16": {
+      "url": "https://audio.vocence.ai/static/playbook-covers/cover-16-4788ce3739.webp",
+      "type": "image/webp",
+      "size": 21452,
+      "originalSize": 499539,
+      "source": "cover-16.png"
+    },
+    "playbook.cover-17": {
+      "url": "https://audio.vocence.ai/static/playbook-covers/cover-17-d55fc137e5.webp",
+      "type": "image/webp",
+      "size": 37378,
+      "originalSize": 1314829,
+      "source": "cover-17.png"
+    },
+    "playbook.cover-18": {
+      "url": "https://audio.vocence.ai/static/playbook-covers/cover-18-cd3b2c003d.webp",
+      "type": "image/webp",
+      "size": 54290,
+      "originalSize": 666427,
+      "source": "cover-18.png"
+    },
+    "playbook.cover-19": {
+      "url": "https://audio.vocence.ai/static/playbook-covers/cover-19-fce7fb4164.webp",
+      "type": "image/webp",
+      "size": 86114,
+      "originalSize": 1539240,
+      "source": "cover-19.png"
+    },
+    "playbook.cover-20": {
+      "url": "https://audio.vocence.ai/static/playbook-covers/cover-20-c25517904e.webp",
+      "type": "image/webp",
+      "size": 38328,
+      "originalSize": 622744,
+      "source": "cover-20.png"
+    },
+    "playbook.cover-21": {
+      "url": "https://audio.vocence.ai/static/playbook-covers/cover-21-5135c2202c.webp",
+      "type": "image/webp",
+      "size": 61264,
+      "originalSize": 1361122,
+      "source": "cover-21.png"
+    },
+    "playbook.cover-22": {
+      "url": "https://audio.vocence.ai/static/playbook-covers/cover-22-95e3403328.webp",
+      "type": "image/webp",
+      "size": 58192,
+      "originalSize": 1279921,
+      "source": "cover-22.png"
+    },
+    "playbook.cover-23": {
+      "url": "https://audio.vocence.ai/static/playbook-covers/cover-23-cb2d437073.webp",
+      "type": "image/webp",
+      "size": 95606,
+      "originalSize": 1518224,
+      "source": "cover-23.png"
+    },
+    "playbook.cover-24": {
+      "url": "https://audio.vocence.ai/static/playbook-covers/cover-24-059d843716.webp",
+      "type": "image/webp",
+      "size": 35696,
+      "originalSize": 647312,
+      "source": "cover-24.png"
+    },
+    "playbook.cover-25": {
+      "url": "https://audio.vocence.ai/static/playbook-covers/cover-25-0eea2e219a.webp",
+      "type": "image/webp",
+      "size": 88446,
+      "originalSize": 1637064,
+      "source": "cover-25.png"
+    },
+    "playbook.cover-26": {
+      "url": "https://audio.vocence.ai/static/playbook-covers/cover-26-e897f1d8c3.webp",
+      "type": "image/webp",
+      "size": 49776,
+      "originalSize": 1375181,
+      "source": "cover-26.png"
+    },
+    "playbook.cover-27": {
+      "url": "https://audio.vocence.ai/static/playbook-covers/cover-27-0a1b6d26b5.webp",
+      "type": "image/webp",
+      "size": 106684,
+      "originalSize": 1938903,
+      "source": "cover-27.png"
+    },
+    "playbook.cover-28": {
+      "url": "https://audio.vocence.ai/static/playbook-covers/cover-28-65d69f5ffe.webp",
+      "type": "image/webp",
+      "size": 105236,
+      "originalSize": 1697069,
+      "source": "cover-28.png"
+    },
+    "playbook.cover-29": {
+      "url": "https://audio.vocence.ai/static/playbook-covers/cover-29-df4d94ae7e.webp",
+      "type": "image/webp",
+      "size": 103184,
+      "originalSize": 1714843,
+      "source": "cover-29.png"
+    },
+    "playbook.cover-30": {
+      "url": "https://audio.vocence.ai/static/playbook-covers/cover-30-55b14db59d.webp",
+      "type": "image/webp",
+      "size": 161000,
+      "originalSize": 1940743,
+      "source": "cover-30.png"
+    },
+    "playbook.cover-31": {
+      "url": "https://audio.vocence.ai/static/playbook-covers/cover-31-3ede17cdd0.webp",
+      "type": "image/webp",
+      "size": 73376,
+      "originalSize": 1613633,
+      "source": "cover-31.png"
+    },
+    "playbook.cover-32": {
+      "url": "https://audio.vocence.ai/static/playbook-covers/cover-32-dd5847a7d2.webp",
+      "type": "image/webp",
+      "size": 124782,
+      "originalSize": 1876351,
+      "source": "cover-32.png"
+    },
+    "playbook.cover-33": {
+      "url": "https://audio.vocence.ai/static/playbook-covers/cover-33-b43e9ec716.webp",
+      "type": "image/webp",
+      "size": 135330,
+      "originalSize": 1913105,
+      "source": "cover-33.png"
+    },
+    "playbook.cover-34": {
+      "url": "https://audio.vocence.ai/static/playbook-covers/cover-34-60f00d832b.webp",
+      "type": "image/webp",
+      "size": 51014,
+      "originalSize": 1490129,
+      "source": "cover-34.png"
+    },
+    "playbook.cover-35": {
+      "url": "https://audio.vocence.ai/static/playbook-covers/cover-35-d177a2aa5c.webp",
+      "type": "image/webp",
+      "size": 69748,
+      "originalSize": 1556461,
+      "source": "cover-35.png"
+    },
+    "playbook.cover-36": {
+      "url": "https://audio.vocence.ai/static/playbook-covers/cover-36-cb061efdad.webp",
+      "type": "image/webp",
+      "size": 113302,
+      "originalSize": 1777737,
+      "source": "cover-36.png"
+    },
+    "playbook.cover-37": {
+      "url": "https://audio.vocence.ai/static/playbook-covers/cover-37-ed8d860bd2.webp",
+      "type": "image/webp",
+      "size": 114098,
+      "originalSize": 1898675,
+      "source": "cover-37.png"
+    },
+    "playbook.cover-38": {
+      "url": "https://audio.vocence.ai/static/playbook-covers/cover-38-7008a23fc0.webp",
+      "type": "image/webp",
+      "size": 78922,
+      "originalSize": 1578373,
+      "source": "cover-38.png"
+    },
+    "playbook.cover-39": {
+      "url": "https://audio.vocence.ai/static/playbook-covers/cover-39-ca3fb65d86.webp",
+      "type": "image/webp",
+      "size": 120534,
+      "originalSize": 1887764,
+      "source": "cover-39.png"
+    },
+    "playbook.cover-40": {
+      "url": "https://audio.vocence.ai/static/playbook-covers/cover-40-299dc1c412.webp",
+      "type": "image/webp",
+      "size": 106858,
+      "originalSize": 1888181,
+      "source": "cover-40.png"
+    },
+    "playbook.cover-41": {
+      "url": "https://audio.vocence.ai/static/playbook-covers/cover-41-39b30e8b8e.webp",
+      "type": "image/webp",
+      "size": 79082,
+      "originalSize": 1529709,
+      "source": "cover-41.png"
+    },
+    "abstract.voice-abstract-01": {
+      "url": "https://audio.vocence.ai/static/abstract/voice-abstract-01-ad11dfe149.webp",
+      "type": "image/webp",
+      "size": 58610,
+      "originalSize": 1254898,
+      "source": "voice-abstract-01.png"
+    },
+    "abstract.voice-abstract-02": {
+      "url": "https://audio.vocence.ai/static/abstract/voice-abstract-02-c39e585b15.webp",
+      "type": "image/webp",
+      "size": 57618,
+      "originalSize": 1172237,
+      "source": "voice-abstract-02.png"
+    },
+    "abstract.voice-abstract-03": {
+      "url": "https://audio.vocence.ai/static/abstract/voice-abstract-03-d56afb40a0.webp",
+      "type": "image/webp",
+      "size": 40412,
+      "originalSize": 1370223,
+      "source": "voice-abstract-03.png"
+    },
+    "abstract.voice-abstract-04": {
+      "url": "https://audio.vocence.ai/static/abstract/voice-abstract-04-459a4d4a8e.webp",
+      "type": "image/webp",
+      "size": 91828,
+      "originalSize": 1562321,
+      "source": "voice-abstract-04.png"
+    },
+    "abstract.voice-abstract-05": {
+      "url": "https://audio.vocence.ai/static/abstract/voice-abstract-05-71c66ce5d2.webp",
+      "type": "image/webp",
+      "size": 59192,
+      "originalSize": 1388337,
+      "source": "voice-abstract-05.png"
+    },
+    "abstract.voice-abstract-06": {
+      "url": "https://audio.vocence.ai/static/abstract/voice-abstract-06-6412ca5e14.webp",
+      "type": "image/webp",
+      "size": 24926,
+      "originalSize": 542842,
+      "source": "voice-abstract-06.png"
+    },
+    "abstract.voice-abstract-07": {
+      "url": "https://audio.vocence.ai/static/abstract/voice-abstract-07-bf2818b07a.webp",
+      "type": "image/webp",
+      "size": 42410,
+      "originalSize": 1335900,
+      "source": "voice-abstract-07.png"
+    },
+    "abstract.voice-abstract-08": {
+      "url": "https://audio.vocence.ai/static/abstract/voice-abstract-08-d004b1a5f4.webp",
+      "type": "image/webp",
+      "size": 35216,
+      "originalSize": 1177234,
+      "source": "voice-abstract-08.png"
+    },
+    "abstract.voice-abstract-09": {
+      "url": "https://audio.vocence.ai/static/abstract/voice-abstract-09-905ab9640b.webp",
+      "type": "image/webp",
+      "size": 54036,
+      "originalSize": 1535991,
+      "source": "voice-abstract-09.png"
+    },
+    "abstract.voice-abstract-10": {
+      "url": "https://audio.vocence.ai/static/abstract/voice-abstract-10-b6cb8aebb6.webp",
+      "type": "image/webp",
+      "size": 117848,
+      "originalSize": 1661491,
+      "source": "voice-abstract-10.png"
+    },
+    "abstract.voice-abstract-11": {
+      "url": "https://audio.vocence.ai/static/abstract/voice-abstract-11-58496b55f5.webp",
+      "type": "image/webp",
+      "size": 88244,
+      "originalSize": 1498716,
+      "source": "voice-abstract-11.png"
+    },
+    "abstract.voice-abstract-12": {
+      "url": "https://audio.vocence.ai/static/abstract/voice-abstract-12-683e9a75d3.webp",
+      "type": "image/webp",
+      "size": 84744,
+      "originalSize": 1479635,
+      "source": "voice-abstract-12.png"
+    },
+    "abstract.voice-abstract-13": {
+      "url": "https://audio.vocence.ai/static/abstract/voice-abstract-13-886a1559c5.webp",
+      "type": "image/webp",
+      "size": 20358,
+      "originalSize": 618190,
+      "source": "voice-abstract-13.png"
+    },
+    "abstract.voice-abstract-14": {
+      "url": "https://audio.vocence.ai/static/abstract/voice-abstract-14-8501fd8614.webp",
+      "type": "image/webp",
+      "size": 89218,
+      "originalSize": 1523700,
+      "source": "voice-abstract-14.png"
+    },
+    "abstract.voice-abstract-15": {
+      "url": "https://audio.vocence.ai/static/abstract/voice-abstract-15-09173e670b.webp",
+      "type": "image/webp",
+      "size": 63816,
+      "originalSize": 1307862,
+      "source": "voice-abstract-15.png"
+    },
+    "abstract.voice-abstract-16": {
+      "url": "https://audio.vocence.ai/static/abstract/voice-abstract-16-ff87bf0c1a.webp",
+      "type": "image/webp",
+      "size": 52726,
+      "originalSize": 1396877,
+      "source": "voice-abstract-16.png"
+    },
+    "abstract.voice-abstract-17": {
+      "url": "https://audio.vocence.ai/static/abstract/voice-abstract-17-4ce2e3cbbb.webp",
+      "type": "image/webp",
+      "size": 49542,
+      "originalSize": 1321487,
+      "source": "voice-abstract-17.png"
+    },
+    "abstract.voice-abstract-18": {
+      "url": "https://audio.vocence.ai/static/abstract/voice-abstract-18-370ca59987.webp",
+      "type": "image/webp",
+      "size": 29192,
+      "originalSize": 1305120,
+      "source": "voice-abstract-18.png"
+    },
+    "abstract.voice-abstract-19": {
+      "url": "https://audio.vocence.ai/static/abstract/voice-abstract-19-66a9c830fd.webp",
+      "type": "image/webp",
+      "size": 32696,
+      "originalSize": 899117,
+      "source": "voice-abstract-19.png"
+    },
+    "abstract.voice-abstract-20": {
+      "url": "https://audio.vocence.ai/static/abstract/voice-abstract-20-08f16c49c2.webp",
+      "type": "image/webp",
+      "size": 54794,
+      "originalSize": 775222,
+      "source": "voice-abstract-20.png"
+    },
+    "abstract.voice-abstract-21": {
+      "url": "https://audio.vocence.ai/static/abstract/voice-abstract-21-58380595e5.webp",
+      "type": "image/webp",
+      "size": 56814,
+      "originalSize": 1318156,
+      "source": "voice-abstract-21.png"
+    },
+    "abstract.voice-abstract-22": {
+      "url": "https://audio.vocence.ai/static/abstract/voice-abstract-22-865bbce067.webp",
+      "type": "image/webp",
+      "size": 13690,
+      "originalSize": 1098201,
+      "source": "voice-abstract-22.png"
+    },
+    "abstract.voice-abstract-23": {
+      "url": "https://audio.vocence.ai/static/abstract/voice-abstract-23-f72fbcdfad.webp",
+      "type": "image/webp",
+      "size": 71168,
+      "originalSize": 1390009,
+      "source": "voice-abstract-23.png"
+    },
+    "abstract.voice-abstract-24": {
+      "url": "https://audio.vocence.ai/static/abstract/voice-abstract-24-21874c881b.webp",
+      "type": "image/webp",
+      "size": 133506,
+      "originalSize": 1912666,
+      "source": "voice-abstract-24.png"
+    },
+    "abstract.voice-abstract-25": {
+      "url": "https://audio.vocence.ai/static/abstract/voice-abstract-25-c6216f56db.webp",
+      "type": "image/webp",
+      "size": 125016,
+      "originalSize": 1827590,
+      "source": "voice-abstract-25.png"
+    },
+    "abstract.voice-abstract-26": {
+      "url": "https://audio.vocence.ai/static/abstract/voice-abstract-26-d9720679c6.webp",
+      "type": "image/webp",
+      "size": 79734,
+      "originalSize": 1739281,
+      "source": "voice-abstract-26.png"
+    },
+    "abstract.voice-abstract-27": {
+      "url": "https://audio.vocence.ai/static/abstract/voice-abstract-27-6e82480b34.webp",
+      "type": "image/webp",
+      "size": 78390,
+      "originalSize": 1714818,
+      "source": "voice-abstract-27.png"
+    },
+    "abstract.voice-abstract-28": {
+      "url": "https://audio.vocence.ai/static/abstract/voice-abstract-28-08798198cf.webp",
+      "type": "image/webp",
+      "size": 185390,
+      "originalSize": 1969605,
+      "source": "voice-abstract-28.png"
+    },
+    "abstract.voice-abstract-29": {
+      "url": "https://audio.vocence.ai/static/abstract/voice-abstract-29-d59e8bdf26.webp",
+      "type": "image/webp",
+      "size": 127618,
+      "originalSize": 1888934,
+      "source": "voice-abstract-29.png"
+    },
+    "abstract.voice-abstract-30": {
+      "url": "https://audio.vocence.ai/static/abstract/voice-abstract-30-7ec0bb5304.webp",
+      "type": "image/webp",
+      "size": 112640,
+      "originalSize": 1901997,
+      "source": "voice-abstract-30.png"
+    },
+    "abstract.voice-abstract-31": {
+      "url": "https://audio.vocence.ai/static/abstract/voice-abstract-31-561e54bac5.webp",
+      "type": "image/webp",
+      "size": 379396,
+      "originalSize": 2885929,
+      "source": "voice-abstract-31.png"
+    },
+    "abstract.voice-abstract-32": {
+      "url": "https://audio.vocence.ai/static/abstract/voice-abstract-32-2d7117f497.webp",
+      "type": "image/webp",
+      "size": 190584,
+      "originalSize": 2218897,
+      "source": "voice-abstract-32.png"
+    },
+    "abstract.voice-abstract-33": {
+      "url": "https://audio.vocence.ai/static/abstract/voice-abstract-33-85b4a991c5.webp",
+      "type": "image/webp",
+      "size": 253290,
+      "originalSize": 2117316,
+      "source": "voice-abstract-33.png"
+    },
+    "abstract.voice-abstract-34": {
+      "url": "https://audio.vocence.ai/static/abstract/voice-abstract-34-2440031228.webp",
+      "type": "image/webp",
+      "size": 184402,
+      "originalSize": 2190539,
+      "source": "voice-abstract-34.png"
+    },
+    "abstract.voice-abstract-35": {
+      "url": "https://audio.vocence.ai/static/abstract/voice-abstract-35-28b9929816.webp",
+      "type": "image/webp",
+      "size": 75106,
+      "originalSize": 1503259,
+      "source": "voice-abstract-35.png"
+    },
+    "abstract.voice-abstract-36": {
+      "url": "https://audio.vocence.ai/static/abstract/voice-abstract-36-0d84384127.webp",
+      "type": "image/webp",
+      "size": 22064,
+      "originalSize": 1327699,
+      "source": "voice-abstract-36.png"
+    },
+    "abstract.voice-abstract-37": {
+      "url": "https://audio.vocence.ai/static/abstract/voice-abstract-37-6f9e8e8e03.webp",
+      "type": "image/webp",
+      "size": 66860,
+      "originalSize": 1492117,
+      "source": "voice-abstract-37.png"
+    },
+    "abstract.voice-abstract-38": {
+      "url": "https://audio.vocence.ai/static/abstract/voice-abstract-38-0c2610bf93.webp",
+      "type": "image/webp",
+      "size": 84136,
+      "originalSize": 1575233,
+      "source": "voice-abstract-38.png"
+    },
+    "abstract.voice-abstract-39": {
+      "url": "https://audio.vocence.ai/static/abstract/voice-abstract-39-1cf8f91974.webp",
+      "type": "image/webp",
+      "size": 60264,
+      "originalSize": 1649304,
+      "source": "voice-abstract-39.png"
+    },
+    "abstract.voice-abstract-40": {
+      "url": "https://audio.vocence.ai/static/abstract/voice-abstract-40-446c85068a.webp",
+      "type": "image/webp",
+      "size": 38002,
+      "originalSize": 1361349,
+      "source": "voice-abstract-40.png"
+    },
+    "abstract.voice-abstract-41": {
+      "url": "https://audio.vocence.ai/static/abstract/voice-abstract-41-204c6a9a0b.webp",
+      "type": "image/webp",
+      "size": 88726,
+      "originalSize": 1543627,
+      "source": "voice-abstract-41.png"
+    },
+    "abstract.voice-abstract-42": {
+      "url": "https://audio.vocence.ai/static/abstract/voice-abstract-42-763eaa2b41.webp",
+      "type": "image/webp",
+      "size": 50020,
+      "originalSize": 1414842,
+      "source": "voice-abstract-42.png"
+    },
+    "abstract.voice-abstract-43": {
+      "url": "https://audio.vocence.ai/static/abstract/voice-abstract-43-907c13afbc.webp",
+      "type": "image/webp",
+      "size": 88234,
+      "originalSize": 1441741,
+      "source": "voice-abstract-43.png"
+    },
+    "abstract.voice-abstract-44": {
+      "url": "https://audio.vocence.ai/static/abstract/voice-abstract-44-0a4c32b328.webp",
+      "type": "image/webp",
+      "size": 45306,
+      "originalSize": 1555064,
+      "source": "voice-abstract-44.png"
+    },
+    "stt-demo.stt-chinese": {
+      "url": "https://audio.vocence.ai/static/stt-demos/stt-chinese-5834dbe94d.opus",
+      "type": "audio/opus",
+      "size": 110331,
+      "originalSize": 299564,
+      "source": "stt-chinese.wav"
+    },
+    "stt-demo.stt-english": {
+      "url": "https://audio.vocence.ai/static/stt-demos/stt-english-29aed49b66.opus",
+      "type": "audio/opus",
+      "size": 133808,
+      "originalSize": 314924,
+      "source": "stt-english.wav"
+    },
+    "stt-demo.stt-japanese": {
+      "url": "https://audio.vocence.ai/static/stt-demos/stt-japanese-d92b3c3ba1.opus",
+      "type": "audio/opus",
+      "size": 175976,
+      "originalSize": 529964,
+      "source": "stt-japanese.wav"
+    },
+    "stt-demo.stt-spanish": {
+      "url": "https://audio.vocence.ai/static/stt-demos/stt-spanish-cd83ee6ae9.opus",
+      "type": "audio/opus",
+      "size": 145962,
+      "originalSize": 357164,
+      "source": "stt-spanish.wav"
     }
   }
 }

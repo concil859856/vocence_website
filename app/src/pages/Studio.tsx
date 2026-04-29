@@ -14,6 +14,9 @@ import {
   Sparkles,
   LayoutGrid,
   Trash2,
+  Lightbulb,
+  Plus,
+  X,
 } from 'lucide-react';
 import gsap from 'gsap';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
@@ -22,6 +25,8 @@ import { AuthModal } from '../components/AuthModal';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { MyVoiceCardArt } from '../components/MyVoiceCardArt';
 import { StudioShell } from '../components/StudioShell';
+import { VoiceCloneConsent, hasVoiceCloneConsent } from '../components/VoiceCloneConsent';
+import { useGenerations } from '../contexts/GenerationsContext';
 import { STUDIO_VIEWS, type StudioView } from '../studio/studioNav';
 import { DEFAULT_ABSTRACT_CARD_IMAGES } from '../data/abstractCardImages';
 import { asset } from '../data/assets';
@@ -32,8 +37,10 @@ import {
   CREDIT_VOICE_DESIGN_PREVIEW,
 } from '../studio/creditCosts';
 import { blobToCloneReferenceWav } from '../utils/cloneReferenceAudio';
+import { fileToBase64 } from '../utils/fileToBase64';
 import {
   dashboardApi,
+  humanizeApiError,
   type StudioDesignedVoiceItem,
   type StudioTopModel,
   type StudioHistoryItem,
@@ -202,6 +209,7 @@ export function Studio() {
   const [searchParams] = useSearchParams();
   const { user, isAuthenticated, updateCredits } = useAuth();
   const player = useStudioPlayer();
+  const generations = useGenerations();
   const routeParams = useParams<{ view?: string; playbookId?: string }>();
   const routeViewRaw = routeParams.playbookId ? 'playbooks' : (routeParams.view || 'home').toLowerCase();
   const activeView: StudioView = STUDIO_VIEWS.includes(routeViewRaw as StudioView)
@@ -218,6 +226,12 @@ export function Studio() {
     'all' | 'tts' | 'stt' | 'clone' | 'voice_design' | 'music'
   >('all');
   const [studioHistoryPage, setStudioHistoryPage] = useState(1);
+  const [studioHistoryDateRange, setStudioHistoryDateRange] = useState<'all' | '24h' | '7d' | '30d'>('all');
+  const [studioHistorySelected, setStudioHistorySelected] = useState<Set<string>>(new Set());
+  const [studioHistoryAddTarget, setStudioHistoryAddTarget] = useState<number | null>(null);
+  const [studioHistoryBulkBusy, setStudioHistoryBulkBusy] = useState(false);
+  const [studioHistoryAddOpen, setStudioHistoryAddOpen] = useState(false);
+  const [studioPlaybooksList, setStudioPlaybooksList] = useState<{ id: number; title: string }[]>([]);
   const [chatMessages, setChatMessages] = useState([
     { role: 'ai', content: "Hello! I'm your Vocence voice assistant. How can I help you today?" },
     { role: 'user', content: 'Tell me about the Bittensor network rewards for this subnet.' },
@@ -236,6 +250,12 @@ export function Studio() {
   const [ttsStylePrompt, setTtsStylePrompt] = useState('');
   const [selectedLanguage, setSelectedLanguage] = useState('auto-detect');
   const [sttFile, setSttFile] = useState<File | null>(null);
+  const [sttMode, setSttMode] = useState<'upload' | 'record'>('upload');
+  const [sttIsRecording, setSttIsRecording] = useState(false);
+  const [sttRecordingSec, setSttRecordingSec] = useState(0);
+  const sttMediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const sttStreamRef = useRef<MediaStream | null>(null);
+  const sttTimerRef = useRef<number | null>(null);
   const [isSttDragActive, setIsSttDragActive] = useState(false);
   const [sttResult, setSttResult] = useState<{ text: string; language?: string | null; fileName?: string } | null>(null);
   const [sttStatus, setSttStatus] = useState<{ type: 'success' | 'error' | 'info'; message: string } | null>(null);
@@ -244,9 +264,11 @@ export function Studio() {
   const [isRecording, setIsRecording] = useState(false);
   const [cloningMode, setCloningMode] = useState<'upload' | 'record'>('upload');
   const [cloneTargetText, setCloneTargetText] = useState('');
+  const [cloneReferenceScript, setCloneReferenceScript] = useState('');
   const [cloneLanguage, setCloneLanguage] = useState('');
   const [cloneLoading, setCloneLoading] = useState(false);
   const [cloneStatus, setCloneStatus] = useState<{ type: 'success' | 'error' | 'info'; message: string } | null>(null);
+  const [showCloneConsent, setShowCloneConsent] = useState(false);
   const [cloneResult, setCloneResult] = useState<{
     id: number;
     audioUrl: string;
@@ -312,9 +334,20 @@ export function Studio() {
   const STUDIO_HISTORY_PAGE_SIZE = 10;
 
   const studioHistoryFiltered = useMemo(() => {
+    const cutoff = (() => {
+      if (studioHistoryDateRange === 'all') return 0;
+      const ms = studioHistoryDateRange === '24h' ? 86_400_000
+        : studioHistoryDateRange === '7d' ? 7 * 86_400_000
+        : 30 * 86_400_000;
+      return Date.now() - ms;
+    })();
     return studioHistory.filter((h) => {
       if (studioHistoryCategory !== 'all' && h.entry_type !== studioHistoryCategory) {
         return false;
+      }
+      if (cutoff > 0) {
+        const ts = h.created_at ? new Date(h.created_at + 'Z').getTime() : 0;
+        if (!ts || ts < cutoff) return false;
       }
       if (!studioHistorySearch.trim()) return true;
       const q = studioHistorySearch.toLowerCase();
@@ -330,11 +363,96 @@ export function Studio() {
         (h.model_name || '').toLowerCase().includes(q)
       );
     });
-  }, [studioHistory, studioHistorySearch, studioHistoryCategory]);
+  }, [studioHistory, studioHistorySearch, studioHistoryCategory, studioHistoryDateRange]);
 
   useEffect(() => {
     setStudioHistoryPage(1);
-  }, [studioHistorySearch, studioHistoryCategory]);
+    setStudioHistorySelected(new Set());
+  }, [studioHistorySearch, studioHistoryCategory, studioHistoryDateRange]);
+
+  const _historyKey = (e: { entry_type: string; id: number }) => `${e.entry_type}-${e.id}`;
+  const toggleHistorySelected = (key: string) => {
+    setStudioHistorySelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
+  const togglePageAllSelected = () => {
+    setStudioHistorySelected((prev) => {
+      const visibleKeys = studioHistoryFiltered
+        .slice(0, STUDIO_HISTORY_PAGE_SIZE * 1) // selection scope: visible page
+        .map(_historyKey);
+      const next = new Set(prev);
+      const allSelected = visibleKeys.every((k) => next.has(k));
+      if (allSelected) visibleKeys.forEach((k) => next.delete(k));
+      else visibleKeys.forEach((k) => next.add(k));
+      return next;
+    });
+  };
+
+  const handleBulkDeleteHistory = async () => {
+    if (studioHistorySelected.size === 0) return;
+    if (!confirm(`Delete ${studioHistorySelected.size} item${studioHistorySelected.size === 1 ? '' : 's'}? This cannot be undone.`)) return;
+    setStudioHistoryBulkBusy(true);
+    try {
+      const items = Array.from(studioHistorySelected).map((k) => {
+        const [type, idStr] = k.split('-');
+        return { type: type as 'tts' | 'stt' | 'clone' | 'voice_design' | 'music', id: parseInt(idStr, 10) };
+      }).filter((x) => Number.isFinite(x.id));
+      const token = localStorage.getItem('vocence_token');
+      await dashboardApi.deleteStudioHistory(items, token);
+      // Optimistically prune
+      const removed = new Set(items.map((i) => `${i.type}-${i.id}`));
+      setStudioHistory((prev) => prev.filter((h) => !removed.has(`${h.entry_type}-${h.id}`)));
+      setStudioHistorySelected(new Set());
+    } catch {
+      alert('Could not delete some items. Please try again.');
+    } finally {
+      setStudioHistoryBulkBusy(false);
+    }
+  };
+
+  const openBulkAddToPlaybook = async () => {
+    if (studioHistorySelected.size === 0) return;
+    setStudioHistoryAddOpen(true);
+    setStudioHistoryAddTarget(null);
+    if (studioPlaybooksList.length === 0) {
+      try {
+        const token = localStorage.getItem('vocence_token');
+        const r = await dashboardApi.listPlaybooks(token);
+        setStudioPlaybooksList(r.playbooks.map((p) => ({ id: p.id, title: p.title })));
+      } catch { /* ignore */ }
+    }
+  };
+
+  const handleBulkAddToPlaybook = async () => {
+    if (!studioHistoryAddTarget || studioHistorySelected.size === 0) return;
+    setStudioHistoryBulkBusy(true);
+    try {
+      const items = Array.from(studioHistorySelected)
+        .map((k) => studioHistory.find((h) => _historyKey(h) === k))
+        .filter((h): h is StudioHistoryItem => !!h && !!h.audio_url && h.entry_type !== 'stt');
+      if (items.length === 0) {
+        alert('No playable audio in selection (STT and expired items skipped).');
+        return;
+      }
+      const tracks = items.map((h) => ({
+        title: (h.prompt_text || h.target_text || h.transcribed_text || h.display_name || `Track`).slice(0, 80),
+        subtitle: h.entry_type.toUpperCase(),
+        audio_url: h.audio_url!,
+        source_type: 'generated' as const,
+      }));
+      const token = localStorage.getItem('vocence_token');
+      await dashboardApi.addPlaybookTracks(studioHistoryAddTarget, tracks, token);
+      setStudioHistorySelected(new Set());
+      setStudioHistoryAddOpen(false);
+    } catch {
+      alert('Could not add to playbook. Please try again.');
+    } finally {
+      setStudioHistoryBulkBusy(false);
+    }
+  };
 
   const studioHistoryTotalPages = Math.max(
     1,
@@ -514,6 +632,56 @@ export function Studio() {
     }
   };
 
+  // ---- STT browser recording (max 3 min) ----
+  const STT_MAX_RECORDING_SEC = 180;
+
+  const startSttRecording = async () => {
+    setSttStatus(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      sttStreamRef.current = stream;
+      const chunks: BlobPart[] = [];
+      const mr = new MediaRecorder(stream);
+      sttMediaRecorderRef.current = mr;
+      mr.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+      mr.onstop = () => {
+        stream.getTracks().forEach((t) => t.stop());
+        sttStreamRef.current = null;
+        const blob = new Blob(chunks, { type: mr.mimeType || 'audio/webm' });
+        const ext = blob.type.includes('webm') ? 'webm' : blob.type.includes('mp4') ? 'm4a' : 'wav';
+        setSttFile(new File([blob], `recording.${ext}`, { type: blob.type || 'audio/webm' }));
+        setSttIsRecording(false);
+        sttMediaRecorderRef.current = null;
+      };
+      mr.start();
+      setSttIsRecording(true);
+      setSttRecordingSec(0);
+      // Timer + auto-stop at 3 min
+      sttTimerRef.current = window.setInterval(() => {
+        setSttRecordingSec((prev) => {
+          const next = prev + 1;
+          if (next >= STT_MAX_RECORDING_SEC) {
+            stopSttRecording();
+          }
+          return next;
+        });
+      }, 1000);
+    } catch {
+      setSttStatus({ type: 'error', message: 'Microphone access denied or unavailable.' });
+      setSttIsRecording(false);
+    }
+  };
+
+  const stopSttRecording = () => {
+    if (sttTimerRef.current != null) {
+      clearInterval(sttTimerRef.current);
+      sttTimerRef.current = null;
+    }
+    if (sttMediaRecorderRef.current && sttMediaRecorderRef.current.state !== 'inactive') {
+      sttMediaRecorderRef.current.stop();
+    }
+  };
+
   const stopCloneRecording = () => {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.stop();
@@ -539,35 +707,90 @@ export function Studio() {
         setCloneStatus({ type: 'error', message: 'Enter the text you want the cloned voice to speak.' });
         return;
       }
-      const token = localStorage.getItem('vocence_token');
-      setCloneLoading(true);
-      setCloneStatus(null);
-      setCloneResult(null);
-      try {
-        const res = await dashboardApi.generateStudioClone(
-          {
-            user_id: user.id,
-            target_text: target,
-            ref_source: cloningMode,
-            language: cloneLanguage.trim() || null,
-            audio_file: cloningFile,
-          },
-          token
-        );
-        updateCredits(res.credits);
-        setCloneResult({
-          id: res.id,
-          audioUrl: res.audio_url,
-          referenceText: res.reference_text,
-          language: res.detected_language,
-        });
-        setCloneStatus({ type: 'success', message: 'Cloned audio is ready. Play or download below.' });
-      } catch (e) {
-        setCloneStatus({ type: 'error', message: userFacingApiError(e) });
-      } finally {
-        setCloneLoading(false);
+      // First-time consent gate
+      if (!hasVoiceCloneConsent()) {
+        setShowCloneConsent(true);
+        return;
       }
+      void doCloneGenerate();
     });
+  };
+
+  const doCloneGenerate = async () => {
+    if (!user) return;
+    const target = cloneTargetText.trim();
+    if (!target || !cloningFile) return;
+    const token = localStorage.getItem('vocence_token');
+    setCloneLoading(true);
+    setCloneStatus(null);
+    setCloneResult(null);
+    try {
+      const audio_b64 = await fileToBase64(cloningFile);
+      const submission = await dashboardApi.startJob({
+        type: 'clone',
+        credits: CREDIT_VOICE_CLONE,
+        payload: {
+          target_text: target,
+          ref_source: cloningMode,
+          language: cloneLanguage.trim() || null,
+          reference_text: cloneReferenceScript.trim() || null,
+          source_audio_filename: cloningFile.name,
+          audio_b64,
+        },
+      }, token);
+      updateCredits((user.credits ?? 0) - CREDIT_VOICE_CLONE);
+      setCloneStatus({
+        type: submission.load_warning ? 'info' : 'info',
+        message: submission.load_warning
+          ? `Queued (position ${submission.queue_position}). Capacity is heavy — this might take roughly 2× as long as usual.`
+          : `Queued (position ${submission.queue_position}). Cloning…`,
+      });
+      generations.trackServerJob({
+        serverJobId: submission.job_id,
+        type: 'clone',
+        label: target.slice(0, 80),
+        toastResult: {
+          navigateTo: '/studio/cloning',
+          playerTitle: target.slice(0, 80) || 'Cloned voice',
+          playerSubtitle: 'Voice clone result',
+          downloadFilename: `vocence-clone-${submission.job_id.slice(0, 8)}.wav`,
+        },
+      });
+      // Local poll for in-page Result card
+      let done = false;
+      while (!done) {
+        await new Promise((r) => setTimeout(r, 2000));
+        try {
+          const job = await dashboardApi.getJob(submission.job_id, token);
+          if (job.status === 'completed') {
+            const audioUrl = (job.result?.audio_url as string | undefined) || '';
+            const referenceText = (job.result?.reference_text as string | undefined) || '';
+            const detectedLang = (job.result?.detected_language as string | undefined) || null;
+            const historyId = (job.result?.history_id as number | undefined) || Date.now();
+            setCloneResult({ id: historyId, audioUrl, referenceText, language: detectedLang });
+            if (audioUrl) {
+              player.play({
+                src: audioUrl,
+                title: target.slice(0, 80) || 'Cloned voice',
+                subtitle: 'Voice clone result',
+                downloadFilename: `vocence-clone-${historyId}.wav`,
+              });
+            }
+            setCloneStatus({ type: 'success', message: 'Cloned audio is ready.' });
+            done = true;
+          } else if (['failed', 'timeout', 'cancelled'].includes(job.status)) {
+            setCloneStatus({ type: 'error', message: job.error_message || 'Voice cloning failed.' });
+            done = true;
+          } else if (job.phase) {
+            setCloneStatus({ type: 'info', message: job.phase });
+          }
+        } catch { /* keep polling */ }
+      }
+    } catch (e) {
+      setCloneStatus({ type: 'error', message: humanizeApiError(e, 'Voice cloning failed. Please try again.') });
+    } finally {
+      setCloneLoading(false);
+    }
   };
 
   const triggerBrowserDownload = async (url: string | null, filename: string) => {
@@ -648,48 +871,81 @@ export function Studio() {
 
       const token = localStorage.getItem('vocence_token');
       setGenerateLoading(true);
-      dashboardApi
-        .generateStudioTts(
-          {
-            user_id: user.id,
-            miner_hotkey: selectedModel.miner_hotkey,
-            model_name: selectedModel.model_name,
-            chute_id: selectedModel.chute_id,
-            chute_slug: selectedModel.chute_slug,
-            text: ttsText.trim(),
-            style_instruction: ttsStylePrompt.trim() || undefined,
-          },
-          token
-        )
-        .then((res) => {
-          player.play({
-            src: res.audio_url,
-            title: ttsText.trim().slice(0, 80) || 'Generated audio',
-            subtitle: (ttsStylePrompt.trim() || 'neutral voice'),
-            downloadFilename: `vocence-tts-${res.id}.wav`,
-          });
-          setStudioHistory((prev) => [
-            {
-              id: res.id,
-              entry_type: 'tts',
+      const text = ttsText.trim();
+      const instruction = ttsStylePrompt.trim();
+      const label = text.slice(0, 80) || 'Generated audio';
+
+      void (async () => {
+        try {
+          const submission = await dashboardApi.startJob({
+            type: 'tts',
+            credits: CREDIT_TTS,
+            payload: {
+              text,
+              style_instruction: instruction || 'neutral voice',
               miner_hotkey: selectedModel.miner_hotkey,
               model_name: selectedModel.model_name,
-              display_name: selectedModel.display_name,
-              prompt_text: ttsText.trim(),
-              style_instruction: ttsStylePrompt.trim() || 'neutral voice',
-              audio_url: res.audio_url,
-              expires_at: res.expires_at,
-              created_at: new Date().toISOString(),
-              expired: false,
+              chute_slug: selectedModel.chute_slug,
+              chute_id: selectedModel.chute_id,
             },
-            ...prev,
-          ]);
-          if (res.credits != null) updateCredits(res.credits);
-        })
-        .catch((err) => {
-          alert(err?.message || 'Generation failed. The miner may be offline.');
-        })
-        .finally(() => setGenerateLoading(false));
+          }, token);
+          updateCredits((user.credits ?? 0) - CREDIT_TTS);
+          generations.trackServerJob({
+            serverJobId: submission.job_id,
+            type: 'tts',
+            label,
+            toastResult: {
+              navigateTo: '/studio/tts',
+              playerTitle: label,
+              playerSubtitle: instruction || 'neutral voice',
+              downloadFilename: `vocence-tts-${submission.job_id.slice(0, 8)}.wav`,
+            },
+          });
+          // Local optimistic poll: when complete, push into history + auto-play
+          let done = false;
+          while (!done) {
+            await new Promise((r) => setTimeout(r, 2000));
+            try {
+              const job = await dashboardApi.getJob(submission.job_id, token);
+              if (job.status === 'completed') {
+                const audioUrl = (job.result?.audio_url as string | undefined) || '';
+                const historyId = (job.result?.history_id as number | undefined) || 0;
+                if (audioUrl) {
+                  player.play({
+                    src: audioUrl,
+                    title: label,
+                    subtitle: instruction || 'neutral voice',
+                    downloadFilename: `vocence-tts-${historyId || submission.job_id.slice(0, 8)}.wav`,
+                  });
+                  setStudioHistory((prev) => [
+                    {
+                      id: historyId || Date.now(),
+                      entry_type: 'tts',
+                      miner_hotkey: selectedModel.miner_hotkey,
+                      model_name: selectedModel.model_name,
+                      display_name: selectedModel.display_name,
+                      prompt_text: text,
+                      style_instruction: instruction || 'neutral voice',
+                      audio_url: audioUrl,
+                      expires_at: '',
+                      created_at: new Date().toISOString(),
+                      expired: false,
+                    },
+                    ...prev,
+                  ]);
+                }
+                done = true;
+              } else if (['failed', 'timeout', 'cancelled'].includes(job.status)) {
+                done = true;
+              }
+            } catch { /* keep polling on transient errors */ }
+          }
+        } catch (e) {
+          alert(humanizeApiError(e, 'Generation failed. Please try again.'));
+        } finally {
+          setGenerateLoading(false);
+        }
+      })();
     });
   };
 
@@ -707,55 +963,71 @@ export function Studio() {
       setSttStatus(null);
       const token = localStorage.getItem('vocence_token');
       setGenerateLoading(true);
-      dashboardApi
-        .generateStudioStt(
-          {
-            user_id: user.id,
-            language: selectedLanguage === 'auto-detect' ? null : selectedLanguage,
-            audio_file: sttFile,
-          },
-          token
-        )
-        .then((res) => {
-          setSttResult({
-            text: res.text || '',
-            language: res.language ?? selectedLanguage,
-            fileName: sttFile.name,
+      const fileRef = sttFile;
+      const lang = selectedLanguage === 'auto-detect' ? null : selectedLanguage;
+      void (async () => {
+        try {
+          const audio_b64 = await fileToBase64(fileRef);
+          const submission = await dashboardApi.startJob({
+            type: 'stt',
+            credits: CREDIT_STT,
+            payload: { audio_b64, language: lang, filename: fileRef.name },
+          }, token);
+          updateCredits((user.credits ?? 0) - CREDIT_STT);
+          setSttStatus({ type: 'info', message: `Queued (position ${submission.queue_position}). Transcribing…` });
+          generations.trackServerJob({
+            serverJobId: submission.job_id,
+            type: 'stt',
+            label: fileRef.name,
+            toastResult: { navigateTo: '/studio/stt' },
           });
-          setSttStatus({
-            type: 'success',
-            message: 'Transcription completed successfully.',
-          });
-          const createdAt = new Date().toISOString();
-          setStudioHistory((prev) => [
-            {
-              id: res.id,
-              entry_type: 'stt',
-              miner_hotkey: '',
-              model_name: 'Speech-to-Text',
-              display_name: 'Speech-to-Text',
-              prompt_text: null,
-              style_instruction: '',
-              audio_url: null,
-              expires_at: '',
-              created_at: createdAt,
-              expired: false,
-              transcribed_text: res.text,
-              source_audio_filename: sttFile.name,
-              source_language: res.language ?? null,
-              duration_seconds: res.duration_seconds ?? null,
-            },
-            ...prev,
-          ]);
-          if (res.credits != null) updateCredits(res.credits);
-        })
-        .catch((err) => {
-          setSttStatus({
-            type: 'error',
-            message: userFacingApiError(err),
-          });
-        })
-        .finally(() => setGenerateLoading(false));
+          // Local poll for in-page result + history insert
+          let done = false;
+          while (!done) {
+            await new Promise((r) => setTimeout(r, 2000));
+            try {
+              const job = await dashboardApi.getJob(submission.job_id, token);
+              if (job.status === 'completed') {
+                const text = (job.result?.text as string | undefined) || '';
+                const language = (job.result?.language as string | undefined) || selectedLanguage;
+                const historyId = (job.result?.history_id as number | undefined) || Date.now();
+                setSttResult({ text, language, fileName: fileRef.name });
+                setSttStatus({ type: 'success', message: 'Transcription completed successfully.' });
+                setStudioHistory((prev) => [
+                  {
+                    id: historyId,
+                    entry_type: 'stt',
+                    miner_hotkey: '',
+                    model_name: 'Speech-to-Text',
+                    display_name: 'Speech-to-Text',
+                    prompt_text: null,
+                    style_instruction: '',
+                    audio_url: null,
+                    expires_at: '',
+                    created_at: new Date().toISOString(),
+                    expired: false,
+                    transcribed_text: text,
+                    source_audio_filename: fileRef.name,
+                    source_language: language ?? null,
+                    duration_seconds: null,
+                  },
+                  ...prev,
+                ]);
+                done = true;
+              } else if (['failed', 'timeout', 'cancelled'].includes(job.status)) {
+                setSttStatus({ type: 'error', message: job.error_message || 'Transcription failed.' });
+                done = true;
+              } else if (job.phase) {
+                setSttStatus({ type: 'info', message: job.phase });
+              }
+            } catch { /* keep polling */ }
+          }
+        } catch (e) {
+          setSttStatus({ type: 'error', message: humanizeApiError(e, 'Transcription failed. Please try again.') });
+        } finally {
+          setGenerateLoading(false);
+        }
+      })();
     });
   };
 
@@ -857,32 +1129,72 @@ export function Studio() {
       setVdLoading(true);
       setVdStatus(null);
       setVdSavedVoiceId(null);
-      try {
-        const res = await dashboardApi.studioVoiceDesignPreview(
-          {
-            user_id: user.id,
-            voice_description: desc,
-            miner_hotkey: selectedModel.miner_hotkey,
-            model_name: selectedModel.model_name,
-            chute_id: selectedModel.chute_id,
-            chute_slug: selectedModel.chute_slug,
-          },
-          token
-        );
-        updateCredits(res.credits);
-        setVdPreview(res);
-        setVdChosen('revised');
-        setVdDisplayName('');
-        setVdSaveNameInvalid(false);
-        setVdStatus({
-          type: 'success',
-          message: 'Listen to both samples and pick the one that fits.',
-        });
-      } catch (e) {
-        setVdStatus({ type: 'error', message: userFacingApiError(e) });
-      } finally {
-        setVdLoading(false);
-      }
+      void (async () => {
+        try {
+          const submission = await dashboardApi.startJob({
+            type: 'voice_design',
+            credits: vdPreviewCredits,
+            payload: {
+              mode: 'preview',
+              voice_description: desc,
+              miner_hotkey: selectedModel.miner_hotkey,
+              model_name: selectedModel.model_name,
+              chute_slug: selectedModel.chute_slug,
+            },
+          }, token);
+          updateCredits((user.credits ?? 0) - vdPreviewCredits);
+          setVdStatus({
+            type: 'info',
+            message: submission.load_warning
+              ? `Queued (position ${submission.queue_position}). Capacity is heavy — this might take roughly 2× as long as usual.`
+              : `Queued (position ${submission.queue_position}). Designing voice…`,
+          });
+          generations.trackServerJob({
+            serverJobId: submission.job_id,
+            type: 'voice_design',
+            label: desc.slice(0, 80),
+            toastResult: { navigateTo: '/studio/voice-design' },
+          });
+          // Local poll for vdPreview state
+          let done = false;
+          while (!done) {
+            await new Promise((r) => setTimeout(r, 2000));
+            try {
+              const job = await dashboardApi.getJob(submission.job_id, token);
+              if (job.status === 'completed' && job.result) {
+                const result = job.result as Record<string, unknown>;
+                setVdPreview({
+                  preview_token: (result.preview_token as string) || '',
+                  voice_description: desc,
+                  revised_instruction: (result.revised_instruction as string) || '',
+                  sample_script: (result.sample_script as string) || '',
+                  audio_a_url: (result.audio_a_url as string) || '',
+                  audio_b_url: (result.audio_b_url as string) || '',
+                  expires_at: '',
+                  credits: user.credits ?? 0,
+                  miner_hotkey: selectedModel.miner_hotkey,
+                  model_name: selectedModel.model_name,
+                  chute_slug: selectedModel.chute_slug,
+                });
+                setVdChosen('revised');
+                setVdDisplayName('');
+                setVdSaveNameInvalid(false);
+                setVdStatus({ type: 'success', message: 'Listen to both samples and pick the one that fits.' });
+                done = true;
+              } else if (['failed', 'timeout', 'cancelled'].includes(job.status)) {
+                setVdStatus({ type: 'error', message: job.error_message || 'Voice design failed.' });
+                done = true;
+              } else if (job.phase) {
+                setVdStatus({ type: 'info', message: job.phase });
+              }
+            } catch { /* keep polling */ }
+          }
+        } catch (e) {
+          setVdStatus({ type: 'error', message: humanizeApiError(e, 'Voice design failed. Please try again.') });
+        } finally {
+          setVdLoading(false);
+        }
+      })();
     });
   };
 
@@ -910,8 +1222,6 @@ export function Studio() {
         );
         updateCredits(res.credits);
         setVdSavedVoiceId(res.voice_id);
-        setVdPreview(null);
-        setVdDescription('');
         setVdStatus({
           type: 'success',
           message: `Voice saved as “${name}”.`,
@@ -962,37 +1272,6 @@ export function Studio() {
               <p className="text-amber-100/80 mt-1 text-xs leading-relaxed">
                 This feature is not turned on for this workspace yet. Please try again later or contact support.
               </p>
-            </div>
-          </div>
-        )}
-
-        {vdSavedVoiceId != null && (
-          <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/[0.08] p-6 space-y-4">
-            <div className="flex items-start gap-3">
-              <CheckCircle2 className="text-emerald-400 shrink-0" size={22} />
-              <div>
-                <p className="font-semibold text-white">Voice saved</p>
-                <p className="text-sm text-[#A7B0B7] mt-1">Open My voices to generate new lines in this style.</p>
-              </div>
-            </div>
-            <div className="flex flex-wrap gap-3">
-              <button
-                type="button"
-                className="btn-primary"
-                onClick={() => navigate(`/studio/my-voices/${vdSavedVoiceId}`)}
-              >
-                Use this voice now
-              </button>
-              <button
-                type="button"
-                className="btn-outline text-sm"
-                onClick={() => {
-                  setVdSavedVoiceId(null);
-                  setVdStatus(null);
-                }}
-              >
-                Design another
-              </button>
             </div>
           </div>
         )}
@@ -1068,7 +1347,7 @@ export function Studio() {
               </div>
             </div>
 
-            {vdPreview && !vdSavedVoiceId && (
+            {vdPreview && (
               <div className="space-y-6">
                 <div className="max-w-lg rounded-xl border border-[#DFFF00]/25 bg-gradient-to-br from-[#DFFF00]/[0.07] to-transparent px-4 py-3">
                   <p className="text-[10px] uppercase tracking-[0.18em] text-[#DFFF00]/90 mb-1.5">Shared sample line</p>
@@ -1165,44 +1444,78 @@ export function Studio() {
                   ))}
                 </div>
 
-                <div className="card-vocence p-6 space-y-4 border border-white/[0.07]">
-                  <label className="label-mono block">Save as</label>
-                  <input
-                    type="text"
-                    value={vdDisplayName}
-                    maxLength={20}
-                    onChange={(e) => {
-                      const next = e.target.value.slice(0, 20);
-                      setVdDisplayName(next);
-                      if (vdSaveNameInvalid) setVdSaveNameInvalid(false);
-                    }}
-                    placeholder="Enter a name for this voice"
-                    autoComplete="off"
-                    aria-invalid={vdSaveNameInvalid}
-                    aria-required
-                    className={`w-full bg-[#0a0a0a] border rounded-xl px-4 py-3 text-white placeholder-[#5c6370] outline-none focus:border-[#DFFF00]/40 ${
-                      vdSaveNameInvalid ? 'border-red-400/50 ring-1 ring-red-400/20' : 'border-white/10'
-                    }`}
-                  />
-                  {vdSaveNameInvalid ? (
-                    <p className="text-xs text-red-300/90">A name is required to save.</p>
-                  ) : null}
-                  <button
-                    type="button"
-                    onClick={() => void handleVoiceDesignSave()}
-                    disabled={vdSaveLoading}
-                    className="btn-primary w-full sm:w-auto disabled:opacity-50"
-                  >
-                    {vdSaveLoading ? (
-                      <>
-                        <div className="w-4 h-4 border-2 border-[#07080A] border-t-transparent rounded-full animate-spin mr-2 inline-block" />
-                        Saving…
-                      </>
-                    ) : (
-                      'Save chosen voice'
-                    )}
-                  </button>
-                </div>
+                {vdSavedVoiceId != null ? (
+                  <div className="card-vocence p-6 space-y-4 border border-emerald-500/30 bg-emerald-500/[0.06]">
+                    <div className="flex items-start gap-3">
+                      <CheckCircle2 className="text-emerald-400 shrink-0" size={22} />
+                      <div>
+                        <p className="font-semibold text-white">Voice saved as “{vdDisplayName}”</p>
+                        <p className="text-sm text-[#A7B0B7] mt-1">Use it now or design another.</p>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-3">
+                      <button
+                        type="button"
+                        className="btn-primary"
+                        onClick={() => navigate(`/studio/my-voices/${vdSavedVoiceId}`)}
+                      >
+                        Use this voice now
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-outline text-sm"
+                        onClick={() => {
+                          setVdSavedVoiceId(null);
+                          setVdStatus(null);
+                          setVdPreview(null);
+                          setVdDescription('');
+                          setVdDisplayName('');
+                        }}
+                      >
+                        Design another
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="card-vocence p-6 space-y-4 border border-white/[0.07]">
+                    <label className="label-mono block">Save as</label>
+                    <input
+                      type="text"
+                      value={vdDisplayName}
+                      maxLength={20}
+                      onChange={(e) => {
+                        const next = e.target.value.slice(0, 20);
+                        setVdDisplayName(next);
+                        if (vdSaveNameInvalid) setVdSaveNameInvalid(false);
+                      }}
+                      placeholder="Enter a name for this voice"
+                      autoComplete="off"
+                      aria-invalid={vdSaveNameInvalid}
+                      aria-required
+                      className={`w-full bg-[#0a0a0a] border rounded-xl px-4 py-3 text-white placeholder-[#5c6370] outline-none focus:border-[#DFFF00]/40 ${
+                        vdSaveNameInvalid ? 'border-red-400/50 ring-1 ring-red-400/20' : 'border-white/10'
+                      }`}
+                    />
+                    {vdSaveNameInvalid ? (
+                      <p className="text-xs text-red-300/90">A name is required to save.</p>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={() => void handleVoiceDesignSave()}
+                      disabled={vdSaveLoading}
+                      className="btn-primary w-full sm:w-auto disabled:opacity-50"
+                    >
+                      {vdSaveLoading ? (
+                        <>
+                          <div className="w-4 h-4 border-2 border-[#07080A] border-t-transparent rounded-full animate-spin mr-2 inline-block" />
+                          Saving…
+                        </>
+                      ) : (
+                        'Save chosen voice'
+                      )}
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -1309,24 +1622,25 @@ export function Studio() {
                         eager
                         className="h-full w-full transition-transform duration-500 group-hover:scale-[1.03]"
                       />
-                      <div className="absolute inset-0 bg-gradient-to-t from-[#0f131a]/95 via-[#0f131a]/40 to-black/18 pointer-events-none" />
                       <button
                         type="button"
                         onClick={() => setDeleteConfirmVoiceId(v.id)}
-                        className="absolute right-2 top-2 flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-black/50 text-[#A7B0B7] backdrop-blur-sm transition-colors hover:border-red-400/30 hover:bg-red-500/20 hover:text-red-200"
+                        className="absolute right-2 top-2 flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-black/50 text-white backdrop-blur-sm transition-colors hover:border-red-400/30 hover:bg-red-500/20 hover:text-red-200"
                         aria-label="Delete voice"
                       >
                         <Trash2 size={16} />
                       </button>
-                      <div className="absolute bottom-3 left-4 right-4">
-                        <h3 className="font-semibold text-white text-lg leading-tight drop-shadow-md">{v.display_name}</h3>
-                        {v.model_name ? (
-                          <p className="text-[10px] text-[#A7B0B7]/90 mt-1 truncate">{v.model_name}</p>
-                        ) : null}
-                      </div>
+                    </div>
+                    <div className="px-4 pt-3 pb-1">
+                      <h3 className="font-semibold text-white text-base leading-tight tracking-tight truncate">
+                        {v.display_name || `Voice #${v.id}`}
+                      </h3>
+                      {v.model_name ? (
+                        <p className="text-[11px] text-[#6B7280] mt-0.5 truncate">{v.model_name}</p>
+                      ) : null}
                     </div>
 
-                    <div className="flex flex-1 flex-col gap-3 border-t border-white/[0.08] p-4">
+                    <div className="flex flex-1 flex-col gap-3 px-4 pt-2 pb-4">
                       <div>
                         <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#DFFF00]/85 mb-1">
                           Sample
@@ -1462,6 +1776,19 @@ export function Studio() {
                   aria-invalid={ttsContentLimitNotice}
                   aria-describedby={ttsContentLimitNotice ? 'tts-content-limit-hint' : undefined}
                 />
+                <div className="flex items-center justify-end mt-2 -mb-1">
+                  <span
+                    className={`text-[11px] tabular-nums ${
+                      ttsText.length >= TTS_CONTENT_MAX_CHARS
+                        ? 'text-amber-400'
+                        : ttsText.length >= TTS_CONTENT_MAX_CHARS * 0.9
+                          ? 'text-amber-300/70'
+                          : 'text-[#666]'
+                    }`}
+                  >
+                    {ttsText.length.toLocaleString()} / {TTS_CONTENT_MAX_CHARS.toLocaleString()}
+                  </span>
+                </div>
               </div>
               {ttsContentLimitNotice ? (
                 <p
@@ -1569,48 +1896,122 @@ export function Studio() {
       </div>
 
       <div className="card-vocence p-6 space-y-6">
-        {/* Upload Zone */}
-        <div>
-          <input
-            ref={sttFileInputRef}
-            type="file"
-            accept="audio/*,.mp3,.wav,.m4a"
-            className="hidden"
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (file) {
-                setSttFile(file);
-              }
-            }}
-          />
-          <div
-            onClick={() => sttFileInputRef.current?.click()}
-            onDragOver={handleSttDragOver}
-            onDragLeave={handleSttDragLeave}
-            onDrop={handleSttDrop}
-            className={`border-2 border-dashed rounded-2xl p-12 text-center transition-colors cursor-pointer ${
-              isSttDragActive
-                ? 'border-[#DFFF00] bg-[#DFFF00]/10'
-                : 'border-white/10 hover:border-white/20'
-            }`}
-          >
-            <Upload size={40} className="mx-auto mb-4 text-[#666]" />
-            {sttFile ? (
+        {/* Upload / Record toggle */}
+        <div className="inline-flex rounded-xl border border-white/10 bg-white/[0.03] p-1">
+          {([
+            { id: 'upload' as const, label: 'Upload file' },
+            { id: 'record' as const, label: 'Record now' },
+          ]).map((m) => (
+            <button
+              key={m.id}
+              type="button"
+              onClick={() => {
+                if (sttIsRecording) stopSttRecording();
+                setSttMode(m.id);
+                setSttFile(null);
+              }}
+              className={`px-4 py-1.5 text-sm rounded-lg transition-colors ${
+                sttMode === m.id ? 'bg-white/10 text-white' : 'text-[#A7B0B7] hover:text-white'
+              }`}
+            >
+              {m.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Source Zone */}
+        {sttMode === 'upload' ? (
+          <div>
+            <input
+              ref={sttFileInputRef}
+              type="file"
+              accept="audio/*,.mp3,.wav,.m4a"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) {
+                  setSttFile(file);
+                }
+              }}
+            />
+            <div
+              onClick={() => sttFileInputRef.current?.click()}
+              onDragOver={handleSttDragOver}
+              onDragLeave={handleSttDragLeave}
+              onDrop={handleSttDrop}
+              className={`border-2 border-dashed rounded-2xl p-12 text-center transition-colors cursor-pointer ${
+                isSttDragActive
+                  ? 'border-[#DFFF00] bg-[#DFFF00]/10'
+                  : 'border-white/10 hover:border-white/20'
+              }`}
+            >
+              <Upload size={40} className="mx-auto mb-4 text-[#666]" />
+              {sttFile ? (
+                <>
+                  <p className="mb-2 text-[#DFFF00]">{sttFile.name}</p>
+                  <p className="text-sm text-[#666]">{(sttFile.size / 1024 / 1024).toFixed(2)} MB</p>
+                </>
+              ) : (
+                <>
+                  <p className="mb-2">
+                    Drag and drop audio files or{' '}
+                    <span className="text-[#DFFF00]">browse</span>
+                  </p>
+                  <p className="text-sm text-[#666]">MP3, WAV, M4A · max 3 minutes</p>
+                </>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="border-2 border-dashed border-white/10 rounded-2xl p-12 text-center">
+            {sttIsRecording ? (
+              <>
+                <div className="flex items-center justify-center gap-3 mb-4">
+                  <span className="relative flex h-3 w-3">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-500 opacity-75" />
+                    <span className="relative inline-flex rounded-full h-3 w-3 bg-red-500" />
+                  </span>
+                  <span className="text-2xl font-mono tabular-nums text-white">
+                    {Math.floor(sttRecordingSec / 60)}:{String(sttRecordingSec % 60).padStart(2, '0')}
+                  </span>
+                  <span className="text-sm text-[#666]">/ 3:00</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={stopSttRecording}
+                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-white text-[#07080A] text-sm font-semibold hover:bg-white/90"
+                >
+                  Stop recording
+                </button>
+              </>
+            ) : sttFile ? (
               <>
                 <p className="mb-2 text-[#DFFF00]">{sttFile.name}</p>
-                <p className="text-sm text-[#666]">{(sttFile.size / 1024 / 1024).toFixed(2)} MB</p>
+                <p className="text-sm text-[#666] mb-4">{(sttFile.size / 1024 / 1024).toFixed(2)} MB</p>
+                <button
+                  type="button"
+                  onClick={() => { setSttFile(null); void startSttRecording(); }}
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-white/15 text-sm text-white hover:bg-white/5"
+                >
+                  <Mic size={14} /> Record again
+                </button>
               </>
             ) : (
               <>
-                <p className="mb-2">
-                  Drag and drop audio files or{' '}
-                  <span className="text-[#DFFF00]">browse</span>
-                </p>
-                <p className="text-sm text-[#666]">MP3, WAV, M4A up to 50MB</p>
+                <Mic size={40} className="mx-auto mb-4 text-[#666]" />
+                <p className="mb-2 text-white">Record up to 3 minutes</p>
+                <p className="text-sm text-[#666] mb-4">We'll ask for microphone permission.</p>
+                <button
+                  type="button"
+                  onClick={() => void startSttRecording()}
+                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#DFFF00] text-[#07080A] text-sm font-semibold hover:brightness-110"
+                >
+                  <Mic size={14} /> Start recording
+                </button>
               </>
             )}
           </div>
-        </div>
+        )}
 
         <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
           <div className="w-full md:w-[260px]">
@@ -1840,6 +2241,14 @@ export function Studio() {
         </p>
       </div>
 
+      <div className="rounded-xl border border-cyan-400/20 bg-cyan-500/[0.04] p-4 text-sm text-cyan-100/90 flex gap-3">
+        <Lightbulb size={16} className="shrink-0 mt-0.5 text-cyan-300" />
+        <div className="space-y-1">
+          <p><span className="font-semibold text-cyan-200">For best results:</span> use 5–10 seconds of a single speaker, with no background music and no clipping or distortion.</p>
+          <p className="text-cyan-100/70 text-xs">If you know exactly what was said, type it as the reference script below — that's more accurate than auto-transcription. Leave it empty and we'll transcribe automatically.</p>
+        </div>
+      </div>
+
       <div className="grid md:grid-cols-2 gap-6">
         <div className="card-vocence p-6 space-y-4">
           <label className="label-mono block">Reference audio</label>
@@ -2003,6 +2412,17 @@ export function Studio() {
               className="w-full bg-[#0a0a0a] border border-white/10 rounded-xl px-3 py-2 text-sm text-white placeholder-[#666] outline-none"
             />
           </div>
+
+          <div>
+            <label className="label-mono mb-2 block text-xs">Reference script (optional)</label>
+            <textarea
+              value={cloneReferenceScript}
+              onChange={(e) => setCloneReferenceScript(e.target.value)}
+              rows={3}
+              placeholder="What is said in the reference clip — improves cloning accuracy. Leave empty and we'll auto-transcribe."
+              className="w-full bg-[#0a0a0a] border border-white/10 rounded-xl px-3 py-2 text-sm text-white placeholder-[#666] outline-none resize-y"
+            />
+          </div>
         </div>
 
         <div className="card-vocence p-6 flex flex-col gap-4">
@@ -2063,34 +2483,6 @@ export function Studio() {
               <p className="text-xs text-[#666] mt-2">Language: {cloneResult.language}</p>
             )}
           </div>
-          {(() => {
-            const isThis = player.track?.src === cloneResult.audioUrl;
-            const isPlaying = isThis && player.playing;
-            const onPlayPause = () => {
-              if (isPlaying) { player.pause(); return; }
-              if (isThis) { player.resume(); return; }
-              player.play({
-                src: cloneResult.audioUrl,
-                title: cloneResult.referenceText.slice(0, 80) || 'Cloned voice',
-                subtitle: 'Voice clone result',
-                downloadFilename: `vocence-clone-${cloneResult.id}.wav`,
-              });
-            };
-            return (
-              <div className="flex items-center gap-3">
-                <button
-                  onClick={onPlayPause}
-                  className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 transition-colors ${
-                    isPlaying ? 'bg-[#DFFF00] text-[#07080A]' : 'bg-white/10 text-white hover:bg-white/20'
-                  }`}
-                  aria-label={isPlaying ? 'Pause' : 'Play'}
-                >
-                  {isPlaying ? <Pause size={18} fill="currentColor" /> : <Play size={18} className="ml-0.5" fill="currentColor" />}
-                </button>
-                <span className="text-xs text-[#666]">Plays in the bottom player.</span>
-              </div>
-            );
-          })()}
           <div className="flex flex-wrap gap-3">
             <button
               type="button"
@@ -2154,31 +2546,43 @@ export function Studio() {
                   </div>
                 ) : (
                   <>
-                    <div className="card-vocence p-4 mb-6">
-                      <div className="flex flex-wrap gap-4">
-                        <div className="flex-1 min-w-[200px] bg-[#0a0a0a] border border-white/10 rounded-lg px-4 py-2 flex items-center gap-2">
-                          <Search size={16} className="text-[#666]" />
+                    <div className="rounded-2xl border border-white/[0.08] bg-gradient-to-br from-white/[0.04] to-white/[0.01] p-3 mb-6">
+                      <div className="flex flex-col sm:flex-row gap-2.5">
+                        {/* Search */}
+                        <div className="flex-1 min-w-[200px] group flex items-center gap-2.5 rounded-xl bg-[#0a0a0a] border border-white/[0.07] px-3.5 h-11 transition-colors focus-within:border-[#DFFF00]/40 focus-within:bg-[#0d0d0d]">
+                          <Search size={16} className="text-[#666] group-focus-within:text-[#DFFF00]/80 transition-colors" />
                           <input
                             type="text"
-                            placeholder="Search prompts, transcription, clone text..."
+                            placeholder="Search prompts, transcripts, clone text…"
                             value={studioHistorySearch}
                             onChange={(e) => setStudioHistorySearch(e.target.value)}
                             className="flex-1 bg-transparent text-sm outline-none text-white placeholder-[#666]"
                           />
+                          {studioHistorySearch && (
+                            <button
+                              type="button"
+                              onClick={() => setStudioHistorySearch('')}
+                              className="text-[#555] hover:text-white transition-colors"
+                              aria-label="Clear search"
+                            >
+                              <X size={14} />
+                            </button>
+                          )}
                         </div>
+                        {/* Category */}
                         <Select
                           value={studioHistoryCategory}
                           onValueChange={(v) =>
                             setStudioHistoryCategory(v as typeof studioHistoryCategory)
                           }
                         >
-                          <SelectTrigger className="w-full sm:w-[200px] h-10 bg-[#0a0a0a] border border-white/10 rounded-lg px-3 text-sm text-white">
-                            <SelectValue placeholder="Category" />
+                          <SelectTrigger className="w-full sm:w-[210px] h-11 px-3.5 rounded-xl bg-[#0a0a0a] border border-white/[0.07] text-sm text-white transition-all hover:border-white/[0.18] data-[state=open]:border-[#DFFF00]/40 data-[state=open]:bg-[#0d0d0d]">
+                            <SelectValue placeholder="All types" />
                           </SelectTrigger>
                           <SelectContent
                             position="popper"
-                            sideOffset={4}
-                            className="bg-[#0a0a0a] border border-white/10 text-white [&_[data-slot=select-item]]:focus:!bg-transparent [&_[data-slot=select-item]]:data-[state=checked]:!bg-[#DFFF00]/15 [&_[data-slot=select-item]]:data-[state=checked]:!text-[#DFFF00] [&_[data-slot=select-item]]:data-[highlighted]:data-[state=unchecked]:!bg-white/[0.06] [&_[data-slot=select-item]]:data-[highlighted]:data-[state=unchecked]:!text-white [&_[data-slot=select-item]]:data-[highlighted]:data-[state=checked]:!bg-[#DFFF00]/15 [&_[data-slot=select-item]]:data-[highlighted]:data-[state=checked]:!text-[#DFFF00]"
+                            sideOffset={6}
+                            className="rounded-xl border border-white/[0.10] bg-[#0c0c0c] text-white shadow-2xl shadow-black/40 overflow-hidden p-1 [&_[data-slot=select-item]]:rounded-lg [&_[data-slot=select-item]]:focus:!bg-transparent [&_[data-slot=select-item]]:data-[state=checked]:!bg-[#DFFF00]/15 [&_[data-slot=select-item]]:data-[state=checked]:!text-[#DFFF00] [&_[data-slot=select-item]]:data-[highlighted]:data-[state=unchecked]:!bg-white/[0.06] [&_[data-slot=select-item]]:data-[highlighted]:data-[state=unchecked]:!text-white [&_[data-slot=select-item]]:data-[highlighted]:data-[state=checked]:!bg-[#DFFF00]/15 [&_[data-slot=select-item]]:data-[highlighted]:data-[state=checked]:!text-[#DFFF00]"
                           >
                             <SelectItem value="all">All types</SelectItem>
                             <SelectItem value="tts">Text-to-Speech</SelectItem>
@@ -2188,8 +2592,59 @@ export function Studio() {
                             <SelectItem value="music">Music Generation</SelectItem>
                           </SelectContent>
                         </Select>
+                        {/* Date */}
+                        <Select
+                          value={studioHistoryDateRange}
+                          onValueChange={(v) => setStudioHistoryDateRange(v as 'all' | '24h' | '7d' | '30d')}
+                        >
+                          <SelectTrigger className="w-full sm:w-[170px] h-11 px-3.5 rounded-xl bg-[#0a0a0a] border border-white/[0.07] text-sm text-white transition-all hover:border-white/[0.18] data-[state=open]:border-[#DFFF00]/40 data-[state=open]:bg-[#0d0d0d]">
+                            <SelectValue placeholder="All time" />
+                          </SelectTrigger>
+                          <SelectContent
+                            position="popper"
+                            sideOffset={6}
+                            className="rounded-xl border border-white/[0.10] bg-[#0c0c0c] text-white shadow-2xl shadow-black/40 overflow-hidden p-1 [&_[data-slot=select-item]]:rounded-lg [&_[data-slot=select-item]]:focus:!bg-transparent [&_[data-slot=select-item]]:data-[state=checked]:!bg-[#DFFF00]/15 [&_[data-slot=select-item]]:data-[state=checked]:!text-[#DFFF00] [&_[data-slot=select-item]]:data-[highlighted]:data-[state=unchecked]:!bg-white/[0.06] [&_[data-slot=select-item]]:data-[highlighted]:data-[state=unchecked]:!text-white [&_[data-slot=select-item]]:data-[highlighted]:data-[state=checked]:!bg-[#DFFF00]/15 [&_[data-slot=select-item]]:data-[highlighted]:data-[state=checked]:!text-[#DFFF00]"
+                          >
+                            <SelectItem value="all">All time</SelectItem>
+                            <SelectItem value="24h">Last 24 hours</SelectItem>
+                            <SelectItem value="7d">Last 7 days</SelectItem>
+                            <SelectItem value="30d">Last 30 days</SelectItem>
+                          </SelectContent>
+                        </Select>
                       </div>
                     </div>
+
+                    {/* Bulk-action bar */}
+                    {studioHistorySelected.size > 0 && (
+                      <div className="card-vocence px-4 py-3 mb-4 flex flex-wrap items-center gap-3">
+                        <span className="text-sm text-white">
+                          <span className="font-semibold">{studioHistorySelected.size}</span> selected
+                        </span>
+                        <button
+                          type="button"
+                          disabled={studioHistoryBulkBusy}
+                          onClick={() => void openBulkAddToPlaybook()}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 text-xs text-white hover:bg-white/5 disabled:opacity-50"
+                        >
+                          <Plus size={12} /> Add to playbook
+                        </button>
+                        <button
+                          type="button"
+                          disabled={studioHistoryBulkBusy}
+                          onClick={() => void handleBulkDeleteHistory()}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-400/30 bg-red-500/10 text-xs text-red-200 hover:bg-red-500/20 disabled:opacity-50"
+                        >
+                          <Trash2 size={12} /> Delete
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setStudioHistorySelected(new Set())}
+                          className="text-xs text-[#A7B0B7] hover:text-white ml-auto"
+                        >
+                          Clear selection
+                        </button>
+                      </div>
+                    )}
                     {studioHistoryLoading ? (
                       <div className="flex items-center justify-center py-12 gap-2 text-[#A7B0B7]">
                         <div className="w-5 h-5 border-2 border-[#DFFF00] border-t-transparent rounded-full animate-spin" />
@@ -2215,6 +2670,18 @@ export function Studio() {
                           <table className="w-full text-sm">
                             <thead className="text-xs text-[#666] uppercase bg-white/5">
                               <tr>
+                                <th className="px-3 py-3">
+                                  <input
+                                    type="checkbox"
+                                    aria-label="Select page"
+                                    onChange={togglePageAllSelected}
+                                    checked={
+                                      studioHistoryPageItems.length > 0 &&
+                                      studioHistoryPageItems.every((it) => studioHistorySelected.has(_historyKey(it)))
+                                    }
+                                    className="w-4 h-4 accent-[#DFFF00]"
+                                  />
+                                </th>
                                 <th className="px-4 py-3 text-left">Timestamp</th>
                                 <th className="px-4 py-3 text-left">Type</th>
                                 <th className="px-4 py-3 text-left">Content</th>
@@ -2281,7 +2748,16 @@ export function Studio() {
                                       ? `vocence-music-${item.id}.wav`
                                       : `vocence-tts-${item.id}.wav`;
                                   return (
-                                    <tr key={`${item.entry_type}-${item.id}`} className="hover:bg-white/5 transition-colors">
+                                    <tr key={`${item.entry_type}-${item.id}`} className={`hover:bg-white/5 transition-colors ${studioHistorySelected.has(_historyKey(item)) ? 'bg-[#DFFF00]/[0.04]' : ''}`}>
+                                      <td className="px-3 py-4">
+                                        <input
+                                          type="checkbox"
+                                          aria-label="Select item"
+                                          checked={studioHistorySelected.has(_historyKey(item))}
+                                          onChange={() => toggleHistorySelected(_historyKey(item))}
+                                          className="w-4 h-4 accent-[#DFFF00]"
+                                        />
+                                      </td>
                                       <td className="px-4 py-4">
                                         <div className="font-medium">{timestamp}</div>
                                         <div className="text-xs text-[#666]">{date}</div>
@@ -2338,14 +2814,29 @@ export function Studio() {
                                             </>
                                           ) : item.audio_url ? (
                                             <>
-                                              <button
-                                                type="button"
-                                                onClick={() => navigate(`/studio/result/${item.id}${resultQs}`)}
-                                                className="p-1.5 text-[#666] hover:text-white"
-                                                title="Play"
-                                              >
-                                                <Play size={16} />
-                                              </button>
+                                              {(() => {
+                                                const isThis = player.track?.src === item.audio_url;
+                                                const isPlaying = isThis && player.playing;
+                                                return (
+                                                  <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                      if (isPlaying) { player.pause(); return; }
+                                                      if (isThis) { player.resume(); return; }
+                                                      player.play({
+                                                        src: item.audio_url!,
+                                                        title: (contentCopy || styleCopy || dlName).slice(0, 80),
+                                                        subtitle: typeLabel,
+                                                        downloadFilename: dlName,
+                                                      });
+                                                    }}
+                                                    className={`p-1.5 ${isPlaying ? 'text-[#DFFF00]' : 'text-[#666] hover:text-white'}`}
+                                                    title={isPlaying ? 'Pause' : 'Play'}
+                                                  >
+                                                    {isPlaying ? <Pause size={16} /> : <Play size={16} />}
+                                                  </button>
+                                                );
+                                              })()}
                                               <button
                                                 type="button"
                                                 onClick={() => void triggerBrowserDownload(item.audio_url, dlName)}
@@ -2415,6 +2906,64 @@ export function Studio() {
         isOpen={isAuthModalOpen}
         onClose={() => setIsAuthModalOpen(false)}
       />
+
+      {/* Voice cloning consent (one-time) */}
+      {showCloneConsent && (
+        <VoiceCloneConsent
+          onCancel={() => setShowCloneConsent(false)}
+          onAccept={() => {
+            setShowCloneConsent(false);
+            void doCloneGenerate();
+          }}
+        />
+      )}
+
+      {/* Bulk add-to-playbook (history) */}
+      {studioHistoryAddOpen && (
+        <div className="fixed inset-0 z-[55] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4" onClick={() => setStudioHistoryAddOpen(false)}>
+          <div className="w-full max-w-md rounded-2xl border border-white/10 bg-[#0f1115] p-5 space-y-4" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-semibold text-white">Add to playbook</h3>
+              <button onClick={() => setStudioHistoryAddOpen(false)} className="text-[#666] hover:text-white" aria-label="Close">
+                <X size={16} />
+              </button>
+            </div>
+            <p className="text-xs text-[#A7B0B7]">
+              Adding {studioHistorySelected.size} item{studioHistorySelected.size === 1 ? '' : 's'}. STT and expired items will be skipped.
+            </p>
+            {studioPlaybooksList.length === 0 ? (
+              <p className="text-sm text-[#A7B0B7]">No playbooks yet — create one first from the Playbooks page.</p>
+            ) : (
+              <div className="space-y-1 max-h-72 overflow-y-auto">
+                {studioPlaybooksList.map((pb) => (
+                  <button
+                    key={pb.id}
+                    type="button"
+                    onClick={() => setStudioHistoryAddTarget(pb.id)}
+                    className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors ${
+                      studioHistoryAddTarget === pb.id
+                        ? 'bg-[#DFFF00]/10 border border-[#DFFF00]/35 text-white'
+                        : 'border border-transparent hover:bg-white/[0.04] text-[#C5CAD1]'
+                    }`}
+                  >
+                    {pb.title}
+                  </button>
+                ))}
+              </div>
+            )}
+            <div className="flex justify-end gap-2 pt-1">
+              <button onClick={() => setStudioHistoryAddOpen(false)} className="px-4 py-2 text-sm rounded-xl text-[#A7B0B7] hover:text-white hover:bg-white/5">Cancel</button>
+              <button
+                onClick={() => void handleBulkAddToPlaybook()}
+                disabled={!studioHistoryAddTarget || studioHistoryBulkBusy}
+                className="px-4 py-2 text-sm rounded-xl bg-[#DFFF00] text-[#07080A] font-semibold hover:brightness-110 disabled:opacity-50"
+              >
+                {studioHistoryBulkBusy ? 'Adding…' : 'Add'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -2424,10 +2973,10 @@ export function Studio() {
    ========================================================================== */
 
 const CLONE_SAMPLE_TRACKS = [
-  { id: 'cs1', name: 'Studio Interview', avatar: '/samples/images/clone_1.webp', originalAudio: '/samples/audio/clone1_original.wav', clonedAudio: '/samples/audio/clone1_cloned.wav', originalLabel: 'Original Recording', clonedLabel: 'Cloned — New Script' },
-  { id: 'cs2', name: 'Podcast Host', avatar: '/samples/images/clone_2.webp', originalAudio: '/samples/audio/clone2_original.wav', clonedAudio: '/samples/audio/clone2_cloned.wav', originalLabel: 'Reference Clip', clonedLabel: 'Cloned Output' },
-  { id: 'cs3', name: 'Voiceover Artist', avatar: '/samples/images/clone_3.webp', originalAudio: '/samples/audio/clone3_original.wav', clonedAudio: '/samples/audio/clone3_cloned.wav', originalLabel: 'Original Sample', clonedLabel: 'Cloned — Ad Read' },
-  { id: 'cs4', name: 'Audiobook Narrator', avatar: '/samples/images/clone_4.webp', originalAudio: '/samples/audio/clone4_original.wav', clonedAudio: '/samples/audio/clone4_cloned.wav', originalLabel: 'Reference', clonedLabel: 'Cloned — Chapter Read' },
+  { id: 'cs1', name: 'Const', avatar: asset('clone.const'), originalAudio: asset('clone-audio.const'), clonedAudio: asset('clone-audio.clone_const'), originalLabel: 'Reference', clonedLabel: 'Cloned' },
+  { id: 'cs2', name: 'Mark Jeffery', avatar: asset('clone.mark_jeffery'), originalAudio: asset('clone-audio.mark_jeffery'), clonedAudio: asset('clone-audio.clone_mark'), originalLabel: 'Reference', clonedLabel: 'Cloned' },
+  { id: 'cs3', name: 'Micaela', avatar: asset('clone.micaela'), originalAudio: asset('clone-audio.micaela'), clonedAudio: asset('clone-audio.clone_micaela'), originalLabel: 'Reference', clonedLabel: 'Cloned' },
+  { id: 'cs4', name: 'Sophia', avatar: asset('clone.sophia'), originalAudio: asset('clone-audio.sophia'), clonedAudio: asset('clone-audio.clone_sophia'), originalLabel: 'Reference', clonedLabel: 'Cloned' },
 ];
 
 function CloneSamplesSection() {

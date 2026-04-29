@@ -27,15 +27,20 @@ def music_gen_configured() -> bool:
 async def _post_music_form(
     endpoint: str,
     form_data: aiohttp.FormData,
+    base_url: str | None = None,
 ) -> tuple[bytes | None, str | None, str]:
     """
     POST multipart form to ACE-Step API. Returns (audio_bytes, audio_path, error).
     On success error is empty string. On failure audio_bytes is None.
+
+    `base_url` overrides MUSIC_GEN_API_URL for this call (used by the load
+    balancer to target a specific pod).
     """
-    if not MUSIC_GEN_API_URL:
+    base = (base_url or MUSIC_GEN_API_URL or "").rstrip("/")
+    if not base:
         return None, None, "Music generation not configured (MUSIC_GEN_API_URL)"
 
-    url = f"{MUSIC_GEN_API_URL.rstrip('/')}{endpoint}"
+    url = f"{base}{endpoint}"
     _log.info("Music gen POST %s", url)
 
     try:
@@ -55,9 +60,8 @@ async def _post_music_form(
                 if not audio_path:
                     return None, None, "Music server returned no audio_path"
 
-                # Fetch the actual audio file from the /audio/ endpoint
                 filename = audio_path.split("/")[-1]
-                audio_url = f"{MUSIC_GEN_API_URL.rstrip('/')}/audio/{filename}"
+                audio_url = f"{base}/audio/{filename}"
                 async with session.get(
                     audio_url,
                     timeout=aiohttp.ClientTimeout(total=60),
@@ -79,6 +83,7 @@ async def _post_music_form(
 
 async def generate_text2music(
     *,
+    base_url: str | None = None,
     prompt: str,
     lyrics: str = "",
     audio_duration: float = 60.0,
@@ -121,7 +126,7 @@ async def generate_text2music(
     fd.add_field("guidance_scale_text", str(guidance_scale_text))
     fd.add_field("guidance_scale_lyric", str(guidance_scale_lyric))
     fd.add_field("lora_name_or_path", lora_name_or_path)
-    return await _post_music_form("/generate/text2music", fd)
+    return await _post_music_form("/generate/text2music", fd, base_url=base_url)
 
 
 async def generate_audio2audio(

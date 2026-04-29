@@ -1,10 +1,14 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { dashboardApi, type BlogPost, type RegisteredUser, type DashboardValidator } from '../services/dashboardApi';
 import { API_ORIGIN_BASE } from '../services/baseUrl';
-import { ShieldOff, Plus, Trash2, Copy, ImagePlus, FileText, Users, ShieldCheck, Pencil, Search, ChevronLeft, ChevronRight } from 'lucide-react';
+import {
+  ShieldOff, Plus, Trash2, Copy, ImagePlus, FileText, Users, ShieldCheck, Pencil, Search, ChevronLeft, ChevronRight,
+  Heading1, Heading2, Heading3, Bold, Italic, Code as CodeIcon, Link as LinkIcon, List, ListOrdered, Quote, Minus, Eye, Edit3,
+} from 'lucide-react';
 import { ADMIN_EMAIL } from '../config';
+import { BlogContent } from '../components/BlogContent';
 const ACCENT = '#D1F840';
 const USERS_PAGE_SIZE = 15;
 
@@ -35,6 +39,8 @@ export function Admin() {
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [copiedHotkey, setCopiedHotkey] = useState<string | null>(null);
+  const [editorMode, setEditorMode] = useState<'edit' | 'preview' | 'split'>('split');
+  const contentRef = useRef<HTMLTextAreaElement | null>(null);
 
   const [validators, setValidators] = useState<DashboardValidator[]>([]);
   const [validatorForm, setValidatorForm] = useState({ uid: '', hotkey: '', stake: '0', s3_bucket: '' });
@@ -235,6 +241,62 @@ export function Admin() {
     setImageFile(null);
     setShowPostForm(false);
   };
+
+  /**
+   * Apply a markdown transform to the content textarea around the current selection.
+   * - 'wrap': inserts `before…after` around the selection (or `before placeholder after` if empty)
+   * - 'linePrefix': prefixes every selected line with `before`
+   * - 'block': inserts the snippet as its own block (bookended by blank lines)
+   */
+  const applyEdit = (
+    op: { mode: 'wrap'; before: string; after: string; placeholder?: string }
+      | { mode: 'linePrefix'; before: string }
+      | { mode: 'block'; snippet: string }
+  ) => {
+    const ta = contentRef.current;
+    if (!ta) return;
+    const value = ta.value;
+    const start = ta.selectionStart ?? 0;
+    const end = ta.selectionEnd ?? 0;
+    let next: string;
+    let cursor: number;
+
+    if (op.mode === 'wrap') {
+      const sel = value.slice(start, end) || (op.placeholder ?? '');
+      next = value.slice(0, start) + op.before + sel + op.after + value.slice(end);
+      cursor = start + op.before.length + sel.length + op.after.length;
+    } else if (op.mode === 'linePrefix') {
+      // Expand selection to whole lines.
+      const lineStart = value.lastIndexOf('\n', start - 1) + 1;
+      const nlAfter = value.indexOf('\n', end);
+      const lineEnd = nlAfter === -1 ? value.length : nlAfter;
+      const segment = value.slice(lineStart, lineEnd) || op.before.replace(/\s+$/, '');
+      const prefixed = segment
+        .split('\n')
+        .map((ln) => (ln.startsWith(op.before) ? ln : op.before + ln))
+        .join('\n');
+      next = value.slice(0, lineStart) + prefixed + value.slice(lineEnd);
+      cursor = lineStart + prefixed.length;
+    } else {
+      // block: insert as standalone block surrounded by blank lines
+      const before = value.slice(0, start);
+      const after = value.slice(end);
+      const padBefore = before === '' || before.endsWith('\n\n') ? '' : before.endsWith('\n') ? '\n' : '\n\n';
+      const padAfter = after === '' || after.startsWith('\n\n') ? '' : after.startsWith('\n') ? '\n' : '\n\n';
+      next = before + padBefore + op.snippet + padAfter + after;
+      cursor = (before + padBefore + op.snippet).length;
+    }
+
+    setPostForm((p) => ({ ...p, content: next }));
+    // Restore focus + caret after React updates the DOM
+    requestAnimationFrame(() => {
+      ta.focus();
+      ta.setSelectionRange(cursor, cursor);
+    });
+  };
+
+  const wordCount = postForm.content.trim() ? postForm.content.trim().split(/\s+/).length : 0;
+  const charCount = postForm.content.length;
 
   const handleDeletePost = async (id: string) => {
     if (!user?.email || !confirm('Delete this post?')) return;
@@ -625,15 +687,85 @@ export function Admin() {
                 </div>
               </div>
               <div>
-                <label className="block text-xs text-gray-500 mb-1">Content (plain text or markdown; styles applied on blog)</label>
-                <textarea
-                  required
-                  value={postForm.content}
-                  onChange={(e) => setPostForm((p) => ({ ...p, content: e.target.value }))}
-                  rows={10}
-                  className="w-full px-4 py-2 rounded-lg bg-[#0f0f0f] border border-[#27272a] text-white text-sm placeholder-gray-500 resize-y font-mono"
-                  placeholder="Write your post content here. Paragraphs and line breaks are preserved."
-                />
+                <div className="flex items-center justify-between mb-2">
+                  <label className="text-xs text-gray-500">Content</label>
+                  <div className="flex items-center gap-2 text-[11px] text-gray-500">
+                    <span>{wordCount.toLocaleString()} words · {charCount.toLocaleString()} chars</span>
+                    <div className="inline-flex rounded-md border border-[#27272a] overflow-hidden">
+                      {([
+                        { id: 'edit', icon: Edit3, label: 'Edit' },
+                        { id: 'split', icon: () => null, label: 'Split' },
+                        { id: 'preview', icon: Eye, label: 'Preview' },
+                      ] as const).map((m) => (
+                        <button
+                          key={m.id}
+                          type="button"
+                          onClick={() => setEditorMode(m.id)}
+                          className={`px-2.5 py-1 text-[11px] transition-colors ${
+                            editorMode === m.id ? 'bg-[#DFFF00] text-[#07080A] font-semibold' : 'text-gray-400 hover:text-white'
+                          }`}
+                        >
+                          {m.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Toolbar */}
+                <div className="flex flex-wrap items-center gap-1 px-2 py-1.5 rounded-t-lg border border-b-0 border-[#27272a] bg-[#0a0a0a]">
+                  <ToolbarBtn label="Heading 1" onClick={() => applyEdit({ mode: 'linePrefix', before: '# ' })}><Heading1 className="w-4 h-4" /></ToolbarBtn>
+                  <ToolbarBtn label="Heading 2" onClick={() => applyEdit({ mode: 'linePrefix', before: '## ' })}><Heading2 className="w-4 h-4" /></ToolbarBtn>
+                  <ToolbarBtn label="Heading 3" onClick={() => applyEdit({ mode: 'linePrefix', before: '### ' })}><Heading3 className="w-4 h-4" /></ToolbarBtn>
+                  <ToolbarSep />
+                  <ToolbarBtn label="Bold" onClick={() => applyEdit({ mode: 'wrap', before: '**', after: '**', placeholder: 'bold text' })}><Bold className="w-4 h-4" /></ToolbarBtn>
+                  <ToolbarBtn label="Italic" onClick={() => applyEdit({ mode: 'wrap', before: '*', after: '*', placeholder: 'italic text' })}><Italic className="w-4 h-4" /></ToolbarBtn>
+                  <ToolbarBtn label="Inline code" onClick={() => applyEdit({ mode: 'wrap', before: '`', after: '`', placeholder: 'code' })}><CodeIcon className="w-4 h-4" /></ToolbarBtn>
+                  <ToolbarBtn label="Link" onClick={() => {
+                    const url = window.prompt('Link URL', 'https://');
+                    if (url) applyEdit({ mode: 'wrap', before: '[', after: `](${url})`, placeholder: 'link text' });
+                  }}><LinkIcon className="w-4 h-4" /></ToolbarBtn>
+                  <ToolbarSep />
+                  <ToolbarBtn label="Bullet list" onClick={() => applyEdit({ mode: 'linePrefix', before: '- ' })}><List className="w-4 h-4" /></ToolbarBtn>
+                  <ToolbarBtn label="Numbered list" onClick={() => applyEdit({ mode: 'linePrefix', before: '1. ' })}><ListOrdered className="w-4 h-4" /></ToolbarBtn>
+                  <ToolbarBtn label="Quote" onClick={() => applyEdit({ mode: 'linePrefix', before: '> ' })}><Quote className="w-4 h-4" /></ToolbarBtn>
+                  <ToolbarBtn label="Divider" onClick={() => applyEdit({ mode: 'block', snippet: '---' })}><Minus className="w-4 h-4" /></ToolbarBtn>
+                </div>
+
+                <div className={editorMode === 'split' ? 'grid grid-cols-1 lg:grid-cols-2 gap-0 border border-[#27272a] rounded-b-lg overflow-hidden' : 'border border-[#27272a] rounded-b-lg overflow-hidden'}>
+                  {(editorMode === 'edit' || editorMode === 'split') && (
+                    <textarea
+                      ref={contentRef}
+                      required
+                      value={postForm.content}
+                      onChange={(e) => setPostForm((p) => ({ ...p, content: e.target.value }))}
+                      onKeyDown={(e) => {
+                        if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'b') { e.preventDefault(); applyEdit({ mode: 'wrap', before: '**', after: '**', placeholder: 'bold text' }); }
+                        else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'i') { e.preventDefault(); applyEdit({ mode: 'wrap', before: '*', after: '*', placeholder: 'italic text' }); }
+                        else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault();
+                          const url = window.prompt('Link URL', 'https://');
+                          if (url) applyEdit({ mode: 'wrap', before: '[', after: `](${url})`, placeholder: 'link text' });
+                        }
+                      }}
+                      rows={20}
+                      className={`w-full min-h-[480px] px-5 py-4 bg-[#0f0f0f] text-white text-[15px] leading-7 placeholder-gray-500 resize-y outline-none focus:bg-[#0c0c0c] ${editorMode === 'split' ? 'lg:border-r border-[#27272a]' : ''}`}
+                      placeholder={"# Your headline\n\nA great opening paragraph that hooks the reader.\n\n## A subheading\n\n- bullet one\n- bullet two\n\n> A pull quote.\n\nUse **bold**, *italic*, `code`, and [links](https://example.com) inline."}
+                      style={{ fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif' }}
+                    />
+                  )}
+                  {(editorMode === 'preview' || editorMode === 'split') && (
+                    <div className="min-h-[480px] max-h-[640px] overflow-y-auto px-5 py-4 bg-[#07080A]">
+                      {postForm.content.trim() ? (
+                        <BlogContent content={postForm.content} />
+                      ) : (
+                        <p className="text-sm text-gray-600 italic">Start typing on the left — preview will appear here.</p>
+                      )}
+                    </div>
+                  )}
+                </div>
+                <p className="mt-2 text-[11px] text-gray-500">
+                  Markdown supported: <code className="text-gray-400">#</code> <code className="text-gray-400">##</code> <code className="text-gray-400">###</code> headings, <code className="text-gray-400">**bold**</code>, <code className="text-gray-400">*italic*</code>, <code className="text-gray-400">`code`</code>, <code className="text-gray-400">[link](url)</code>, <code className="text-gray-400">&gt;</code> quote, <code className="text-gray-400">- list</code>, <code className="text-gray-400">1. list</code>, <code className="text-gray-400">---</code> divider. Blank line separates paragraphs.
+                </p>
               </div>
               <div className="flex items-center gap-4">
                 <label className="flex items-center gap-2 text-sm text-gray-400 cursor-pointer">
@@ -682,4 +814,22 @@ export function Admin() {
       </div>
     </div>
   );
+}
+
+function ToolbarBtn({ children, label, onClick }: { children: React.ReactNode; label: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      title={label}
+      aria-label={label}
+      onClick={onClick}
+      className="p-1.5 rounded text-gray-400 hover:text-white hover:bg-white/[0.06] transition-colors"
+    >
+      {children}
+    </button>
+  );
+}
+
+function ToolbarSep() {
+  return <span className="mx-1 w-px h-5 bg-[#27272a]" />;
 }

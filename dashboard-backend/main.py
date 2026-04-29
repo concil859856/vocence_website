@@ -36,6 +36,8 @@ from database import (
 from local_db import ensure_tables as ensure_local_tables, migrate_legacy_website_data
 from routers import auth, dashboard, studio
 from routers.playbooks import router as playbooks_router
+from routers.jobs import router as jobs_router
+from jobs import start_workers, stop_workers
 
 
 UPLOADS_DIR = Path(__file__).resolve().parent / "uploads"
@@ -88,7 +90,9 @@ async def lifespan(app: FastAPI):
     await ensure_local_tables()
     async with acquire() as conn:
         await migrate_legacy_website_data(conn)
+    await start_workers()
     yield
+    await stop_workers()
     await close_pool()
 
 
@@ -129,6 +133,7 @@ app.include_router(auth.router)
 app.include_router(dashboard.router)
 app.include_router(studio.router, prefix="/api/dashboard")
 app.include_router(playbooks_router, prefix="/api/dashboard")
+app.include_router(jobs_router, prefix="/api/dashboard")
 app.mount("/api/dashboard/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
 
 

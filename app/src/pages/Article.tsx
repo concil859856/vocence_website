@@ -5,6 +5,7 @@ import gsap from 'gsap';
 import { ScrollTrigger } from 'gsap/ScrollTrigger';
 import { dashboardApi } from '../services/dashboardApi';
 import { API_ORIGIN_BASE } from '../services/baseUrl';
+import { BlogContent } from '../components/BlogContent';
 
 gsap.registerPlugin(ScrollTrigger);
 
@@ -338,36 +339,10 @@ export function Article() {
 
         {/* Content */}
         <article className="prose prose-invert max-w-none">
-          <div className="article-content space-y-6 text-[#A7B0B7] leading-relaxed">
-            {article.content.map((paragraph, index) => {
-              // Check if paragraph is a bullet point
-              if (paragraph.startsWith('•')) {
-                return (
-                  <div key={index} className="flex items-start gap-3 pl-4">
-                    <span className="text-[#DFFF00] mt-1">•</span>
-                    <p className="flex-1">{paragraph.substring(1).trim()}</p>
-                  </div>
-                );
-              }
-              // Check if paragraph is a numbered list item
-              if (/^\d+\./.test(paragraph)) {
-                return (
-                  <div key={index} className="flex items-start gap-3 pl-4">
-                    <span className="text-[#DFFF00] mt-1 font-mono">
-                      {paragraph.match(/^\d+\./)?.[0]}
-                    </span>
-                    <p className="flex-1">{paragraph.replace(/^\d+\.\s*/, '')}</p>
-                  </div>
-                );
-              }
-              // Regular paragraph
-              return (
-                <p key={index} className="text-lg leading-8">
-                  {paragraph}
-                </p>
-              );
-            })}
-          </div>
+          <BlogContent
+            content={article.content.join('\n\n')}
+            className="article-content space-y-6 text-[#A7B0B7] leading-relaxed"
+          />
         </article>
 
         {/* Footer Actions */}

@@ -53,10 +53,17 @@ CHUTES_WHISPER_STT_URL = os.environ.get(
     "CHUTES_WHISPER_STT_URL",
     "https://chutes-whisper-large-v3.chutes.ai/transcribe",
 )
-# Studio STT: Chutes transcribe URL (explicit Studio knob; falls back to CHUTES_WHISPER_STT_URL).
-STUDIO_STT_CHUTES_URL = (
-    os.environ.get("STUDIO_STT_CHUTES_URL") or CHUTES_WHISPER_STT_URL or ""
+# Studio STT URL. Provider-agnostic JSON POST endpoint. Works with Chutes Whisper
+# (key: audio_b64) and self-hosted Qwen3-ASR (key: audio_base64) — payload sends both.
+# Precedence: STUDIO_STT_URL > STUDIO_STT_CHUTES_URL (legacy) > CHUTES_WHISPER_STT_URL.
+STUDIO_STT_URL = (
+    os.environ.get("STUDIO_STT_URL")
+    or os.environ.get("STUDIO_STT_CHUTES_URL")
+    or CHUTES_WHISPER_STT_URL
+    or ""
 ).strip() or "https://chutes-whisper-large-v3.chutes.ai/transcribe"
+# Back-compat alias.
+STUDIO_STT_CHUTES_URL = STUDIO_STT_URL
 
 STUDIO_VOICE_CLONE_URL = (os.environ.get("STUDIO_VOICE_CLONE_URL") or "").strip()
 STUDIO_VOICE_CLONE_API_KEY = (os.environ.get("STUDIO_VOICE_CLONE_API_KEY") or "").strip()
@@ -168,10 +175,10 @@ async def fetch_chute_slug(chute_id: str) -> str | None:
         return None
 
 
-async def synthesize_speak(chute_slug: str, text: str, instruction: str) -> tuple[bytes | None, str]:
-    """POST to https://{slug}.chutes.ai/speak with JSON { text, instruction }.
+async def synthesize_speak(chute_slug: str, text: str, instruction: str, *, base_url: str | None = None) -> tuple[bytes | None, str]:
+    """POST to https://{slug}.chutes.ai/speak (or `base_url` override) with JSON { text, instruction }.
     Returns (wav_bytes, error_message). On success: (bytes, ""). On failure: (None, "reason")."""
-    url = _chute_speak_url(chute_slug)
+    url = (base_url or _chute_speak_url(chute_slug)).strip()
     payload = {"text": text or "Hello.", "instruction": instruction or "neutral voice"}
     headers = {"Content-Type": "application/json"}
     if CHUTES_AUTH_KEY:
@@ -201,15 +208,22 @@ async def transcribe_audio(
     *,
     audio_bytes: bytes,
     language: str | None = None,
+    base_url: str | None = None,
 ) -> tuple[dict | None, str]:
-    """POST STT to configured Chutes transcribe URL (STUDIO_STT_CHUTES_URL).
+    """POST STT to a transcribe URL. `base_url` overrides STUDIO_STT_URL for
+    this call (used by the load balancer).
 
-    Payload uses `audio_b64` and optional `language`.
-    Returns ({text, chunks, ...}, "") on success, else (None, "reason").
+    Payload sends both `audio_b64` (Chutes Whisper) and `audio_base64` (Qwen3-ASR)
+    keys so the same code works against either provider. `language` is optional.
+    Returns ({text, ...}, "") on success, else (None, "reason").
     """
-    url = STUDIO_STT_CHUTES_URL
+    url = (base_url or STUDIO_STT_URL or "").strip()
+    if not url:
+        return None, "STT not configured"
+    b64 = base64.b64encode(audio_bytes).decode("utf-8")
     payload: dict[str, str] = {
-        "audio_b64": base64.b64encode(audio_bytes).decode("utf-8"),
+        "audio_b64": b64,
+        "audio_base64": b64,
     }
     if language:
         payload["language"] = language
@@ -320,6 +334,7 @@ async def voice_clone_synthesize(
     reference_text: str,
     target_text: str,
     chute_slug: str | None = None,
+    base_url: str | None = None,
 ) -> tuple[bytes | None, str]:
     """POST to clone service: ref audio + ref text + target text.
 
@@ -337,8 +352,9 @@ async def voice_clone_synthesize(
         STUDIO_VOICE_CLONE_KEY_TARGET: target_text or "",
     }
     headers: dict[str, str] = {}
-    if STUDIO_VOICE_CLONE_URL:
-        url = STUDIO_VOICE_CLONE_URL
+    effective_url = (base_url or STUDIO_VOICE_CLONE_URL or "").strip()
+    if effective_url:
+        url = effective_url
         if STUDIO_VOICE_CLONE_API_KEY:
             headers["Authorization"] = f"Bearer {STUDIO_VOICE_CLONE_API_KEY}"
         req_mode = STUDIO_VOICE_CLONE_REQUEST_MODE

@@ -387,6 +387,24 @@ SCHEMA_SQL = [
         FOREIGN KEY (playbook_id) REFERENCES playbooks(id) ON DELETE CASCADE
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS generation_jobs (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        type TEXT NOT NULL,                 -- 'tts'|'stt'|'clone'|'voice_design'|'music'
+        status TEXT NOT NULL,               -- pending|processing|completed|failed|timeout|cancelled
+        phase TEXT,                         -- e.g. 'transcribing reference', 'cloning voice'
+        payload_json TEXT NOT NULL,         -- input
+        result_json TEXT,                   -- output (audio_url, history_id, ...)
+        error_message TEXT,
+        pod_url TEXT,                       -- last pod that handled it
+        credits_charged INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        started_at TEXT,
+        finished_at TEXT,
+        FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
+    )
+    """,
 ]
 
 
@@ -413,6 +431,9 @@ INDEX_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_studio_user_designed_voices_user ON studio_user_designed_voices (user_id, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_playbooks_user_id ON playbooks (user_id, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_playbook_tracks_playbook_id ON playbook_tracks (playbook_id, position ASC)",
+    "CREATE INDEX IF NOT EXISTS idx_generation_jobs_user_created ON generation_jobs (user_id, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_generation_jobs_status ON generation_jobs (status, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_generation_jobs_type_status ON generation_jobs (type, status, created_at)",
 ]
 
 

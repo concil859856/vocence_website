@@ -383,3 +383,96 @@ async def upload_track(
         PlaybookTracksAddRequest(tracks=[track]),
         user_id,
     )
+
+
+# ---- Cover image upload ----
+
+MAX_COVER_BYTES = int(os.environ.get("PLAYBOOK_COVER_MAX_BYTES", str(2 * 1024 * 1024)))
+COVER_TARGET_PX = 1024
+ALLOWED_COVER_MIMES = {"image/png", "image/jpeg", "image/jpg", "image/webp"}
+
+
+@router.post("/{playbook_id}/cover", response_model=PlaybookResponse)
+async def upload_cover(
+    playbook_id: int,
+    image: UploadFile = File(...),
+    user_id: str = Depends(require_auth),
+):
+    """Upload a custom cover image for a playbook. Re-encodes to square WebP and stores on R2."""
+    raw = await image.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Empty file")
+    if len(raw) > MAX_COVER_BYTES:
+        raise HTTPException(status_code=413, detail=f"Image exceeds {MAX_COVER_BYTES // (1024*1024)}MB limit")
+    mime = (image.content_type or "").lower()
+    if mime not in ALLOWED_COVER_MIMES:
+        raise HTTPException(status_code=415, detail="Use PNG, JPEG, or WebP")
+
+    pb_conn = await get_connection()
+    try:
+        pb = await (await pb_conn.execute(
+            "SELECT id FROM playbooks WHERE id = ? AND user_id = ?", (playbook_id, user_id)
+        )).fetchone()
+        if not pb:
+            raise HTTPException(status_code=404, detail="Playbook not found")
+    finally:
+        await pb_conn.close()
+
+    try:
+        from PIL import Image  # Pillow is already a dep (see scripts/upload_static_assets.py)
+    except ImportError:
+        raise HTTPException(status_code=500, detail="Server missing Pillow; install python image library")
+
+    try:
+        with Image.open(BytesIO(raw)) as img:
+            img = img.convert("RGB") if img.mode not in ("RGB", "RGBA") else img
+            w, h = img.size
+            side = min(w, h)
+            left = (w - side) // 2
+            top = (h - side) // 2
+            img = img.crop((left, top, left + side, top + side))
+            if side > COVER_TARGET_PX:
+                img = img.resize((COVER_TARGET_PX, COVER_TARGET_PX), Image.LANCZOS)
+            out = BytesIO()
+            img.save(out, format="WEBP", quality=82, method=6)
+            payload = out.getvalue()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not process image: {e}")
+
+    from studio_tts_service import _minio_client  # local import: avoids hard dep at module load
+
+    object_key = f"static/playbook-covers/user/{user_id}/{uuid.uuid4().hex}.webp"
+    try:
+        client = _minio_client()
+        client.put_object(
+            _active_bucket(),
+            object_key,
+            BytesIO(payload),
+            length=len(payload),
+            content_type="image/webp",
+            metadata={"Cache-Control": "public, max-age=31536000, immutable"},
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Could not upload to storage: {e}")
+
+    if BUCKET_PROVIDER == "r2" and R2_PUBLIC_DOMAIN:
+        public_url = f"https://{R2_PUBLIC_DOMAIN}/{object_key}"
+    else:
+        public_url = get_presigned_url(_active_bucket(), object_key, datetime.now(timezone.utc) + timedelta(days=365 * 5)) or ""
+
+    conn = await get_connection()
+    try:
+        await conn.execute(
+            "UPDATE playbooks SET cover_image_url = ?, updated_at = datetime('now') WHERE id = ?",
+            (public_url, playbook_id),
+        )
+        await conn.commit()
+        row = await (await conn.execute("SELECT * FROM playbooks WHERE id = ?", (playbook_id,))).fetchone()
+        count_row = await (await conn.execute(
+            "SELECT COUNT(*) AS n, COALESCE(SUM(duration_seconds), 0) AS dur FROM playbook_tracks WHERE playbook_id = ?",
+            (playbook_id,),
+        )).fetchone()
+    finally:
+        await conn.close()
+
+    return _playbook_response(row, int(count_row["n"] or 0), float(count_row["dur"] or 0))

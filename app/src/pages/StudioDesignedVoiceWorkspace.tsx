@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Download, Play, Pause } from 'lucide-react';
+import { ArrowLeft, Download, Play } from 'lucide-react';
 import { StudioShell } from '../components/StudioShell';
 import { AuthModal } from '../components/AuthModal';
 import { useAuth } from '../contexts/AuthContext';
 import { useStudioPlayer } from '../contexts/StudioPlayerContext';
 import { dashboardApi, type StudioDesignedVoiceItem } from '../services/dashboardApi';
+import { useGenerations } from '../contexts/GenerationsContext';
 import { CREDIT_MY_VOICE_GENERATE } from '../studio/creditCosts';
 const USER_FACING_TRY_AGAIN = 'Something went wrong. Please try again later.';
 
@@ -34,6 +35,7 @@ async function triggerBrowserDownload(url: string | null, filename: string) {
 
 export function StudioDesignedVoiceWorkspace() {
   const player = useStudioPlayer();
+  const generations = useGenerations();
   const { voiceId: voiceIdParam } = useParams<{ voiceId: string }>();
   const navigate = useNavigate();
   const { user, isAuthenticated, updateCredits } = useAuth();
@@ -112,18 +114,63 @@ export function StudioDesignedVoiceWorkspace() {
       setGenLoading(true);
       setNotice(null);
       setResult(null);
-      try {
-        const res = await dashboardApi.studioDesignedVoiceSpeak(
-          { user_id: user.id, voice_id: voiceId, target_text: text },
-          token,
-        );
-        updateCredits(res.credits);
-        setResult({ id: res.id, audioUrl: res.audio_url });
-      } catch (e) {
-        setNotice({ type: 'error', message: userFacingApiError(e) });
-      } finally {
-        setGenLoading(false);
-      }
+      const label = `${voice?.display_name || 'Designed voice'} — ${text.slice(0, 60)}`;
+      void (async () => {
+        try {
+          const submission = await dashboardApi.startJob({
+            type: 'voice_design',
+            credits: CREDIT_MY_VOICE_GENERATE,
+            payload: { mode: 'speak', voice_id: voiceId, target_text: text },
+          }, token);
+          updateCredits((user.credits ?? 0) - CREDIT_MY_VOICE_GENERATE);
+          setNotice({
+            type: 'info' as never,
+            message: submission.load_warning
+              ? `Queued (position ${submission.queue_position}). Capacity is heavy — this might take roughly 2× as long as usual.`
+              : `Queued (position ${submission.queue_position}). Generating…`,
+          } as never);
+          generations.trackServerJob({
+            serverJobId: submission.job_id,
+            type: 'voice_design',
+            label,
+            toastResult: {
+              navigateTo: `/studio/my-voices/${voiceId}`,
+              playerTitle: voice?.display_name || 'Designed voice',
+              playerSubtitle: text.slice(0, 80),
+              downloadFilename: `vocence-designed-${submission.job_id.slice(0, 8)}.wav`,
+            },
+          });
+          // Local poll for in-page result + auto-play
+          let done = false;
+          while (!done) {
+            await new Promise((r) => setTimeout(r, 2000));
+            try {
+              const job = await dashboardApi.getJob(submission.job_id, token);
+              if (job.status === 'completed') {
+                const audioUrl = (job.result?.audio_url as string | undefined) || '';
+                const historyId = (job.result?.history_id as number | undefined) || Date.now();
+                setResult({ id: historyId, audioUrl });
+                if (audioUrl) {
+                  player.play({
+                    src: audioUrl,
+                    title: voice?.display_name || 'Designed voice',
+                    subtitle: text.slice(0, 80),
+                    downloadFilename: `vocence-designed-${historyId}.wav`,
+                  });
+                }
+                done = true;
+              } else if (['failed', 'timeout', 'cancelled'].includes(job.status)) {
+                setNotice({ type: 'error', message: job.error_message || 'Generation failed.' });
+                done = true;
+              }
+            } catch { /* keep polling */ }
+          }
+        } catch (e) {
+          setNotice({ type: 'error', message: userFacingApiError(e) });
+        } finally {
+          setGenLoading(false);
+        }
+      })();
     });
   };
 
@@ -196,8 +243,8 @@ export function StudioDesignedVoiceWorkspace() {
                   value={targetText}
                   onChange={(e) => setTargetText(e.target.value)}
                   placeholder="Type what this voice should say…"
-                  rows={8}
-                  className="flex-1 min-h-[220px] w-full resize-y rounded-2xl border border-white/10 bg-[#0a0b0e] p-4 text-white placeholder-[#5c6370] outline-none focus:border-cyan-500/40 text-[15px] leading-relaxed"
+                  rows={5}
+                  className="min-h-[150px] w-full resize-y rounded-2xl border border-white/10 bg-[#0a0b0e] p-4 text-white placeholder-[#5c6370] outline-none focus:border-cyan-500/40 text-[15px] leading-relaxed"
                 />
                 <button
                   type="button"
@@ -225,35 +272,6 @@ export function StudioDesignedVoiceWorkspace() {
                 </h2>
                 {result ? (
                   <div className="space-y-4">
-                    {(() => {
-                      const isThis = player.track?.src === result.audioUrl;
-                      const isPlaying = isThis && player.playing;
-                      const onPlayPause = () => {
-                        if (isPlaying) { player.pause(); return; }
-                        if (isThis) { player.resume(); return; }
-                        player.play({
-                          src: result.audioUrl,
-                          title: 'Designed voice',
-                          subtitle: 'Generated audio',
-                          downloadFilename: `vocence-designed-${result.id}.wav`,
-                        });
-                      };
-                      return (
-                        <div className="flex items-center gap-3">
-                          <button
-                            type="button"
-                            onClick={onPlayPause}
-                            className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 transition-colors ${
-                              isPlaying ? 'bg-[#DFFF00] text-[#07080A]' : 'bg-white/10 text-white hover:bg-white/20'
-                            }`}
-                            aria-label={isPlaying ? 'Pause' : 'Play'}
-                          >
-                            {isPlaying ? <Pause size={18} fill="currentColor" /> : <Play size={18} className="ml-0.5" fill="currentColor" />}
-                          </button>
-                          <span className="text-xs text-[#666]">Plays in the bottom player.</span>
-                        </div>
-                      );
-                    })()}
                     <div className="flex flex-wrap gap-2">
                       <button
                         type="button"

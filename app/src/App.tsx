@@ -3,10 +3,12 @@ import { Navigate, Routes, Route } from 'react-router-dom';
 import { GoogleOAuthProvider } from '@react-oauth/google';
 import { AuthProvider } from './contexts/AuthContext';
 import { StudioPlayerProvider } from './contexts/StudioPlayerContext';
+import { GenerationsProvider } from './contexts/GenerationsContext';
 import { Navbar } from './components/Navbar';
 import { Footer } from './components/Footer';
 import { ScrollToTop } from './components/ScrollToTop';
 import { StudioPlayerBar } from './components/StudioPlayerBar';
+import { Toaster } from './components/ui/sonner';
 import { Overview } from './pages/Overview';
 
 // Route-level code splitting: heavy pages load only when visited (named exports → default for lazy)
@@ -48,7 +50,9 @@ function App() {
   const AppContent = () => (
     <AuthProvider>
       <StudioPlayerProvider>
+      <GenerationsProvider>
       <ScrollToTop />
+      <Toaster position="bottom-right" richColors closeButton />
       <div className="min-h-screen bg-[#07080A] text-[#F5F7FF]">
         <Navbar />
         <main>
@@ -58,7 +62,7 @@ function App() {
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/dashboard/evaluations" element={<DashboardEvaluations />} />
               <Route path="/studio/result/:id" element={<StudioResult />} />
-              <Route path="/studio" element={<Navigate to="/studio/tts" replace />} />
+              <Route path="/studio" element={<Navigate to="/studio/home" replace />} />
               <Route path="/studio/my-voices/:voiceId" element={<StudioDesignedVoiceWorkspace />} />
               <Route path="/studio/playbooks/:playbookId" element={<Studio />} />
               <Route path="/studio/:view" element={<Studio />} />
@@ -83,6 +87,7 @@ function App() {
         <Footer />
         <StudioPlayerBar />
       </div>
+      </GenerationsProvider>
       </StudioPlayerProvider>
     </AuthProvider>
   );

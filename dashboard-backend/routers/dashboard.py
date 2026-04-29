@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 
 from database import acquire
 from local_db import ensure_tables, get_connection, log_admin_action
+from studio_tts_service import get_presigned_url
 from ranking import (
     RANKING_WINDOW_EVALS,
     get_ranked_miner_stats_for_validator,
@@ -55,6 +56,8 @@ from schemas import (
     WebsiteUsageDayResponse,
     PlanDistributionResponse,
     RecentPaymentResponse,
+    UserRecentActivityItem,
+    UserRecentActivityResponse,
     ValidatorResponse,
     ValidatorsResponse,
 )
@@ -796,6 +799,31 @@ async def get_website_overview(_: str = Depends(require_admin_session)):
             ORDER BY day ASC
             """
         )).fetchall()
+
+        # Per-day counts for the other studio types (computed at query time so we
+        # don't need a schema migration to daily_usage_stats).
+        stt_by_day = {
+            r["day"]: int(r["n"] or 0) for r in await (await conn.execute(
+                "SELECT date(created_at) AS day, COUNT(*) AS n FROM studio_stt_history WHERE status = 'completed' GROUP BY day"
+            )).fetchall()
+        }
+        clone_by_day = {
+            r["day"]: int(r["n"] or 0) for r in await (await conn.execute(
+                "SELECT date(created_at) AS day, COUNT(*) AS n FROM studio_clone_history "
+                "WHERE status = 'completed' AND COALESCE(source_mode, '') != 'designed_voice' GROUP BY day"
+            )).fetchall()
+        }
+        vd_by_day = {
+            r["day"]: int(r["n"] or 0) for r in await (await conn.execute(
+                "SELECT date(created_at) AS day, COUNT(*) AS n FROM studio_clone_history "
+                "WHERE status = 'completed' AND source_mode = 'designed_voice' GROUP BY day"
+            )).fetchall()
+        }
+        music_by_day = {
+            r["day"]: int(r["n"] or 0) for r in await (await conn.execute(
+                "SELECT date(created_at) AS day, COUNT(*) AS n FROM studio_music_history WHERE status = 'completed' GROUP BY day"
+            )).fetchall()
+        }
         plan_rows = await (await conn.execute(
             """
             SELECT plan_code, COUNT(*) AS user_count
@@ -820,16 +848,34 @@ async def get_website_overview(_: str = Depends(require_admin_session)):
                 COALESCE((SELECT SUM(amount_usd) FROM payments WHERE status IN ('paid', 'completed')), 0) AS total_revenue_usd
             """
         )).fetchone()
+        # Union of all days across daily_usage_stats and the per-type tables, so a day
+        # with only STT/clone/music activity (no TTS) still shows up in the chart.
+        usage_by_day: dict[str, dict] = {
+            row["day"]: {
+                "tts_generation_count": int(row["tts_generation_count"] or 0),
+                "unique_users": int(row["unique_users"] or 0),
+                "credits_used": int(row["credits_used"] or 0),
+                "revenue_usd": float(row["revenue_usd"] or 0),
+                "credits_purchased": int(row["credits_purchased"] or 0),
+            }
+            for row in usage_rows
+        }
+        all_days = set(usage_by_day) | set(stt_by_day) | set(clone_by_day) | set(vd_by_day) | set(music_by_day)
+        empty_day = {"tts_generation_count": 0, "unique_users": 0, "credits_used": 0, "revenue_usd": 0.0, "credits_purchased": 0}
         usage = [
             WebsiteUsageDayResponse(
-                day=row["day"],
-                tts_generation_count=int(row["tts_generation_count"] or 0),
-                unique_users=int(row["unique_users"] or 0),
-                credits_used=int(row["credits_used"] or 0),
-                revenue_usd=float(row["revenue_usd"] or 0),
-                credits_purchased=int(row["credits_purchased"] or 0),
+                day=day,
+                tts_generation_count=usage_by_day.get(day, empty_day)["tts_generation_count"],
+                stt_count=stt_by_day.get(day, 0),
+                clone_count=clone_by_day.get(day, 0),
+                voice_design_count=vd_by_day.get(day, 0),
+                music_count=music_by_day.get(day, 0),
+                unique_users=usage_by_day.get(day, empty_day)["unique_users"],
+                credits_used=usage_by_day.get(day, empty_day)["credits_used"],
+                revenue_usd=usage_by_day.get(day, empty_day)["revenue_usd"],
+                credits_purchased=usage_by_day.get(day, empty_day)["credits_purchased"],
             )
-            for row in usage_rows
+            for day in sorted(all_days)
         ]
         distribution = [
             PlanDistributionResponse(
@@ -1235,6 +1281,171 @@ async def admin_website_usage_user_summary(
         credit_tx_count=int(tx_row["n"] or 0),
         payments_count=int(pay_row["n"] or 0),
     )
+
+
+async def _build_recent_activity(
+    user_id: str | None,
+    limit: int,
+) -> UserRecentActivityResponse:
+    """Shared logic — pulls recent generations across all 5 studio history tables,
+    optionally filtered to one user, and returns a unified, sorted list with
+    presigned audio URLs and user identification.
+    """
+    await ensure_tables()
+    limit = max(1, min(int(limit), 500))
+    user_clause = "WHERE user_id = ?" if user_id else ""
+    user_args: tuple = (user_id,) if user_id else ()
+
+    conn = await get_connection()
+    try:
+        tts = await (await conn.execute(
+            f"""SELECT id, user_id, created_at, prompt_text, model_name, credits_used, status,
+                       audio_s3_bucket, audio_s3_key, expires_at
+                FROM studio_tts_history {user_clause}
+                ORDER BY datetime(created_at) DESC LIMIT ?""",
+            (*user_args, limit),
+        )).fetchall()
+        stt = await (await conn.execute(
+            f"""SELECT id, user_id, created_at, transcribed_text, source_audio_filename, source_language, credits_used, status
+                FROM studio_stt_history {user_clause}
+                ORDER BY datetime(created_at) DESC LIMIT ?""",
+            (*user_args, limit),
+        )).fetchall()
+        clones = await (await conn.execute(
+            f"""SELECT id, user_id, created_at, target_text, reference_text, source_mode, credits_used, status,
+                       audio_s3_bucket, audio_s3_key, expires_at
+                FROM studio_clone_history {user_clause}
+                ORDER BY datetime(created_at) DESC LIMIT ?""",
+            (*user_args, limit),
+        )).fetchall()
+        music = await (await conn.execute(
+            f"""SELECT id, user_id, created_at, prompt_text, task, credits_used, status,
+                       audio_s3_bucket, audio_s3_key, expires_at
+                FROM studio_music_history {user_clause}
+                ORDER BY datetime(created_at) DESC LIMIT ?""",
+            (*user_args, limit),
+        )).fetchall()
+
+        # Collect user IDs so we can resolve email/name in one query.
+        user_ids: set[str] = set()
+        for r in tts:    user_ids.add(r["user_id"])
+        for r in stt:    user_ids.add(r["user_id"])
+        for r in clones: user_ids.add(r["user_id"])
+        for r in music:  user_ids.add(r["user_id"])
+        users_map: dict[str, dict[str, str | None]] = {}
+        if user_ids:
+            placeholders = ",".join("?" * len(user_ids))
+            urows = await (await conn.execute(
+                f"SELECT id, email, name FROM auth_users WHERE id IN ({placeholders})",
+                tuple(user_ids),
+            )).fetchall()
+            for u in urows:
+                users_map[u["id"]] = {"email": u["email"], "name": u["name"] or ""}
+    finally:
+        await conn.close()
+
+    now = datetime.now(timezone.utc)
+
+    def _resolve_audio(bucket: str | None, key: str | None, exp: str | None) -> str | None:
+        if not bucket or not key or not exp:
+            return None
+        try:
+            expires_at = datetime.fromisoformat(str(exp).replace("Z", "+00:00"))
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            if expires_at <= now:
+                return None
+            return get_presigned_url(bucket, key, expires_at)
+        except Exception:
+            return None
+
+    def _user_fields(uid: str) -> dict[str, str | None]:
+        u = users_map.get(uid) or {}
+        return {"user_id": uid, "user_email": u.get("email"), "user_name": u.get("name")}
+
+    items: list[UserRecentActivityItem] = []
+    for r in tts:
+        items.append(UserRecentActivityItem(
+            id=int(r["id"]), type="tts", created_at=str(r["created_at"] or ""),
+            title=(r["prompt_text"] or "")[:160], detail=r["model_name"] or None,
+            credits_used=int(r["credits_used"] or 0), status=r["status"] or None,
+            audio_url=_resolve_audio(r["audio_s3_bucket"], r["audio_s3_key"], r["expires_at"]),
+            **_user_fields(r["user_id"]),
+        ))
+    for r in stt:
+        items.append(UserRecentActivityItem(
+            id=int(r["id"]), type="stt", created_at=str(r["created_at"] or ""),
+            title=(r["transcribed_text"] or r["source_audio_filename"] or "")[:160],
+            detail=r["source_language"] or None,
+            credits_used=int(r["credits_used"] or 0), status=r["status"] or None,
+            **_user_fields(r["user_id"]),
+        ))
+    for r in clones:
+        is_designed = (r["source_mode"] or "").strip().lower() == "designed_voice"
+        items.append(UserRecentActivityItem(
+            id=int(r["id"]),
+            type="voice_design" if is_designed else "clone",
+            created_at=str(r["created_at"] or ""),
+            title=(r["target_text"] or "")[:160],
+            detail=(r["reference_text"] or "")[:80] if r["reference_text"] else None,
+            credits_used=int(r["credits_used"] or 0),
+            status=r["status"] or None,
+            audio_url=_resolve_audio(r["audio_s3_bucket"], r["audio_s3_key"], r["expires_at"]),
+            **_user_fields(r["user_id"]),
+        ))
+    for r in music:
+        items.append(UserRecentActivityItem(
+            id=int(r["id"]), type="music", created_at=str(r["created_at"] or ""),
+            title=(r["prompt_text"] or "")[:160], detail=r["task"] or None,
+            credits_used=int(r["credits_used"] or 0), status=r["status"] or None,
+            audio_url=_resolve_audio(r["audio_s3_bucket"], r["audio_s3_key"], r["expires_at"]),
+            **_user_fields(r["user_id"]),
+        ))
+
+    items.sort(key=lambda x: x.created_at, reverse=True)
+    items = items[:limit]
+
+    by_day_map: dict[str, dict[str, int]] = {}
+    for it in items:
+        day = (it.created_at or "")[:10]
+        if not day:
+            continue
+        bucket = by_day_map.setdefault(day, {"tts": 0, "stt": 0, "clone": 0, "voice_design": 0, "music": 0})
+        bucket[it.type] = bucket.get(it.type, 0) + 1
+    by_day = [{"day": d, **counts} for d, counts in sorted(by_day_map.items())]
+
+    return UserRecentActivityResponse(user_id=user_id, items=items, by_day=by_day)
+
+
+@router.get(
+    "/admin/website-usage/user/{user_id}/recent-activity",
+    response_model=UserRecentActivityResponse,
+)
+async def admin_user_recent_activity(
+    user_id: str,
+    limit: int = 100,
+    _: str = Depends(require_admin_session),
+):
+    """Per-user recent activity across all studio types."""
+    return await _build_recent_activity(user_id, limit)
+
+
+@router.get(
+    "/admin/recent-activity",
+    response_model=UserRecentActivityResponse,
+)
+async def admin_recent_activity(
+    limit: int = 100,
+    user_id: str | None = None,
+    _: str = Depends(require_admin_session),
+):
+    """Global feed of recent activity across all users + all studio types.
+
+    If `user_id` is provided, behaves like the per-user endpoint.
+    Items include presigned `audio_url` (when still valid), user email/name,
+    and a `by_day` breakdown for stacking charts.
+    """
+    return await _build_recent_activity(user_id, limit)
 
 
 # ----- Admin: blocklist (blocked_entities table) -----

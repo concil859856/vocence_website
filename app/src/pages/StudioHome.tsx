@@ -8,8 +8,11 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useStudioPlayer } from '../contexts/StudioPlayerContext';
-import { dashboardApi, type StudioHistoryItem } from '../services/dashboardApi';
+import { dashboardApi, type StudioHistoryItem, type StudioDesignedVoiceItem } from '../services/dashboardApi';
 import { asset } from '../data/assets';
+import { MyVoiceCardArt } from '../components/MyVoiceCardArt';
+import { DEFAULT_ABSTRACT_CARD_IMAGES } from '../data/abstractCardImages';
+import { WelcomeBanner, shouldShowWelcomeBanner } from '../components/WelcomeBanner';
 
 /* ==========================================================================
    Placeholder data — replace with real content later.
@@ -68,10 +71,10 @@ const VOICE_DESIGN_SAMPLES: VoiceShowcaseItem[] = [
 ];
 
 const CLONE_EXAMPLES: CloneExampleItem[] = [
-  { id: 'cl1', name: 'Studio Interview', avatar: '/samples/images/clone_1.webp', originalLabel: 'Original Recording', originalAudio: '/samples/audio/clone1_original.wav', clonedLabel: 'Cloned — New Script', clonedAudio: '/samples/audio/clone1_cloned.wav' },
-  { id: 'cl2', name: 'Podcast Host', avatar: '/samples/images/clone_2.webp', originalLabel: 'Reference Clip', originalAudio: '/samples/audio/clone2_original.wav', clonedLabel: 'Cloned Output', clonedAudio: '/samples/audio/clone2_cloned.wav' },
-  { id: 'cl3', name: 'Voiceover Artist', avatar: '/samples/images/clone_3.webp', originalLabel: 'Original Sample', originalAudio: '/samples/audio/clone3_original.wav', clonedLabel: 'Cloned — Ad Read', clonedAudio: '/samples/audio/clone3_cloned.wav' },
-  { id: 'cl4', name: 'Audiobook Narrator', avatar: '/samples/images/clone_4.webp', originalLabel: 'Reference', originalAudio: '/samples/audio/clone4_original.wav', clonedLabel: 'Cloned — Chapter Read', clonedAudio: '/samples/audio/clone4_cloned.wav' },
+  { id: 'cl1', name: 'Const', avatar: asset('clone.const'), originalLabel: 'Reference', originalAudio: asset('clone-audio.const'), clonedLabel: 'Cloned', clonedAudio: asset('clone-audio.clone_const') },
+  { id: 'cl2', name: 'Mark Jeffery', avatar: asset('clone.mark_jeffery'), originalLabel: 'Reference', originalAudio: asset('clone-audio.mark_jeffery'), clonedLabel: 'Cloned', clonedAudio: asset('clone-audio.clone_mark') },
+  { id: 'cl3', name: 'Micaela', avatar: asset('clone.micaela'), originalLabel: 'Reference', originalAudio: asset('clone-audio.micaela'), clonedLabel: 'Cloned', clonedAudio: asset('clone-audio.clone_micaela') },
+  { id: 'cl4', name: 'Sophia', avatar: asset('clone.sophia'), originalLabel: 'Reference', originalAudio: asset('clone-audio.sophia'), clonedLabel: 'Cloned', clonedAudio: asset('clone-audio.clone_sophia') },
 ];
 
 const MUSIC_PRESETS: MusicPresetItem[] = [
@@ -200,6 +203,7 @@ export function StudioHome() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const [recentHistory, setRecentHistory] = useState<StudioHistoryItem[]>([]);
+  const [designedVoices, setDesignedVoices] = useState<StudioDesignedVoiceItem[]>([]);
 
   useEffect(() => {
     if (!user) return;
@@ -209,8 +213,31 @@ export function StudioHome() {
       .catch(() => {});
   }, [user]);
 
+  useEffect(() => {
+    if (!user) {
+      setDesignedVoices([]);
+      return;
+    }
+    const token = localStorage.getItem('vocence_token');
+    dashboardApi
+      .listStudioDesignedVoices(token)
+      .then((r) => {
+        const sorted = [...r.voices].sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+        setDesignedVoices(sorted);
+      })
+      .catch(() => setDesignedVoices([]));
+  }, [user]);
+
+  const showWelcome = !!user && shouldShowWelcomeBanner(user.credits ?? 0);
+  const [welcomeOpen, setWelcomeOpen] = useState(showWelcome);
+
   return (
     <div className="space-y-14">
+      {/* First-time welcome */}
+      {welcomeOpen && (
+        <WelcomeBanner onDismiss={() => setWelcomeOpen(false)} />
+      )}
+
       {/* ---- Hero ---- */}
       <div className="text-center py-6">
         <h1 className="text-3xl md:text-4xl font-bold mb-3">Vocence Studio</h1>
@@ -319,24 +346,47 @@ export function StudioHome() {
         />
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {[
-            { id: 'stt1', label: 'English Interview', lang: 'English', transcript: 'The future of artificial intelligence lies not in replacing human creativity, but in amplifying it beyond what we ever thought possible.', audioSrc: '/samples/audio/stt_english.wav', bg: '/samples/images/stt_1.webp' },
-            { id: 'stt2', label: 'Spanish Podcast', lang: 'Spanish', transcript: 'La inteligencia artificial est\u00e1 transformando la manera en que creamos y consumimos contenido de audio en todo el mundo.', audioSrc: '/samples/audio/stt_spanish.wav', bg: '/samples/images/stt_2.webp' },
-            { id: 'stt3', label: 'Meeting Notes', lang: 'English', transcript: 'Let\'s circle back on the Q3 roadmap. I think we need to prioritize the voice agent integration before the API launch.', audioSrc: '/samples/audio/stt_meeting.wav', bg: '/samples/images/stt_3.webp' },
-            { id: 'stt4', label: 'Japanese Narration', lang: 'Japanese', transcript: '\u97f3\u58f0AI\u306e\u6280\u8853\u306f\u3001\u79c1\u305f\u3061\u306e\u30b3\u30df\u30e5\u30cb\u30b1\u30fc\u30b7\u30e7\u30f3\u306e\u3042\u308a\u65b9\u3092\u6839\u672c\u7684\u306b\u5909\u3048\u3088\u3046\u3068\u3057\u3066\u3044\u307e\u3059\u3002', audioSrc: '/samples/audio/stt_japanese.wav', bg: '/samples/images/stt_4.webp' },
+            {
+              id: 'stt1',
+              lang: 'English',
+              transcript: 'I left my laptop charger at home, so I\u2019m going to work from the caf\u00e9 for a bit and come back after lunch.',
+              audioSrc: asset('stt-demo.stt-english'),
+              bg: '/samples/images/stt_1.webp',
+            },
+            {
+              id: 'stt2',
+              lang: 'Japanese',
+              transcript: '\u4ffa\u306f\u9003\u3052\u306a\u3044\uff01\u305f\u3068\u3048\u3053\u306e\u8eab\u304c\u7815\u3051\u3066\u3082\u3001\u4ef2\u9593\u306e\u305f\u3081\u306b\u524d\u3078\u9032\u3080\uff01\u6050\u308c\u308b\u306a\u3001\u53eb\u3079\uff01\u52dd\u5229\u306f\u4ffa\u305f\u3061\u306e\u3082\u306e\u3060\uff01',
+              audioSrc: asset('stt-demo.stt-japanese'),
+              bg: '/samples/images/stt_2.webp',
+            },
+            {
+              id: 'stt3',
+              lang: 'Spanish',
+              transcript: 'El tren sale en quince minutos, as\u00ed que compremos los boletos ahora y busquemos la plataforma antes de que se llene.',
+              audioSrc: asset('stt-demo.stt-spanish'),
+              bg: '/samples/images/stt_3.webp',
+            },
+            {
+              id: 'stt4',
+              lang: 'Chinese',
+              transcript: '\u4eca\u5929\u7684\u4f1a\u8bae\u5148\u63a8\u8fdf\u4e00\u4e0b\uff0c\u6211\u9700\u8981\u518d\u68c0\u67e5\u4e00\u904d\u6570\u636e,\u786e\u8ba4\u6ca1\u6709\u95ee\u9898\u4e4b\u540e\u518d\u53d1\u7ed9\u5927\u5bb6\u3002',
+              audioSrc: asset('stt-demo.stt-chinese'),
+              bg: '/samples/images/stt_4.webp',
+            },
           ].map((item) => (
             <div key={item.id} className="rounded-2xl border border-white/10 overflow-hidden relative p-5 hover:border-white/20 transition-all">
               <img loading="lazy" src={item.bg} alt="" className="absolute inset-0 w-full h-full object-cover" />
               <div className="absolute inset-0 bg-black/60" />
               <div className="relative z-10">
-                <div className="flex items-center justify-between mb-3">
-                  <h3 className="text-white font-semibold text-sm">{item.label}</h3>
+                <div className="flex items-center justify-end mb-3">
                   <span className="text-[10px] px-2 py-0.5 rounded bg-green-500/15 text-green-400">{item.lang}</span>
                 </div>
                 <div className="flex items-center gap-3">
-                  <PlayBtn src={item.audioSrc} title={item.label} subtitle={item.lang} />
+                  <PlayBtn src={item.audioSrc} title={item.lang} subtitle="Speech-to-Text demo" />
                   <span className="text-xs text-white/60">Listen</span>
                 </div>
-                <p className="text-xs text-white/50 mt-3 leading-relaxed italic">"{item.transcript}"</p>
+                <p className="text-sm text-white mt-3 leading-relaxed italic">{item.transcript}</p>
               </div>
             </div>
           ))}
@@ -356,29 +406,28 @@ export function StudioHome() {
           {CLONE_EXAMPLES.map((c) => (
             <div
               key={c.id}
-              className="rounded-2xl border border-white/10 bg-white/[0.02] p-5 hover:border-white/20 transition-all"
+              className="rounded-2xl border border-white/10 bg-white/[0.02] flex overflow-hidden hover:border-white/20 transition-all"
             >
-              <div className="flex items-center gap-4 mb-4">
-                <div className="w-[72px] h-[72px] rounded-xl bg-gradient-to-br from-cyan-500/30 to-blue-500/30 overflow-hidden flex items-center justify-center shrink-0 relative group/avatar">
-                  <img
-                    loading="lazy"
-                    src={c.avatar}
-                    alt={c.name}
-                    className="w-full h-full object-cover relative z-10 transition-transform duration-300 group-hover/avatar:scale-110"
-                    onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
-                  />
-                  <span className="text-xl font-bold text-cyan-300 absolute">{c.name[0]}</span>
-                </div>
-                <h3 className="text-white font-semibold text-sm">{c.name}</h3>
+              <div className="w-[160px] shrink-0 bg-gradient-to-br from-cyan-500/30 to-blue-500/30 relative group/avatar overflow-hidden">
+                <img
+                  loading="lazy"
+                  src={c.avatar}
+                  alt={c.name}
+                  className="absolute inset-0 w-full h-full object-cover transition-transform duration-300 group-hover/avatar:scale-110"
+                  onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                />
               </div>
-              <div className="space-y-2">
-                <div className="flex items-center gap-3">
-                  <PlayBtn src={c.originalAudio} title={`${c.name} — Original`} subtitle={c.originalLabel} />
-                  <span className="text-xs text-[#A7B0B7]">{c.originalLabel}</span>
-                </div>
-                <div className="flex items-center gap-3">
-                  <PlayBtn src={c.clonedAudio} title={`${c.name} — Cloned`} subtitle={c.clonedLabel} />
-                  <span className="text-xs text-[#A7B0B7]">{c.clonedLabel}</span>
+              <div className="flex-1 p-5 flex flex-col justify-center min-w-0">
+                <h3 className="text-white font-semibold text-sm mb-3 truncate">{c.name}</h3>
+                <div className="space-y-2">
+                  <div className="flex items-center gap-3">
+                    <PlayBtn src={c.originalAudio} title={`${c.name} — Original`} subtitle={c.originalLabel} />
+                    <span className="text-xs text-[#A7B0B7]">{c.originalLabel}</span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <PlayBtn src={c.clonedAudio} title={`${c.name} — Cloned`} subtitle={c.clonedLabel} />
+                    <span className="text-xs text-[#A7B0B7]">{c.clonedLabel}</span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -399,40 +448,64 @@ export function StudioHome() {
       </section>
 
       {/* ================================================================
-          6. MY VOICES SHOWCASE
+          6. MY VOICES SHOWCASE — real saved voices for logged-in users
           ================================================================ */}
-      <section>
-        <SectionHeading
-          title="My Voices"
-          subtitle="Your saved custom voices — generate speech in any character you've designed."
-          action={{ label: 'View my voices', to: '/studio/my-voices' }}
-        />
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {[
-            { id: 'mv1', name: 'Corporate Sarah', desc: 'Professional female voice for business presentations and e-learning.', tags: ['Professional', 'Clear', 'Female'], audioSrc: '/samples/audio/myvoice_sarah.wav' },
-            { id: 'mv2', name: 'Pirate Pete', desc: 'Fun character voice for gaming, storytelling, and entertainment.', tags: ['Character', 'Gruff', 'Male'], audioSrc: '/samples/audio/myvoice_pete.wav' },
-            { id: 'mv3', name: 'Zen Master', desc: 'Calm, meditative voice for wellness apps and guided relaxation.', tags: ['Calm', 'Spiritual', 'Male'], audioSrc: '/samples/audio/myvoice_zen.wav' },
-          ].map((v) => (
-            <div key={v.id} className="rounded-2xl border border-white/10 bg-white/[0.02] p-5 hover:border-white/20 transition-all">
-              <div className="flex items-center gap-3 mb-2">
-                <div className="w-10 h-10 rounded-full bg-gradient-to-br from-amber-500/30 to-orange-500/30 flex items-center justify-center shrink-0">
-                  <span className="text-sm font-bold text-amber-300">{v.name[0]}</span>
-                </div>
-                <div>
-                  <h3 className="text-white font-semibold text-sm">{v.name}</h3>
-                  <div className="flex gap-1 mt-0.5">
-                    {v.tags.map((t) => (
-                      <span key={t} className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 text-[#A7B0B7]">{t}</span>
-                    ))}
+      {user && designedVoices.length > 0 && (
+        <section>
+          <SectionHeading
+            title="My Voices"
+            subtitle="Your saved custom voices — generate speech in any character you've designed."
+            action={{ label: 'View my voices', to: '/studio/my-voices' }}
+          />
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {designedVoices.slice(0, 6).map((v) => (
+              <div
+                key={v.id}
+                className="group flex flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#0f131a] hover:border-white/20 transition-all cursor-pointer"
+                onClick={() => navigate(`/studio/my-voices/${v.id}`)}
+              >
+                <div className="relative h-32 w-full shrink-0 overflow-hidden">
+                  <MyVoiceCardArt
+                    urls={DEFAULT_ABSTRACT_CARD_IMAGES}
+                    seed={v.id}
+                    className="h-full w-full transition-transform duration-500 group-hover:scale-[1.03]"
+                  />
+                  <div className="absolute inset-0 bg-gradient-to-t from-[#0f131a]/95 via-[#0f131a]/40 to-black/10 pointer-events-none" />
+                  <div className="absolute bottom-3 left-4 right-4 drop-shadow-[0_2px_8px_rgba(0,0,0,0.85)]">
+                    <h3 className="font-bold text-white text-base leading-tight tracking-tight truncate">
+                      {v.display_name || `Voice #${v.id}`}
+                    </h3>
+                    {v.model_name ? (
+                      <p className="text-[10px] text-white/75 mt-0.5 truncate">{v.model_name}</p>
+                    ) : null}
                   </div>
                 </div>
+                <div className="flex items-center gap-3 p-4">
+                  {v.audio_url && !v.expired ? (
+                    <PlayBtn src={v.audio_url} title={v.display_name || `My Voice ${v.id}`} subtitle={v.ref_script?.slice(0, 80)} />
+                  ) : (
+                    <span className="text-[10px] text-amber-200/85 rounded-md border border-amber-500/20 bg-amber-500/10 px-2 py-1">
+                      Sample expired
+                    </span>
+                  )}
+                  <p className="text-xs text-[#A7B0B7] leading-relaxed line-clamp-2 flex-1">
+                    {v.ref_script ? `“${v.ref_script}”` : 'Click to generate speech in this voice.'}
+                  </p>
+                </div>
+                <div className="px-4 pb-4 -mt-1">
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); navigate(`/studio/my-voices/${v.id}`); }}
+                    className="w-full inline-flex items-center justify-center gap-1.5 rounded-xl bg-white text-[#07080A] py-2 text-xs font-semibold hover:bg-white/90 transition-all"
+                  >
+                    <Play size={12} fill="currentColor" /> Speak with this voice
+                  </button>
+                </div>
               </div>
-              <p className="text-xs text-[#A7B0B7] leading-relaxed mb-3">{v.desc}</p>
-              <PlayBtn src={v.audioSrc} title={v.name} subtitle={v.tags.join(' · ')} />
-            </div>
-          ))}
-        </div>
-      </section>
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* ================================================================
           RECENT CREATIONS (logged-in users only)

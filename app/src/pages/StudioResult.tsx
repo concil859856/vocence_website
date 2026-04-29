@@ -176,7 +176,8 @@ export function StudioResult() {
         fetchParams: { mode: 'cors', credentials: 'omit' },
       });
     } catch (e) {
-      setWaveError(e instanceof Error ? e.message : 'Waveform failed');
+      console.warn('[waveform]', e);
+      setWaveError('Waveform unavailable');
       return;
     }
 

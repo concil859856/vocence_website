@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
   Plus, Play, Pause, Trash2, Upload, Music, X, GripVertical,
-  Shuffle, ListMusic, Globe, Lock, Check,
+  Shuffle, ListMusic, Globe, Lock, Check, Copy,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useStudioPlayer, type Track } from '../contexts/StudioPlayerContext';
@@ -13,6 +13,8 @@ import {
   type PublicPlaybook,
   type StudioMusicHistoryItem,
 } from '../services/dashboardApi';
+import { coverFor } from '../data/playbookCovers';
+import { PlaybookCoverPicker } from '../components/PlaybookCoverPicker';
 
 /* ==========================================================================
    Sample tracks (same as StudioMusic page)
@@ -142,7 +144,11 @@ function PlaybookListView() {
             >
               {/* Cover */}
               <div className="aspect-square rounded-xl bg-gradient-to-br from-[#1c1d21] to-[#111215] mb-3 flex items-center justify-center relative overflow-hidden">
-                <img loading="lazy" src={`/samples/images/music_${(pb.id % 8) + 1}.webp`} alt="" className="absolute inset-0 w-full h-full object-cover opacity-60 group-hover:scale-105 transition-transform duration-300" />
+                {coverFor(pb) ? (
+                  <img loading="lazy" src={coverFor(pb)} alt="" className="absolute inset-0 w-full h-full object-cover opacity-90 group-hover:scale-105 transition-transform duration-300" />
+                ) : (
+                  <ListMusic size={32} className="text-[#3a3b3f] group-hover:text-[#555] transition-colors" />
+                )}
                 <button
                   onClick={(e) => { e.stopPropagation(); handlePlayAll(pb); }}
                   className="absolute bottom-2 right-2 w-10 h-10 rounded-full bg-[#DFFF00] text-[#07080A] flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all hover:scale-105 shadow-lg"
@@ -173,8 +179,12 @@ function PlaybookListView() {
                 onClick={() => navigate(`/studio/playbooks/${pb.id}`)}
                 className="rounded-2xl border border-[#2e2f33] bg-[#111215] p-4 cursor-pointer hover:border-[#444] transition-all group"
               >
-                <div className="aspect-video rounded-xl bg-gradient-to-br from-[#1c1d21] to-[#111215] mb-3 relative overflow-hidden">
-                  <img loading="lazy" src={`/samples/images/music_${(pb.id % 8) + 1}.webp`} alt="" className="absolute inset-0 w-full h-full object-cover opacity-60 group-hover:scale-105 transition-transform duration-300" />
+                <div className="aspect-video rounded-xl bg-gradient-to-br from-[#1c1d21] to-[#111215] mb-3 flex items-center justify-center relative overflow-hidden">
+                  {coverFor(pb) ? (
+                    <img loading="lazy" src={coverFor(pb)} alt="" className="absolute inset-0 w-full h-full object-cover opacity-90 group-hover:scale-105 transition-transform duration-300" />
+                  ) : (
+                    <ListMusic size={32} className="text-[#3a3b3f] group-hover:text-[#555] transition-colors" />
+                  )}
                   <button
                     onClick={(e) => { e.stopPropagation(); handlePlayAll(pb); }}
                     className="absolute bottom-2 right-2 w-9 h-9 rounded-full bg-[#DFFF00] text-[#07080A] flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all hover:scale-105 shadow-lg"
@@ -213,8 +223,12 @@ function PlaybookDetailView({ playbookId }: { playbookId: number }) {
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleVal, setTitleVal] = useState('');
   const titleRef = useRef<HTMLInputElement>(null);
+  const [showCoverPicker, setShowCoverPicker] = useState(false);
 
   const token = localStorage.getItem('vocence_token');
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+  const [shareCopied, setShareCopied] = useState(false);
 
   const load = useCallback(async () => {
     if (!token) return;
@@ -225,6 +239,25 @@ function PlaybookDetailView({ playbookId }: { playbookId: number }) {
     } catch { navigate('/studio/playbooks'); }
     finally { setLoading(false); }
   }, [playbookId, token, navigate]);
+
+  const handleReorderDrop = async (toIdx: number) => {
+    if (!playbook || !token || dragIndex == null || dragIndex === toIdx) {
+      setDragIndex(null);
+      setDragOverIndex(null);
+      return;
+    }
+    const tracks = [...playbook.tracks];
+    const [moved] = tracks.splice(dragIndex, 1);
+    tracks.splice(toIdx, 0, moved);
+    setPlaybook((p) => (p ? { ...p, tracks } : p));
+    setDragIndex(null);
+    setDragOverIndex(null);
+    try {
+      await dashboardApi.reorderPlaybookTracks(playbook.id, tracks.map((t) => t.id), token);
+    } catch {
+      void load(); // revert from server on failure
+    }
+  };
 
   useEffect(() => { load(); }, [load]);
 
@@ -287,8 +320,23 @@ function PlaybookDetailView({ playbookId }: { playbookId: number }) {
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-start gap-5">
-        <div className="w-32 h-32 rounded-xl bg-gradient-to-br from-[#1c1d21] to-[#111215] flex items-center justify-center shrink-0 overflow-hidden relative">
-          <img loading="lazy" src={`/samples/images/music_${(playbookId % 8) + 1}.webp`} alt="" className="absolute inset-0 w-full h-full object-cover opacity-70" />
+        <div
+          className={`w-32 h-32 rounded-xl bg-gradient-to-br from-[#1c1d21] to-[#111215] flex items-center justify-center shrink-0 overflow-hidden relative group/cover ${playbook.is_owner ? 'cursor-pointer' : ''}`}
+          onClick={() => playbook.is_owner && setShowCoverPicker(true)}
+        >
+          {coverFor(playbook) ? (
+            <img loading="lazy" src={coverFor(playbook)} alt="" className="absolute inset-0 w-full h-full object-cover" />
+          ) : (
+            <div className="flex flex-col items-center gap-1.5 text-[#3a3b3f]">
+              <ListMusic size={28} />
+              {playbook.is_owner && <span className="text-[10px] uppercase tracking-wider">Add cover</span>}
+            </div>
+          )}
+          {playbook.is_owner && coverFor(playbook) && (
+            <div className="absolute inset-0 bg-black/0 group-hover/cover:bg-black/45 transition-colors flex items-center justify-center opacity-0 group-hover/cover:opacity-100">
+              <span className="text-xs font-medium text-white px-3 py-1.5 rounded-full bg-black/40 backdrop-blur-sm">Change cover</span>
+            </div>
+          )}
         </div>
         <div className="flex-1 min-w-0 pt-2">
           {editingTitle && playbook.is_owner ? (
@@ -337,6 +385,21 @@ function PlaybookDetailView({ playbookId }: { playbookId: number }) {
                 {playbook.visibility === 'public' ? 'Public' : 'Private'}
               </button>
             )}
+            {playbook.visibility === 'public' && (
+              <button
+                onClick={() => {
+                  const url = `${window.location.origin}/studio/playbooks/${playbook.id}`;
+                  void navigator.clipboard.writeText(url).then(() => {
+                    setShareCopied(true);
+                    window.setTimeout(() => setShareCopied(false), 1500);
+                  });
+                }}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-[#2e2f33] text-xs text-[#A7B0B7] hover:text-white hover:border-[#444] transition-colors"
+                title="Copy public link"
+              >
+                {shareCopied ? <><Check size={12} className="text-[#DFFF00]" /> Copied!</> : <><Copy size={12} /> Copy link</>}
+              </button>
+            )}
             {!playbook.is_owner && (
               <span className="flex items-center gap-1.5 px-3 py-2 text-xs text-[#666]">
                 <Globe size={12} /> Public Playbook
@@ -370,16 +433,36 @@ function PlaybookDetailView({ playbookId }: { playbookId: number }) {
           {playbook.tracks.map((t, i) => {
             const isThis = currentTrack?.src === t.audio_url;
             const isPlaying = isThis && playing;
+            const isDragging = dragIndex === i;
+            const isDragTarget = dragOverIndex === i && dragIndex !== null && dragIndex !== i;
             return (
               <div
                 key={t.id}
+                draggable={playbook.is_owner}
+                onDragStart={(e) => {
+                  if (!playbook.is_owner) return;
+                  setDragIndex(i);
+                  e.dataTransfer.effectAllowed = 'move';
+                }}
+                onDragOver={(e) => {
+                  if (!playbook.is_owner || dragIndex === null) return;
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = 'move';
+                  if (dragOverIndex !== i) setDragOverIndex(i);
+                }}
+                onDragEnd={() => { setDragIndex(null); setDragOverIndex(null); }}
+                onDrop={(e) => {
+                  if (!playbook.is_owner) return;
+                  e.preventDefault();
+                  void handleReorderDrop(i);
+                }}
                 className={`flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all group ${
                   isThis ? 'bg-[#1c1d21] border border-[#2e2f33]' : 'hover:bg-[#1c1d21]/50 border border-transparent'
-                }`}
+                } ${isDragging ? 'opacity-40' : ''} ${isDragTarget ? 'ring-1 ring-[#DFFF00]/40' : ''}`}
               >
                 {/* Drag handle */}
                 {playbook.is_owner && (
-                  <div className="text-[#333] opacity-0 group-hover:opacity-100 cursor-grab shrink-0">
+                  <div className="text-[#666] opacity-50 group-hover:opacity-100 cursor-grab active:cursor-grabbing shrink-0" title="Drag to reorder">
                     <GripVertical size={14} />
                   </div>
                 )}
@@ -481,6 +564,18 @@ function PlaybookDetailView({ playbookId }: { playbookId: number }) {
           onAdded={load}
         />
       )}
+
+      {showCoverPicker && (
+        <PlaybookCoverPicker
+          playbookId={playbook.id}
+          current={playbook.cover_image_url}
+          onClose={() => setShowCoverPicker(false)}
+          onSaved={(url) => {
+            setPlaybook((p) => (p ? { ...p, cover_image_url: url } : p));
+            setShowCoverPicker(false);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -580,7 +675,7 @@ function AddTracksModal({ playbookId, onClose, onAdded }: { playbookId: number; 
         </div>
 
         {/* Content */}
-        <div className="flex-1 overflow-y-auto p-4">
+        <div className="max-h-[30rem] overflow-y-auto p-4">
           {tab === 'history' && (
             historyLoading ? (
               <p className="text-[#666] text-center py-8">Loading...</p>
