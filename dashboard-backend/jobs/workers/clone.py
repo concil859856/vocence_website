@@ -109,8 +109,8 @@ async def process_clone(job: state.Job) -> dict:
             INSERT INTO studio_clone_history
             (user_id, reference_text, target_text, source_mode, source_audio_filename,
              source_language, chute_slug, audio_s3_bucket, audio_s3_key, expires_at,
-             credits_used, latency_ms, status, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', datetime('now'))
+             credits_used, stt_latency_ms, clone_latency_ms, status, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', datetime('now'))
             """,
             (
                 job.user_id,
@@ -124,7 +124,8 @@ async def process_clone(job: state.Job) -> dict:
                 key,
                 expires_at.isoformat() if expires_at else "",
                 int(job.credits_charged or 0),
-                stt_latency_ms + clone_latency_ms,
+                stt_latency_ms,
+                clone_latency_ms,
             ),
         )
         history_id = int(cursor.lastrowid)
