@@ -64,6 +64,41 @@ function isLikelyWav(blob: Blob): boolean {
 }
 
 /**
+ * Read playback duration (seconds) of an audio file/blob via HTMLAudioElement metadata.
+ * Some MediaRecorder containers (webm/opus) report Infinity until the element seeks to EOF —
+ * we work around that by jumping to a huge currentTime and reading the corrected duration.
+ */
+export function getAudioDurationSec(file: File | Blob): Promise<number> {
+  return new Promise<number>((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const audio = document.createElement('audio');
+    audio.preload = 'metadata';
+    const finish = (value: number | Error) => {
+      URL.revokeObjectURL(url);
+      audio.onloadedmetadata = null;
+      audio.ondurationchange = null;
+      audio.onerror = null;
+      if (value instanceof Error) reject(value);
+      else resolve(value);
+    };
+    audio.onloadedmetadata = () => {
+      if (Number.isFinite(audio.duration) && audio.duration > 0) {
+        finish(audio.duration);
+      } else {
+        audio.currentTime = 1e10;
+      }
+    };
+    audio.ondurationchange = () => {
+      if (Number.isFinite(audio.duration) && audio.duration > 0) {
+        finish(audio.duration);
+      }
+    };
+    audio.onerror = () => finish(new Error('Failed to read audio metadata'));
+    audio.src = url;
+  });
+}
+
+/**
  * If the blob is not already WAV, decode via Web Audio and export mono 16-bit PCM WAV for the clone service.
  */
 export async function blobToCloneReferenceWav(blob: Blob, filename = 'reference.wav'): Promise<File> {

@@ -8,7 +8,14 @@ interface AuthContextType {
   user: User | null;
   login: (userData: { id: string; email: string; name: string; picture?: string }) => Promise<void>;
   logout: () => void;
+  /** Persist a new absolute credit balance to the server (writes a `manual_adjustment` ledger row).
+   *  Use ONLY for client-side flows that don't go through a server-side job (e.g. the chat demo).
+   *  For TTS/STT/clone/music/voice_design, the server already deducts via `_charge_credits` —
+   *  use `setLocalCredits` to mirror the deduction in local UI state, and add it back on failure. */
   updateCredits: (credits: number) => Promise<void>;
+  /** Update only the local React state + localStorage. Does NOT call the server.
+   *  Pair with server-side jobs that already deducted via `_charge_credits`. */
+  setLocalCredits: (credits: number) => void;
   isAuthenticated: boolean;
   isLoading: boolean;
 }
@@ -135,6 +142,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.removeItem('vocence_token');
   };
 
+  const setLocalCredits = (credits: number) => {
+    if (!user) return;
+    const updatedUser = { ...user, credits };
+    setUser(updatedUser);
+    localStorage.setItem('vocence_user', JSON.stringify(updatedUser));
+  };
+
   const updateCredits = async (credits: number) => {
     if (!user) return;
 
@@ -172,6 +186,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         login,
         logout,
         updateCredits,
+        setLocalCredits,
         isAuthenticated: !!user,
         isLoading,
       }}

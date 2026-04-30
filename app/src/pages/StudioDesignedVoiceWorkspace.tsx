@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Download, Play } from 'lucide-react';
+import { AlertCircle, ArrowLeft, Download, Play } from 'lucide-react';
 import { StudioShell } from '../components/StudioShell';
 import { AuthModal } from '../components/AuthModal';
 import { useAuth } from '../contexts/AuthContext';
@@ -8,6 +8,10 @@ import { useStudioPlayer } from '../contexts/StudioPlayerContext';
 import { dashboardApi, type StudioDesignedVoiceItem } from '../services/dashboardApi';
 import { useGenerations } from '../contexts/GenerationsContext';
 import { CREDIT_MY_VOICE_GENERATE } from '../studio/creditCosts';
+
+/** Designed-voice script: character cap (shown to user only if they try to exceed it). */
+const SCRIPT_MAX_CHARS = 2000;
+
 const USER_FACING_TRY_AGAIN = 'Something went wrong. Please try again later.';
 
 function userFacingApiError(_e: unknown): string {
@@ -38,13 +42,14 @@ export function StudioDesignedVoiceWorkspace() {
   const generations = useGenerations();
   const { voiceId: voiceIdParam } = useParams<{ voiceId: string }>();
   const navigate = useNavigate();
-  const { user, isAuthenticated, updateCredits } = useAuth();
+  const { user, isAuthenticated, setLocalCredits } = useAuth();
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const voiceId = voiceIdParam ? parseInt(voiceIdParam, 10) : NaN;
 
   const [voice, setVoice] = useState<StudioDesignedVoiceItem | null>(null);
   const [loading, setLoading] = useState(true);
   const [targetText, setTargetText] = useState('');
+  const [scriptLimitNotice, setScriptLimitNotice] = useState(false);
   const [genLoading, setGenLoading] = useState(false);
   const [result, setResult] = useState<{ id: number; audioUrl: string } | null>(null);
   const [notice, setNotice] = useState<{ type: 'error'; message: string } | null>(null);
@@ -80,9 +85,21 @@ export function StudioDesignedVoiceWorkspace() {
 
   useEffect(() => {
     setTargetText('');
+    setScriptLimitNotice(false);
     setResult(null);
     setNotice(null);
   }, [voiceId]);
+
+  const handleScriptChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const v = e.target.value;
+    if (v.length <= SCRIPT_MAX_CHARS) {
+      setTargetText(v);
+      setScriptLimitNotice(false);
+    } else {
+      setTargetText(v.slice(0, SCRIPT_MAX_CHARS));
+      setScriptLimitNotice(true);
+    }
+  }, []);
 
   const requireAuth = useCallback(
     (fn: () => void) => {
@@ -101,6 +118,10 @@ export function StudioDesignedVoiceWorkspace() {
       const text = targetText.trim();
       if (!text) {
         setNotice({ type: 'error', message: 'Enter the text you want this voice to speak.' });
+        return;
+      }
+      if (targetText.length > SCRIPT_MAX_CHARS) {
+        setScriptLimitNotice(true);
         return;
       }
       if (user.credits < CREDIT_MY_VOICE_GENERATE) {
@@ -122,7 +143,7 @@ export function StudioDesignedVoiceWorkspace() {
             credits: CREDIT_MY_VOICE_GENERATE,
             payload: { mode: 'speak', voice_id: voiceId, target_text: text },
           }, token);
-          updateCredits((user.credits ?? 0) - CREDIT_MY_VOICE_GENERATE);
+          setLocalCredits((user.credits ?? 0) - CREDIT_MY_VOICE_GENERATE);
           setNotice({
             type: 'info' as never,
             message: submission.load_warning
@@ -161,6 +182,7 @@ export function StudioDesignedVoiceWorkspace() {
                 done = true;
               } else if (['failed', 'timeout', 'cancelled'].includes(job.status)) {
                 setNotice({ type: 'error', message: job.error_message || 'Generation failed.' });
+                setLocalCredits((user.credits ?? 0) + CREDIT_MY_VOICE_GENERATE);
                 done = true;
               }
             } catch { /* keep polling */ }
@@ -239,13 +261,49 @@ export function StudioDesignedVoiceWorkspace() {
 
               <div className="flex-1 flex flex-col gap-4 min-h-[12rem]">
                 <label className="label-mono block text-xs text-[#A7B0B7]">Script</label>
-                <textarea
-                  value={targetText}
-                  onChange={(e) => setTargetText(e.target.value)}
-                  placeholder="Type what this voice should say…"
-                  rows={5}
-                  className="min-h-[150px] w-full resize-y rounded-2xl border border-white/10 bg-[#0a0b0e] p-4 text-white placeholder-[#5c6370] outline-none focus:border-cyan-500/40 text-[15px] leading-relaxed"
-                />
+                <div
+                  className={`flex flex-col rounded-2xl border bg-[#0a0b0e] p-4 transition-colors ${
+                    scriptLimitNotice
+                      ? 'border-amber-500/45 ring-1 ring-amber-500/20'
+                      : 'border-white/10 focus-within:border-cyan-500/40'
+                  }`}
+                >
+                  <textarea
+                    value={targetText}
+                    onChange={handleScriptChange}
+                    placeholder="Type what this voice should say…"
+                    rows={5}
+                    className="min-h-[150px] w-full resize-y bg-transparent text-white placeholder-[#5c6370] outline-none text-[15px] leading-relaxed"
+                    aria-invalid={scriptLimitNotice}
+                    aria-describedby={scriptLimitNotice ? 'designed-voice-script-limit-hint' : undefined}
+                  />
+                  <div className="flex items-center justify-end mt-2 -mb-1">
+                    <span
+                      className={`text-[11px] tabular-nums ${
+                        targetText.length >= SCRIPT_MAX_CHARS
+                          ? 'text-amber-400'
+                          : targetText.length >= SCRIPT_MAX_CHARS * 0.9
+                            ? 'text-amber-300/70'
+                            : 'text-[#666]'
+                      }`}
+                    >
+                      {targetText.length.toLocaleString()} / {SCRIPT_MAX_CHARS.toLocaleString()}
+                    </span>
+                  </div>
+                </div>
+                {scriptLimitNotice ? (
+                  <p
+                    id="designed-voice-script-limit-hint"
+                    className="text-xs text-amber-400/95 flex items-start gap-2 leading-relaxed"
+                    role="alert"
+                  >
+                    <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" aria-hidden />
+                    <span>
+                      Script is limited to {SCRIPT_MAX_CHARS.toLocaleString()} characters. Anything beyond that
+                      wasn&apos;t added—shorten your text or split it into multiple generations.
+                    </span>
+                  </p>
+                ) : null}
                 <button
                   type="button"
                   onClick={() => void handleGenerate()}

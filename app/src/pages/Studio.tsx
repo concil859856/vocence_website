@@ -36,7 +36,7 @@ import {
   CREDIT_VOICE_CLONE,
   CREDIT_VOICE_DESIGN_PREVIEW,
 } from '../studio/creditCosts';
-import { blobToCloneReferenceWav } from '../utils/cloneReferenceAudio';
+import { blobToCloneReferenceWav, getAudioDurationSec } from '../utils/cloneReferenceAudio';
 import { fileToBase64 } from '../utils/fileToBase64';
 import {
   dashboardApi,
@@ -121,93 +121,87 @@ const TTS_STYLE_PRESETS = [
   {
     id: 'neutral-male',
     label: 'Neutral Male',
-    description:
-      'neutral male voice, calm, clear, natural tone, moderate speed, friendly, professional, casual conversation style, versatile for narration or dialogue',
+    description: 'A calm, friendly male voice speaking at a natural pace.',
   },
   {
     id: 'neutral-female',
     label: 'Neutral Female',
-    description:
-      'neutral female voice, calm, clear, natural tone, moderate speed, friendly, professional, casual conversation style, versatile for narration or dialogue',
+    description: 'A calm, friendly female voice speaking at a natural pace.',
   },
   {
     id: 'urgent-support',
     label: 'Urgent Support / Emergency Tone',
-    description:
-      'clear, serious, urgent, professional, calm yet firm, informative, directing users quickly, empathetic, concise delivery',
+    description: 'A firm, focused voice speaking quickly and clearly, calm but urgent.',
   },
   {
     id: 'friendly-ai-assistant',
     label: 'Friendly AI Assistant',
-    description:
-      'calm, clear, neutral male/female voice, slightly robotic, polite, precise, professional, informative, friendly, digital assistant tone',
+    description: 'A polite, slightly synthetic assistant voice — warm, precise, and helpful.',
   },
   {
     id: 'epic-warrior',
-    label: 'Epic Warrior',
-    description:
-      'intense cinematic warrior voice, deep male, loud, aggressive, heroic, shouting, high energy, fearless, battlefield atmosphere, dramatic, powerful delivery',
+    label: 'Dragon Warrior',
+    description: 'A deep male voice roaring like a dragon warrior, fierce and powerful.',
   },
   {
     id: 'dark-villain',
     label: 'Dark Villain',
-    description:
-      'dark villain voice, deep, cold, menacing, slow, evil tone, dramatic, cinematic, confident, threatening, powerful, echoing, fantasy antagonist style',
+    description: 'A deep, cold male voice speaking slowly with menacing confidence.',
   },
   {
     id: 'anime-hero',
     label: 'Anime Hero',
-    description:
-      'anime hero voice, energetic, emotional, youthful male, shouting, determined, heroic, high energy, dramatic, action scene, fighting spirit, intense delivery',
+    description: 'An energetic young male voice shouting with passion and determination.',
   },
   {
     id: 'military-commander',
     label: 'Military Commander',
-    description:
-      'military commander voice, strong male, confident, loud, clear, authoritative, battlefield radio tone, commanding, serious, high intensity, tactical atmosphere',
+    description: 'A loud, authoritative male voice giving commands sharply and directly.',
   },
   {
     id: 'narrator-trailer',
     label: 'Narrator / Trailer Voice',
-    description:
-      'cinematic narrator voice, deep, calm, dramatic, movie trailer tone, slow, powerful, emotional, storytelling, epic atmosphere, clear and professional',
+    description: 'A deep, cinematic male voice speaking slowly and dramatically.',
   },
   {
     id: 'cyberpunk-ai',
     label: 'Cyberpunk / AI Voice',
-    description:
-      'futuristic AI voice, robotic, calm, synthetic, digital tone, sci-fi atmosphere, precise, emotionless, clean, cyberpunk style, controlled delivery',
+    description: 'A robotic synthetic voice — cold, precise, and emotionless.',
   },
   {
     id: 'orc-monster',
     label: 'Orc / Monster / Brutal',
-    description:
-      'brutal monster voice, rough, growling, aggressive, loud, deep, savage, angry, battle roar, fantasy creature, intense, wild, powerful shouting',
+    description: 'A rough, growling monster voice, brutal and aggressive.',
   },
   {
     id: 'viking-barbarian',
     label: 'Viking / Barbarian',
-    description:
-      'viking warrior voice, strong, rough, loud, heroic, shouting, fearless, nordic battle tone, aggressive, epic, dramatic, war cry, powerful energy',
+    description: 'A rough male voice shouting fiercely like a battle cry.',
   },
   {
     id: 'little-girl',
     label: 'Little Girl',
-    description:
-      'cute little girl voice, high-pitched, innocent, cheerful, playful, soft, energetic, happy, emotional, expressive, youthful, friendly, lighthearted delivery',
+    description: "A bright, cheerful young girl's voice, playful and excited.",
   },
 ];
 const PRIORITY_PRESET_COUNT = 6;
 
 /** TTS main content: character cap (shown to user only if they try to exceed it). */
-const TTS_CONTENT_MAX_CHARS = 500;
+const TTS_CONTENT_MAX_CHARS = 350;
+
+/** Voice cloning target text: character cap (shown to user only if they try to exceed it). */
+const CLONE_TARGET_MAX_CHARS = 2000;
+
+/** Voice cloning reference audio: duration window (seconds). */
+const CLONE_REF_MIN_SEC = 5;
+const CLONE_REF_MAX_SEC = 20;
 
 // Top 3 models from main validator; loaded in TTS view
 
 export function Studio() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const { user, isAuthenticated, updateCredits } = useAuth();
+  const { user, isAuthenticated, updateCredits, setLocalCredits } = useAuth();
   const player = useStudioPlayer();
   const generations = useGenerations();
   const routeParams = useParams<{ view?: string; playbookId?: string }>();
@@ -264,6 +258,7 @@ export function Studio() {
   const [isRecording, setIsRecording] = useState(false);
   const [cloningMode, setCloningMode] = useState<'upload' | 'record'>('upload');
   const [cloneTargetText, setCloneTargetText] = useState('');
+  const [cloneTargetLimitNotice, setCloneTargetLimitNotice] = useState(false);
   const [cloneReferenceScript, setCloneReferenceScript] = useState('');
   const [cloneLanguage, setCloneLanguage] = useState('');
   const [cloneLoading, setCloneLoading] = useState(false);
@@ -591,6 +586,31 @@ export function Studio() {
     };
   }, []);
 
+  const acceptCloneReferenceFile = useCallback(async (file: File) => {
+    let durationSec: number;
+    try {
+      durationSec = await getAudioDurationSec(file);
+    } catch {
+      setCloningFile(null);
+      setCloneStatus({
+        type: 'error',
+        message:
+          'Could not read this audio file. Please upload a standard audio format (WAV, MP3, M4A, FLAC, or WEBM).',
+      });
+      return;
+    }
+    if (durationSec < CLONE_REF_MIN_SEC || durationSec > CLONE_REF_MAX_SEC) {
+      setCloningFile(null);
+      setCloneStatus({
+        type: 'error',
+        message: `Reference audio must be between ${CLONE_REF_MIN_SEC} and ${CLONE_REF_MAX_SEC} seconds (this clip is ${durationSec.toFixed(1)}s). Please upload or record another clip.`,
+      });
+      return;
+    }
+    setCloneStatus(null);
+    setCloningFile(file);
+  }, []);
+
   const startCloneRecording = async () => {
     setCloneStatus(null);
     try {
@@ -609,10 +629,9 @@ export function Studio() {
         void (async () => {
           try {
             const wavFile = await blobToCloneReferenceWav(blob, 'reference.wav');
-            setCloningFile(wavFile);
+            await acceptCloneReferenceFile(wavFile);
           } catch {
-            const ext = blob.type.includes('webm') ? 'webm' : 'dat';
-            setCloningFile(new File([blob], `reference.${ext}`, { type: blob.type || 'application/octet-stream' }));
+            setCloningFile(null);
             setCloneStatus({
               type: 'error',
               message:
@@ -707,6 +726,10 @@ export function Studio() {
         setCloneStatus({ type: 'error', message: 'Enter the text you want the cloned voice to speak.' });
         return;
       }
+      if (cloneTargetText.length > CLONE_TARGET_MAX_CHARS) {
+        setCloneTargetLimitNotice(true);
+        return;
+      }
       // First-time consent gate
       if (!hasVoiceCloneConsent()) {
         setShowCloneConsent(true);
@@ -738,7 +761,7 @@ export function Studio() {
           audio_b64,
         },
       }, token);
-      updateCredits((user.credits ?? 0) - CREDIT_VOICE_CLONE);
+      setLocalCredits((user.credits ?? 0) - CREDIT_VOICE_CLONE);
       setCloneStatus({
         type: submission.load_warning ? 'info' : 'info',
         message: submission.load_warning
@@ -780,6 +803,7 @@ export function Studio() {
             done = true;
           } else if (['failed', 'timeout', 'cancelled'].includes(job.status)) {
             setCloneStatus({ type: 'error', message: job.error_message || 'Voice cloning failed.' });
+            setLocalCredits((user.credits ?? 0) + CREDIT_VOICE_CLONE);
             done = true;
           } else if (job.phase) {
             setCloneStatus({ type: 'info', message: job.phase });
@@ -848,6 +872,17 @@ export function Studio() {
     }
   }, []);
 
+  const handleCloneTargetChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const v = e.target.value;
+    if (v.length <= CLONE_TARGET_MAX_CHARS) {
+      setCloneTargetText(v);
+      setCloneTargetLimitNotice(false);
+    } else {
+      setCloneTargetText(v.slice(0, CLONE_TARGET_MAX_CHARS));
+      setCloneTargetLimitNotice(true);
+    }
+  }, []);
+
   const handleGenerateAudio = () => {
     requireAuth(() => {
       if (!ttsText.trim()) {
@@ -889,7 +924,7 @@ export function Studio() {
               chute_id: selectedModel.chute_id,
             },
           }, token);
-          updateCredits((user.credits ?? 0) - CREDIT_TTS);
+          setLocalCredits((user.credits ?? 0) - CREDIT_TTS);
           generations.trackServerJob({
             serverJobId: submission.job_id,
             type: 'tts',
@@ -936,6 +971,7 @@ export function Studio() {
                 }
                 done = true;
               } else if (['failed', 'timeout', 'cancelled'].includes(job.status)) {
+                setLocalCredits((user.credits ?? 0) + CREDIT_TTS);
                 done = true;
               }
             } catch { /* keep polling on transient errors */ }
@@ -973,7 +1009,7 @@ export function Studio() {
             credits: CREDIT_STT,
             payload: { audio_b64, language: lang, filename: fileRef.name },
           }, token);
-          updateCredits((user.credits ?? 0) - CREDIT_STT);
+          setLocalCredits((user.credits ?? 0) - CREDIT_STT);
           setSttStatus({ type: 'info', message: `Queued (position ${submission.queue_position}). Transcribing…` });
           generations.trackServerJob({
             serverJobId: submission.job_id,
@@ -1016,6 +1052,7 @@ export function Studio() {
                 done = true;
               } else if (['failed', 'timeout', 'cancelled'].includes(job.status)) {
                 setSttStatus({ type: 'error', message: job.error_message || 'Transcription failed.' });
+                setLocalCredits((user.credits ?? 0) + CREDIT_STT);
                 done = true;
               } else if (job.phase) {
                 setSttStatus({ type: 'info', message: job.phase });
@@ -1142,7 +1179,7 @@ export function Studio() {
               chute_slug: selectedModel.chute_slug,
             },
           }, token);
-          updateCredits((user.credits ?? 0) - vdPreviewCredits);
+          setLocalCredits((user.credits ?? 0) - vdPreviewCredits);
           setVdStatus({
             type: 'info',
             message: submission.load_warning
@@ -1183,6 +1220,7 @@ export function Studio() {
                 done = true;
               } else if (['failed', 'timeout', 'cancelled'].includes(job.status)) {
                 setVdStatus({ type: 'error', message: job.error_message || 'Voice design failed.' });
+                setLocalCredits((user.credits ?? 0) + vdPreviewCredits);
                 done = true;
               } else if (job.phase) {
                 setVdStatus({ type: 'info', message: job.phase });
@@ -1220,7 +1258,7 @@ export function Studio() {
           },
           token
         );
-        updateCredits(res.credits);
+        setLocalCredits(res.credits);
         setVdSavedVoiceId(res.voice_id);
         setVdStatus({
           type: 'success',
@@ -2252,7 +2290,10 @@ export function Studio() {
       <div className="grid md:grid-cols-2 gap-6">
         <div className="card-vocence p-6 space-y-4">
           <label className="label-mono block">Reference audio</label>
-          <p className="text-xs text-[#666]">Choose one source: file upload (drag-and-drop) or microphone recording.</p>
+          <p className="text-xs text-[#666]">
+            Choose one source: file upload (drag-and-drop) or microphone recording. Reference clip must be{' '}
+            {CLONE_REF_MIN_SEC}–{CLONE_REF_MAX_SEC} seconds long.
+          </p>
           <div className="grid grid-cols-2 gap-2">
             <button
               type="button"
@@ -2293,7 +2334,7 @@ export function Studio() {
                 className="hidden"
                 onChange={(e) => {
                   const file = e.target.files?.[0];
-                  if (file) setCloningFile(file);
+                  if (file) void acceptCloneReferenceFile(file);
                 }}
               />
               <div
@@ -2311,7 +2352,7 @@ export function Studio() {
                   e.preventDefault();
                   setIsCloneDragActive(false);
                   const file = e.dataTransfer.files?.[0];
-                  if (file) setCloningFile(file);
+                  if (file) void acceptCloneReferenceFile(file);
                 }}
                 onClick={() => cloningFileInputRef.current?.click()}
                 className={`border-2 border-dashed rounded-2xl p-10 text-center transition-colors cursor-pointer ${
@@ -2430,13 +2471,50 @@ export function Studio() {
           <p className="text-xs text-[#666]">
             This is what the cloned voice will say. Reference words come from your audio via automatic transcription.
           </p>
-          <textarea
-            rows={8}
-            value={cloneTargetText}
-            onChange={(e) => setCloneTargetText(e.target.value)}
-            placeholder="Type the sentence or paragraph you want to hear in the reference voice…"
-            className="w-full flex-1 min-h-[200px] bg-[#0a0a0a] border border-white/10 rounded-xl p-4 text-white placeholder-[#666] resize-y outline-none"
-          />
+          <div
+            className={cn(
+              'bg-[#0a0a0a] rounded-xl p-4 border transition-colors flex-1 flex flex-col',
+              cloneTargetLimitNotice
+                ? 'border-amber-500/45 ring-1 ring-amber-500/20'
+                : 'border-white/10'
+            )}
+          >
+            <textarea
+              rows={8}
+              value={cloneTargetText}
+              onChange={handleCloneTargetChange}
+              placeholder="Type the sentence or paragraph you want to hear in the reference voice…"
+              className="w-full flex-1 min-h-[200px] bg-transparent text-white placeholder-[#666] resize-y outline-none"
+              aria-invalid={cloneTargetLimitNotice}
+              aria-describedby={cloneTargetLimitNotice ? 'clone-target-limit-hint' : undefined}
+            />
+            <div className="flex items-center justify-end mt-2 -mb-1">
+              <span
+                className={`text-[11px] tabular-nums ${
+                  cloneTargetText.length >= CLONE_TARGET_MAX_CHARS
+                    ? 'text-amber-400'
+                    : cloneTargetText.length >= CLONE_TARGET_MAX_CHARS * 0.9
+                      ? 'text-amber-300/70'
+                      : 'text-[#666]'
+                }`}
+              >
+                {cloneTargetText.length.toLocaleString()} / {CLONE_TARGET_MAX_CHARS.toLocaleString()}
+              </span>
+            </div>
+          </div>
+          {cloneTargetLimitNotice ? (
+            <p
+              id="clone-target-limit-hint"
+              className="text-xs text-amber-400/95 flex items-start gap-2 leading-relaxed"
+              role="alert"
+            >
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" aria-hidden />
+              <span>
+                Voice cloning text is limited to {CLONE_TARGET_MAX_CHARS.toLocaleString()} characters. Anything beyond
+                that wasn&apos;t added—shorten your text or split it into multiple generations.
+              </span>
+            </p>
+          ) : null}
           <button
             type="button"
             onClick={() => void handleCloneGenerate()}

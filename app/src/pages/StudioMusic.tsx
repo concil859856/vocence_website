@@ -47,7 +47,7 @@ const TASK_TABS: { id: MusicTask; label: string; icon: typeof Music; desc: strin
 interface StatusMsg { type: 'success' | 'error' | 'info'; message: string; }
 
 export function StudioMusic() {
-  const { user, isAuthenticated, updateCredits } = useAuth();
+  const { user, isAuthenticated, setLocalCredits } = useAuth();
   const { play: playAudio } = useStudioPlayer();
   const generations = useGenerations();
 
@@ -183,7 +183,7 @@ Hear the night sing out our song`);
           lora_name_or_path: loraPath,
         },
       }, token);
-      updateCredits((user.credits ?? 0) - CREDIT_MUSIC);
+      setLocalCredits((user.credits ?? 0) - CREDIT_MUSIC);
       setStatus({
         type: submission.load_warning ? 'info' : 'success',
         message: submission.load_warning
@@ -232,6 +232,7 @@ Hear the night sing out our song`);
         }
         if (job.status === 'failed' || job.status === 'timeout' || job.status === 'cancelled') {
           setStatus({ type: 'error', message: job.error_message || 'Music generation failed.' });
+          setLocalCredits((user?.credits ?? 0) + CREDIT_MUSIC);
           return;
         }
         // pending or processing — keep polling. Surface phase + queue position.
