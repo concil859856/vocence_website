@@ -116,35 +116,52 @@ export function GenerationsProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => { saveToStorage(jobs); }, [jobs]);
 
+  /** Track jobs we've already toasted on, so duplicate poll responses (or any
+   *  re-invocation of `applyServerJob` for a final state) never fire the toast twice.
+   *  React 18 + StrictMode can run state-updaters multiple times — keeping toast.* OUT
+   *  of the `setJobs` updater plus this guard makes the side effect idempotent. */
+  const toastedRef = useRef<Set<string>>(new Set());
+
   const prune = useCallback(() => {
     const cutoff = Date.now() - KEEP_DONE_MS;
-    setJobs((prev) => prev.filter((j) => j.status === 'pending' || (j.finishedAt ?? 0) > cutoff));
+    setJobs((prev) => {
+      const kept = prev.filter((j) => j.status === 'pending' || (j.finishedAt ?? 0) > cutoff);
+      const keptIds = new Set(kept.map((j) => j.id));
+      for (const id of toastedRef.current) {
+        if (!keptIds.has(id)) toastedRef.current.delete(id);
+      }
+      return kept;
+    });
   }, []);
 
   const dismiss = useCallback((id: string) => {
     const cancel = pollersRef.current.get(id);
     if (cancel) { cancel(); pollersRef.current.delete(id); }
+    toastedRef.current.delete(id);
     setJobs((prev) => prev.filter((j) => j.id !== id));
   }, []);
 
-  /** Map backend job → context update; returns true if job is now in a final state. */
+  /** Map backend job → context update; returns true if job is now in a final state.
+   *  Side effects (toast / player) live OUTSIDE the setJobs updater — updaters must be pure. */
   const applyServerJob = useCallback((localId: string, type: JobType, label: string, server: JobStatusResponse, toastResult?: TrackServerJobArgs['toastResult']): boolean => {
-    let final = false;
-    setJobs((prev) => prev.map((j) => {
-      if (j.id !== localId) return j;
-      const phase = server.phase ?? null;
-      const queuePosition = server.queue_position ?? 0;
-      if (server.status === 'completed') {
-        const audioUrl = (server.result?.audio_url as string | undefined) || undefined;
-        const result: JobResult = {
-          audioUrl,
-          navigateTo: toastResult?.navigateTo,
-          playerTitle: toastResult?.playerTitle || label,
-          playerSubtitle: toastResult?.playerSubtitle || TYPE_LABEL[type],
-          downloadFilename: toastResult?.downloadFilename,
-          entityId: (server.result?.history_id as number | undefined),
-        };
-        // Fire toast
+    const phase = server.phase ?? null;
+    const queuePosition = server.queue_position ?? 0;
+
+    if (server.status === 'completed') {
+      const audioUrl = (server.result?.audio_url as string | undefined) || undefined;
+      const result: JobResult = {
+        audioUrl,
+        navigateTo: toastResult?.navigateTo,
+        playerTitle: toastResult?.playerTitle || label,
+        playerSubtitle: toastResult?.playerSubtitle || TYPE_LABEL[type],
+        downloadFilename: toastResult?.downloadFilename,
+        entityId: (server.result?.history_id as number | undefined),
+      };
+      setJobs((prev) => prev.map((j) =>
+        j.id !== localId ? j : { ...j, status: 'success', finishedAt: Date.now(), result, phase: null, queuePosition: 0 }
+      ));
+      if (!toastedRef.current.has(localId)) {
+        toastedRef.current.add(localId);
         const action = result.audioUrl
           ? {
               label: 'Play',
@@ -164,19 +181,25 @@ export function GenerationsProvider({ children }: { children: ReactNode }) {
           description: label.length > 80 ? label.slice(0, 77) + '…' : label,
           action,
         });
-        final = true;
-        return { ...j, status: 'success', finishedAt: Date.now(), result, phase: null, queuePosition: 0 };
       }
-      if (server.status === 'failed' || server.status === 'timeout' || server.status === 'cancelled') {
-        const msg = server.error_message || `${TYPE_LABEL[type]} ${server.status}`;
+      return true;
+    }
+
+    if (server.status === 'failed' || server.status === 'timeout' || server.status === 'cancelled') {
+      const msg = server.error_message || `${TYPE_LABEL[type]} ${server.status}`;
+      setJobs((prev) => prev.map((j) =>
+        j.id !== localId ? j : { ...j, status: 'error', finishedAt: Date.now(), error: msg, phase: null, queuePosition: 0 }
+      ));
+      if (!toastedRef.current.has(localId)) {
+        toastedRef.current.add(localId);
         toast.error(`${TYPE_LABEL[type]} ${server.status}`, { description: msg });
-        final = true;
-        return { ...j, status: 'error', finishedAt: Date.now(), error: msg, phase: null, queuePosition: 0 };
       }
-      // pending or processing — update phase + position only
-      return { ...j, phase, queuePosition };
-    }));
-    return final;
+      return true;
+    }
+
+    // pending or processing — update phase + position only
+    setJobs((prev) => prev.map((j) => (j.id !== localId ? j : { ...j, phase, queuePosition })));
+    return false;
   }, [player, navigate]);
 
   const trackServerJob = useCallback<ContextValue['trackServerJob']>(({ serverJobId, type, label, toastResult, pollIntervalMs }) => {

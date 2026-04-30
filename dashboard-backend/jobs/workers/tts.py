@@ -17,6 +17,20 @@ from ..timeouts import PHASE_TIMEOUT_TTS
 _log = logging.getLogger(__name__)
 
 
+def _humanize_miner_error(err: str) -> str:
+    """Map known miner failure patterns to user-facing messages. Falls back to the raw error.
+    Surfaces in the failed-job error_message → toast/UI notice on the frontend."""
+    if not err:
+        return ""
+    low = err.lower()
+    if "invalid duration" in low:
+        return (
+            "This text would produce audio longer than the model supports. "
+            "Try shorter text or a faster style."
+        )
+    return err
+
+
 async def process_tts(job: state.Job) -> dict:
     if not TTS_POOL.configured():
         raise RuntimeError("TTS pool is not configured")
@@ -45,7 +59,7 @@ async def process_tts(job: state.Job) -> dict:
     if not wav_bytes:
         if err and ("returned 5" in err or "timed out" in err.lower()):
             TTS_POOL.quarantine(pod)
-        raise RuntimeError(err or "TTS synthesis failed")
+        raise RuntimeError(_humanize_miner_error(err) or "TTS synthesis failed")
     latency_ms = int((time.perf_counter() - started) * 1000)
 
     await state.update_status(job.id, phase="storing audio")

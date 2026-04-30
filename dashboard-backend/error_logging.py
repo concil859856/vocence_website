@@ -24,6 +24,20 @@ from starlette.responses import JSONResponse
 log = logging.getLogger("vocence_dashboard.http")
 
 
+class _DashboardAccessFilter(logging.Filter):
+    """Drop uvicorn.access lines for `/api/dashboard/*` paths so the console isn't drowned
+    in poll traffic. 4xx/5xx still surface via the structured handler in this module, and
+    every other route (auth, studio jobs, developer-api) continues to log normally."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple):
+            for a in args:
+                if isinstance(a, str) and "/api/dashboard/" in a:
+                    return False
+        return True
+
+
 def configure_logging() -> None:
     """Align root and app log levels with LOG_LEVEL (default INFO). Safe if uvicorn already configured handlers."""
     raw = (os.environ.get("LOG_LEVEL") or "INFO").strip().upper()
@@ -42,6 +56,11 @@ def configure_logging() -> None:
     logging.getLogger("vocence_dashboard").setLevel(level)
     logging.getLogger("routers").setLevel(level)
     logging.getLogger("studio_tts_service").setLevel(level)
+
+    # Mute access logs for /api/dashboard/* (frontend polls these every couple of seconds).
+    access = logging.getLogger("uvicorn.access")
+    if not any(isinstance(f, _DashboardAccessFilter) for f in access.filters):
+        access.addFilter(_DashboardAccessFilter())
 
 
 def register_exception_handlers(app: FastAPI) -> None:

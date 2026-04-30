@@ -187,7 +187,7 @@ const TTS_STYLE_PRESETS = [
 const PRIORITY_PRESET_COUNT = 6;
 
 /** TTS main content: character cap (shown to user only if they try to exceed it). */
-const TTS_CONTENT_MAX_CHARS = 350;
+const TTS_CONTENT_MAX_CHARS = 300;
 
 /** Voice cloning target text: character cap (shown to user only if they try to exceed it). */
 const CLONE_TARGET_MAX_CHARS = 2000;
