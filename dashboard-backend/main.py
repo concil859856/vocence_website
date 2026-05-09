@@ -34,14 +34,20 @@ from database import (
     ensure_live_evaluation_pending_table,
 )
 from local_db import ensure_tables as ensure_local_tables, migrate_legacy_website_data
+from assistant_knowledge_indexer import index_assistant_knowledge_at_startup
 from routers import auth, dashboard, studio
 from routers.playbooks import router as playbooks_router
 from routers.jobs import router as jobs_router
+from routers.voicechat import router as voicechat_router
+from routers.agents import router as agents_router
 from jobs import start_workers, stop_workers
 
 
 UPLOADS_DIR = Path(__file__).resolve().parent / "uploads"
 UPLOADS_DIR.mkdir(exist_ok=True)
+
+SAMPLE_VOICES_STATIC_DIR = Path(__file__).resolve().parent / "static" / "sample_voices"
+SAMPLE_VOICES_STATIC_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _cors_allow_origins() -> list[str]:
@@ -90,6 +96,15 @@ async def lifespan(app: FastAPI):
     await ensure_local_tables()
     async with acquire() as conn:
         await migrate_legacy_website_data(conn)
+    # Seed the Vocence Assistant's RAG store from vocence_assistant_knowledge/*.md.
+    # No-op when the content hash matches the last run.
+    try:
+        await index_assistant_knowledge_at_startup()
+    except Exception:
+        # Don't block boot on indexer failure — assistant will still answer
+        # using the static system prompt, just without retrieval depth.
+        import logging
+        logging.getLogger(__name__).exception("assistant knowledge indexing failed; continuing")
     await start_workers()
     yield
     await stop_workers()
@@ -134,7 +149,14 @@ app.include_router(dashboard.router)
 app.include_router(studio.router, prefix="/api/dashboard")
 app.include_router(playbooks_router, prefix="/api/dashboard")
 app.include_router(jobs_router, prefix="/api/dashboard")
+app.include_router(voicechat_router, prefix="/api/dashboard")
+app.include_router(agents_router, prefix="/api/dashboard")
 app.mount("/api/dashboard/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
+app.mount(
+    "/api/dashboard/sample-voices",
+    StaticFiles(directory=str(SAMPLE_VOICES_STATIC_DIR)),
+    name="sample-voices",
+)
 
 
 @app.get("/health")

@@ -415,10 +415,6 @@ export function Overview() {
           <span className="text-xs text-[#A7B0B7]">Network Status: Healthy</span>
         </div>
 
-        {/* Scroll Hint */}
-        <div className="absolute bottom-8 right-6 lg:right-8 text-xs text-[#666]">
-          Scroll to explore
-        </div>
       </section>
 
       {/* What is Vocence Section */}

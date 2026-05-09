@@ -24,9 +24,12 @@ from schemas import (
     StudioDesignedVoicesResponse,
     StudioGenerateRequest,
     StudioGenerateResponse,
+    StudioTtsSampleVoiceRequest,
     StudioHistoryItemResponse,
     StudioHistoryResponse,
     StudioMusicGenerateResponse,
+    StudioMusicLyricsRequest,
+    StudioMusicLyricsResponse,
     StudioMusicHistoryItemResponse,
     StudioMusicHistoryResponse,
     StudioMusicText2MusicRequest,
@@ -199,6 +202,39 @@ VOICE_DESIGN_PREVIEW_CREDITS = int(os.environ.get("STUDIO_VOICE_DESIGN_PREVIEW_C
 VOICE_DESIGN_SPEAK_CREDITS = int(os.environ.get("STUDIO_VOICE_DESIGN_SPEAK_CREDITS", "25"))
 MUSIC_CREDITS_COST = int(os.environ.get("STUDIO_MUSIC_CREDITS_COST", "50"))
 MUSIC_MAX_UPLOAD_BYTES = int(os.environ.get("STUDIO_MUSIC_MAX_UPLOAD_BYTES", str(100 * 1024 * 1024)))
+# Tiered duration caps by inference quality.
+#
+# Higher infer_step values multiply the per-second compute cost. A 300 s
+# Max-quality (120 steps) song already takes ~10 minutes on a single
+# pod — right at the LB_PHASE_TIMEOUT_MUSIC ceiling — so we cap shorter
+# the higher the quality. Fast jobs can run longer because they finish
+# in roughly proportional wall-clock time.
+#
+# The ``infer_step`` thresholds match the frontend mode presets:
+#     Fast      = 27   → up to FAST_MAX     (default 400 s)
+#     Balanced  = 60   → up to BALANCED_MAX (default 300 s)
+#     Max       = 120  → up to MAX_MAX      (default 200 s)
+# Anything between tiers takes the next-stricter cap.
+MUSIC_MAX_DURATION_FAST_SEC     = float(os.environ.get("MUSIC_MAX_DURATION_FAST_SEC",     "400"))
+MUSIC_MAX_DURATION_BALANCED_SEC = float(os.environ.get("MUSIC_MAX_DURATION_BALANCED_SEC", "300"))
+MUSIC_MAX_DURATION_MAX_SEC      = float(os.environ.get("MUSIC_MAX_DURATION_MAX_SEC",      "200"))
+# Absolute hard ceiling — no combination of inputs may exceed this.
+MUSIC_MAX_DURATION_SEC = max(
+    MUSIC_MAX_DURATION_FAST_SEC,
+    MUSIC_MAX_DURATION_BALANCED_SEC,
+    MUSIC_MAX_DURATION_MAX_SEC,
+)
+
+
+def _max_music_duration_for_steps(infer_step: int) -> float:
+    """Pick the tiered duration cap that matches the requested quality.
+    Tiers are inclusive of their named step count; anything higher steps
+    up to the stricter tier."""
+    if infer_step <= 30:
+        return MUSIC_MAX_DURATION_FAST_SEC
+    if infer_step <= 70:
+        return MUSIC_MAX_DURATION_BALANCED_SEC
+    return MUSIC_MAX_DURATION_MAX_SEC
 
 
 async def _resolve_studio_tts_chute(
@@ -596,6 +632,168 @@ async def clone_voice(
         credits=new_credits,
         reference_text=reference_text,
         detected_language=detected_language,
+    )
+
+
+# ----------------------------------------------------------------------------
+# General TTS via sample voices — voice cloning under the hood, charged at
+# TTS price. Reference clip lookup is server-side; client only sends the id.
+# ----------------------------------------------------------------------------
+
+import asyncio as _asyncio_general_tts  # local alias to avoid colliding with module-level imports
+from sample_voices_data import is_known_sample, get_sample_url
+
+# voice_id -> (audio_bytes, ref_text). Populated lazily per process so the
+# first call pays the fetch+STT cost, subsequent calls don't.
+_SAMPLE_VOICE_CACHE: dict[str, tuple[bytes, str]] = {}
+_SAMPLE_VOICE_CACHE_LOCK = _asyncio_general_tts.Lock()
+
+
+async def _fetch_sample_audio(url: str) -> bytes:
+    import aiohttp
+    timeout = aiohttp.ClientTimeout(total=30)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.get(url) as resp:
+            if resp.status != 200:
+                raise HTTPException(status_code=502, detail=f"sample audio fetch failed ({resp.status})")
+            return await resp.read()
+
+
+async def _load_sample_voice(voice_id: str) -> tuple[bytes, str]:
+    """Return (audio_bytes, reference_text) for a sample voice, with a per-process cache."""
+    cached = _SAMPLE_VOICE_CACHE.get(voice_id)
+    if cached:
+        return cached
+    async with _SAMPLE_VOICE_CACHE_LOCK:
+        cached = _SAMPLE_VOICE_CACHE.get(voice_id)
+        if cached:
+            return cached
+        url = get_sample_url(voice_id)
+        if not url:
+            raise HTTPException(status_code=404, detail=f"unknown sample voice: {voice_id}")
+        audio = await _fetch_sample_audio(url)
+        # Transcribe to feed the voice-clone API (it requires a reference transcript)
+        stt_result, stt_err = await transcribe_audio(audio_bytes=audio)
+        ref_text = (stt_result or {}).get("text", "").strip() if stt_result else ""
+        if not ref_text:
+            raise HTTPException(
+                status_code=502,
+                detail=f"could not transcribe sample voice {voice_id}: {stt_err or 'empty transcript'}",
+            )
+        _SAMPLE_VOICE_CACHE[voice_id] = (audio, ref_text)
+        return audio, ref_text
+
+
+@router.post("/tts/voice-clone-sample", response_model=StudioCloneResponse)
+async def tts_voice_clone_sample(
+    body: StudioTtsSampleVoiceRequest,
+    user_id: str = Depends(require_auth),
+):
+    """General TTS using a pre-stored sample voice as the cloning reference.
+    Charged at TTS_CREDITS_COST (not the higher clone price) — backend cost
+    of the clone call is absorbed."""
+    if not voice_clone_chute_configured():
+        raise HTTPException(status_code=503, detail="Voice cloning is not configured.")
+    if not is_known_sample(body.sample_voice_id):
+        raise HTTPException(status_code=404, detail=f"unknown sample voice: {body.sample_voice_id}")
+    target = (body.target_text or "").strip()
+    if not target:
+        raise HTTPException(status_code=400, detail="target_text is required")
+
+    # Credit check (TTS price, not clone price)
+    conn = await get_connection()
+    try:
+        cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
+        row = await cursor.fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        credits = int(row["credits"])
+        if credits < TTS_CREDITS_COST:
+            raise HTTPException(
+                status_code=402,
+                detail=f"Insufficient credits. Need {TTS_CREDITS_COST} credits. You have {credits}.",
+            )
+    finally:
+        await conn.close()
+
+    # Load sample reference (cached per process)
+    raw_ref, reference_text = await _load_sample_voice(body.sample_voice_id)
+
+    # Clone synthesize
+    clone_started = time.perf_counter()
+    out_bytes, clone_err = await voice_clone_synthesize(
+        reference_audio_bytes=raw_ref,
+        reference_text=reference_text,
+        target_text=target,
+    )
+    clone_latency_ms = int((time.perf_counter() - clone_started) * 1000)
+    if not out_bytes:
+        detail = "Voice clone request failed."
+        if clone_err:
+            detail += f" ({clone_err})"
+        raise HTTPException(status_code=502, detail=detail)
+
+    # Upload result
+    bucket, key, expires_at = upload_wav_to_hippius(user_id, out_bytes, subdir="clone")
+    clone_endpoint_label = voice_clone_endpoint_label()
+
+    conn = await get_connection()
+    try:
+        cursor = await conn.execute(
+            """
+            INSERT INTO studio_clone_history
+            (user_id, reference_text, target_text, source_mode, source_audio_filename, source_language,
+             chute_slug, audio_s3_bucket, audio_s3_key, expires_at, credits_used,
+             stt_latency_ms, clone_latency_ms, status, created_at)
+            VALUES (?, ?, ?, 'sample', ?, ?, ?, ?, ?, ?, ?, 0, ?, 'completed', datetime('now'))
+            """,
+            (
+                user_id,
+                reference_text,
+                target,
+                body.sample_voice_id,         # store sample id in filename slot for traceability
+                body.target_language,
+                clone_endpoint_label,
+                bucket,
+                key,
+                expires_at.isoformat(),
+                TTS_CREDITS_COST,             # charge TTS price, not clone price
+                clone_latency_ms,
+            ),
+        )
+        history_id = int(cursor.lastrowid)
+        await conn.execute(
+            "UPDATE auth_users SET credits = credits - ?, updated_at = datetime('now') WHERE id = ?",
+            (TTS_CREDITS_COST, user_id),
+        )
+        credit_cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
+        new_row = await credit_cursor.fetchone()
+        new_credits = int(new_row["credits"]) if new_row else credits - TTS_CREDITS_COST
+        await record_credit_transaction(
+            conn,
+            user_id=user_id,
+            transaction_type="tts_sample_voice",
+            amount=-TTS_CREDITS_COST,
+            balance_after=new_credits,
+            description=f"General TTS · voice {body.sample_voice_id}",
+            reference_type="studio_clone_history",
+            reference_id=str(history_id),
+            metadata={"sample_voice_id": body.sample_voice_id, "clone_endpoint": clone_endpoint_label},
+        )
+        await refresh_daily_usage_for_day(conn, datetime.now(timezone.utc).date().isoformat())
+        await conn.commit()
+    finally:
+        await conn.close()
+
+    is_premium = await _is_premium_user(user_id)
+    audio_url = get_presigned_url(bucket, key, expires_at, public=is_premium) or ""
+    return StudioCloneResponse(
+        id=history_id,
+        audio_url=audio_url,
+        expires_at=expires_at.isoformat() if expires_at else "",
+        credits=new_credits,
+        reference_text=reference_text,
+        detected_language=body.target_language,
     )
 
 
@@ -1333,6 +1531,125 @@ async def get_history_audio_url(
 # ---------------------------------------------------------------------------
 
 
+# System prompt for the AI lyric writer. Compact and prescriptive — small
+# models follow concrete examples better than abstract instructions.
+_LYRIC_SYSTEM_PROMPT = """You write song lyrics in the ACE-Step structure-tag format.
+
+Output format (HARD RULES — the music engine will reject anything else):
+
+- Use ONLY these structure tags, each on its own line, with a blank line
+  between sections:
+    [intro]  [verse]  [chorus]  [bridge]  [pre-chorus]  [hook]
+    [solo]   [break]  [outro]   [end]     [inst]
+- Tags are lowercase, in square brackets, on their own line.
+- NEVER invent tags. NO [verse 1], NO [guitar], NO [piano], NO [Verse],
+  NO numbered tags. Anything other than the tags above will be sung out
+  loud and break the song.
+- Plain text only inside sections. NO markdown, NO asterisks, NO
+  parentheticals like "(repeat)", NO stage directions, NO emoji.
+- 4 lines per [verse] / [chorus] is a good default. Bridges can be
+  shorter. Choruses repeat — write each chorus identically unless the
+  user asks for variation.
+- Match the genre / mood / vocal style hints from the prompt the user
+  passes in (e.g. if they say "rock, gritty, male vocals" the lyrics
+  should feel that way — punchy, direct, urban grit; not soft).
+
+Canonical structure: [verse] → [chorus] → [verse] → [bridge] → [chorus] → [outro]
+
+Output ONLY the lyrics — no preamble like "Here are your lyrics:", no
+explanations, no markdown fences."""
+
+
+def _strip_lyric_artifacts(s: str) -> str:
+    """Belt-and-suspenders cleanup. The system prompt forbids these,
+    but small models slip — strip stray markdown fences, leading
+    "Here is..." preambles, and ``**`` markers if they leak through."""
+    s = s.strip()
+    # Drop leading "Here is..." / "Sure!" / "Here are the lyrics..." lines
+    lines = s.splitlines()
+    while lines and not lines[0].lstrip().startswith("[") and len(lines) > 5:
+        # If first non-empty line isn't a structure tag and we have plenty
+        # of lines below, drop it as preamble
+        head = lines[0].strip()
+        if head and not head.startswith("[") and (
+            head.lower().startswith(("here", "sure", "okay", "let me", "let's"))
+            or head.endswith(":")
+        ):
+            lines = lines[1:]
+            continue
+        break
+    s = "\n".join(lines).strip()
+    # Strip code-fence wrapping if any
+    if s.startswith("```"):
+        s = s.split("\n", 1)[1] if "\n" in s else s[3:]
+        if s.endswith("```"):
+            s = s[: -3]
+    s = s.strip()
+    # Remove **bold** markers if present
+    s = re.sub(r"\*\*([^*\n]+)\*\*", r"\1", s)
+    return s
+
+
+@router.post("/music/generate-lyrics", response_model=StudioMusicLyricsResponse)
+async def music_generate_lyrics(
+    body: StudioMusicLyricsRequest,
+    user_id: str = Depends(require_auth),
+):
+    """Generate structured song lyrics from a topic + style prompt.
+    Uses the same LLM router as agents (Chutes by default; local if set).
+    Free — no credits charged. Output is plain lyric text with proper
+    [verse]/[chorus]/[bridge] tags, ready to drop into the music
+    generation form."""
+    from llm_client import (  # local import to avoid cycles
+        chat_complete_with_fallback,
+        llm_configured,
+    )
+    _ = user_id  # auth-only; no per-user state
+
+    topic = (body.topic or "").strip()
+    if not topic:
+        raise HTTPException(status_code=400, detail="topic is required")
+    if len(topic) > 500:
+        topic = topic[:500]
+
+    if not llm_configured():
+        raise HTTPException(status_code=503, detail="lyric LLM is not configured")
+
+    style = (body.prompt or "").strip()
+    sections = max(3, min(8, body.section_count or 5))
+
+    user_msg = (
+        f"Write song lyrics about: {topic}\n\n"
+        + (f"Style hints (from the music prompt): {style}\n\n" if style else "")
+        + f"Aim for around {sections} sections total. "
+        "Use the canonical structure: verse, chorus, verse, bridge, chorus, outro. "
+        "Make the chorus catchy and repeat it identically. Output only the lyrics."
+    )
+
+    # Try every Chutes model in the configured fallback list. Some
+    # reasoning models (e.g. R1 variants) occasionally return empty
+    # ``content`` for creative-writing prompts because their reasoning
+    # eats the budget; falling through to the next model in the list
+    # almost always works. Cleanup runs against each candidate so we
+    # never return raw "Here is your song:" preambles.
+    try:
+        raw = await chat_complete_with_fallback(
+            [
+                {"role": "system", "content": _LYRIC_SYSTEM_PROMPT},
+                {"role": "user", "content": user_msg},
+            ],
+            temperature=0.85,   # let it be a little playful
+            max_tokens=1500,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"lyric generation failed: {exc}") from exc
+
+    cleaned = _strip_lyric_artifacts(raw or "")
+    if not cleaned:
+        raise HTTPException(status_code=502, detail="lyric generation returned empty")
+    return StudioMusicLyricsResponse(lyrics=cleaned)
+
+
 @router.post("/music/text2music", response_model=StudioMusicGenerateResponse)
 async def music_generate_text2music(body: StudioMusicText2MusicRequest, user_id: str = Depends(require_auth)):
     """Generate music from text prompt + lyrics via ACE-Step API."""
@@ -1344,6 +1661,19 @@ async def music_generate_text2music(body: StudioMusicText2MusicRequest, user_id:
     prompt = (body.prompt or "").strip()
     if not prompt:
         raise HTTPException(status_code=400, detail="prompt is required")
+    # Tiered duration cap by quality. ``-1`` is a sentinel for "random"
+    # supported by the underlying engine; the engine clamps internally
+    # so we let it through.
+    if body.audio_duration != -1:
+        cap = _max_music_duration_for_steps(int(body.infer_step or 60))
+        if body.audio_duration > cap:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"audio_duration must be ≤ {int(cap)} seconds at this quality "
+                    f"(infer_step={body.infer_step}). Pick a faster quality or a shorter song."
+                ),
+            )
 
     conn = await get_connection()
     try:
@@ -1472,6 +1802,16 @@ async def music_generate_audio2audio(
         raise HTTPException(status_code=403, detail="user_id does not match authenticated user")
     if not music_gen_configured():
         raise HTTPException(status_code=503, detail="Music generation is not configured.")
+    if audio_duration != -1:
+        cap = _max_music_duration_for_steps(int(infer_step or 60))
+        if audio_duration > cap:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"audio_duration must be ≤ {int(cap)} seconds at this quality "
+                    f"(infer_step={infer_step}). Pick a faster quality or a shorter song."
+                ),
+            )
 
     raw = await ref_audio.read()
     if not raw:

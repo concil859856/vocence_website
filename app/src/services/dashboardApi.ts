@@ -805,6 +805,27 @@ export const dashboardApi = {
     });
   },
 
+  /**
+   * Generate TTS using a pre-stored sample voice. Backend uses voice cloning
+   * under the hood with the matching reference clip; charged at TTS price.
+   */
+  generateStudioTtsSampleVoice(
+    body: {
+      sample_voice_id: string;
+      target_text: string;
+      target_language?: string | null;
+    },
+    token: string | null
+  ): Promise<StudioCloneResponse> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson('/api/dashboard/studio/tts/voice-clone-sample', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+  },
+
   generateStudioStt(
     body: { user_id: string; language?: string | null; audio_file: File },
     token: string | null
@@ -1003,6 +1024,22 @@ export const dashboardApi = {
       method: 'POST',
       headers,
       body: formData,
+    });
+  },
+
+  /** AI-generate lyrics from a topic. Free; no credits charged. The
+   * server uses the same LLM router as agents and enforces the
+   * ACE-Step structure-tag format ([verse]/[chorus]/...). */
+  generateStudioMusicLyrics(
+    body: { topic: string; prompt?: string; section_count?: number },
+    token: string | null
+  ): Promise<{ lyrics: string }> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson('/api/dashboard/studio/music/generate-lyrics', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
     });
   },
 

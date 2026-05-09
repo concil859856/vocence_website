@@ -17,6 +17,7 @@ import {
   Lightbulb,
   Plus,
   X,
+  BookOpen,
 } from 'lucide-react';
 import gsap from 'gsap';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
@@ -25,7 +26,7 @@ import { AuthModal } from '../components/AuthModal';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { MyVoiceCardArt } from '../components/MyVoiceCardArt';
 import { StudioShell } from '../components/StudioShell';
-import { VoiceCloneConsent, hasVoiceCloneConsent } from '../components/VoiceCloneConsent';
+import { VoiceCloneConsent } from '../components/VoiceCloneConsent';
 import { useGenerations } from '../contexts/GenerationsContext';
 import { STUDIO_VIEWS, type StudioView } from '../studio/studioNav';
 import { DEFAULT_ABSTRACT_CARD_IMAGES } from '../data/abstractCardImages';
@@ -50,6 +51,7 @@ import {
 import { StudioMusic } from './StudioMusic';
 import { StudioHome } from './StudioHome';
 import { StudioPlaybooks } from './StudioPlaybooks';
+import { StudioTtsGeneral } from '../components/studio/StudioTtsGeneral';
 import { useStudioPlayer } from '../contexts/StudioPlayerContext';
 import { api } from '../services/api';
 import {
@@ -78,6 +80,7 @@ const STUDIO_VIEW_LABELS: Record<StudioView, string> = {
   music: 'Text-to-Music',
   playbooks: 'Playbooks',
   history: 'History',
+  agents: 'Agents',
 };
 
 function ComingSoonView({ view }: { view: StudioView }) {
@@ -242,6 +245,9 @@ export function Studio() {
   const [ttsText, setTtsText] = useState('');
   const [ttsContentLimitNotice, setTtsContentLimitNotice] = useState(false);
   const [ttsStylePrompt, setTtsStylePrompt] = useState('');
+  // Subpage tab inside the TTS view: 'general' = sample-voice picker (voice
+  // cloning under the hood), 'prompt' = the style-prompt PromptTTS flow.
+  const [ttsTab, setTtsTab] = useState<'general' | 'prompt'>('general');
   const [selectedLanguage, setSelectedLanguage] = useState('auto-detect');
   const [sttFile, setSttFile] = useState<File | null>(null);
   const [sttMode, setSttMode] = useState<'upload' | 'record'>('upload');
@@ -730,12 +736,11 @@ export function Studio() {
         setCloneTargetLimitNotice(true);
         return;
       }
-      // First-time consent gate
-      if (!hasVoiceCloneConsent()) {
-        setShowCloneConsent(true);
-        return;
-      }
-      void doCloneGenerate();
+      // Consent gate — shown EVERY time, not cached. Voice cloning's
+      // abuse risk doesn't get cheaper with familiarity; one past
+      // acceptance shouldn't stand in for fresh attestation about a
+      // possibly-different voice the user is about to clone now.
+      setShowCloneConsent(true);
     });
   };
 
@@ -1294,12 +1299,23 @@ export function Studio() {
   const renderVoiceDesignView = () => {
     return (
       <div className="space-y-6">
-        <header className="space-y-2">
-          <h1 className="text-2xl sm:text-3xl font-semibold text-white tracking-tight">Voice Design</h1>
-          <p className="text-[10px] uppercase tracking-[0.16em] text-[#DFFF00]/80">Tips</p>
-          <p className="text-sm text-[#9CA3AF] leading-relaxed">
-            Describe the character you want - include age, gender, emotion, pacing, speaking speed, use case, and other details in neutral language.
-          </p>
+        <header className="flex flex-wrap items-start justify-between gap-3">
+          <div className="space-y-2">
+            <h1 className="text-2xl sm:text-3xl font-semibold text-white tracking-tight">Voice Design</h1>
+            <p className="text-[10px] uppercase tracking-[0.16em] text-[#DFFF00]/80">Tips</p>
+            <p className="text-sm text-[#9CA3AF] leading-relaxed">
+              Describe the character you want - include age, gender, emotion, pacing, speaking speed, use case, and other details in neutral language.
+            </p>
+          </div>
+          <a
+            href="/docs/guide-tts"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.02] px-3 py-2 text-xs text-[#A7B0B7] hover:border-white/25 hover:text-white transition-colors"
+          >
+            <BookOpen size={14} />
+            Guide
+          </a>
         </header>
 
         {vdConfig !== null && !vdConfig.llm_configured && (
@@ -1590,13 +1606,24 @@ export function Studio() {
                 Voices you saved from Voice Design. Open a card, enter new text, and generate speech in that style.
               </p>
             </div>
-            <button
-              type="button"
-              onClick={() => navigate('/studio/voice-design')}
-              className="shrink-0 self-start rounded-xl border border-white/15 bg-white px-5 py-2.5 text-sm font-semibold text-[#07080A] shadow-sm shadow-black/10 transition-colors hover:bg-white/95 active:scale-[0.99] sm:mt-1"
-            >
-              Create my voice
-            </button>
+            <div className="flex shrink-0 items-center gap-2 self-start sm:mt-1">
+              <a
+                href="/docs/guide-cloning"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.02] px-3 py-2 text-xs text-[#A7B0B7] hover:border-white/25 hover:text-white transition-colors"
+              >
+                <BookOpen size={14} />
+                Guide
+              </a>
+              <button
+                type="button"
+                onClick={() => navigate('/studio/voice-design')}
+                className="rounded-xl border border-white/15 bg-white px-5 py-2.5 text-sm font-semibold text-[#07080A] shadow-sm shadow-black/10 transition-colors hover:bg-white/95 active:scale-[0.99]"
+              >
+                Create my voice
+              </button>
+            </div>
           </div>
 
           {myVoicesNotice ? (
@@ -1756,9 +1783,20 @@ export function Studio() {
 
   const renderTTSView = () => (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-2xl font-semibold mb-2">Text-to-Speech</h2>
-        <p className="text-[#A7B0B7]">Synthesize natural sounding speech from text using top miners.</p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-2xl font-semibold mb-2">Text-to-Speech</h2>
+          <p className="text-[#A7B0B7]">Synthesize natural sounding speech from text using top miners.</p>
+        </div>
+        <a
+          href="/docs/guide-tts"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.02] px-3 py-2 text-xs text-[#A7B0B7] hover:border-white/25 hover:text-white transition-colors"
+        >
+          <BookOpen size={14} />
+          Guide
+        </a>
       </div>
 
       <div className="flex flex-col lg:flex-row lg:items-stretch lg:gap-3">
@@ -1926,11 +1964,22 @@ export function Studio() {
 
   const renderSTTView = () => (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-2xl font-semibold mb-2">Speech-to-Text</h2>
-        <p className="text-[#A7B0B7]">
-          Highly accurate transcription and translation for audio files.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-2xl font-semibold mb-2">Speech-to-Text</h2>
+          <p className="text-[#A7B0B7]">
+            Highly accurate transcription and translation for audio files.
+          </p>
+        </div>
+        <a
+          href="/docs/guide-stt"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.02] px-3 py-2 text-xs text-[#A7B0B7] hover:border-white/25 hover:text-white transition-colors"
+        >
+          <BookOpen size={14} />
+          Guide
+        </a>
       </div>
 
       <div className="card-vocence p-6 space-y-6">
@@ -2270,13 +2319,24 @@ export function Studio() {
 
   const renderCloningView = () => (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-2xl font-semibold mb-2">Voice Cloning</h2>
-        <p className="text-[#A7B0B7] max-w-3xl">
-          Upload a reference recording or capture one with your microphone. We transcribe the reference audio automatically,
-          then synthesize your target text in that voice. Output is stored for 7 days — play or download below. Each run
-          uses {CREDIT_VOICE_CLONE} credits.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-2xl font-semibold mb-2">Voice Cloning</h2>
+          <p className="text-[#A7B0B7] max-w-3xl">
+            Upload a reference recording or capture one with your microphone. We transcribe the reference audio automatically,
+            then synthesize your target text in that voice. Output is stored for 7 days — play or download below. Each run
+            uses {CREDIT_VOICE_CLONE} credits.
+          </p>
+        </div>
+        <a
+          href="/docs/guide-cloning"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.02] px-3 py-2 text-xs text-[#A7B0B7] hover:border-white/25 hover:text-white transition-colors"
+        >
+          <BookOpen size={14} />
+          Guide
+        </a>
       </div>
 
       <div className="rounded-xl border border-cyan-400/20 bg-cyan-500/[0.04] p-4 text-sm text-cyan-100/90 flex gap-3">
@@ -2598,7 +2658,36 @@ export function Studio() {
         <div className="max-w-6xl mx-auto">
             {activeView === 'chat' && !ENABLE_VOICE_CHAT && <ComingSoonView view={activeView} />}
             {activeView === 'home' && <StudioHome />}
-            {activeView === 'tts' && renderTTSView()}
+            {activeView === 'tts' && (
+              <div className="space-y-6">
+                {/* Subpage tabs: General (sample-voice picker) / Style Prompt (PromptTTS) */}
+                <div className="flex items-center gap-1 border-b border-white/10">
+                  <button
+                    type="button"
+                    onClick={() => setTtsTab('general')}
+                    className={`px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
+                      ttsTab === 'general'
+                        ? 'border-[#DFFF00] text-white'
+                        : 'border-transparent text-[#A7B0B7] hover:text-white'
+                    }`}
+                  >
+                    General
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTtsTab('prompt')}
+                    className={`px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
+                      ttsTab === 'prompt'
+                        ? 'border-[#DFFF00] text-white'
+                        : 'border-transparent text-[#A7B0B7] hover:text-white'
+                    }`}
+                  >
+                    Style Prompt
+                  </button>
+                </div>
+                {ttsTab === 'general' ? <StudioTtsGeneral /> : renderTTSView()}
+              </div>
+            )}
             {activeView === 'stt' && renderSTTView()}
             {ENABLE_VOICE_CHAT && activeView === 'chat' && renderChatView()}
             {activeView === 'cloning' && renderCloningView()}

@@ -405,6 +405,55 @@ SCHEMA_SQL = [
         FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS agents (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        type TEXT NOT NULL,                -- 'knowledge' | 'goal'
+        status TEXT NOT NULL DEFAULT 'draft',  -- draft|active|paused|archived
+        name TEXT NOT NULL,
+        config_json TEXT NOT NULL,         -- AgentConfig as JSON
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        last_run_at TEXT,
+        run_count INTEGER NOT NULL DEFAULT 0,
+        FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS agent_runs (
+        id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        status TEXT NOT NULL,              -- pending|running|completed|failed|cancelled
+        goal TEXT NOT NULL,
+        success_metric TEXT NOT NULL,
+        iterations_json TEXT NOT NULL DEFAULT '[]',
+        best_output TEXT,
+        best_score REAL,
+        error TEXT,
+        started_at TEXT NOT NULL DEFAULT (datetime('now')),
+        finished_at TEXT,
+        FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS studio_voicechat_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        mode TEXT NOT NULL,                 -- 'voice' | 'text'
+        user_text TEXT,
+        bot_text TEXT,
+        latency_ms INTEGER NOT NULL DEFAULT 0,
+        ttft_ms INTEGER NOT NULL DEFAULT 0, -- time to first LLM token
+        ttfa_ms INTEGER,                    -- time to first audio frame (null if turn errored before audio)
+        error TEXT,
+        status TEXT NOT NULL DEFAULT 'completed',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
+    )
+    """,
 ]
 
 
@@ -434,6 +483,24 @@ INDEX_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_generation_jobs_user_created ON generation_jobs (user_id, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_generation_jobs_status ON generation_jobs (status, created_at)",
     "CREATE INDEX IF NOT EXISTS idx_generation_jobs_type_status ON generation_jobs (type, status, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_studio_voicechat_history_user ON studio_voicechat_history (user_id, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_agents_user ON agents (user_id, updated_at DESC)",
+    # FTS5 virtual table for agent knowledge chunks (RAG retrieval).
+    # Created with porter+unicode61 tokenizer so English stems work
+    # (e.g. "running" matches "run"). agent_id and chunk_idx are stored
+    # but NOT searched (UNINDEXED). Filter by agent_id in the WHERE clause
+    # of MATCH queries.
+    """
+    CREATE VIRTUAL TABLE IF NOT EXISTS agent_knowledge_chunks
+    USING fts5(
+        agent_id UNINDEXED,
+        chunk_idx UNINDEXED,
+        content,
+        tokenize = 'porter unicode61'
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_agent_runs_agent ON agent_runs (agent_id, started_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_agent_runs_user ON agent_runs (user_id, started_at DESC)",
 ]
 
 

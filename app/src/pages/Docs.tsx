@@ -23,7 +23,7 @@ import {
   CREDIT_VOICE_DESIGN_PREVIEW,
 } from '../studio/creditCosts';
 
-type DocSection = 'getting-started' | 'core-concepts' | 'architecture' | 'api' | 'pricing' | 'sdk' | 'models' | 'cloning' | 'integration' | 'miner' | 'validator' | 'faq' | 'troubleshooting';
+type DocSection = 'getting-started' | 'core-concepts' | 'architecture' | 'api' | 'pricing' | 'sdk' | 'models' | 'cloning' | 'integration' | 'miner' | 'validator' | 'faq' | 'troubleshooting' | 'guide-tts' | 'guide-cloning' | 'guide-stt' | 'guide-music' | 'guide-agents';
 
 interface DocLink {
   id: DocSection;
@@ -35,11 +35,16 @@ const docLinks: DocLink[] = [
   { id: 'getting-started', label: 'Getting Started', category: 'Introduction' },
   { id: 'core-concepts', label: 'Core Concepts', category: 'Introduction' },
   { id: 'architecture', label: 'Architecture', category: 'Introduction' },
+  { id: 'guide-agents', label: 'Agents', category: 'Studio Guides' },
+  { id: 'guide-tts', label: 'Text-to-Speech', category: 'Studio Guides' },
+  { id: 'guide-cloning', label: 'Voice Cloning', category: 'Studio Guides' },
+  { id: 'guide-stt', label: 'Speech-to-Text', category: 'Studio Guides' },
+  { id: 'guide-music', label: 'Text-to-Music', category: 'Studio Guides' },
   { id: 'api', label: 'API Reference', category: 'Development' },
   { id: 'pricing', label: 'Pricing', category: 'Development' },
   { id: 'sdk', label: 'SDKs & Libraries', category: 'Development' },
   { id: 'models', label: 'Models', category: 'Development' },
-  { id: 'cloning', label: 'Voice Cloning', category: 'Development' },
+  { id: 'cloning', label: 'Voice Cloning (API)', category: 'Development' },
   { id: 'integration', label: 'Integration Guide', category: 'Guides' },
   { id: 'miner', label: 'Miner Setup', category: 'Guides' },
   { id: 'validator', label: 'Validator Setup', category: 'Guides' },
@@ -47,7 +52,7 @@ const docLinks: DocLink[] = [
   { id: 'troubleshooting', label: 'Troubleshooting', category: 'Support' },
 ];
 
-const DOC_SECTIONS: DocSection[] = ['getting-started', 'core-concepts', 'architecture', 'api', 'pricing', 'sdk', 'models', 'cloning', 'integration', 'miner', 'validator', 'faq', 'troubleshooting'];
+const DOC_SECTIONS: DocSection[] = ['getting-started', 'core-concepts', 'architecture', 'guide-agents', 'guide-tts', 'guide-cloning', 'guide-stt', 'guide-music', 'api', 'pricing', 'sdk', 'models', 'cloning', 'integration', 'miner', 'validator', 'faq', 'troubleshooting'];
 
 /** Stable links to the open-source subnet repo (paths use `master` branch). */
 const GH = 'https://github.com/vocence-78/vocence';
@@ -1510,6 +1515,732 @@ uv run vocence serve`}</pre>
     </div>
   );
 
+  const renderGuideAgents = () => (
+    <div className="space-y-8">
+      <div className="border-b border-white/[0.06] pb-6">
+        <div className="flex items-center gap-1.5 text-xs text-zinc-500 mb-3">
+          <span>Docs</span>
+          <ChevronRight size={12} className="opacity-60" />
+          <span>Studio Guides</span>
+          <ChevronRight size={12} className="opacity-60" />
+          <span className="text-zinc-300">Agents</span>
+        </div>
+        <h1 className="text-2xl font-semibold mb-2 tracking-tight">Agents — Build & Deploy Voice Agents</h1>
+        <p className="text-sm text-zinc-400 leading-relaxed max-w-2xl">
+          A Vocence Agent is a voice-first AI you configure once and call again and again — for support, study, brainstorming,
+          autonomous work, and anything in between. Build one in under a minute by chatting with the Agent Architect.
+        </p>
+      </div>
+
+      <section>
+        <h2 className="text-lg font-semibold mb-3">Two flavors</h2>
+        <div className="grid md:grid-cols-2 gap-4">
+          <div className="card-vocence p-5">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-md bg-[#DFFF00]/15 text-[#DFFF00] border border-[#DFFF00]/30">Knowledge</span>
+            </div>
+            <h3 className="font-medium mb-2 text-sm">Conversational</h3>
+            <p className="text-sm text-zinc-400 leading-relaxed">
+              Answers questions using injected knowledge. You talk to it via voice or text. Examples: customer support,
+              study coach, internal docs assistant.
+            </p>
+          </div>
+          <div className="card-vocence p-5">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-md bg-purple-500/15 text-purple-200 border border-purple-400/30">Goal</span>
+            </div>
+            <h3 className="font-medium mb-2 text-sm">Self-improving</h3>
+            <p className="text-sm text-zinc-400 leading-relaxed">
+              You give it a goal and a success metric; it iterates toward the target, scoring itself each round and refining.
+              Examples: cold-email refiner, daily summarizer, draft brainstormer.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h2 className="text-lg font-semibold mb-3">Quick start</h2>
+        <ol className="list-decimal space-y-3 pl-5 text-sm leading-relaxed text-zinc-400 marker:text-zinc-600">
+          <li>
+            Open <Link to="/studio/agents" className="text-[#DFFF00] hover:underline">Studio → Agents</Link> and click{' '}
+            <span className="text-zinc-200">New Agent</span> (or pick a template).
+          </li>
+          <li>
+            Describe your agent in plain English on the left pane. The <span className="text-zinc-200">Agent Architect</span>{' '}
+            drafts the full config (name, purpose, system prompt, voice, model, knowledge) on the right.
+          </li>
+          <li>
+            Refine by chatting ("make it more technical", "shorten the answers") or by editing any field directly. Each
+            field has a ✨ button to regenerate just that one.
+          </li>
+          <li>
+            For Goal agents, fill in <span className="text-zinc-200">Goal</span>,{' '}
+            <span className="text-zinc-200">Success metric</span>, and <span className="text-zinc-200">Max iterations</span>.
+          </li>
+          <li>
+            Click <span className="text-zinc-200">Deploy</span>. Your agent is now active. Knowledge agents open a chat tab;
+            Goal agents show a Runs tab where you start runs and watch iterations.
+          </li>
+        </ol>
+      </section>
+
+      <section>
+        <h2 className="text-lg font-semibold mb-3">Tips that actually matter</h2>
+        <ul className="space-y-3 text-sm text-zinc-400 leading-relaxed">
+          <li>
+            <span className="text-zinc-200 font-medium">Write a tight purpose.</span> One or two sentences. The Architect
+            uses this to seed everything else, so a vague purpose produces a vague agent.
+          </li>
+          <li>
+            <span className="text-zinc-200 font-medium">Put facts in Knowledge, behavior in System Prompt.</span> Pricing,
+            APIs, FAQ entries → Knowledge. Tone, refusals, fallback rules → System Prompt.
+          </li>
+          <li>
+            <span className="text-zinc-200 font-medium">Keep replies short by default.</span> Add a rule like
+            "Two or three sentences usually." to the system prompt. The user is listening, not reading.
+          </li>
+          <li>
+            <span className="text-zinc-200 font-medium">For Goal agents, write a measurable success metric.</span>{' '}
+            "Sounds professional" is bad; "Under 90 words, single clear ask, no buzzwords" is good — the agent self-scores
+            against it.
+          </li>
+          <li>
+            <span className="text-zinc-200 font-medium">Pick a voice that fits the role.</span> Ryan/Ethan are good neutral
+            defaults. Try Olivia or Abigail for warmer support tones, Cherry/Dylan for Mandarin agents.
+          </li>
+        </ul>
+      </section>
+
+      <section className="bg-white/[0.03] border border-white/[0.06] rounded-xl p-5">
+        <h2 className="text-lg font-semibold mb-3">How Goal agents iterate</h2>
+        <p className="text-sm text-zinc-400 leading-relaxed mb-3">
+          Each run loops up to <span className="text-zinc-200">Max iterations</span> times (or stops early when the
+          self-score crosses 0.9). On every iteration the agent:
+        </p>
+        <ol className="list-decimal space-y-2 pl-5 text-sm leading-relaxed text-zinc-400 marker:text-zinc-600">
+          <li>Reads the goal, success metric, knowledge, and the last few prior outputs.</li>
+          <li>Produces a new attempt — this is the deliverable.</li>
+          <li>Self-scores against the success metric and explains the score.</li>
+          <li>Stores the iteration in the timeline; if it's the highest score so far, becomes the "best output".</li>
+        </ol>
+        <p className="text-sm text-zinc-400 leading-relaxed mt-3">
+          You can cancel a run any time. You always see the full timeline (thought, output, score, rationale) for every iteration.
+        </p>
+      </section>
+
+      <section>
+        <h2 className="text-lg font-semibold mb-3">Limits & roadmap</h2>
+        <div className="grid md:grid-cols-2 gap-4">
+          <div className="card-vocence p-5">
+            <h3 className="font-medium mb-2 text-sm">Today (v1)</h3>
+            <ul className="space-y-1 text-sm text-zinc-400">
+              <li>• Voice + text chat for Knowledge agents</li>
+              <li>• Up to <span className="text-zinc-200">20 iterations</span> per Goal run</li>
+              <li>• Text-only knowledge (paste or type)</li>
+              <li>• Built-in TTS speakers, Chutes-served LLMs</li>
+            </ul>
+          </div>
+          <div className="card-vocence p-5">
+            <h3 className="font-medium mb-2 text-sm">Coming next</h3>
+            <ul className="space-y-1 text-sm text-zinc-400">
+              <li>• File / URL knowledge upload (PDF, Markdown, web)</li>
+              <li>• Tools (web search, code, custom HTTP)</li>
+              <li>• Scheduled runs & event triggers</li>
+              <li>• Phone-call deployment (your agent on a number)</li>
+              <li>• Sharing / publishing agents</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section className="pt-4 border-t border-white/[0.06]">
+        <Link
+          to="/studio/agents"
+          className="inline-flex items-center gap-2 rounded-xl bg-[#DFFF00] text-[#07080A] px-4 py-2.5 text-sm font-semibold hover:brightness-110"
+        >
+          Open Studio → Agents
+          <ChevronRight size={16} />
+        </Link>
+      </section>
+    </div>
+  );
+
+  const renderGuideTts = () => (
+    <div className="space-y-8">
+      <div className="border-b border-white/[0.06] pb-6">
+        <div className="flex items-center gap-1.5 text-xs text-zinc-500 mb-3">
+          <span>Docs</span>
+          <ChevronRight size={12} className="opacity-60" />
+          <span>Studio Guides</span>
+          <ChevronRight size={12} className="opacity-60" />
+          <span className="text-zinc-300">Text-to-Speech</span>
+        </div>
+        <h1 className="text-2xl font-semibold mb-2 tracking-tight">Text-to-Speech — Practice Guide</h1>
+        <p className="text-sm text-zinc-400 leading-relaxed max-w-2xl">
+          How to get the best results from Vocence Studio TTS. Tips for writing style prompts, picking lengths and
+          languages, and avoiding common errors.
+        </p>
+      </div>
+
+      <section>
+        <h2 className="text-lg font-semibold mb-3">What it does</h2>
+        <p className="text-sm text-zinc-400 leading-relaxed">
+          Voice Design TTS invents a persona on the fly from your style prompt — no reference audio required. It reads
+          the text, listens to your style instruction, and renders speech in one of 10 supported languages. Every
+          generation is non-deterministic: the same prompt twice will sound similar but not identical.
+        </p>
+      </section>
+
+      <section>
+        <h2 className="text-lg font-semibold mb-3">Tips for great results</h2>
+        <ol className="list-decimal space-y-3 pl-5 text-sm leading-relaxed text-zinc-400 marker:text-zinc-600">
+          <li>
+            <span className="text-zinc-200 font-medium">Write style prompts like a director's note, not a tag list.</span>{' '}
+            <code className="text-zinc-300">"A calm, friendly female voice speaking at a natural pace"</code> beats{' '}
+            <code className="text-zinc-300">"calm, female, friendly, neutral, soft, professional"</code>. The model was
+            trained on natural sentences.
+          </li>
+          <li>
+            <span className="text-zinc-200 font-medium">Anchor with one dominant trait.</span> Pick a single tone — calm,
+            energetic, menacing, authoritative — and add at most two modifiers (gender, pace, energy). Stacking too many
+            traits muddies the output.
+          </li>
+          <li>
+            <span className="text-zinc-200 font-medium">Keep instructions under ~15 words.</span> Long prompts wash out;
+            the model focuses on the strongest cues at the start.
+          </li>
+          <li>
+            <span className="text-zinc-200 font-medium">Start from a preset.</span> The 13 built-in style presets are
+            tested templates — pick the closest one and tweak the description rather than starting from scratch.
+          </li>
+          <li>
+            <span className="text-zinc-200 font-medium">Match input language to output.</span> Write the script in the
+            target language. The model auto-detects and synthesizes — you don't need to mention the language in the
+            prompt.
+          </li>
+          <li>
+            <span className="text-zinc-200 font-medium">For consistent characters across multiple lines, save the voice
+            first.</span> Voice Design is non-deterministic, so the same prompt won't produce the same timbre twice. Use{' '}
+            <Link to="/studio/voice-design" className="text-[#DFFF00] hover:underline">Voice Design</Link>{' '}→ Save to{' '}
+            <Link to="/studio/my-voices" className="text-[#DFFF00] hover:underline">My Voices</Link>, then generate from
+            the saved voice.
+          </li>
+          <li>
+            <span className="text-zinc-200 font-medium">Keep the script under 300 characters.</span> Longer text triggers
+            the model's max output duration ceiling and the synthesis fails.
+          </li>
+        </ol>
+      </section>
+
+      <section className="bg-white/[0.03] border border-white/[0.06] rounded-xl p-5">
+        <h2 className="text-lg font-semibold mb-3">Common errors</h2>
+        <ul className="space-y-3 text-sm text-zinc-400 leading-relaxed">
+          <li>
+            <code className="text-zinc-300">"This text would produce audio longer than the model supports..."</code> —
+            your text + style estimate exceeds ~30 seconds of speech. Shorten the text, or pick a faster style
+            ("speaking quickly", "energetic delivery").
+          </li>
+          <li>
+            <code className="text-zinc-300">"miner returned 503"</code> — capacity is full right now. Wait a minute and
+            retry; your credits aren't deducted on capacity rejection.
+          </li>
+          <li>
+            Output sounds flat or generic → your style prompt has too many adjectives competing. Trim to 1 dominant tone
+            + pace.
+          </li>
+        </ul>
+      </section>
+
+      <section>
+        <h2 className="text-lg font-semibold mb-3">Limits & languages</h2>
+        <div className="grid md:grid-cols-2 gap-4">
+          <div className="card-vocence p-5">
+            <h3 className="font-medium mb-2 text-sm">Limits</h3>
+            <ul className="space-y-1 text-sm text-zinc-400">
+              <li>• Up to <span className="text-zinc-200">300 characters</span> per generation</li>
+              <li>• Up to <span className="text-zinc-200">~30 seconds</span> of audio</li>
+              <li>• <span className="text-zinc-200">25 credits</span> per generation</li>
+            </ul>
+          </div>
+          <div className="card-vocence p-5">
+            <h3 className="font-medium mb-2 text-sm">Languages (10)</h3>
+            <p className="text-sm text-zinc-400">
+              Chinese, English, Japanese, Korean, German, French, Russian, Portuguese, Spanish, Italian.
+            </p>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+
+  const renderGuideCloning = () => (
+    <div className="space-y-8">
+      <div className="border-b border-white/[0.06] pb-6">
+        <div className="flex items-center gap-1.5 text-xs text-zinc-500 mb-3">
+          <span>Docs</span>
+          <ChevronRight size={12} className="opacity-60" />
+          <span>Studio Guides</span>
+          <ChevronRight size={12} className="opacity-60" />
+          <span className="text-zinc-300">Voice Cloning</span>
+        </div>
+        <h1 className="text-2xl font-semibold mb-2 tracking-tight">Voice Cloning — Practice Guide</h1>
+        <p className="text-sm text-zinc-400 leading-relaxed max-w-2xl">
+          How to clone any voice with high fidelity. What makes a great reference clip, when cross-lingual cloning works,
+          and how to handle long scripts.
+        </p>
+      </div>
+
+      <section>
+        <h2 className="text-lg font-semibold mb-3">What it does</h2>
+        <p className="text-sm text-zinc-400 leading-relaxed">
+          Cloning takes a short reference clip (someone speaking) plus optional reference text, and synthesizes new
+          sentences in that exact voice. It can speak in a different language from the reference — clone an English
+          speaker reading Spanish, etc. — with strong speaker similarity across all supported languages.
+        </p>
+      </section>
+
+      <section>
+        <h2 className="text-lg font-semibold mb-3">Tips for great results</h2>
+        <ol className="list-decimal space-y-3 pl-5 text-sm leading-relaxed text-zinc-400 marker:text-zinc-600">
+          <li>
+            <span className="text-zinc-200 font-medium">Reference clip 5–20 seconds, sweet spot 5–10s.</span> Studio
+            enforces this range. Clips under 5s have unstable timbre; clips over 20s add no extra benefit and slow down
+            generation.
+          </li>
+          <li>
+            <span className="text-zinc-200 font-medium">Clean reference audio is everything.</span> Single speaker, no
+            music, no reverb, no overlapping voices. Spoken-word podcast snippets and audiobook excerpts work best. Phone
+            calls, echo-y rooms, and YouTube clips with background music produce muddy clones.
+          </li>
+          <li>
+            <span className="text-zinc-200 font-medium">Provide a verbatim reference script if you can.</span> We
+            auto-transcribe when you don't, but a hand-written transcript that exactly matches the audio is the #1 lever
+            for fidelity. Punctuation and capitalization help.
+          </li>
+          <li>
+            <span className="text-zinc-200 font-medium">Match sample rate and channels.</span> 16 kHz mono is the sweet
+            spot. Stereo and high sample rates work (we resample), but lower-quality recordings degrade more in
+            preprocessing.
+          </li>
+          <li>
+            <span className="text-zinc-200 font-medium">Cross-lingual cloning works.</span> A 7-second English reference
+            can speak Spanish, German, Japanese. Best directions: Chinese ↔ English. Japanese cross-lingual is the
+            weakest direction — proofread pronunciations.
+          </li>
+          <li>
+            <span className="text-zinc-200 font-medium">For repeated cloning of the same voice, save it.</span> Run{' '}
+            <Link to="/studio/voice-design" className="text-[#DFFF00] hover:underline">Voice Design</Link>, save the
+            preview to <Link to="/studio/my-voices" className="text-[#DFFF00] hover:underline">My Voices</Link>, then
+            generate from there. This gives you a stable persona across many lines without re-uploading the reference
+            each time.
+          </li>
+          <li>
+            <span className="text-zinc-200 font-medium">Always get explicit consent.</span> Cloning a real person's voice
+            without permission is a legal and ethical line; Vocence requires you to confirm consent on first use.
+          </li>
+        </ol>
+      </section>
+
+      <section className="bg-white/[0.03] border border-white/[0.06] rounded-xl p-5">
+        <h2 className="text-lg font-semibold mb-3">Common failure modes</h2>
+        <ul className="space-y-3 text-sm text-zinc-400 leading-relaxed">
+          <li>
+            <span className="text-zinc-200 font-medium">Slurred or hallucinated output</span> → reference script doesn't
+            match the audio. Edit the script to match exactly what's spoken in the clip.
+          </li>
+          <li>
+            <span className="text-zinc-200 font-medium">Voice doesn't sound like the reference</span> → reference is too
+            short, has multiple speakers, or has heavy background noise. Try a longer (~10s) clean clip from the same
+            speaker.
+          </li>
+          <li>
+            <code className="text-zinc-300">"Reference audio must be between 5 and 20 seconds…"</code> — re-upload or
+            re-record within range.
+          </li>
+        </ul>
+      </section>
+
+      <section>
+        <h2 className="text-lg font-semibold mb-3">Limits & languages</h2>
+        <div className="grid md:grid-cols-2 gap-4">
+          <div className="card-vocence p-5">
+            <h3 className="font-medium mb-2 text-sm">Limits</h3>
+            <ul className="space-y-1 text-sm text-zinc-400">
+              <li>• Reference audio: <span className="text-zinc-200">5–20 seconds</span></li>
+              <li>• Target text: up to <span className="text-zinc-200">2,000 characters</span></li>
+              <li>• <span className="text-zinc-200">50 credits</span> per generation</li>
+            </ul>
+          </div>
+          <div className="card-vocence p-5">
+            <h3 className="font-medium mb-2 text-sm">Languages (10, cross-lingual)</h3>
+            <p className="text-sm text-zinc-400">
+              Chinese, English, Japanese, Korean, German, French, Russian, Portuguese, Spanish, Italian.
+            </p>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+
+  const renderGuideStt = () => (
+    <div className="space-y-8">
+      <div className="border-b border-white/[0.06] pb-6">
+        <div className="flex items-center gap-1.5 text-xs text-zinc-500 mb-3">
+          <span>Docs</span>
+          <ChevronRight size={12} className="opacity-60" />
+          <span>Studio Guides</span>
+          <ChevronRight size={12} className="opacity-60" />
+          <span className="text-zinc-300">Speech-to-Text</span>
+        </div>
+        <h1 className="text-2xl font-semibold mb-2 tracking-tight">Speech-to-Text — Practice Guide</h1>
+        <p className="text-sm text-zinc-400 leading-relaxed max-w-2xl">
+          How to get accurate transcriptions. Tips for picking the right language, recording quality, and handling long
+          or noisy audio.
+        </p>
+      </div>
+
+      <section>
+        <h2 className="text-lg font-semibold mb-3">What it does</h2>
+        <p className="text-sm text-zinc-400 leading-relaxed">
+          Vocence Studio transcribes speech to text across 30 languages and 22 Chinese dialects. It's accurate on noisy
+          audio, singing voices, and music-with-vocals mixtures — domains where most ASR systems struggle.
+        </p>
+      </section>
+
+      <section>
+        <h2 className="text-lg font-semibold mb-3">Tips for great results</h2>
+        <ol className="list-decimal space-y-3 pl-5 text-sm leading-relaxed text-zinc-400 marker:text-zinc-600">
+          <li>
+            <span className="text-zinc-200 font-medium">Pick the language explicitly when you know it.</span> Auto-detect
+            works but is slightly slower and adds a small accuracy hit. Forcing the right language locks the decoder and
+            improves edge-case words.
+          </li>
+          <li>
+            <span className="text-zinc-200 font-medium">16 kHz mono is the sweet spot.</span> Higher rates work (we
+            downsample), but they don't add quality. Stereo recordings get mixed to mono before transcription.
+          </li>
+          <li>
+            <span className="text-zinc-200 font-medium">Recordings up to 3 minutes per file.</span> For longer sources,
+            split into chunks at natural pauses — pasting clips back together is trivial; mid-sentence splits are not.
+          </li>
+          <li>
+            <span className="text-zinc-200 font-medium">Avoid clipping.</span> Audio recorded too loud (where waveforms
+            hit the ceiling and flatten) is the single biggest source of transcription errors. Aim for peaks at -6 to
+            -3 dB.
+          </li>
+          <li>
+            <span className="text-zinc-200 font-medium">Single-speaker audio gives the cleanest transcripts.</span> The
+            model handles speech-over-music well, but two people talking simultaneously will produce a mixed transcript.
+            For interviews, channel-separate first.
+          </li>
+          <li>
+            <span className="text-zinc-200 font-medium">Songs work.</span> Studio's transcription is trained on singing
+            voice — you can transcribe lyrics directly from a song mix.
+          </li>
+        </ol>
+      </section>
+
+      <section className="bg-white/[0.03] border border-white/[0.06] rounded-xl p-5">
+        <h2 className="text-lg font-semibold mb-3">Common failure modes</h2>
+        <ul className="space-y-3 text-sm text-zinc-400 leading-relaxed">
+          <li>
+            <span className="text-zinc-200 font-medium">Garbled transcript</span> → audio is clipping (too loud), has
+            heavy background noise, or has overlapping speakers. Try a cleaner source.
+          </li>
+          <li>
+            <span className="text-zinc-200 font-medium">Wrong language detected</span> → switch from Auto-detect to the
+            specific language. Auto-detect can stumble on short clips or accents.
+          </li>
+          <li>
+            <span className="text-zinc-200 font-medium">Mid-sentence cutoff</span> → recording exceeded the 3-minute
+            ceiling. Split into shorter chunks.
+          </li>
+        </ul>
+      </section>
+
+      <section>
+        <h2 className="text-lg font-semibold mb-3">Limits & languages</h2>
+        <div className="grid md:grid-cols-2 gap-4">
+          <div className="card-vocence p-5">
+            <h3 className="font-medium mb-2 text-sm">Limits</h3>
+            <ul className="space-y-1 text-sm text-zinc-400">
+              <li>• Up to <span className="text-zinc-200">3 minutes</span> per recording</li>
+              <li>• Any audio format (we resample to 16 kHz mono)</li>
+              <li>• <span className="text-zinc-200">20 credits</span> per generation</li>
+            </ul>
+          </div>
+          <div className="card-vocence p-5">
+            <h3 className="font-medium mb-2 text-sm">Languages</h3>
+            <p className="text-sm text-zinc-400 leading-relaxed">
+              30 languages including Chinese, English, Cantonese, Arabic, German, French, Spanish, Portuguese, Italian,
+              Korean, Russian, Thai, Vietnamese, Japanese, Turkish, Hindi, Dutch, Polish, plus Filipino, Persian, Greek,
+              Hungarian, Romanian, and more. <span className="text-zinc-300">22 Chinese dialects</span> (Sichuan,
+              Shanghai/Wu, Minnan, etc.) and multi-region English accents are also supported.
+            </p>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+
+  const renderGuideMusic = () => (
+    <div className="space-y-8">
+      <div className="border-b border-white/[0.06] pb-6">
+        <div className="flex items-center gap-1.5 text-xs text-zinc-500 mb-3">
+          <span>Docs</span>
+          <ChevronRight size={12} className="opacity-60" />
+          <span>Studio Guides</span>
+          <ChevronRight size={12} className="opacity-60" />
+          <span className="text-zinc-300">Text-to-Music</span>
+        </div>
+        <h1 className="text-2xl font-semibold mb-2 tracking-tight">Text-to-Music — Practice Guide</h1>
+        <p className="text-sm text-zinc-400 leading-relaxed max-w-2xl">
+          How to get great music from Studio: which fields go where, how to structure lyrics, how to
+          pick a genre, when to use AI lyric generation, and how the quality modes change the trade-off
+          between speed and polish.
+        </p>
+      </div>
+
+      <section>
+        <h2 className="text-lg font-semibold mb-3">Mental model</h2>
+        <p className="text-sm text-zinc-400 leading-relaxed mb-3">
+          Music generation has two distinct text inputs that do completely different jobs. The most common
+          mistake is putting the wrong content in either box — Studio shows a soft warning when this
+          happens, but it's worth understanding why:
+        </p>
+        <div className="grid md:grid-cols-2 gap-4">
+          <div className="card-vocence p-5">
+            <p className="text-xs uppercase tracking-wider text-zinc-500 mb-2">Prompt / Tags</p>
+            <p className="text-sm text-zinc-200 font-medium mb-1">Describes what the music sounds like.</p>
+            <p className="text-sm text-zinc-400 leading-relaxed">
+              Genre, instruments, BPM, key, mood, vocal style. Comma-separated tags work best.
+              Aim for 8–15 tags — fewer is too vague, more dilutes the signal.
+            </p>
+          </div>
+          <div className="card-vocence p-5">
+            <p className="text-xs uppercase tracking-wider text-zinc-500 mb-2">Lyrics</p>
+            <p className="text-sm text-zinc-200 font-medium mb-1">What gets sung.</p>
+            <p className="text-sm text-zinc-400 leading-relaxed">
+              Plain text plus structure tags (<code className="text-zinc-300">[verse]</code>,{' '}
+              <code className="text-zinc-300">[chorus]</code>, etc.). For an instrumental track, set
+              the field to <code className="text-zinc-300">[inst]</code> — never empty.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h2 className="text-lg font-semibold mb-3">The fastest path: pick a genre</h2>
+        <p className="text-sm text-zinc-400 leading-relaxed mb-3">
+          The 8 genre tiles at the top of the page are the fastest way to get a good first track.
+          Clicking one fills <span className="text-zinc-200">both</span> the prompt and the lyrics with
+          a curated template that matches the genre. If a genre is instrumental (Club EDM, Smooth Jazz,
+          Orchestral, Chill Lo-fi), the "Instrumental only" toggle flips on automatically.
+        </p>
+        <p className="text-sm text-zinc-400 leading-relaxed">
+          If you've already typed your own lyrics, picking a different genre will ask before
+          overwriting them. Your prompt always updates immediately — the two fields are independent.
+        </p>
+      </section>
+
+      <section>
+        <h2 className="text-lg font-semibold mb-3">Structure tags inside lyrics</h2>
+        <p className="text-sm text-zinc-400 leading-relaxed mb-3">
+          The model recognizes a fixed set of structure tokens. Anything else inside square brackets
+          (<code className="text-zinc-300">[guitar]</code>,{' '}
+          <code className="text-zinc-300">[Verse 1]</code>) is treated as plain text and may be sung
+          out loud.
+        </p>
+        <div className="card-vocence p-5">
+          <p className="text-xs uppercase tracking-wider text-zinc-500 mb-3">Valid tags</p>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-sm font-mono text-zinc-300">
+            <span>[verse]</span>
+            <span>[chorus]</span>
+            <span>[bridge]</span>
+            <span>[intro]</span>
+            <span>[outro]</span>
+            <span>[end]</span>
+            <span>[inst]</span>
+            <span>[solo]</span>
+            <span>[hook]</span>
+            <span>[pre-chorus]</span>
+            <span>[break]</span>
+          </div>
+        </div>
+        <ul className="mt-4 space-y-2 text-sm text-zinc-400 leading-relaxed">
+          <li>• One tag per section, on its own line, with a blank line between sections.</li>
+          <li>• Lower-case and exact form matters — <code className="text-zinc-300">[Verse]</code> and{' '}
+            <code className="text-zinc-300">[verse 1]</code> are <em>not</em> the special tokens.
+          </li>
+          <li>• The structure-tag bar above the lyric textarea inserts these at your cursor with
+            proper blank-line padding — use it instead of typing them by hand.</li>
+          <li>• Match lyric length to the song duration: roughly one section per 30 seconds.
+            Too few lines for a long duration → instrumental gaps; too many for a short
+            duration → rushed delivery.
+          </li>
+        </ul>
+      </section>
+
+      <section>
+        <h2 className="text-lg font-semibold mb-3">Generate lyrics with AI</h2>
+        <p className="text-sm text-zinc-400 leading-relaxed mb-3">
+          The <span className="text-[#DFFF00]">Generate lyrics</span> button next to the structure-tag
+          bar opens a small panel that asks <em>"What's the song about?"</em> Type a topic and the AI
+          writes a full song in the right format — verse, chorus, verse, bridge, chorus, outro — and
+          drops it straight into the lyrics box.
+        </p>
+        <ul className="space-y-2 text-sm text-zinc-400 leading-relaxed">
+          <li>• It uses your current <span className="text-zinc-200">prompt</span> as a style hint, so
+            picking a genre first means the lyrics will match that vibe.</li>
+          <li>• Free — no credits charged for AI lyric generation.</li>
+          <li>• Disabled when "Instrumental only" is on (there's nothing to write).</li>
+          <li>• You can edit the generated lyrics freely afterward — they're a starting point, not
+            a final answer.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2 className="text-lg font-semibold mb-3">Quality modes</h2>
+        <p className="text-sm text-zinc-400 leading-relaxed mb-3">
+          The <span className="text-zinc-200">Quality</span> tile in the right-side panel sets two
+          parameters: how many denoising steps the model runs, and how strictly it follows the prompt.
+          Higher means longer compute and cleaner audio.
+        </p>
+        <div className="card-vocence p-5">
+          <table className="w-full text-sm">
+            <thead className="text-xs text-zinc-500 uppercase tracking-wider">
+              <tr>
+                <th className="text-left pb-2 font-medium">Mode</th>
+                <th className="text-left pb-2 font-medium">Steps</th>
+                <th className="text-left pb-2 font-medium">Adherence</th>
+                <th className="text-left pb-2 font-medium">Wall time (60s song)</th>
+                <th className="text-left pb-2 font-medium">Max song length</th>
+              </tr>
+            </thead>
+            <tbody className="text-zinc-300 divide-y divide-white/5">
+              <tr>
+                <td className="py-2 text-zinc-200 font-medium">Fast</td>
+                <td className="py-2">27</td>
+                <td className="py-2 text-zinc-400">looser</td>
+                <td className="py-2 text-zinc-400">~1 minute</td>
+                <td className="py-2 text-zinc-400">400 s</td>
+              </tr>
+              <tr>
+                <td className="py-2 text-zinc-200 font-medium">Balanced</td>
+                <td className="py-2">60</td>
+                <td className="py-2 text-zinc-400">default</td>
+                <td className="py-2 text-zinc-400">1–2 minutes</td>
+                <td className="py-2 text-zinc-400">300 s</td>
+              </tr>
+              <tr>
+                <td className="py-2 text-zinc-200 font-medium">Max</td>
+                <td className="py-2">120</td>
+                <td className="py-2 text-zinc-400">strictest</td>
+                <td className="py-2 text-zinc-400">2–4 minutes</td>
+                <td className="py-2 text-zinc-400">200 s</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p className="text-sm text-zinc-400 leading-relaxed mt-3">
+          Use <span className="text-zinc-200">Fast</span> for sketching ideas, then re-roll the
+          winners on <span className="text-zinc-200">Balanced</span> or <span className="text-zinc-200">Max</span>.
+          The Advanced panel still lets power users tune <code className="text-zinc-300">infer_step</code> and{' '}
+          <code className="text-zinc-300">guidance_scale</code> directly — touching them flips the
+          mode label to "Custom".
+        </p>
+      </section>
+
+      <section>
+        <h2 className="text-lg font-semibold mb-3">Tag-writing tips</h2>
+        <ol className="list-decimal space-y-3 pl-5 text-sm leading-relaxed text-zinc-400 marker:text-zinc-600">
+          <li>
+            <span className="text-zinc-200 font-medium">Order matters mildly.</span> Put the dominant
+            genre first, then sub-genre, then instruments, then BPM/key, then mood, then vocal qualities,
+            then era/scene. Example:{' '}
+            <code className="text-zinc-300">pop, synth, drums, guitar, 120 bpm, upbeat, catchy, female vocals, polished vocals, 80s</code>.
+          </li>
+          <li>
+            <span className="text-zinc-200 font-medium">Tag count: 8–15 is the sweet spot.</span> Fewer
+            and outputs go generic; more and the signal dilutes. The genre presets are tuned to this range.
+          </li>
+          <li>
+            <span className="text-zinc-200 font-medium">BPM: numeric.</span> "120 bpm" or "120 BPM" both
+            work. Keep it realistic for the genre — drum-and-bass at 80 BPM won't sound right.
+          </li>
+          <li>
+            <span className="text-zinc-200 font-medium">"instrumental" as a literal tag.</span> Including
+            the word <code className="text-zinc-300">instrumental</code> in the tag list (in addition to{' '}
+            <code className="text-zinc-300">[inst]</code> in the lyrics box) reinforces the no-vocals signal.
+          </li>
+          <li>
+            <span className="text-zinc-200 font-medium">Multilingual works.</span> Spanish, Chinese, Japanese
+            and several others are supported in tag form too — useful for non-English genre conventions.
+          </li>
+        </ol>
+      </section>
+
+      <section className="bg-white/[0.03] border border-white/[0.06] rounded-xl p-5">
+        <h2 className="text-lg font-semibold mb-3">Common pitfalls</h2>
+        <ul className="space-y-3 text-sm text-zinc-400 leading-relaxed">
+          <li>
+            <span className="text-zinc-200 font-medium">Genre tags pasted into the lyrics box</span> — the
+            model will literally try to sing "120 bpm electric guitar". Studio's linter flags this; if you
+            see the warning, move the tags up to the prompt field.
+          </li>
+          <li>
+            <span className="text-zinc-200 font-medium">Structure tags in the prompt</span> — same issue
+            in reverse. <code className="text-zinc-300">[verse]</code> in the prompt field doesn't do anything
+            useful and may confuse the tag parser.
+          </li>
+          <li>
+            <span className="text-zinc-200 font-medium">Bracketed words that aren't structure tokens</span> —{' '}
+            <code className="text-zinc-300">[guitar]</code>,{' '}
+            <code className="text-zinc-300">[Verse 1]</code>, <code className="text-zinc-300">[1st verse]</code>{' '}
+            all become sung text. Use the tag bar buttons to insert valid ones.
+          </li>
+          <li>
+            <span className="text-zinc-200 font-medium">Empty lyrics</span> — the engine errors out. Use{' '}
+            <code className="text-zinc-300">[inst]</code> for an instrumental, or just toggle "Instrumental only".
+          </li>
+          <li>
+            <span className="text-zinc-200 font-medium">Generic output</span> — usually means the prompt is
+            too vague ("song", "good music"). Add at least one genre word and one mood word.
+          </li>
+          <li>
+            <span className="text-zinc-200 font-medium">Garbled vocals</span> — lyrics too dense for the
+            duration, or missing structure tags. Add{' '}
+            <code className="text-zinc-300">[verse]</code> /{' '}
+            <code className="text-zinc-300">[chorus]</code> or shorten the lyrics.
+          </li>
+        </ul>
+      </section>
+
+      <section>
+        <h2 className="text-lg font-semibold mb-3">Limits & licensing</h2>
+        <div className="grid md:grid-cols-2 gap-4">
+          <div className="card-vocence p-5">
+            <h3 className="font-medium mb-2 text-sm">Limits</h3>
+            <ul className="space-y-1 text-sm text-zinc-400">
+              <li>• Duration cap depends on quality: <span className="text-zinc-200">Fast 400 s</span>, <span className="text-zinc-200">Balanced 300 s</span>, <span className="text-zinc-200">Max 200 s</span> — or <code className="text-zinc-300">-1</code> for random</li>
+              <li>• Formats: WAV (default), MP3, OGG, FLAC</li>
+              <li>• <span className="text-zinc-200">50 credits</span> per generation</li>
+              <li>• Vocals are strongest in EN, ZH, RU, ES, JA, DE, FR, PT, IT, KO</li>
+            </ul>
+          </div>
+          <div className="card-vocence p-5">
+            <h3 className="font-medium mb-2 text-sm">Licensing</h3>
+            <p className="text-sm text-zinc-400 leading-relaxed">
+              Music generated in Studio is trained on licensed / royalty-free / synthetic data and is
+              safe for commercial use. Verify originality before publishing and disclose AI involvement
+              when your platform requires it.
+            </p>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+
   const renderContent = () => {
     switch (activeSection) {
       case 'getting-started':
@@ -1518,6 +2249,16 @@ uv run vocence serve`}</pre>
         return renderCoreConcepts();
       case 'architecture':
         return renderArchitecture();
+      case 'guide-agents':
+        return renderGuideAgents();
+      case 'guide-tts':
+        return renderGuideTts();
+      case 'guide-cloning':
+        return renderGuideCloning();
+      case 'guide-stt':
+        return renderGuideStt();
+      case 'guide-music':
+        return renderGuideMusic();
       case 'api':
         return renderAPI();
       case 'pricing':

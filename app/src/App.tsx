@@ -8,8 +8,11 @@ import { Navbar } from './components/Navbar';
 import { Footer } from './components/Footer';
 import { ScrollToTop } from './components/ScrollToTop';
 import { StudioPlayerBar } from './components/StudioPlayerBar';
+import { VocenceBot } from './components/bot/VocenceBot';
 import { Toaster } from './components/ui/sonner';
 import { Overview } from './pages/Overview';
+import { AgentsComingSoon } from './components/AgentsComingSoon';
+import { useIsAdmin } from './lib/useIsAdmin';
 
 // Route-level code splitting: heavy pages load only when visited (named exports → default for lazy)
 const Dashboard = lazy(() => import('./pages/Dashboard').then((m) => ({ default: m.Dashboard })));
@@ -18,6 +21,10 @@ const StudioDesignedVoiceWorkspace = lazy(() =>
   import('./pages/StudioDesignedVoiceWorkspace').then((m) => ({ default: m.StudioDesignedVoiceWorkspace }))
 );
 const StudioResult = lazy(() => import('./pages/StudioResult').then((m) => ({ default: m.StudioResult })));
+const AgentsList = lazy(() => import('./pages/agents/AgentsList').then((m) => ({ default: m.AgentsList })));
+const AgentBuilder = lazy(() => import('./pages/agents/AgentBuilder').then((m) => ({ default: m.AgentBuilder })));
+const AgentDetail = lazy(() => import('./pages/agents/AgentDetail').then((m) => ({ default: m.AgentDetail })));
+const AgentRunViewer = lazy(() => import('./pages/agents/AgentRunViewer').then((m) => ({ default: m.AgentRunViewer })));
 const Docs = lazy(() => import('./pages/Docs').then((m) => ({ default: m.Docs })));
 const Blog = lazy(() => import('./pages/Blog').then((m) => ({ default: m.Blog })));
 const Article = lazy(() => import('./pages/Article').then((m) => ({ default: m.Article })));
@@ -43,6 +50,15 @@ function PageFallback() {
   );
 }
 
+// Temporary launch gate: agents and Logos are admin-only while the team
+// finishes the public rollout. Non-admins see the AgentsComingSoon page on
+// any /studio/agents/* route, and the floating bot is hidden entirely.
+// To re-enable for everyone, remove this gate (and the bot's own gate).
+function AgentRouteGate({ children }: { children: React.ReactNode }) {
+  const isAdmin = useIsAdmin();
+  return isAdmin ? <>{children}</> : <AgentsComingSoon />;
+}
+
 function App() {
   const googleClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
 
@@ -65,6 +81,10 @@ function App() {
               <Route path="/studio" element={<Navigate to="/studio/home" replace />} />
               <Route path="/studio/my-voices/:voiceId" element={<StudioDesignedVoiceWorkspace />} />
               <Route path="/studio/playbooks/:playbookId" element={<Studio />} />
+              <Route path="/studio/agents" element={<AgentRouteGate><AgentsList /></AgentRouteGate>} />
+              <Route path="/studio/agents/new" element={<AgentRouteGate><AgentBuilder /></AgentRouteGate>} />
+              <Route path="/studio/agents/:id/runs/:runId" element={<AgentRouteGate><AgentRunViewer /></AgentRouteGate>} />
+              <Route path="/studio/agents/:id" element={<AgentRouteGate><AgentDetail /></AgentRouteGate>} />
               <Route path="/studio/:view" element={<Studio />} />
               <Route path="/docs" element={<Navigate to="/docs/getting-started" replace />} />
               <Route path="/docs/:section" element={<Docs />} />
@@ -86,6 +106,7 @@ function App() {
         </main>
         <Footer />
         <StudioPlayerBar />
+        <VocenceBot />
       </div>
       </GenerationsProvider>
       </StudioPlayerProvider>

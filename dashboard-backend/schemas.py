@@ -512,6 +512,12 @@ class StudioCloneResponse(BaseModel):
     detected_language: str | None = None
 
 
+class StudioTtsSampleVoiceRequest(BaseModel):
+    sample_voice_id: str
+    target_text: str
+    target_language: str | None = None
+
+
 class StudioHistoryItemResponse(BaseModel):
     id: int
     entry_type: str = "tts"  # "tts", "stt", "clone", or "voice_design" (My voices / designed-voice generation)
@@ -644,6 +650,19 @@ class StudioMusicGenerateResponse(BaseModel):
     expires_at: str
     credits: int
     task: str = "text2music"
+
+
+class StudioMusicLyricsRequest(BaseModel):
+    """Request body for AI-generated lyrics. ``topic`` is what the song
+    should be about (free-form, user-supplied); ``prompt`` mirrors the
+    music-prompt tags so the lyric model can match the genre's vibe."""
+    topic: str
+    prompt: str = ""
+    section_count: int = 5  # rough number of structure sections to aim for
+
+
+class StudioMusicLyricsResponse(BaseModel):
+    lyrics: str
 
 
 class StudioMusicHistoryItemResponse(BaseModel):

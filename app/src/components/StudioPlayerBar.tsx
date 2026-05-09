@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Play, Pause, X, Volume2, VolumeX, SkipBack, SkipForward, Shuffle, Repeat, Repeat1, Download } from 'lucide-react';
 import { useStudioPlayer } from '../contexts/StudioPlayerContext';
+import { avatarGradientPairFor } from '../data/sampleVoices';
 
 async function downloadTrack(url: string, filename: string) {
   try {
@@ -47,7 +48,16 @@ export function StudioPlayerBar() {
   if (!track) return null;
 
   const pct = duration > 0 ? (progress / duration) * 100 : 0;
-  const initial = track.title?.[0]?.toUpperCase() || '?';
+  // Initials from up to 2 words of the title — "Lofi Jazz Beat" → "LJ"
+  const initials = (track.title || '?')
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((p) => p[0]!.toUpperCase())
+    .join('') || '?';
+  // Deterministic two-ring gradient seeded from the track title (or src
+  // as fallback) — same palette as agents / designed voices.
+  const grad = avatarGradientPairFor(track.title || track.src || 'track');
   const hasQueue = queue.length > 1;
 
   const handleSeek = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -61,18 +71,32 @@ export function StudioPlayerBar() {
   };
 
   return (
-    <div className={`fixed bottom-5 left-4 lg:left-[calc(256px+16px)] right-4 z-[60] transition-all duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] ${visible ? 'translate-y-0 opacity-100' : 'translate-y-12 opacity-0 pointer-events-none'}`}>
-      <div className="max-w-5xl mx-auto rounded-[20px] bg-[#111215]/90 backdrop-blur-2xl border border-white/[0.06] shadow-[0_8px_60px_rgba(0,0,0,0.6),0_0_0_1px_rgba(255,255,255,0.03)] p-3 pr-4">
+    <div className={`fixed bottom-5 left-4 lg:left-[calc(256px+16px)] right-4 z-[60] pointer-events-none transition-all duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] ${visible ? 'translate-y-0 opacity-100' : 'translate-y-12 opacity-0'}`}>
+      <div className="max-w-5xl mx-auto pointer-events-auto rounded-[20px] bg-[#111215]/90 backdrop-blur-2xl border border-white/[0.06] shadow-[0_8px_60px_rgba(0,0,0,0.6),0_0_0_1px_rgba(255,255,255,0.03)] p-3 pr-4">
         <div className="flex items-center gap-3">
-          {/* Artwork */}
+          {/* Artwork — image when present, otherwise a two-ring gradient
+              tile with the track's initials. Same palette as the rest of
+              Studio (agents, designed voices) for visual consistency. */}
           <div className="relative shrink-0">
-            <div className={`w-12 h-12 rounded-lg overflow-hidden bg-gradient-to-br from-[#DFFF00]/25 via-emerald-500/20 to-cyan-500/20 flex items-center justify-center transition-transform duration-700 ${playing ? 'scale-100' : 'scale-95'}`}>
-              {track.image ? (
+            {track.image ? (
+              <div
+                className={`w-12 h-12 rounded-lg overflow-hidden flex items-center justify-center transition-transform duration-700 ${
+                  playing ? 'scale-100' : 'scale-95'
+                }`}
+              >
                 <img src={track.image} alt="" className="w-full h-full object-cover" />
-              ) : (
-                <span className="text-base font-bold text-white/80">{initial}</span>
-              )}
-            </div>
+              </div>
+            ) : (
+              <div
+                className={`w-12 h-12 rounded-lg p-[2.5px] bg-gradient-to-br ${grad.outer} transition-transform duration-700 ${
+                  playing ? 'scale-100' : 'scale-95'
+                }`}
+              >
+                <div className={`w-full h-full rounded-md flex items-center justify-center bg-gradient-to-br ${grad.inner}`}>
+                  <span className="text-[15px] font-semibold text-white">{initials}</span>
+                </div>
+              </div>
+            )}
             {playing && <div className="absolute -inset-1 rounded-lg bg-[#DFFF00]/10 animate-pulse" />}
           </div>
 

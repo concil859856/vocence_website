@@ -1,4 +1,13 @@
-"""Voice clone worker — composite (auto-STT if no ref text, then clone)."""
+"""Voice clone worker — composite (auto-STT if no ref text, then clone).
+
+Two payload modes:
+  1. Upload/record mode: client sends `audio_b64`. We optionally STT to derive
+     the reference transcript, then call the clone API.
+  2. Sample-voice mode: client sends `sample_voice_id` (an entry in
+     sample_voices_data.SAMPLE_VOICE_AUDIO_URLS). We fetch the audio from the
+     CDN and STT it once, caching both per process for subsequent calls. Used
+     by the General TTS subpage.
+"""
 
 from __future__ import annotations
 
@@ -8,6 +17,8 @@ import logging
 import time
 
 from local_db import get_connection
+from sample_voice_loader import load_sample_voice
+from sample_voices_data import is_known_sample
 from studio_tts_service import (
     get_presigned_url,
     transcribe_audio,
@@ -29,10 +40,6 @@ async def process_clone(job: state.Job) -> dict:
     if not CLONE_POOL.configured():
         raise RuntimeError("Voice clone pool is not configured")
 
-    audio_b64 = payload.get("audio_b64") or ""
-    if not audio_b64:
-        raise RuntimeError("audio_b64 missing in payload")
-    raw_ref = base64.b64decode(audio_b64)
     target = (payload.get("target_text") or "").strip()
     if not target:
         raise RuntimeError("target_text missing in payload")
@@ -40,6 +47,36 @@ async def process_clone(job: state.Job) -> dict:
     language = (payload.get("language") or "").strip() or None
     source_mode = (payload.get("ref_source") or "upload").strip().lower()
     source_filename = (payload.get("source_audio_filename") or "reference.wav")[:120]
+
+    sample_voice_id = (payload.get("sample_voice_id") or "").strip()
+    audio_b64 = payload.get("audio_b64") or ""
+
+    if sample_voice_id:
+        if not is_known_sample(sample_voice_id):
+            raise RuntimeError(f"unknown sample voice: {sample_voice_id}")
+        await state.update_status(job.id, phase="loading sample voice")
+        # First call pays fetch + STT (held inside an STT_POOL slot if
+        # available, so we don't bypass admission control); subsequent
+        # calls for the same voice are instant.
+        if STT_POOL.configured():
+            async with STT_POOL.acquire() as stt_pod:
+                raw_ref, cached_ref_text = await load_sample_voice(
+                    sample_voice_id, language=language, stt_pod_url=stt_pod,
+                )
+        else:
+            raw_ref, cached_ref_text = await load_sample_voice(
+                sample_voice_id, language=language,
+            )
+        # Sample-voice mode: ref text comes from the cache (STT done once).
+        # `user_ref_text` is ignored — the sample's own transcript is what
+        # the clone API needs.
+        user_ref_text = cached_ref_text
+        source_mode = "sample"
+        source_filename = sample_voice_id[:120]
+    elif audio_b64:
+        raw_ref = base64.b64decode(audio_b64)
+    else:
+        raise RuntimeError("payload requires audio_b64 (upload mode) or sample_voice_id (general TTS)")
 
     started_total = time.perf_counter()
 

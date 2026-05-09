@@ -597,11 +597,14 @@ def _parse_voice_design_llm_payload(data: dict) -> tuple[str | None, str | None]
 
 
 async def voice_design_llm_plan(*, voice_description: str) -> tuple[dict | None, str]:
-    """Call Chutes OpenAI-compatible POST .../v1/chat/completions (Bearer = same as TTS/STT)."""
-    if not VOICE_DESIGN_LLM_MODEL:
-        return None, "VOICE_DESIGN_LLM_MODEL is not configured"
-    if not CHUTES_AUTH_KEY:
-        return None, "CHUTES_API_KEY or CHUTES_AUTH_KEY is required for Chutes LLM"
+    """Voice Design plan (sample_script + revised_instruction) via the
+    unified llm_client. Routes to the local Qwen3-4B endpoint by default,
+    falls back to Chutes (with VOICE_DESIGN_LLM_MODEL) on error."""
+    # Avoid import cycles: voicechat / agents may import this module.
+    from llm_client import chat_complete, llm_configured
+
+    if not llm_configured():
+        return None, "no LLM configured (set LOCAL_LLM_BASE_URL or VOICE_DESIGN_LLM_MODEL+CHUTES_AUTH_KEY)"
     user_desc = (voice_description or "").strip()
     if not user_desc:
         return None, "voice description is empty"
@@ -613,122 +616,77 @@ async def voice_design_llm_plan(*, voice_description: str) -> tuple[dict | None,
         "revised_instruction: one clear English instruction for a TTS model describing timbre, age, emotion, pace, tone — "
         "improved from the user's wording, no quotes inside the values."
     )
-    url = f"{VOICE_DESIGN_LLM_BASE_URL}/chat/completions"
-    payload: dict = {
-        "model": VOICE_DESIGN_LLM_MODEL,
-        "messages": [
-            {"role": "system", "content": system_rules},
-            {"role": "user", "content": f"The user wants this voice:\n{user_desc}"},
-        ],
-        "max_tokens": VOICE_DESIGN_LLM_MAX_TOKENS,
-        "temperature": VOICE_DESIGN_LLM_TEMPERATURE,
-    }
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {CHUTES_AUTH_KEY}",
-    }
+    messages = [
+        {"role": "system", "content": system_rules},
+        {"role": "user", "content": f"The user wants this voice:\n{user_desc}"},
+    ]
     last_err = ""
     max_tries = max(1, VOICE_DESIGN_LLM_RETRY_MAX)
     try:
-        async with aiohttp.ClientSession() as session:
-            for attempt in range(max_tries):
-                async with session.post(
-                    url,
-                    headers=headers,
-                    json=payload,
-                    timeout=aiohttp.ClientTimeout(total=VOICE_DESIGN_LLM_TIMEOUT_SEC),
-                ) as resp:
-                    body = await resp.read()
-                    err_text = body.decode("utf-8", errors="replace")[:500] if body else ""
-                    if resp.status == 429 or resp.status >= 500:
-                        last_err = f"Chutes LLM returned {resp.status}: {err_text}"
-                        _log.warning(
-                            "voice_design_llm_plan: HTTP %s attempt %s/%s url=%s snippet=%r",
-                            resp.status,
-                            attempt + 1,
-                            max_tries,
-                            url,
-                            err_text[:300],
-                        )
-                        if attempt + 1 >= max_tries:
-                            _log.error(
-                                "voice_design_llm_plan: giving up after %s tries last_error=%s",
-                                max_tries,
-                                last_err,
-                            )
-                            return None, last_err
-                        delay = min(VOICE_DESIGN_LLM_RETRY_BASE_SEC * (2**attempt), 120.0)
-                        await asyncio.sleep(delay)
-                        continue
-                    if resp.status != 200:
-                        msg = f"Chutes LLM returned {resp.status}" + (f": {err_text}" if err_text else "")
-                        _log.error(
-                            "voice_design_llm_plan: non-success status=%s url=%s snippet=%r",
-                            resp.status,
-                            url,
-                            err_text[:300],
-                        )
-                        return None, msg
-                    try:
-                        outer = json.loads(body.decode("utf-8"))
-                    except Exception:
-                        raw_snip = body.decode("utf-8", errors="replace")[:400]
-                        _log.error("voice_design_llm_plan: response not JSON snippet=%r", raw_snip)
-                        return None, "LLM returned non-JSON"
-                    if not isinstance(outer, dict):
-                        _log.error("voice_design_llm_plan: top-level JSON is not an object type=%s", type(outer))
-                        return None, "LLM returned unsupported JSON"
-                    served = outer.get("model")
-                    if isinstance(served, str) and served:
-                        _log.info("voice_design_llm_plan: completion served model=%s", served)
-                    content = ""
-                    choices = outer.get("choices")
-                    ch0: dict | None = choices[0] if isinstance(choices, list) and choices else None
-                    if isinstance(ch0, dict):
-                        content = _assistant_text_from_choice(ch0)
-                    inner = _extract_json_dict_from_llm_text(content)
-                    if not inner:
-                        diag_ch = json.dumps(ch0, default=str)[:800] if ch0 else "(no choices[0])"
-                        diag_usage = outer.get("usage")
-                        _log.error(
-                            "voice_design_llm_plan: no JSON in assistant text (empty or unparseable). "
-                            "choice0=%r usage=%r",
-                            diag_ch,
-                            diag_usage,
-                        )
-                        return None, "LLM response did not contain a JSON object with sample_script and revised_instruction"
-                    script, revised = _parse_voice_design_llm_payload(inner)
-                    if not script or not revised:
-                        _log.error(
-                            "voice_design_llm_plan: missing keys after parse script_empty=%s revised_empty=%s",
-                            not bool(script),
-                            not bool(revised),
-                        )
-                        return None, "LLM JSON missing sample_script or revised_instruction"
-                    script = clamp_sample_script_words(script)
-                    revised = revised.strip()
-                    if len(revised) < 8:
-                        _log.error("voice_design_llm_plan: revised_instruction too short len=%s", len(revised))
-                        return None, "revised_instruction too short"
-                    return {
-                        "sample_script": script,
-                        "revised_instruction": revised,
-                        "raw": outer,
-                    }, ""
-            _log.error(
-                "voice_design_llm_plan: loop exhausted without success last_err=%r",
-                last_err,
-            )
-            return None, last_err or "Chutes LLM retries exhausted"
+        for attempt in range(max_tries):
+            try:
+                content = await chat_complete(
+                    messages,
+                    temperature=VOICE_DESIGN_LLM_TEMPERATURE,
+                    max_tokens=VOICE_DESIGN_LLM_MAX_TOKENS,
+                    retries=0,  # we handle retries here for the bigger backoff
+                )
+            except RuntimeError as exc:
+                last_err = str(exc)
+                msg = last_err.lower()
+                transient = ("returned 5" in msg) or ("returned 429" in msg) or ("timed out" in msg) or ("connect" in msg)
+                _log.warning(
+                    "voice_design_llm_plan: attempt %s/%s failed (transient=%s): %s",
+                    attempt + 1, max_tries, transient, last_err[:300],
+                )
+                if attempt + 1 >= max_tries or not transient:
+                    return None, last_err
+                delay = min(VOICE_DESIGN_LLM_RETRY_BASE_SEC * (2 ** attempt), 120.0)
+                await asyncio.sleep(delay)
+                continue
+
+            if not content:
+                _log.error("voice_design_llm_plan: empty content")
+                return None, "LLM returned empty content"
+
+            inner = _extract_json_dict_from_llm_text(content)
+            if not inner:
+                _log.error(
+                    "voice_design_llm_plan: no JSON in assistant text. content=%r",
+                    content[:400],
+                )
+                return None, "LLM response did not contain a JSON object with sample_script and revised_instruction"
+            script, revised = _parse_voice_design_llm_payload(inner)
+            if not script or not revised:
+                _log.error(
+                    "voice_design_llm_plan: missing keys after parse script_empty=%s revised_empty=%s",
+                    not bool(script),
+                    not bool(revised),
+                )
+                return None, "LLM JSON missing sample_script or revised_instruction"
+            script = clamp_sample_script_words(script)
+            revised = revised.strip()
+            if len(revised) < 8:
+                _log.error("voice_design_llm_plan: revised_instruction too short len=%s", len(revised))
+                return None, "revised_instruction too short"
+            return {
+                "sample_script": script,
+                "revised_instruction": revised,
+                "raw": {"content": content},
+            }, ""
+        _log.error(
+            "voice_design_llm_plan: loop exhausted without success last_err=%r",
+            last_err,
+        )
+        return None, last_err or "LLM retries exhausted"
     except asyncio.TimeoutError:
         _log.error(
-            "voice_design_llm_plan: timeout model=%s timeout_sec=%s",
-            VOICE_DESIGN_LLM_MODEL,
+            "voice_design_llm_plan: timeout timeout_sec=%s",
             VOICE_DESIGN_LLM_TIMEOUT_SEC,
         )
         return None, "voice design LLM timed out"
     except Exception as e:
-        _log.exception("voice_design_llm_plan: request error model=%s", VOICE_DESIGN_LLM_MODEL)
+        _log.exception("voice_design_llm_plan: request error")
         return None, str(e)
 
 
