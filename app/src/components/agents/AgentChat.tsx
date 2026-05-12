@@ -64,6 +64,7 @@ export function AgentChat({ agent, authToken }: Props) {
   const stateLabel: Record<typeof state, string> = {
     idle: authToken ? 'Tap mic to talk' : 'Sign in to chat',
     connecting: 'Connecting…',
+    listening: 'Listening…',
     recording: 'Listening…',
     uploading: 'Sending…',
     transcribing: 'Transcribing…',

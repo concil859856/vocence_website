@@ -1,30 +1,43 @@
 """Unified LLM client for the dashboard backend.
 
-Routes every LLM call to one of two providers:
+Routes every LLM call to one of three providers, picked by the
+``LLM_PROVIDER`` env var (``openai`` | ``local`` | ``chutes``).
 
-  1. **Local Qwen3-4B service** (preferred) — when ``LOCAL_LLM_BASE_URL`` is
-     set in the environment. Uses the four-route contract documented in
+  1. **OpenAI** — when ``OPENAI_API_KEY`` is set. Standard OpenAI-compatible
+     POST {OPENAI_BASE_URL}/chat/completions with ``OPENAI_MODEL``. Fastest
+     option for hosted inference; recommended for production voice chat.
+
+  2. **Local Qwen3-4B service** — when ``LOCAL_LLM_BASE_URL`` is set.
+     Uses the four-route contract documented in
      /workspace/qwen-8m-streaming-llm/small/README.md:
          POST /v1/no-think          (non-streaming, fast)
          POST /v1/think             (non-streaming, with chain-of-thought)
          POST /v1/stream/no-think   (SSE streaming, fast)
          POST /v1/stream/think      (SSE streaming, with chain-of-thought)
-     Request body: {"messages": [...], "max_tokens": N, "temperature": F}.
-     Response: OpenAI chat-completions-compatible shape.
 
-  2. **Chutes hosted LLM** (fallback) — when LOCAL_LLM_BASE_URL is empty.
-     Uses the existing OpenAI-compatible POST {VOICE_DESIGN_LLM_BASE_URL}
-     /chat/completions with VOICECHAT_LLM_MODEL / VOICE_DESIGN_LLM_MODEL.
+  3. **Chutes hosted LLM** — when ``VOICE_DESIGN_LLM_MODEL`` +
+     ``CHUTES_AUTH_KEY`` are set. Uses the OpenAI-compatible
+     {VOICE_DESIGN_LLM_BASE_URL}/chat/completions.
+
+Provider selection:
+
+  - ``LLM_PROVIDER=openai|local|chutes`` picks the primary explicitly.
+  - When unset, auto-detect priority: **openai > local > chutes**. OpenAI
+    is the default primary because it's the fastest hosted option with
+    the strongest instruction-following at the small-model tier (gpt-5-mini).
+  - Per-call ``model="..."`` override forces the Chutes path (agent
+    config uses specific Chutes model ids).
+
+Fallback: when the primary provider errors *before yielding any output*
+the client retries against **Chutes** (universal fallback). Set
+``LLM_FALLBACK=0`` to disable. Local is never used as a fallback because
+its non-OpenAI wire shape differs from the other two.
 
 Public API (provider-agnostic):
 
     chat_complete(messages, *, temperature, max_tokens, think=None, model=None) -> str
     chat_complete_json(messages, ...) -> dict   (parses JSON from the content)
     stream_chat(messages, ...) -> AsyncIterator[str]   (yields content deltas)
-
-The Chutes path is preserved so we can fall back automatically if the
-local service is unreachable, and so any non-default model selections
-(e.g. picking a specific Chutes model in agent config) keep working.
 """
 
 from __future__ import annotations
@@ -48,7 +61,7 @@ _log = logging.getLogger(__name__)
 # Config
 # ---------------------------------------------------------------------------
 
-# Local LLM endpoint (Qwen3-4B). When set, takes priority for every call.
+# Local LLM endpoint (Qwen3-4B).
 LOCAL_LLM_BASE_URL = (os.environ.get("LOCAL_LLM_BASE_URL") or "").strip().rstrip("/")
 LOCAL_LLM_API_KEY = (os.environ.get("LOCAL_LLM_API_KEY") or "").strip()
 LOCAL_LLM_TIMEOUT_SEC = float(os.environ.get("LOCAL_LLM_TIMEOUT_SEC") or "120")
@@ -56,10 +69,23 @@ LOCAL_LLM_TIMEOUT_SEC = float(os.environ.get("LOCAL_LLM_TIMEOUT_SEC") or "120")
 _LOCAL_LLM_USE_THINK_DEFAULT = (os.environ.get("LOCAL_LLM_USE_THINK") or "").strip().lower() in (
     "1", "true", "yes", "on",
 )
-# When the local service is unreachable / errors, automatically retry against Chutes.
-LLM_FALLBACK_TO_CHUTES = (os.environ.get("LLM_FALLBACK_TO_CHUTES") or "1").strip().lower() in (
-    "1", "true", "yes", "on",
-)
+
+# OpenAI endpoint (or any OpenAI-compatible service like Groq, Together,
+# Fireworks — just point OPENAI_BASE_URL at their /v1).
+OPENAI_API_KEY = (os.environ.get("OPENAI_API_KEY") or "").strip()
+OPENAI_BASE_URL = (os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1").strip().rstrip("/")
+OPENAI_MODEL = (os.environ.get("OPENAI_MODEL") or "gpt-5-mini").strip()
+
+# Provider selection: explicit override via env, else auto-detect.
+# Accepts: "openai" | "local" | "chutes" | "" (auto).
+_LLM_PROVIDER_OVERRIDE = (os.environ.get("LLM_PROVIDER") or "").strip().lower()
+
+# When the primary provider fails before yielding any output, automatically
+# retry against Chutes. Legacy var name kept for back-compat; the new name
+# is LLM_FALLBACK.
+LLM_FALLBACK_TO_CHUTES = (
+    os.environ.get("LLM_FALLBACK") or os.environ.get("LLM_FALLBACK_TO_CHUTES") or "1"
+).strip().lower() in ("1", "true", "yes", "on")
 
 def _split_chutes_models(raw: str) -> list[str]:
     """Parse a comma-separated VOICE_DESIGN_LLM_MODEL list into individual
@@ -143,12 +169,37 @@ def chutes_llm_configured() -> bool:
     return bool(DEFAULT_CHUTES_MODEL and CHUTES_AUTH_KEY)
 
 
+def openai_llm_configured() -> bool:
+    return bool(OPENAI_API_KEY and OPENAI_MODEL)
+
+
 def llm_configured() -> bool:
-    return local_llm_configured() or chutes_llm_configured()
+    return local_llm_configured() or openai_llm_configured() or chutes_llm_configured()
 
 
 def llm_provider() -> str:
-    return "local" if local_llm_configured() else ("chutes" if chutes_llm_configured() else "none")
+    """The provider the next default-routed call will hit. Honors the
+    ``LLM_PROVIDER`` env override when it's both set AND configured; falls
+    back to auto-detect priority openai > local > chutes.
+
+    OpenAI is the default primary because it's the fastest hosted option
+    with the strongest instruction-following at the small-model tier.
+    Chutes is the universal fallback (anything primary that fails before
+    yielding output retries against Chutes if it's configured)."""
+    if _LLM_PROVIDER_OVERRIDE == "openai" and openai_llm_configured():
+        return "openai"
+    if _LLM_PROVIDER_OVERRIDE == "local" and local_llm_configured():
+        return "local"
+    if _LLM_PROVIDER_OVERRIDE == "chutes" and chutes_llm_configured():
+        return "chutes"
+    # Auto / unconfigured-override → first available in priority order.
+    if openai_llm_configured():
+        return "openai"
+    if local_llm_configured():
+        return "local"
+    if chutes_llm_configured():
+        return "chutes"
+    return "none"
 
 
 # ---------------------------------------------------------------------------
@@ -167,6 +218,13 @@ def _chutes_headers() -> dict:
     return {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {CHUTES_AUTH_KEY}",
+    }
+
+
+def _openai_headers() -> dict:
+    return {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
     }
 
 
@@ -262,6 +320,38 @@ async def _local_chat_complete(
             return content
 
 
+async def _openai_chat_complete(
+    messages: list[dict],
+    *,
+    temperature: float,
+    max_tokens: int,
+) -> str:
+    if not OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY not set")
+    url = f"{OPENAI_BASE_URL}/chat/completions"
+    body = {
+        "model": OPENAI_MODEL,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+    timeout = aiohttp.ClientTimeout(total=LOCAL_LLM_TIMEOUT_SEC)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.post(url, headers=_openai_headers(), json=body) as resp:
+            raw = await resp.read()
+            if resp.status != 200:
+                snippet = raw[:400].decode("utf-8", errors="replace")
+                raise RuntimeError(f"openai LLM returned {resp.status}: {snippet}")
+            try:
+                obj = json.loads(raw.decode("utf-8"))
+            except Exception as exc:
+                raise RuntimeError(f"openai LLM returned non-JSON: {exc}")
+            content = _extract_content(obj)
+            if not content:
+                raise RuntimeError("openai LLM returned empty content")
+            return content
+
+
 async def _chutes_chat_complete(
     messages: list[dict],
     *,
@@ -327,7 +417,8 @@ async def chat_complete(
             retries,
         )
 
-    if local_llm_configured():
+    primary = llm_provider()
+    if primary == "local":
         if think is None:
             think = _LOCAL_LLM_USE_THINK_DEFAULT
         try:
@@ -344,6 +435,22 @@ async def chat_complete(
                 retries,
             )
 
+    if primary == "openai":
+        try:
+            return await _retry(
+                lambda: _openai_chat_complete(messages, temperature=temperature, max_tokens=max_tokens),
+                retries,
+            )
+        except Exception as exc:  # noqa: BLE001
+            if not LLM_FALLBACK_TO_CHUTES or not chutes_llm_configured():
+                raise
+            _log.warning("openai LLM failed (%s); falling back to Chutes", exc)
+            return await _retry(
+                lambda: _chutes_chat_complete(messages, temperature=temperature, max_tokens=max_tokens, model=None),
+                retries,
+            )
+
+    # primary == "chutes" (or "none" with chutes configured → same call)
     return await _retry(
         lambda: _chutes_chat_complete(messages, temperature=temperature, max_tokens=max_tokens, model=None),
         retries,
@@ -410,12 +517,52 @@ async def _local_stream_chat(
         "temperature": temperature,
     }
     headers = {**_local_headers(), "Accept": "text/event-stream"}
-    timeout = aiohttp.ClientTimeout(total=LOCAL_LLM_TIMEOUT_SEC)
+    # Same streaming-timeout shape as the Chutes path: no `total` cap,
+    # only sock_connect + sock_read. The local service can stream a
+    # long reply too.
+    timeout = aiohttp.ClientTimeout(
+        total=None,
+        sock_connect=15,
+        sock_read=60,
+    )
     async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.post(url, headers=headers, json=body) as resp:
             if resp.status != 200:
                 snippet = (await resp.read())[:400].decode("utf-8", errors="replace")
                 raise RuntimeError(f"local LLM stream returned {resp.status}: {snippet}")
+            async for delta in _iter_sse_content(resp):
+                yield delta
+
+
+async def _openai_stream_chat(
+    messages: list[dict],
+    *,
+    temperature: float,
+    max_tokens: int,
+) -> AsyncIterator[str]:
+    if not OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY not set")
+    url = f"{OPENAI_BASE_URL}/chat/completions"
+    body = {
+        "model": OPENAI_MODEL,
+        "messages": messages,
+        "stream": True,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+    headers = {**_openai_headers(), "Accept": "text/event-stream"}
+    # Same streaming-timeout shape as Chutes/local: cap the connect and the
+    # gap between chunks, never the full stream length.
+    timeout = aiohttp.ClientTimeout(
+        total=None,
+        sock_connect=15,
+        sock_read=60,
+    )
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.post(url, headers=headers, json=body) as resp:
+            if resp.status != 200:
+                snippet = (await resp.read())[:400].decode("utf-8", errors="replace")
+                raise RuntimeError(f"openai LLM stream returned {resp.status}: {snippet}")
             async for delta in _iter_sse_content(resp):
                 yield delta
 
@@ -441,7 +588,16 @@ async def _chutes_stream_chat(
         "max_tokens": max_tokens,
     }
     headers = {**_chutes_headers(), "Accept": "text/event-stream"}
-    timeout = aiohttp.ClientTimeout(total=LOCAL_LLM_TIMEOUT_SEC)
+    # Streaming SSE: do NOT cap `total` — a real reply can stream for
+    # minutes (long answers, slow models). Cap the TCP connect and the
+    # gap between chunks instead. sock_read=60s means the stream is
+    # only killed if Chutes goes silent for a full minute between
+    # tokens, which never happens in healthy traffic.
+    timeout = aiohttp.ClientTimeout(
+        total=None,
+        sock_connect=15,
+        sock_read=60,
+    )
     async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.post(url, headers=headers, json=body) as resp:
             if resp.status != 200:
@@ -498,7 +654,9 @@ async def stream_chat(
             yield d
         return
 
-    if local_llm_configured():
+    primary = llm_provider()
+
+    if primary == "local":
         if think is None:
             think = _LOCAL_LLM_USE_THINK_DEFAULT
         emitted_any = False
@@ -515,5 +673,21 @@ async def stream_chat(
                 yield d
             return
 
+    if primary == "openai":
+        emitted_any = False
+        try:
+            async for d in _openai_stream_chat(messages, temperature=temperature, max_tokens=max_tokens):
+                emitted_any = True
+                yield d
+            return
+        except Exception as exc:  # noqa: BLE001
+            if emitted_any or not LLM_FALLBACK_TO_CHUTES or not chutes_llm_configured():
+                raise
+            _log.warning("openai LLM stream failed before first delta (%s); falling back to Chutes", exc)
+            async for d in _chutes_stream_chat(messages, temperature=temperature, max_tokens=max_tokens, model=None):
+                yield d
+            return
+
+    # primary == "chutes" (or fallthrough)
     async for d in _chutes_stream_chat(messages, temperature=temperature, max_tokens=max_tokens, model=None):
         yield d

@@ -14,7 +14,6 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useVoiceChat } from '../../lib/voicechat/useVoiceChat';
 import { renderMessage } from '../../lib/voicechat/renderInline';
 import { useArchitectOpen } from '../../lib/uiOverlay';
-import { useIsAdmin } from '../../lib/useIsAdmin';
 
 const STORAGE_TOKEN_KEY = 'vocence_token';
 const STORAGE_POS_KEY = 'vocence_bot_launcher_pos';
@@ -105,7 +104,6 @@ const HIDDEN_ROUTE_PREFIXES = ['/dashboard', '/admin'];
 
 export function VocenceBot() {
   const { user } = useAuth();
-  const isAdmin = useIsAdmin();
   const architectOpen = useArchitectOpen();
   const { pathname } = useLocation();
   const [open, setOpen] = useState(false);
@@ -283,14 +281,12 @@ export function VocenceBot() {
   // Hide on dashboard/admin and while the Agent Architect drawer is open.
   // Both surfaces are dense and the floating launcher just gets in the way.
   const onHiddenRoute = HIDDEN_ROUTE_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`));
-  // Temporary launch gate: Logos is admin-only until the public rollout.
-  // Remove this check (and the AgentRouteGate in App.tsx) to re-enable.
-  if (!isAdmin) return null;
   if (architectOpen || onHiddenRoute) return null;
 
   const stateLabel: Record<typeof state, string> = {
     idle: user ? 'Tap mic to talk' : 'Sign in to chat',
     connecting: 'Connecting…',
+    listening: 'Listening…',
     recording: 'Listening…',
     uploading: 'Sending…',
     transcribing: 'Transcribing…',
