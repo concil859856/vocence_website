@@ -14,6 +14,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useVoiceChat } from '../../lib/voicechat/useVoiceChat';
 import { renderMessage } from '../../lib/voicechat/renderInline';
 import { useArchitectOpen } from '../../lib/uiOverlay';
+import { useHasVoiceChatAccess } from '../../lib/voicechatAccess';
 
 const STORAGE_TOKEN_KEY = 'vocence_token';
 const STORAGE_POS_KEY = 'vocence_bot_launcher_pos';
@@ -104,6 +105,7 @@ const HIDDEN_ROUTE_PREFIXES = ['/dashboard', '/admin'];
 
 export function VocenceBot() {
   const { user } = useAuth();
+  const hasAccess = useHasVoiceChatAccess();
   const architectOpen = useArchitectOpen();
   const { pathname } = useLocation();
   const [open, setOpen] = useState(false);
@@ -281,6 +283,8 @@ export function VocenceBot() {
   // Hide on dashboard/admin and while the Agent Architect drawer is open.
   // Both surfaces are dense and the floating launcher just gets in the way.
   const onHiddenRoute = HIDDEN_ROUTE_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`));
+  // Temporary launch gate: only allowlisted users see Logos.
+  if (!hasAccess) return null;
   if (architectOpen || onHiddenRoute) return null;
 
   const stateLabel: Record<typeof state, string> = {
