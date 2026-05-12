@@ -110,13 +110,19 @@ export class VadController {
         // the frame conversion internally (Silero v5 ≈ 32 ms frames).
         redemptionMs: this.opts.endSilenceMs,
         minSpeechMs: this.opts.minSpeechMs,
-        // Echo cancellation + noise suppression + AGC. Stops the agent
-        // hearing itself through laptop speakers.
-        additionalAudioConstraints: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
+        // Caller-supplied MediaStream so we can apply echo cancellation,
+        // noise suppression, and AGC — without these the agent hears
+        // itself through laptop speakers and self-interrupts. The lib
+        // (v0.0.30) wires whatever stream this returns into its
+        // AudioContext, so the constraints stick for the whole session.
+        getStream: () => navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+            channelCount: 1,
+          },
+        }),
         onFrameProcessed: (probabilities) => {
           if (this.paused) return;
           this.events.onProbability?.(probabilities.isSpeech ?? 0);
