@@ -84,13 +84,6 @@ export class VadController {
       // first voice-chat open, not in the initial bundle.
       const { MicVAD } = await import('@ricky0123/vad-web');
 
-      // The Silero VAD frame is 32 ms at 16 kHz. endSilenceMs maps to
-      // `redemptionFrames` (frames of below-threshold audio before a
-      // speech segment is closed); minSpeechMs to `minSpeechFrames`.
-      const frameMs = 32;
-      const redemptionFrames = Math.max(1, Math.round(this.opts.endSilenceMs / frameMs));
-      const minSpeechFrames = Math.max(1, Math.round(this.opts.minSpeechMs / frameMs));
-
       this.vad = await MicVAD.new({
         model: 'v5',
         // Resolve relative to deployment origin so dev + prod both work.
@@ -113,8 +106,10 @@ export class VadController {
         // controlled by the post-speak lock window in the caller.
         positiveSpeechThreshold: 0.55,
         negativeSpeechThreshold: 0.40,
-        redemptionFrames,
-        minSpeechFrames,
+        // The lib v0.0.30 API takes durations in milliseconds; it does
+        // the frame conversion internally (Silero v5 ≈ 32 ms frames).
+        redemptionMs: this.opts.endSilenceMs,
+        minSpeechMs: this.opts.minSpeechMs,
         // Echo cancellation + noise suppression + AGC. Stops the agent
         // hearing itself through laptop speakers.
         additionalAudioConstraints: {
