@@ -30,6 +30,7 @@ const Blog = lazy(() => import('./pages/Blog').then((m) => ({ default: m.Blog })
 const Article = lazy(() => import('./pages/Article').then((m) => ({ default: m.Article })));
 const Account = lazy(() => import('./pages/Account').then((m) => ({ default: m.Account })));
 const History = lazy(() => import('./pages/History').then((m) => ({ default: m.History })));
+const CliAuthorize = lazy(() => import('./pages/CliAuthorize').then((m) => ({ default: m.CliAuthorize })));
 const Admin = lazy(() => import('./pages/Admin').then((m) => ({ default: m.Admin })));
 const DashboardEvaluations = lazy(() => import('./pages/DashboardEvaluations').then((m) => ({ default: m.DashboardEvaluations })));
 const Pricing = lazy(() => import('./pages/Pricing').then((m) => ({ default: m.Pricing })));
@@ -93,6 +94,7 @@ function App() {
               <Route path="/account" element={<Account />} />
               <Route path="/account/:tab" element={<Account />} />
               <Route path="/history" element={<History />} />
+              <Route path="/cli/authorize" element={<CliAuthorize />} />
               <Route path="/admin" element={<Admin />} />
               <Route path="/admin/website_usage" element={<AdminWebsiteUsage />} />
               <Route path="/pricing" element={<Pricing />} />

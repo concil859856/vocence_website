@@ -365,8 +365,19 @@ SCHEMA_SQL = [
         description TEXT NOT NULL DEFAULT '',
         cover_image_url TEXT,
         visibility TEXT NOT NULL DEFAULT 'private',
+        play_count INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS playbook_votes (
+        playbook_id INTEGER NOT NULL,
+        user_id TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (playbook_id, user_id),
+        FOREIGN KEY (playbook_id) REFERENCES playbooks(id) ON DELETE CASCADE,
         FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
     )
     """,
@@ -421,6 +432,35 @@ SCHEMA_SQL = [
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS agent_custom_tools (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        name TEXT NOT NULL,                -- function name the LLM calls (snake_case)
+        description TEXT NOT NULL,         -- LLM uses this to decide when to invoke
+        parameters_json TEXT NOT NULL,     -- JSON Schema for the function's args
+        endpoint_url TEXT NOT NULL,        -- where we POST when the LLM calls it
+        method TEXT NOT NULL DEFAULT 'POST',
+        auth_type TEXT NOT NULL DEFAULT 'none',  -- 'none' | 'bearer' | 'header'
+        auth_header_name TEXT,             -- for 'header' auth (e.g. 'X-API-Key')
+        auth_secret TEXT,                  -- bearer token or header value (plaintext, internal-only)
+        timeout_ms INTEGER NOT NULL DEFAULT 5000,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE (user_id, name),
+        FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS agent_custom_tool_bindings (
+        agent_id TEXT NOT NULL,
+        tool_id TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (agent_id, tool_id),
+        FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE,
+        FOREIGN KEY (tool_id) REFERENCES agent_custom_tools(id) ON DELETE CASCADE
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS agent_runs (
         id TEXT PRIMARY KEY,
         agent_id TEXT NOT NULL,
@@ -454,6 +494,25 @@ SCHEMA_SQL = [
         FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
     )
     """,
+    # CLI device-code login flow (RFC 8628-ish). The CLI obtains a
+    # device_code + user_code, opens the user_code page in the browser,
+    # and polls the device_code endpoint until the user approves. On
+    # approval we mint a fresh API key and stash it here so the next
+    # poll returns the plaintext exactly once.
+    """
+    CREATE TABLE IF NOT EXISTS cli_auth_codes (
+        device_code TEXT PRIMARY KEY,
+        user_code TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL DEFAULT 'pending',      -- pending | approved | denied | expired | consumed
+        user_id TEXT,
+        api_key_id TEXT,
+        api_key_plain TEXT,
+        approved_at TEXT,
+        expires_at TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
+    )
+    """,
 ]
 
 
@@ -467,6 +526,8 @@ INDEX_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_studio_clone_history_user_id ON studio_clone_history (user_id, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_payment_sessions_user_id ON payment_sessions (user_id, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_payments_user_id ON payments (user_id, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_cli_auth_user_code ON cli_auth_codes (user_code)",
+    "CREATE INDEX IF NOT EXISTS idx_cli_auth_expires_at ON cli_auth_codes (expires_at)",
     "CREATE INDEX IF NOT EXISTS idx_payment_sessions_stripe_checkout ON payment_sessions (stripe_checkout_session_id)",
     "CREATE INDEX IF NOT EXISTS idx_payment_sessions_stripe_subscription ON payment_sessions (stripe_subscription_id)",
     "CREATE INDEX IF NOT EXISTS idx_payments_stripe_invoice ON payments (stripe_invoice_id)",
@@ -480,6 +541,8 @@ INDEX_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_studio_user_designed_voices_user ON studio_user_designed_voices (user_id, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_playbooks_user_id ON playbooks (user_id, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_playbook_tracks_playbook_id ON playbook_tracks (playbook_id, position ASC)",
+    "CREATE INDEX IF NOT EXISTS idx_playbook_votes_playbook ON playbook_votes (playbook_id)",
+    "CREATE INDEX IF NOT EXISTS idx_playbook_votes_user ON playbook_votes (user_id)",
     "CREATE INDEX IF NOT EXISTS idx_generation_jobs_user_created ON generation_jobs (user_id, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_generation_jobs_status ON generation_jobs (status, created_at)",
     "CREATE INDEX IF NOT EXISTS idx_generation_jobs_type_status ON generation_jobs (type, status, created_at)",
@@ -501,6 +564,9 @@ INDEX_SQL = [
     """,
     "CREATE INDEX IF NOT EXISTS idx_agent_runs_agent ON agent_runs (agent_id, started_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_agent_runs_user ON agent_runs (user_id, started_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_agent_custom_tools_user ON agent_custom_tools (user_id, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_agent_custom_tool_bindings_agent ON agent_custom_tool_bindings (agent_id)",
+    "CREATE INDEX IF NOT EXISTS idx_agent_custom_tool_bindings_tool ON agent_custom_tool_bindings (tool_id)",
 ]
 
 
@@ -662,6 +728,28 @@ async def ensure_tables() -> None:
         await _ensure_column(conn, "payments", "credits_applied_at", "credits_applied_at TEXT")
         await _ensure_column(conn, "api_keys", "tier", "tier TEXT")
         await _ensure_column(conn, "api_keys", "rate_limit_rpm", "rate_limit_rpm INTEGER")
+        # Public-playbook play counter. Added after the table shipped, so
+        # existing rows need backfilling to 0 (NOT NULL needs a default).
+        await _ensure_column(conn, "playbooks", "play_count", "play_count INTEGER NOT NULL DEFAULT 0")
+        # ``source`` distinguishes how the saved voice was created:
+        #   'designed' — generated via Voice Design (LLM prompt → TTS preview)
+        #   'cloned'   — uploaded by the user as a real-voice reference clip
+        # Both reuse the same row shape (ref_script + audio_s3_*); the
+        # designed-only fields (voice_description, revised_instruction,
+        # chute_slug, etc.) are blank for cloned rows. Frontend uses the
+        # column to render a badge so users can tell the two apart.
+        await _ensure_column(
+            conn,
+            "studio_user_designed_voices",
+            "source",
+            "source TEXT NOT NULL DEFAULT 'designed'",
+        )
+        await _ensure_column(
+            conn,
+            "studio_user_designed_voices",
+            "source_language",
+            "source_language TEXT",
+        )
 
         for statement in INDEX_SQL:
             await conn.execute(statement)

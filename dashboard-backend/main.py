@@ -40,6 +40,9 @@ from routers.playbooks import router as playbooks_router
 from routers.jobs import router as jobs_router
 from routers.voicechat import router as voicechat_router
 from routers.agents import router as agents_router
+from routers.agent_custom_tools import router as agent_custom_tools_router
+from routers.share import router as share_router
+from routers.cli_auth import router as cli_auth_router
 from jobs import start_workers, stop_workers
 
 
@@ -108,6 +111,14 @@ async def lifespan(app: FastAPI):
     await start_workers()
     yield
     await stop_workers()
+    # Clean up the agent-tools shared HTTP session so the keep-alive
+    # connector tears down gracefully (otherwise aiohttp logs an
+    # "Unclosed client session" warning at exit).
+    try:
+        import agent_tools_service
+        await agent_tools_service.close_shared_session()
+    except Exception:
+        pass
     await close_pool()
 
 
@@ -116,6 +127,14 @@ app = FastAPI(
     description="Read-only API for the Vocence website dashboard (owner DB)",
     version="1.0.0",
     lifespan=lifespan,
+    # This service is INTERNAL — backend.vocence.ai. The public API
+    # surface lives on the separate developer-api service (api.vocence.ai)
+    # which has its own clean OpenAPI spec. Disable the auto-generated
+    # docs here so subnet/admin/internal endpoints (validators, blocklist,
+    # evaluations, voicechat WS, etc.) don't leak via /docs or /redoc.
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
 register_exception_handlers(app)
 
@@ -151,6 +170,17 @@ app.include_router(playbooks_router, prefix="/api/dashboard")
 app.include_router(jobs_router, prefix="/api/dashboard")
 app.include_router(voicechat_router, prefix="/api/dashboard")
 app.include_router(agents_router, prefix="/api/dashboard")
+# Custom (user-defined) voice-agent tools — webhook executors the LLM
+# can call mid-conversation. Lives under /api/dashboard/agents/tools/
+# alongside the built-in /agents/tools/builtin endpoint.
+app.include_router(agent_custom_tools_router, prefix="/api/dashboard")
+# Public share/embed pages mount at the ROOT (no /api prefix) so the
+# URLs the user actually pastes into tweets/Discord are short and the
+# meta-bot crawlers (which generally only fetch the literal URL) hit
+# the OG-tagged HTML directly. Vercel rewrites + Vite dev proxies on
+# the frontend ensure /p/:id and /embed/p/:id reach this backend.
+app.include_router(share_router)
+app.include_router(cli_auth_router)
 app.mount("/api/dashboard/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
 app.mount(
     "/api/dashboard/sample-voices",
