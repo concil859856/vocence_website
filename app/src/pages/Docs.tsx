@@ -2950,7 +2950,7 @@ def handle(headers: dict, body: bytes, *, secret: str) -> dict:
 # Tighten in low-latency networks, loosen if your clock drifts.
 webhooks.verify(headers, body, secret, tolerance_seconds=120)
 
-# For unit tests where you control time, pass an explicit ``now`` clock.
+# For unit tests where you control time, pass an explicit 'now' clock.
 webhooks.verify(headers, body, secret, now=fake_clock())`} />
       </section>
 
