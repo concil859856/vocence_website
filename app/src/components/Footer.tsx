@@ -28,7 +28,7 @@ export function Footer() {
     features: [
       { label: 'Studio', href: '/studio/home' },
       { label: 'API', href: '/docs/api' },
-      { label: 'Models', comingSoon: true },
+      { label: 'SDK', href: '/docs/sdk-python' },
       { label: 'Analytics', href: '/dashboard' },
     ] as Array<{ label: string; href?: string; comingSoon?: true }>,
     product: [
