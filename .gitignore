@@ -133,3 +133,7 @@ developer-api/venv/
 *.temp
 .cache/
 
+
+# SDK lives in a sibling directory, never inside this repo
+/vocence-sdk
+vocence-sdk/
