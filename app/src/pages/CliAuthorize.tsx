@@ -102,10 +102,18 @@ export function CliAuthorize() {
 
         {(state === 'idle' || state === 'approving' || state === 'denying' || state === 'error') && (
           <>
+            <div className="mb-4 rounded-lg border border-amber-400/30 bg-amber-500/10 p-3 text-[12px] leading-relaxed text-amber-100">
+              <strong className="font-semibold">Security check.</strong>{' '}
+              Approving will mint a new API key (with FULL access to your
+              account, including credits) and hand it to whoever is polling
+              for this code. Only proceed if you personally started{' '}
+              <code className="rounded bg-black/30 px-1">vocence login</code>{' '}
+              in your terminal AND the code below matches what's displayed there.
+            </div>
             <p className="mb-4 text-sm leading-relaxed text-zinc-400">
               A Vocence CLI is asking to create a new API key on your account. Confirm the
-              code below matches the one shown in your terminal, then choose a label and
-              click <span className="text-zinc-200">Authorize</span>.
+              code matches your terminal, pick a label, and click{' '}
+              <span className="text-zinc-200">Authorize</span>.
             </p>
 
             <label className="mb-1 block text-[11px] font-medium uppercase tracking-wider text-zinc-500">

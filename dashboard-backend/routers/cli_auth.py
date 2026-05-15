@@ -12,15 +12,34 @@ Three endpoints:
 
 The matching browser approval page is on the website (React route
 ``/cli/authorize?user_code=ABCD-1234``).
+
+Security notes
+--------------
+- ``user_code``s have ~40 bits of entropy + a 10-minute TTL, drawn from a
+  Crockford-style alphabet with no confusable characters.
+- ``device_code``s are 128-bit (``uuid4().hex``). Knowing one lets you
+  poll, so they MUST travel over TLS only — the public verification URL
+  is HTTPS-only on prod.
+- The plaintext API key is returned by ``GET /devices/{code}`` exactly
+  once, then the row is marked ``consumed`` so a subsequent poll cannot
+  retrieve the secret a second time.
+- ``POST /device-code`` is rate-limited per source IP to stop a remote
+  attacker from spraying codes (each pending code occupies a row + a
+  user_code that needs to stay unique for 10 minutes).
+- ``POST /approve`` requires a valid session JWT for the user the key is
+  being minted for — so an attacker who steals a ``user_code`` from a
+  user's screen still cannot mint the key without that user's session.
 """
 
 from __future__ import annotations
 
 import secrets
+import time
 import uuid
+from collections import deque
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from local_db import generate_api_key, get_connection, hash_api_key
@@ -77,9 +96,34 @@ class ApproveRequest(BaseModel):
 # --------------------------------------------------------------------- routes
 
 
+# Simple in-memory IP → recent-timestamp rate limiter. We don't need
+# Redis for this — even a hot attacker burns through 10 codes/min and
+# the rest get a 429. Restarting the dashboard resets the window, which
+# is fine because each code only lives 10 minutes anyway.
+_DEVICE_CODE_PER_IP_PER_MIN = 10
+_recent_ip_hits: dict[str, deque[float]] = {}
+
+
+def _enforce_ip_rate_limit(req: Request) -> None:
+    """Drop the request with 429 if this client IP is over the per-minute
+    quota. Trust the loopback ``X-Forwarded-For`` from the reverse proxy
+    in prod; fall back to the raw socket address otherwise."""
+    forwarded = (req.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+    ip = forwarded or (req.client.host if req.client else "unknown")
+    now = time.monotonic()
+    bucket = _recent_ip_hits.setdefault(ip, deque())
+    cutoff = now - 60.0
+    while bucket and bucket[0] < cutoff:
+        bucket.popleft()
+    if len(bucket) >= _DEVICE_CODE_PER_IP_PER_MIN:
+        raise HTTPException(status_code=429, detail="Too many CLI login attempts. Wait a minute.")
+    bucket.append(now)
+
+
 @router.post("/device-code", response_model=DeviceCodeResponse)
-async def issue_device_code() -> DeviceCodeResponse:
+async def issue_device_code(request: Request) -> DeviceCodeResponse:
     """Public: start a new CLI login flow."""
+    _enforce_ip_rate_limit(request)
     device_code = _gen_device_code()
     user_code = _gen_user_code()
     expires_at = (datetime.now(timezone.utc) + _DEVICE_CODE_TTL).isoformat()
