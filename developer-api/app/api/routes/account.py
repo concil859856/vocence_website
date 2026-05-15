@@ -113,6 +113,48 @@ async def create_key(body: _CreateKeyIn, auth_ctx: dict = Depends(require_api_ke
     return {"key": _key_row_to_response(key_obj), "plain_key": plain}
 
 
+@router.get(
+    "/v1/account/usage",
+    tags=["Account"],
+    summary="Recent API requests for this account",
+)
+async def get_usage(
+    limit: int = 50,
+    auth_ctx: dict = Depends(require_api_key),
+) -> dict:
+    """Return the most recent developer-API calls (any endpoint), with
+    timestamp, HTTP status, credits used, latency, and error info. Use
+    this to build a dashboard or audit log on your side.
+
+    ``limit`` is capped at 200 by the dashboard backend; values above
+    that are clamped silently."""
+    user_id = auth_ctx["user_id"]
+    limit = max(1, min(int(limit or 50), 200))
+    data = await call_dashboard(
+        "GET",
+        f"/api/developer/usage?limit={limit}",
+        user_id=user_id,
+    )
+    # Translate camelCase → snake_case for parity with the rest of the
+    # public surface. Unknown keys are passed through verbatim.
+    items: list[dict[str, Any]] = []
+    for r in data.get("logs") or []:
+        items.append({
+            "id": r.get("id"),
+            "endpoint": r.get("endpoint"),
+            "provider": r.get("provider"),
+            "status": r.get("status"),
+            "http_status": r.get("httpStatus") or r.get("http_status"),
+            "credits_used": r.get("creditsUsed") or r.get("credits_used") or 0,
+            "request_chars": r.get("requestChars") or r.get("request_chars"),
+            "latency_ms": r.get("latencyMs") or r.get("latency_ms"),
+            "error_code": r.get("errorCode") or r.get("error_code"),
+            "error_message": r.get("errorMessage") or r.get("error_message"),
+            "created_at": r.get("createdAt") or r.get("created_at"),
+        })
+    return {"items": items}
+
+
 @router.post(
     "/v1/account/keys/{key_id}/revoke",
     tags=["Account"],
