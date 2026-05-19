@@ -131,6 +131,7 @@ async def generate_text2music(
 
 async def generate_audio2audio(
     *,
+    base_url: str | None = None,
     ref_audio_bytes: bytes,
     ref_audio_filename: str = "reference.wav",
     prompt: str,
@@ -150,11 +151,12 @@ async def generate_audio2audio(
     fd.add_field("format", format)
     fd.add_field("infer_step", str(infer_step))
     fd.add_field("guidance_scale", str(guidance_scale))
-    return await _post_music_form("/generate/audio2audio", fd)
+    return await _post_music_form("/generate/audio2audio", fd, base_url=base_url)
 
 
 async def generate_retake(
     *,
+    base_url: str | None = None,
     src_audio_bytes: bytes,
     src_audio_filename: str = "source.wav",
     prompt: str,
@@ -174,11 +176,12 @@ async def generate_retake(
     fd.add_field("format", format)
     fd.add_field("infer_step", str(infer_step))
     fd.add_field("guidance_scale", str(guidance_scale))
-    return await _post_music_form("/generate/retake", fd)
+    return await _post_music_form("/generate/retake", fd, base_url=base_url)
 
 
 async def generate_repaint(
     *,
+    base_url: str | None = None,
     src_audio_bytes: bytes,
     src_audio_filename: str = "source.wav",
     prompt: str,
@@ -200,11 +203,12 @@ async def generate_repaint(
     fd.add_field("format", format)
     fd.add_field("infer_step", str(infer_step))
     fd.add_field("guidance_scale", str(guidance_scale))
-    return await _post_music_form("/generate/repaint", fd)
+    return await _post_music_form("/generate/repaint", fd, base_url=base_url)
 
 
 async def generate_edit(
     *,
+    base_url: str | None = None,
     src_audio_bytes: bytes,
     src_audio_filename: str = "source.wav",
     prompt: str,
@@ -230,11 +234,12 @@ async def generate_edit(
     fd.add_field("format", format)
     fd.add_field("infer_step", str(infer_step))
     fd.add_field("guidance_scale", str(guidance_scale))
-    return await _post_music_form("/generate/edit", fd)
+    return await _post_music_form("/generate/edit", fd, base_url=base_url)
 
 
 async def generate_extend(
     *,
+    base_url: str | None = None,
     src_audio_bytes: bytes,
     src_audio_filename: str = "source.wav",
     prompt: str,
@@ -256,4 +261,4 @@ async def generate_extend(
     fd.add_field("format", format)
     fd.add_field("infer_step", str(infer_step))
     fd.add_field("guidance_scale", str(guidance_scale))
-    return await _post_music_form("/generate/extend", fd)
+    return await _post_music_form("/generate/extend", fd, base_url=base_url)

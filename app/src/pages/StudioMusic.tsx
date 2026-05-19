@@ -748,12 +748,19 @@ export function StudioMusic() {
         return;
       }
       try {
-        const buf = await audioFile.arrayBuffer();
-        const bytes = new Uint8Array(buf);
-        let binary = '';
-        for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
-        srcAudioB64 = btoa(binary);
+        // FileReader.readAsDataURL is a native, off-thread base64 encoder.
+        // The hot loop / string-concat version above this used to OOM and
+        // freeze the tab on multi-MB audio uploads.
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
+          reader.onerror = () => reject(reader.error ?? new Error('FileReader failed'));
+          reader.readAsDataURL(audioFile);
+        });
+        const commaIdx = dataUrl.indexOf(',');
+        srcAudioB64 = commaIdx >= 0 ? dataUrl.slice(commaIdx + 1) : '';
         srcAudioFilename = audioFile.name;
+        if (!srcAudioB64) throw new Error('Empty audio after encoding');
       } catch (e: unknown) {
         const msg = humanizeApiError(e, 'Could not read the source audio file.');
         setStatus({ type: 'error', message: msg });

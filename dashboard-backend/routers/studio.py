@@ -43,6 +43,7 @@ from schemas import (
     StudioVoiceDesignSaveRequest,
     StudioVoiceDesignSaveResponse,
 )
+from jobs.registry import MUSIC_POOL
 from studio_music_service import (
     generate_audio2audio as music_audio2audio,
     generate_edit as music_edit,
@@ -1880,28 +1881,32 @@ async def music_generate_text2music(body: StudioMusicText2MusicRequest, user_id:
         await conn.close()
 
     started = time.perf_counter()
-    wav_bytes, audio_path, err_msg = await music_text2music(
-        prompt=prompt,
-        lyrics=body.lyrics,
-        audio_duration=body.audio_duration,
-        format=body.format,
-        infer_step=body.infer_step,
-        guidance_scale=body.guidance_scale,
-        scheduler_type=body.scheduler_type,
-        cfg_type=body.cfg_type,
-        omega_scale=body.omega_scale,
-        manual_seeds=body.manual_seeds,
-        guidance_interval=body.guidance_interval,
-        guidance_interval_decay=body.guidance_interval_decay,
-        min_guidance_scale=body.min_guidance_scale,
-        use_erg_tag=body.use_erg_tag,
-        use_erg_lyric=body.use_erg_lyric,
-        use_erg_diffusion=body.use_erg_diffusion,
-        oss_steps=body.oss_steps,
-        guidance_scale_text=body.guidance_scale_text,
-        guidance_scale_lyric=body.guidance_scale_lyric,
-        lora_name_or_path=body.lora_name_or_path,
-    )
+    async with MUSIC_POOL.acquire() as pod_url:
+        wav_bytes, audio_path, err_msg = await music_text2music(
+            base_url=pod_url,
+            prompt=prompt,
+            lyrics=body.lyrics,
+            audio_duration=body.audio_duration,
+            format=body.format,
+            infer_step=body.infer_step,
+            guidance_scale=body.guidance_scale,
+            scheduler_type=body.scheduler_type,
+            cfg_type=body.cfg_type,
+            omega_scale=body.omega_scale,
+            manual_seeds=body.manual_seeds,
+            guidance_interval=body.guidance_interval,
+            guidance_interval_decay=body.guidance_interval_decay,
+            min_guidance_scale=body.min_guidance_scale,
+            use_erg_tag=body.use_erg_tag,
+            use_erg_lyric=body.use_erg_lyric,
+            use_erg_diffusion=body.use_erg_diffusion,
+            oss_steps=body.oss_steps,
+            guidance_scale_text=body.guidance_scale_text,
+            guidance_scale_lyric=body.guidance_scale_lyric,
+            lora_name_or_path=body.lora_name_or_path,
+        )
+        if not wav_bytes and err_msg and ("returned 5" in err_msg or "timed out" in err_msg or "connect" in err_msg.lower()):
+            MUSIC_POOL.quarantine(pod_url)
     latency_ms = int((time.perf_counter() - started) * 1000)
 
     if not wav_bytes:
@@ -2021,17 +2026,21 @@ async def music_generate_audio2audio(
         await conn.close()
 
     started = time.perf_counter()
-    wav_bytes, audio_path, err_msg = await music_audio2audio(
-        ref_audio_bytes=raw,
-        ref_audio_filename=ref_audio.filename or "reference.wav",
-        prompt=prompt,
-        lyrics=lyrics,
-        audio_duration=audio_duration,
-        ref_audio_strength=ref_audio_strength,
-        format=format,
-        infer_step=infer_step,
-        guidance_scale=guidance_scale,
-    )
+    async with MUSIC_POOL.acquire() as pod_url:
+        wav_bytes, audio_path, err_msg = await music_audio2audio(
+            base_url=pod_url,
+            ref_audio_bytes=raw,
+            ref_audio_filename=ref_audio.filename or "reference.wav",
+            prompt=prompt,
+            lyrics=lyrics,
+            audio_duration=audio_duration,
+            ref_audio_strength=ref_audio_strength,
+            format=format,
+            infer_step=infer_step,
+            guidance_scale=guidance_scale,
+        )
+        if not wav_bytes and err_msg and ("returned 5" in err_msg or "timed out" in err_msg or "connect" in err_msg.lower()):
+            MUSIC_POOL.quarantine(pod_url)
     latency_ms = int((time.perf_counter() - started) * 1000)
 
     if not wav_bytes:
@@ -2119,11 +2128,15 @@ async def music_generate_retake(
         await conn.close()
 
     started = time.perf_counter()
-    wav_bytes, _, err_msg = await music_retake(
-        src_audio_bytes=raw, src_audio_filename=src_audio.filename or "source.wav",
-        prompt=prompt, lyrics=lyrics, retake_variance=retake_variance,
-        retake_seeds=retake_seeds, format=format, infer_step=infer_step, guidance_scale=guidance_scale,
-    )
+    async with MUSIC_POOL.acquire() as pod_url:
+        wav_bytes, _, err_msg = await music_retake(
+            base_url=pod_url,
+            src_audio_bytes=raw, src_audio_filename=src_audio.filename or "source.wav",
+            prompt=prompt, lyrics=lyrics, retake_variance=retake_variance,
+            retake_seeds=retake_seeds, format=format, infer_step=infer_step, guidance_scale=guidance_scale,
+        )
+        if not wav_bytes and err_msg and ("returned 5" in err_msg or "timed out" in err_msg or "connect" in err_msg.lower()):
+            MUSIC_POOL.quarantine(pod_url)
     latency_ms = int((time.perf_counter() - started) * 1000)
 
     if not wav_bytes:
@@ -2212,11 +2225,15 @@ async def music_generate_repaint(
         await conn.close()
 
     started = time.perf_counter()
-    wav_bytes, _, err_msg = await music_repaint(
-        src_audio_bytes=raw, src_audio_filename=src_audio.filename or "source.wav",
-        prompt=prompt, lyrics=lyrics, repaint_start=repaint_start, repaint_end=repaint_end,
-        retake_variance=retake_variance, format=format, infer_step=infer_step, guidance_scale=guidance_scale,
-    )
+    async with MUSIC_POOL.acquire() as pod_url:
+        wav_bytes, _, err_msg = await music_repaint(
+            base_url=pod_url,
+            src_audio_bytes=raw, src_audio_filename=src_audio.filename or "source.wav",
+            prompt=prompt, lyrics=lyrics, repaint_start=repaint_start, repaint_end=repaint_end,
+            retake_variance=retake_variance, format=format, infer_step=infer_step, guidance_scale=guidance_scale,
+        )
+        if not wav_bytes and err_msg and ("returned 5" in err_msg or "timed out" in err_msg or "connect" in err_msg.lower()):
+            MUSIC_POOL.quarantine(pod_url)
     latency_ms = int((time.perf_counter() - started) * 1000)
 
     if not wav_bytes:
@@ -2304,12 +2321,16 @@ async def music_generate_edit(
         await conn.close()
 
     started = time.perf_counter()
-    wav_bytes, _, err_msg = await music_edit(
-        src_audio_bytes=raw, src_audio_filename=src_audio.filename or "source.wav",
-        prompt=prompt, lyrics=lyrics, edit_target_prompt=edit_target_prompt,
-        edit_target_lyrics=edit_target_lyrics, edit_n_min=edit_n_min, edit_n_max=edit_n_max,
-        retake_seeds=retake_seeds, format=format, infer_step=infer_step, guidance_scale=guidance_scale,
-    )
+    async with MUSIC_POOL.acquire() as pod_url:
+        wav_bytes, _, err_msg = await music_edit(
+            base_url=pod_url,
+            src_audio_bytes=raw, src_audio_filename=src_audio.filename or "source.wav",
+            prompt=prompt, lyrics=lyrics, edit_target_prompt=edit_target_prompt,
+            edit_target_lyrics=edit_target_lyrics, edit_n_min=edit_n_min, edit_n_max=edit_n_max,
+            retake_seeds=retake_seeds, format=format, infer_step=infer_step, guidance_scale=guidance_scale,
+        )
+        if not wav_bytes and err_msg and ("returned 5" in err_msg or "timed out" in err_msg or "connect" in err_msg.lower()):
+            MUSIC_POOL.quarantine(pod_url)
     latency_ms = int((time.perf_counter() - started) * 1000)
 
     if not wav_bytes:
@@ -2397,12 +2418,16 @@ async def music_generate_extend(
         await conn.close()
 
     started = time.perf_counter()
-    wav_bytes, _, err_msg = await music_extend(
-        src_audio_bytes=raw, src_audio_filename=src_audio.filename or "source.wav",
-        prompt=prompt, lyrics=lyrics, left_extend_length=left_extend_length,
-        right_extend_length=right_extend_length, extend_seeds=extend_seeds,
-        format=format, infer_step=infer_step, guidance_scale=guidance_scale,
-    )
+    async with MUSIC_POOL.acquire() as pod_url:
+        wav_bytes, _, err_msg = await music_extend(
+            base_url=pod_url,
+            src_audio_bytes=raw, src_audio_filename=src_audio.filename or "source.wav",
+            prompt=prompt, lyrics=lyrics, left_extend_length=left_extend_length,
+            right_extend_length=right_extend_length, extend_seeds=extend_seeds,
+            format=format, infer_step=infer_step, guidance_scale=guidance_scale,
+        )
+        if not wav_bytes and err_msg and ("returned 5" in err_msg or "timed out" in err_msg or "connect" in err_msg.lower()):
+            MUSIC_POOL.quarantine(pod_url)
     latency_ms = int((time.perf_counter() - started) * 1000)
 
     if not wav_bytes:
