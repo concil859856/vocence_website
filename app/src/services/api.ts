@@ -438,6 +438,14 @@ export const localStorageFallback = {
     if (existingUser) {
       user = existingUser;
     } else {
+      // Fallback path runs offline / when the API is unreachable. The
+      // backend normally derives id/email/name from the verified Google
+      // JWT (``credential``); here we accept the caller-supplied hints
+      // but require them to be present — without an id/email/name we
+      // can't construct a usable User.
+      if (!userData.googleId || !userData.email || !userData.name) {
+        throw new Error('localStorageFallback: googleId, email, and name are required');
+      }
       user = {
         id: userData.googleId,
         email: userData.email,

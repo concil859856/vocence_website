@@ -19,6 +19,7 @@
  */
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Share2, Link as LinkIcon, Check, Mail } from 'lucide-react';
 
@@ -123,7 +124,7 @@ export function ShareButton({ url, title, text, variant = 'pill' }: Props) {
   // Intent URLs follow each platform's documented share endpoint. We
   // open them in a new tab; the user's social account session
   // (if any) handles auth — no OAuth from our side.
-  const targets: Array<{ label: string; href: string; icon: JSX.Element }> = [
+  const targets: Array<{ label: string; href: string; icon: ReactNode }> = [
     {
       label: 'X',
       href: `https://twitter.com/intent/tweet?text=${enc(shareText)}&url=${enc(url)}`,

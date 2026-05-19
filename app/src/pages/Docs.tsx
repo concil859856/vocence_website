@@ -1,15 +1,14 @@
-import { useState, useEffect, useRef } from 'react';
-import { useLocation, Link, useParams } from 'react-router-dom';
+import { useState, useEffect, useMemo, useRef } from 'react';
+import { useLocation, Link, useParams, useNavigate } from 'react-router-dom';
 import { ApiExplorer } from '../components/ApiExplorer';
+import { useHasVoiceChatAccess } from '../lib/voicechatAccess';
 import {
   ChevronRight,
   BookOpen,
-  Mic,
   Code,
   Layers,
   Terminal,
   KeyRound,
-  ArrowRight,
   ExternalLink,
 } from 'lucide-react';
 import gsap from 'gsap';
@@ -30,6 +29,12 @@ interface DocLink {
   id: DocSection;
   label: string;
   category: string;
+  /** When true, only signed-in admin users (matched against VITE_ADMIN_EMAIL
+   *  via useHasVoiceChatAccess) see this entry in the sidebar AND can
+   *  navigate to the URL. Non-admins hitting the URL get bounced to
+   *  /docs/getting-started. Mirrors the launch-gate already applied to
+   *  Logos and /studio/agents. */
+  adminOnly?: true;
 }
 
 const docLinks: DocLink[] = [
@@ -38,20 +43,24 @@ const docLinks: DocLink[] = [
   { id: 'core-concepts', label: 'Core Concepts', category: 'Introduction' },
   { id: 'architecture', label: 'Architecture', category: 'Introduction' },
   // Studio — feature-by-feature how-to for the web app.
-  { id: 'guide-agents', label: 'Agents', category: 'Studio' },
+  // Agents is admin-only until the feature launches publicly.
+  { id: 'guide-agents', label: 'Agents', category: 'Studio', adminOnly: true },
   { id: 'guide-tts', label: 'Text-to-Speech', category: 'Studio' },
   { id: 'guide-cloning', label: 'Voice Cloning', category: 'Studio' },
   { id: 'guide-stt', label: 'Speech-to-Text', category: 'Studio' },
   { id: 'guide-music', label: 'Music', category: 'Studio' },
   // API — everything a developer needs to integrate.
-  { id: 'api', label: 'API Reference', category: 'API' },
-  { id: 'cookbook', label: 'Cookbook', category: 'API' },
+  // API + Cookbook are admin-only until public launch; Pricing stays
+  // public since it's a marketing concern, not a developer one.
+  { id: 'api', label: 'API Reference', category: 'API', adminOnly: true },
+  { id: 'cookbook', label: 'Cookbook', category: 'API', adminOnly: true },
   { id: 'pricing', label: 'Pricing', category: 'API' },
   // SDK — official Python client library (PyPI: ``vocence``).
-  { id: 'sdk-python', label: 'Python SDK', category: 'SDK' },
-  { id: 'sdk-cli', label: 'CLI Reference', category: 'SDK' },
-  { id: 'sdk-agents', label: 'Voice Agents', category: 'SDK' },
-  { id: 'sdk-webhooks', label: 'Webhooks', category: 'SDK' },
+  // Entire SDK category is admin-only until public launch.
+  { id: 'sdk-python', label: 'Python SDK', category: 'SDK', adminOnly: true },
+  { id: 'sdk-cli', label: 'CLI Reference', category: 'SDK', adminOnly: true },
+  { id: 'sdk-agents', label: 'Voice Agents', category: 'SDK', adminOnly: true },
+  { id: 'sdk-webhooks', label: 'Webhooks', category: 'SDK', adminOnly: true },
   // Subnet — running infrastructure on Bittensor (SN10).
   { id: 'miner', label: 'Miner Setup', category: 'Subnet' },
   { id: 'validator', label: 'Validator Setup', category: 'Subnet' },
@@ -59,6 +68,10 @@ const docLinks: DocLink[] = [
   { id: 'faq', label: 'FAQ', category: 'Support' },
   { id: 'troubleshooting', label: 'Troubleshooting', category: 'Support' },
 ];
+
+const ADMIN_ONLY_SECTIONS: Set<DocSection> = new Set(
+  docLinks.filter((l) => l.adminOnly).map((l) => l.id),
+);
 
 const DOC_SECTIONS: DocSection[] = ['getting-started', 'core-concepts', 'architecture', 'guide-agents', 'guide-tts', 'guide-cloning', 'guide-stt', 'guide-music', 'cookbook', 'api', 'pricing', 'sdk-python', 'sdk-cli', 'sdk-agents', 'sdk-webhooks', 'miner', 'validator', 'faq', 'troubleshooting'];
 
@@ -122,7 +135,7 @@ function DocsRightToc({
   contentRef,
   activeSection,
 }: {
-  contentRef: React.RefObject<HTMLDivElement>;
+  contentRef: React.RefObject<HTMLDivElement | null>;
   activeSection: string;
 }) {
   const [items, setItems] = useState<Array<{ id: string; label: string }>>([]);
@@ -201,16 +214,38 @@ function DocsRightToc({
 
 export function Docs() {
   const location = useLocation();
+  const navigate = useNavigate();
   const params = useParams<{ section?: string }>();
   const sectionParamRaw = (params.section || '').toLowerCase();
+  const isAdmin = useHasVoiceChatAccess();
+
+  // Filter the sidebar — admin-only sections (Agents docs, API
+  // Reference, Cookbook, all SDK pages) only show for users who pass
+  // the launch-gate check. Categories that end up empty after filtering
+  // also drop out (e.g. SDK disappears entirely for non-admins).
+  const visibleDocLinks = useMemo(
+    () => (isAdmin ? docLinks : docLinks.filter((l) => !l.adminOnly)),
+    [isAdmin],
+  );
+
   const [activeSection, setActiveSection] = useState<DocSection>('getting-started');
   // Collapsed sidebar categories. We start with EVERY category
   // collapsed; a follow-up effect opens just the one containing the
   // active section. The user can then collapse that one too — there's
   // no force-open, you're always in control.
   const [collapsedCats, setCollapsedCats] = useState<Set<string>>(() => {
-    return new Set(docLinks.map((l) => l.category));
+    return new Set(visibleDocLinks.map((l) => l.category));
   });
+
+  // Direct URL access to an admin-only section by a non-admin: bounce
+  // to Getting Started. Done in an effect (not during render) so
+  // useNavigate doesn't fire mid-commit.
+  useEffect(() => {
+    if (isAdmin) return;
+    if (sectionParamRaw && ADMIN_ONLY_SECTIONS.has(sectionParamRaw as DocSection)) {
+      navigate('/docs/getting-started', { replace: true });
+    }
+  }, [isAdmin, sectionParamRaw, navigate]);
   const docsRef = useRef<HTMLDivElement>(null);
   // Ref the main column so the right-rail TOC can scan its <h2>s.
   const contentRef = useRef<HTMLDivElement>(null);
@@ -230,7 +265,7 @@ export function Docs() {
   // /docs/getting-started → Introduction only, /docs/api → API only,
   // and so on.
   useEffect(() => {
-    const cat = docLinks.find((l) => l.id === activeSection)?.category;
+    const cat = visibleDocLinks.find((l) => l.id === activeSection)?.category;
     if (!cat) return;
     setCollapsedCats((prev) => {
       if (!prev.has(cat)) return prev;
@@ -443,36 +478,6 @@ export function Docs() {
           ))}
         </ul>
       </section>
-    </div>
-  );
-
-  const apiCodeBlock = (label: string, children: string) => (
-    <div className="mb-6 overflow-hidden rounded-lg border border-white/[0.08] bg-[#0c0c0e] shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)]">
-      <div className="flex items-center justify-between border-b border-white/[0.06] bg-white/[0.02] px-4 py-2">
-        <span className="font-mono text-[11px] font-medium uppercase tracking-wide text-[#787f87]">{label}</span>
-      </div>
-      <pre className="overflow-x-auto p-4 font-mono text-[13px] leading-relaxed text-[#b8c0cc] whitespace-pre-wrap">
-        {children}
-      </pre>
-    </div>
-  );
-
-  const apiEndpointCard = (
-    method: string,
-    path: string,
-    description: string,
-    methodColor: string
-  ) => (
-    <div className="rounded-xl border border-white/[0.08] bg-white/[0.02]">
-      <div className="flex flex-wrap items-center gap-3 border-b border-white/[0.06] px-4 py-3">
-        <span
-          className={`rounded-md px-2 py-0.5 font-mono text-[11px] font-semibold uppercase tracking-wide ${methodColor}`}
-        >
-          {method}
-        </span>
-        <code className="text-sm text-zinc-200">{path}</code>
-      </div>
-      <p className="px-4 py-3 text-sm leading-relaxed text-[#9ca3af]">{description}</p>
     </div>
   );
 
@@ -3307,8 +3312,9 @@ print(audio["audio_url"])`} />
     }
   };
 
-  // Group links by category
-  const groupedLinks = docLinks.reduce((acc, link) => {
+  // Group links by category — uses visibleDocLinks so admin-only
+  // sections (and their now-empty categories) drop out for non-admins.
+  const groupedLinks = visibleDocLinks.reduce((acc, link) => {
     if (!acc[link.category]) acc[link.category] = [];
     acc[link.category].push(link);
     return acc;

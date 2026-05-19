@@ -907,7 +907,6 @@ export function StudioMusic() {
     }
   };
 
-  const activeTabInfo = TASK_TABS.find(t => t.id === activeTask)!;
   const inputCls = 'w-full bg-[#1c1d21] border border-[#2e2f33] rounded-xl px-4 py-2.5 text-sm text-white placeholder-[#9ca3af] outline-none focus:border-[#DFFF00]/50 transition-colors [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none';
   const labelCls = 'text-[11px] text-[#9ca3af] uppercase tracking-wider font-medium';
 

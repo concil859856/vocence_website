@@ -34,7 +34,6 @@ interface Props {
 }
 
 const METHODS: CustomToolMethod[] = ['POST', 'GET', 'PUT', 'PATCH', 'DELETE'];
-const AUTH_TYPES: CustomToolAuthType[] = ['none', 'bearer', 'header'];
 
 // Starter JSON Schema — used as the default for new tools so users
 // see the shape they're meant to fill in rather than an empty box.

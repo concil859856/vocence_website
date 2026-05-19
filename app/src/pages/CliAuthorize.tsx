@@ -17,7 +17,8 @@ type State = 'idle' | 'approving' | 'approved' | 'denying' | 'denied' | 'error';
 export function CliAuthorize() {
   const navigate = useNavigate();
   const [search] = useSearchParams();
-  const { user, token } = useAuth();
+  const { user } = useAuth();
+  const token = typeof window !== 'undefined' ? window.localStorage.getItem('vocence_token') : null;
   const initialCode = (search.get('user_code') || '').toUpperCase();
   const [userCode, setUserCode] = useState(initialCode);
   const [keyName, setKeyName] = useState('cli');
