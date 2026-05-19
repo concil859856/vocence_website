@@ -20,6 +20,10 @@ from local_db import get_connection
 from sample_voice_loader import load_sample_voice
 from sample_voices_data import is_known_sample
 from studio_tts_service import (
+    assert_user_owned_object,
+    delete_object,
+    download_object_bytes,
+    download_object_bytes_capped,
     get_presigned_url,
     transcribe_audio,
     upload_wav_to_hippius,
@@ -49,6 +53,11 @@ async def process_clone(job: state.Job) -> dict:
     source_filename = (payload.get("source_audio_filename") or "reference.wav")[:120]
 
     sample_voice_id = (payload.get("sample_voice_id") or "").strip()
+    # Preferred upload-mode source: R2 bucket+key (browser PUTs the file
+    # directly to R2 via a presigned URL, then submits the job with the
+    # key only). Fallback for backward compat: inline ``audio_b64``.
+    audio_bucket = (payload.get("audio_bucket") or "").strip()
+    audio_key = (payload.get("audio_key") or "").strip()
     audio_b64 = payload.get("audio_b64") or ""
 
     if sample_voice_id:
@@ -73,10 +82,18 @@ async def process_clone(job: state.Job) -> dict:
         user_ref_text = cached_ref_text
         source_mode = "sample"
         source_filename = sample_voice_id[:120]
+    elif audio_bucket and audio_key:
+        # SECURITY: ensure the key belongs to this user under the
+        # voice-clone-ref subdir. Without this, a crafted payload could
+        # read any object the backend has R2 credentials for.
+        assert_user_owned_object(audio_bucket, audio_key, job.user_id, allowed_subdir="voice-clone-ref")
+        raw_ref = download_object_bytes_capped(audio_bucket, audio_key)
+        if not raw_ref:
+            raise RuntimeError(f"Could not fetch reference audio from bucket={audio_bucket} key={audio_key}")
     elif audio_b64:
         raw_ref = base64.b64decode(audio_b64)
     else:
-        raise RuntimeError("payload requires audio_b64 (upload mode) or sample_voice_id (general TTS)")
+        raise RuntimeError("payload requires audio_bucket+audio_key (upload mode), audio_b64 (legacy), or sample_voice_id (general TTS)")
 
     started_total = time.perf_counter()
 
@@ -172,6 +189,21 @@ async def process_clone(job: state.Job) -> dict:
 
     audio_url = get_presigned_url(bucket, key, expires_at, public=False) or ""
     total_ms = int((time.perf_counter() - started_total) * 1000)
+
+    # Reference audio is no longer needed once the clone is done.
+    # SECURITY: validate ownership before deletion — for ``sample_voice_id``
+    # branch the audio path is skipped entirely, so a crafted payload
+    # could include ``audio_bucket``+``audio_key`` and reach this cleanup
+    # without going through the validation in the upload branch.
+    if audio_bucket and audio_key:
+        try:
+            assert_user_owned_object(audio_bucket, audio_key, job.user_id, allowed_subdir="voice-clone-ref")
+            delete_object(audio_bucket, audio_key)
+        except RuntimeError as exc:
+            _log.warning("[clone] refusing cleanup of unowned key: %s", exc)
+        except Exception:
+            _log.warning("[clone] failed to delete reference audio bucket=%s key=%s", audio_bucket, audio_key)
+
     return {
         "audio_url": audio_url,
         "history_id": history_id,

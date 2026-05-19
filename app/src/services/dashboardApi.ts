@@ -1281,6 +1281,25 @@ export const dashboardApi = {
     form.append('audio_file', file);
     return fetchJson(`/api/dashboard/playbooks/${playbookId}/upload`, { method: 'POST', headers, body: form });
   },
+
+  /** Two-step upload: PUT the file directly to R2 (no Cloudflare in the path)
+   * then register the track on the backend with the resulting key. Use this
+   * for files larger than ~50 MB or whenever you want to skip the proxy. */
+  async uploadPlaybookTrackDirect(
+    playbookId: number,
+    file: File,
+    title: string,
+    token: string | null,
+  ): Promise<PlaybookDetail> {
+    const { bucket, key, filename } = await this.uploadDirectToR2('playbook-audio', file, token);
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson(`/api/dashboard/playbooks/${playbookId}/upload-from-r2`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ title, bucket, key, filename }),
+    });
+  },
 };
 
 export interface StudioTopModel {

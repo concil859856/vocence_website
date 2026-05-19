@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from io import BytesIO
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from pydantic import BaseModel, Field
 
 from local_db import get_connection
 from routers.auth import optional_auth, require_auth
@@ -542,6 +543,69 @@ async def upload_track(
     # Add track
     track = PlaybookTrackAddRequest(
         title=title.strip() or audio_file.filename or "Uploaded Track",
+        subtitle="Uploaded",
+        audio_url=audio_url,
+        source_type="uploaded",
+    )
+    return await add_tracks(
+        playbook_id,
+        PlaybookTracksAddRequest(tracks=[track]),
+        user_id,
+    )
+
+
+class PlaybookUploadFromR2Request(BaseModel):
+    """Register a track that the browser already PUT directly to R2 via a
+    presigned URL (see /uploads/presign). Avoids passing the audio bytes
+    through your API's Cloudflare proxy — works for files much larger
+    than the proxy's per-request body limit.
+    """
+
+    title: str = Field("", max_length=200)
+    bucket: str = Field(..., min_length=1, max_length=200)
+    key: str = Field(..., min_length=1, max_length=512)
+    filename: str = Field("Uploaded Track", max_length=255)
+
+
+@router.post("/{playbook_id}/upload-from-r2", response_model=PlaybookDetailResponse)
+async def upload_track_from_r2(
+    playbook_id: int,
+    body: PlaybookUploadFromR2Request,
+    user_id: str = Depends(require_auth),
+):
+    """Register a track whose audio has already been uploaded to R2.
+    The caller must have used /uploads/presign with kind='playbook-audio'
+    so the key is namespaced under the same user.
+    """
+    pb_conn = await get_connection()
+    try:
+        pb = await (await pb_conn.execute(
+            "SELECT id FROM playbooks WHERE id = ? AND user_id = ?", (playbook_id, user_id)
+        )).fetchone()
+        if not pb:
+            raise HTTPException(status_code=404, detail="Playbook not found")
+    finally:
+        await pb_conn.close()
+
+    # The presigned upload places keys under ``{user_id}/playbook/...`` —
+    # validate both the user prefix and the subdir so a crafted call
+    # can't register, say, another user's music output as their own
+    # playbook track.
+    from studio_tts_service import assert_user_owned_object
+    try:
+        assert_user_owned_object(body.bucket, body.key, user_id, allowed_subdir="playbook")
+    except RuntimeError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    # Build the audio URL the same way upload_track() does.
+    if BUCKET_PROVIDER == "r2" and R2_PUBLIC_DOMAIN:
+        audio_url = f"https://{R2_PUBLIC_DOMAIN}/{body.key}"
+    else:
+        expires_at = datetime.now(timezone.utc) + timedelta(days=7)
+        audio_url = get_presigned_url(body.bucket, body.key, expires_at) or ""
+
+    track = PlaybookTrackAddRequest(
+        title=body.title.strip() or body.filename or "Uploaded Track",
         subtitle="Uploaded",
         audio_url=audio_url,
         source_type="uploaded",

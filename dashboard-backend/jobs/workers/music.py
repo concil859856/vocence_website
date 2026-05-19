@@ -33,8 +33,9 @@ from studio_music_service import (
     generate_text2music,
 )
 from studio_tts_service import (
+    assert_user_owned_object,
     delete_object,
-    download_object_bytes,
+    download_object_bytes_capped,
     get_presigned_url,
     upload_wav_to_hippius,
 )
@@ -51,19 +52,25 @@ _VALID_TASKS = {"text2music", "audio2audio", "retake", "repaint", "edit", "exten
 _AUDIO_REQUIRED_TASKS = {"audio2audio", "retake", "repaint", "edit", "extend"}
 
 
-def _decode_source_audio(payload: dict) -> tuple[bytes, str]:
+def _decode_source_audio(payload: dict, job_user_id: str) -> tuple[bytes, str]:
     """Resolve source audio for this job — either from an R2 key or inline base64.
 
     Preferred path: ``src_audio_bucket`` + ``src_audio_key`` (browser uploads
-    the file via /studio/music/upload-source first, then puts just the key in
-    the job payload). Fallback path: ``src_audio_b64`` inline. Returns
+    the file via /uploads/presign first, then puts just the key in the job
+    payload). Fallback path: ``src_audio_b64`` inline. Returns
     (raw_bytes, filename).
+
+    SECURITY: the bucket+key fields are client-controlled, so we validate
+    them against ``job_user_id`` and require they live under the
+    ``music-source/`` subdir — otherwise a crafted payload could read
+    other users' audio from R2.
     """
     bucket = (payload.get("src_audio_bucket") or "").strip()
     key = (payload.get("src_audio_key") or "").strip()
     filename = payload.get("src_audio_filename") or "source.wav"
     if bucket and key:
-        raw = download_object_bytes(bucket, key)
+        assert_user_owned_object(bucket, key, job_user_id, allowed_subdir="music-source")
+        raw = download_object_bytes_capped(bucket, key)
         if not raw:
             raise RuntimeError(f"Could not fetch source audio from bucket={bucket} key={key}")
         return raw, filename
@@ -80,18 +87,30 @@ def _decode_source_audio(payload: dict) -> tuple[bytes, str]:
     return raw, filename
 
 
-def _maybe_cleanup_source(payload: dict) -> None:
-    """Best-effort delete of the uploaded source audio in R2 once the job is done."""
+def _maybe_cleanup_source(payload: dict, job_user_id: str) -> None:
+    """Best-effort delete of the uploaded source audio in R2 once the job is done.
+
+    SECURITY: re-validate the (bucket, key) belongs to this user under the
+    music-source subdir before deleting — otherwise a crafted payload for
+    a task that skips the audio-decode path (e.g. text2music) could
+    delete arbitrary R2 objects.
+    """
     bucket = (payload.get("src_audio_bucket") or "").strip()
     key = (payload.get("src_audio_key") or "").strip()
-    if bucket and key:
-        try:
-            delete_object(bucket, key)
-        except Exception:
-            _log.warning("[music] failed to delete source audio bucket=%s key=%s", bucket, key)
+    if not bucket or not key:
+        return
+    try:
+        assert_user_owned_object(bucket, key, job_user_id, allowed_subdir="music-source")
+    except RuntimeError as exc:
+        _log.warning("[music] refusing cleanup of unowned key: %s", exc)
+        return
+    try:
+        delete_object(bucket, key)
+    except Exception:
+        _log.warning("[music] failed to delete source audio bucket=%s key=%s", bucket, key)
 
 
-async def _run_task(task: str, payload: dict, pod_url: str):
+async def _run_task(task: str, payload: dict, pod_url: str, job_user_id: str):
     """Call the right generate_X for ``task``. Returns (wav_bytes, audio_path, err)."""
     if task == "text2music":
         return await generate_text2music(
@@ -118,7 +137,7 @@ async def _run_task(task: str, payload: dict, pod_url: str):
             lora_name_or_path=payload.get("lora_name_or_path") or "none",
         )
 
-    src_bytes, src_name = _decode_source_audio(payload)
+    src_bytes, src_name = _decode_source_audio(payload, job_user_id)
 
     if task == "audio2audio":
         return await generate_audio2audio(
@@ -264,7 +283,7 @@ async def process_music(job: state.Job) -> dict:
         await state.update_status(job.id, pod_url=pod_url)
         try:
             wav_bytes, audio_path, err = await asyncio.wait_for(
-                _run_task(task, payload, pod_url),
+                _run_task(task, payload, pod_url, job.user_id),
                 timeout=PHASE_TIMEOUT_MUSIC,
             )
         except asyncio.TimeoutError:
@@ -314,7 +333,7 @@ async def process_music(job: state.Job) -> dict:
     audio_url = get_presigned_url(bucket, key, expires_at, public=False) or ""
 
     # Source audio is no longer needed once the result is uploaded.
-    _maybe_cleanup_source(payload)
+    _maybe_cleanup_source(payload, job.user_id)
 
     return {
         "audio_url": audio_url,

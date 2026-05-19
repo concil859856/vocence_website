@@ -1367,7 +1367,7 @@ function AddTracksModal({ playbookId, onClose, onAdded }: { playbookId: number; 
     if (!token) return;
     setUploading(true);
     try {
-      await dashboardApi.uploadPlaybookTrack(playbookId, file, file.name.replace(/\.[^.]+$/, ''), token);
+      await dashboardApi.uploadPlaybookTrackDirect(playbookId, file, file.name.replace(/\.[^.]+$/, ''), token);
       onAdded();
       onClose();
     } catch { /* */ }

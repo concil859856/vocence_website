@@ -781,6 +781,59 @@ def upload_wav_to_hippius(user_id: str, wav_bytes: bytes, subdir: str = "") -> t
     return bucket, key, expires_at
 
 
+def assert_user_owned_object(bucket: str, key: str, user_id: str, allowed_subdir: str) -> None:
+    """Raise RuntimeError if the (bucket, key) pair isn't an object that:
+    - lives in our active bucket
+    - is namespaced under ``{user_id}/`` (matching the key shape that
+      /uploads/presign produces)
+    - sits under the expected ``allowed_subdir``
+
+    Use this in workers before calling ``download_object_bytes`` or
+    ``delete_object`` on a (bucket, key) pair that came from the client's
+    job payload — otherwise a crafted payload could read/delete other
+    users' files (the backend has full R2 credentials).
+    """
+    if bucket != _active_bucket():
+        raise RuntimeError("Access denied: invalid bucket for audio source")
+    parts = key.split("/", 2)
+    if len(parts) < 3 or not parts[0] or not parts[1] or not parts[2]:
+        raise RuntimeError("Access denied: malformed audio key")
+    if parts[0] != user_id:
+        raise RuntimeError("Access denied: audio key does not belong to this user")
+    if parts[1] != allowed_subdir:
+        raise RuntimeError(f"Access denied: audio key must be under {allowed_subdir!r}, got {parts[1]!r}")
+
+
+# Cap on bytes pulled out of R2 for any single worker download. Mirrors
+# the presign cap so a client can't bypass it by uploading a 10 GB file
+# (the presigned URL doesn't sign Content-Length).
+R2_MAX_DOWNLOAD_BYTES = int(os.environ.get("R2_MAX_DOWNLOAD_BYTES", str(300 * 1024 * 1024)))
+
+
+def download_object_bytes_capped(bucket: str, key: str, max_bytes: int = R2_MAX_DOWNLOAD_BYTES) -> bytes | None:
+    """Download an R2 object, refusing to load more than ``max_bytes``.
+    Uses ``stat_object`` to check size before reading so we never pull a
+    huge file into memory.
+    """
+    try:
+        client = _minio_client()
+        stat = client.stat_object(bucket, key)
+        if stat.size is not None and stat.size > max_bytes:
+            raise RuntimeError(
+                f"Audio object exceeds maximum size: {stat.size} bytes > {max_bytes}"
+            )
+        obj = client.get_object(bucket, key)
+        try:
+            return obj.read()
+        finally:
+            obj.close()
+            obj.release_conn()
+    except RuntimeError:
+        raise
+    except Exception:
+        return None
+
+
 def presigned_put_url(bucket: str, key: str, expires_seconds: int = 900) -> str:
     """Generate a presigned PUT URL the browser can use to upload directly to R2.
     The signed URL is valid for ``expires_seconds`` (default 15 minutes) and

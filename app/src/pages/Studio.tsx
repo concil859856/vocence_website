@@ -920,7 +920,10 @@ export function Studio() {
     setCloneStatus(null);
     setCloneResult(null);
     try {
-      const audio_b64 = await fileToBase64(cloningFile);
+      // Browser → R2 directly via presigned PUT, then submit job with the
+      // R2 key only. Sidesteps the per-request body limit on the API's
+      // Cloudflare proxy — works for big reference recordings.
+      const uploaded = await dashboardApi.uploadDirectToR2('voice-clone-ref', cloningFile, token);
       const submission = await dashboardApi.startJob({
         type: 'clone',
         credits: CREDIT_VOICE_CLONE,
@@ -929,8 +932,9 @@ export function Studio() {
           ref_source: cloningMode,
           language: cloneLanguage.trim() || null,
           reference_text: cloneReferenceScript.trim() || null,
-          source_audio_filename: cloningFile.name,
-          audio_b64,
+          source_audio_filename: uploaded.filename || cloningFile.name,
+          audio_bucket: uploaded.bucket,
+          audio_key: uploaded.key,
         },
       }, token);
       setLocalCredits((user.credits ?? 0) - CREDIT_VOICE_CLONE);
@@ -1175,11 +1179,14 @@ export function Studio() {
       const lang = selectedLanguage === 'auto-detect' ? null : selectedLanguage;
       void (async () => {
         try {
-          const audio_b64 = await fileToBase64(fileRef);
+          // Browser → R2 directly via presigned PUT, then submit job
+          // with the R2 key only — sidesteps the API Cloudflare proxy's
+          // body-size limit for long recordings.
+          const uploaded = await dashboardApi.uploadDirectToR2('stt-source', fileRef, token);
           const submission = await dashboardApi.startJob({
             type: 'stt',
             credits: CREDIT_STT,
-            payload: { audio_b64, language: lang, filename: fileRef.name },
+            payload: { audio_bucket: uploaded.bucket, audio_key: uploaded.key, language: lang, filename: uploaded.filename || fileRef.name },
           }, token);
           setLocalCredits((user.credits ?? 0) - CREDIT_STT);
           setSttStatus({ type: 'info', message: `Queued (position ${submission.queue_position}). Transcribing…` });

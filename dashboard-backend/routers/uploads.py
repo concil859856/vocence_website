@@ -40,9 +40,10 @@ router = APIRouter(prefix="/uploads", tags=["uploads"])
 # or the upload errors with 403 and the user retries (regenerates URL).
 PRESIGN_TTL_SECONDS = int(os.environ.get("UPLOAD_PRESIGN_TTL_SECONDS", "1800"))
 
-# 500 MB by default — generous enough for full-length music sources or long
-# voice recordings. Override per-deployment via env.
-_DEFAULT_MAX_BYTES = int(os.environ.get("UPLOAD_DEFAULT_MAX_BYTES", str(500 * 1024 * 1024)))
+# 300 MB by default — generous for full-length music sources or long
+# voice recordings. Override per-deployment via env (per-kind overrides
+# below also apply).
+_DEFAULT_MAX_BYTES = int(os.environ.get("UPLOAD_DEFAULT_MAX_BYTES", str(300 * 1024 * 1024)))
 
 _AUDIO_MIMES = {
     "audio/mpeg", "audio/mp3",
@@ -67,7 +68,7 @@ UPLOAD_KINDS: dict[str, dict] = {
     },
     "voice-clone-ref": {
         "subdir": "voice-clone-ref",
-        "max_bytes": int(os.environ.get("UPLOAD_VOICE_CLONE_REF_MAX_BYTES", str(100 * 1024 * 1024))),
+        "max_bytes": int(os.environ.get("UPLOAD_VOICE_CLONE_REF_MAX_BYTES", str(_DEFAULT_MAX_BYTES))),
         "allowed_mimes": _AUDIO_MIMES,
     },
     "stt-source": {
