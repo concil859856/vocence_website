@@ -6,15 +6,22 @@
  * toggle. Parent owns state; this is a controlled component.
  */
 
-import { useEffect, useState } from 'react';
-import { ChevronDown } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { ChevronDown, Pencil, Plus, Trash2, Wrench } from 'lucide-react';
 import type { AgentConfig, AgentType } from '../../lib/agents/types';
 import { SAMPLE_VOICE_INDEX, SAMPLE_VOICES, avatarGradientPairFor } from '../../data/sampleVoices';
 import { SampleVoiceAvatar } from '../studio/SampleVoiceAvatar';
 import { SampleVoicePickerModal } from '../studio/SampleVoicePickerModal';
 import { Select } from '../ui/DropdownSelect';
 import { dashboardApi, type StudioDesignedVoiceItem } from '../../services/dashboardApi';
-import { getStoredToken } from '../../lib/agents/api';
+import {
+  agentsApi,
+  agentCustomToolsApi,
+  getStoredToken,
+  type BuiltinToolInfo,
+  type CustomTool,
+} from '../../lib/agents/api';
+import { CustomToolEditor } from './CustomToolEditor';
 
 interface Props {
   name: string;
@@ -24,14 +31,102 @@ interface Props {
   onChange: (patch: { name?: string; type?: AgentType; config?: Partial<AgentConfig> }) => void;
   /** Optional architect trigger — shown as a subtle helper next to fields. */
   onAskArchitect?: (focusField?: string) => void;
+  /** When provided (edit flow), the form shows the custom-tools
+   *  subsection with per-agent bind/unbind toggles. AgentBuilder
+   *  (create flow) omits this since there's no agent_id yet — users
+   *  can register custom tools after first save. */
+  agentId?: string | null;
 }
 
 const LANGUAGE_OPTIONS = ['English', 'Chinese', 'Japanese', 'Korean', 'German', 'French', 'Russian', 'Portuguese', 'Spanish', 'Italian'];
 
-export function AgentConfigForm({ name, type, config, availableModels, onChange }: Props) {
+export function AgentConfigForm({ name, type, config, availableModels, onChange, agentId }: Props) {
   const isGoal = type === 'goal';
   const [voicePickerOpen, setVoicePickerOpen] = useState(false);
   const [designedVoices, setDesignedVoices] = useState<StudioDesignedVoiceItem[]>([]);
+  const [builtinTools, setBuiltinTools] = useState<BuiltinToolInfo[]>([]);
+
+  // Custom (user-defined) tools the LLM can call. Two collections to track:
+  //   • allUserTools — every custom tool the signed-in user owns (across
+  //     all their agents). Always loaded so they can bind any of them
+  //     to this agent.
+  //   • boundTools — the subset currently bound to *this* agent. Drives
+  //     the checked state of the binding toggles.
+  const [allUserTools, setAllUserTools] = useState<CustomTool[] | null>(null);
+  const [boundToolIds, setBoundToolIds] = useState<Set<string>>(new Set());
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editingTool, setEditingTool] = useState<CustomTool | null>(null);
+  const [bindingBusy, setBindingBusy] = useState<Set<string>>(new Set());
+
+  const refreshCustomTools = useCallback(async () => {
+    const token = getStoredToken();
+    if (!token) return;
+    try {
+      const list = await agentCustomToolsApi.list(token);
+      setAllUserTools(list.tools);
+    } catch {
+      setAllUserTools([]);
+    }
+    if (agentId) {
+      try {
+        const bound = await agentCustomToolsApi.listBoundToAgent(token, agentId);
+        setBoundToolIds(new Set(bound.tools.map((t) => t.id)));
+      } catch {
+        setBoundToolIds(new Set());
+      }
+    } else {
+      setBoundToolIds(new Set());
+    }
+  }, [agentId]);
+
+  useEffect(() => {
+    void refreshCustomTools();
+  }, [refreshCustomTools]);
+
+  const handleBindToggle = async (tool: CustomTool, nextChecked: boolean) => {
+    if (!agentId) return;
+    const token = getStoredToken();
+    if (!token) return;
+    setBindingBusy((prev) => new Set(prev).add(tool.id));
+    // Optimistic toggle.
+    setBoundToolIds((prev) => {
+      const next = new Set(prev);
+      if (nextChecked) next.add(tool.id); else next.delete(tool.id);
+      return next;
+    });
+    try {
+      if (nextChecked) {
+        await agentCustomToolsApi.bind(token, agentId, tool.id);
+      } else {
+        await agentCustomToolsApi.unbind(token, agentId, tool.id);
+      }
+    } catch {
+      // Revert optimistic change on failure.
+      setBoundToolIds((prev) => {
+        const next = new Set(prev);
+        if (nextChecked) next.delete(tool.id); else next.add(tool.id);
+        return next;
+      });
+    } finally {
+      setBindingBusy((prev) => {
+        const next = new Set(prev);
+        next.delete(tool.id);
+        return next;
+      });
+    }
+  };
+
+  const handleDeleteTool = async (tool: CustomTool) => {
+    if (!window.confirm(`Delete tool "${tool.name}"? This unbinds it from every agent and can't be undone.`)) return;
+    const token = getStoredToken();
+    if (!token) return;
+    try {
+      await agentCustomToolsApi.remove(token, tool.id);
+      await refreshCustomTools();
+    } catch (e) {
+      window.alert((e as Error).message || 'Delete failed');
+    }
+  };
 
   // Pull the user's saved "My Voices" so they appear alongside the
   // sample voices in the picker. Failures are silent — the picker
@@ -46,6 +141,46 @@ export function AgentConfigForm({ name, type, config, availableModels, onChange 
       .catch(() => { /* ignore — picker will just not show My Voices */ });
     return () => { cancelled = true; };
   }, []);
+
+  // Pull the built-in tool catalog so we can render the Tools section.
+  // The endpoint reports per-tool availability (web_search needs Tavily,
+  // weather needs OpenWeatherMap) so we can grey out tools the server
+  // can't actually run.
+  useEffect(() => {
+    const token = getStoredToken();
+    if (!token) return;
+    let cancelled = false;
+    agentsApi
+      .listBuiltinTools(token)
+      .then((r) => { if (!cancelled) setBuiltinTools(r.tools); })
+      .catch(() => { /* ignore — Tools section just renders empty */ });
+    return () => { cancelled = true; };
+  }, []);
+
+  // Resolve enabled-tool state. When config.enabled_tools is undefined
+  // (the default for fresh agents), every available tool is implicitly
+  // enabled — same behaviour as the backend when ``enabled_tools`` is
+  // absent from the AgentConfig. Once the user toggles anything, the
+  // form persists an explicit list and locks that semantic in.
+  const enabledToolNames = useMemo<Set<string>>(() => {
+    if (config.enabled_tools === undefined) {
+      return new Set(builtinTools.filter((t) => t.available).map((t) => t.name));
+    }
+    return new Set(config.enabled_tools);
+  }, [config.enabled_tools, builtinTools]);
+
+  const isToolToggleExplicit = config.enabled_tools !== undefined;
+
+  const handleToolToggle = (toolName: string, nextEnabled: boolean) => {
+    // First toggle: seed the explicit list from the implicit "all
+    // available" default so the user's choice is encoded honestly.
+    const base = isToolToggleExplicit
+      ? new Set(config.enabled_tools)
+      : new Set(builtinTools.filter((t) => t.available).map((t) => t.name));
+    if (nextEnabled) base.add(toolName);
+    else base.delete(toolName);
+    onChange({ config: { enabled_tools: Array.from(base) } });
+  };
 
   // Resolve current voice. Three cases:
   //   • dv:<id>   → user designed voice from My Voices
@@ -233,6 +368,155 @@ export function AgentConfigForm({ name, type, config, availableModels, onChange 
         </Field>
       </Section>
 
+      {/* Tools — built-in capabilities the agent can call mid-conversation.
+          Web search, weather, time, URL fetch, Wikipedia. Tools the
+          deployment can't run (missing API key) render disabled with
+          a hint so it's clear why. Custom (user-defined) tools land in
+          a separate section in Phase 3. */}
+      {builtinTools.length > 0 && (
+        <Section
+          title="Tools"
+          hint="Built-in capabilities the agent can call. Disabled tools won't be advertised to the LLM."
+        >
+          <div className="space-y-2">
+            {builtinTools.map((tool) => {
+              const enabled = enabledToolNames.has(tool.name) && tool.available;
+              // When a tool isn't configured server-side, explain the
+              // exact env var that's missing — and for web_search,
+              // point users at the no-key alternative (Groq Compound)
+              // so they don't feel stuck. If they're already on a
+              // Compound model, switch to a positive message — the
+              // tool registry doesn't see it, but the agent's model
+              // has search built in.
+              const usingCompound = (config.llm_model || '').includes('compound');
+              let disabledReason = '';
+              if (!tool.available) {
+                if (tool.name === 'web_search' && usingCompound) {
+                  disabledReason = "Your selected model (Groq Compound) has web search built in — no key needed.";
+                } else {
+                  disabledReason = `Not configured on this deployment (needs ${tool.requires_env.join(', ')}).`;
+                  if (tool.name === 'web_search') {
+                    disabledReason += ' Or pick the "Groq · Compound" model above — it has web search built in, no key needed.';
+                  }
+                }
+              }
+              return (
+                <label
+                  key={tool.name}
+                  className={`flex items-start gap-3 p-3 rounded-xl border transition-colors ${
+                    tool.available
+                      ? 'border-white/10 bg-white/[0.02] hover:bg-white/[0.04] cursor-pointer'
+                      : 'border-white/[0.06] bg-white/[0.01] opacity-60 cursor-not-allowed'
+                  }`}
+                  title={disabledReason || undefined}
+                >
+                  <input
+                    type="checkbox"
+                    checked={enabled}
+                    disabled={!tool.available}
+                    onChange={(e) => handleToolToggle(tool.name, e.target.checked)}
+                    className="mt-1 accent-[#DFFF00] shrink-0"
+                  />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <Wrench size={12} className="text-[#A7B0B7] shrink-0" />
+                      <code className="text-[12px] font-mono text-white">{tool.name}</code>
+                      {!tool.available && (
+                        <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-white/[0.05] text-[#666] border border-white/10">
+                          unavailable
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[12px] text-[#A7B0B7] mt-1 leading-snug">{tool.description}</p>
+                    {disabledReason && (
+                      <p className="text-[11px] text-amber-300/80 mt-1">{disabledReason}</p>
+                    )}
+                  </div>
+                </label>
+              );
+            })}
+          </div>
+        </Section>
+      )}
+
+      {/* Custom tools — user-defined webhook executors the LLM can call.
+          Shown only in the edit flow (we need an agent_id to bind).
+          In the builder, first-save creates the agent; afterwards the
+          detail page shows this section. */}
+      {agentId && (
+        <Section
+          title="Custom tools"
+          hint="Webhook endpoints the LLM can call mid-conversation. Same JSON Schema shape OpenAI/Groq/Anthropic accept."
+        >
+          <div className="space-y-2">
+            {allUserTools === null ? (
+              <p className="text-[12px] text-[#666]">Loading…</p>
+            ) : allUserTools.length === 0 ? (
+              <p className="text-[12px] text-[#666]">
+                You haven't registered any custom tools yet. Click <span className="text-white">+ New custom tool</span> to add one.
+              </p>
+            ) : (
+              allUserTools.map((tool) => {
+                const isBound = boundToolIds.has(tool.id);
+                const busy = bindingBusy.has(tool.id);
+                return (
+                  <div
+                    key={tool.id}
+                    className="flex items-start gap-3 p-3 rounded-xl border border-white/10 bg-white/[0.02] hover:bg-white/[0.04] transition-colors"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isBound}
+                      disabled={busy}
+                      onChange={(e) => void handleBindToggle(tool, e.target.checked)}
+                      className="mt-1 accent-[#DFFF00] shrink-0"
+                      title={isBound ? 'Bound to this agent' : 'Bind to this agent'}
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <Wrench size={12} className="text-[#A7B0B7] shrink-0" />
+                        <code className="text-[12px] font-mono text-white">{tool.name}</code>
+                        <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-white/[0.05] text-[#A7B0B7] border border-white/10">
+                          {tool.method}
+                        </span>
+                      </div>
+                      <p className="text-[12px] text-[#A7B0B7] mt-1 leading-snug line-clamp-2">{tool.description}</p>
+                      <p className="text-[11px] text-[#666] mt-1 font-mono truncate">{tool.endpoint_url}</p>
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => { setEditingTool(tool); setEditorOpen(true); }}
+                        className="p-1.5 rounded-md text-[#A7B0B7] hover:text-white hover:bg-white/5 transition-colors"
+                        title="Edit"
+                      >
+                        <Pencil size={13} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleDeleteTool(tool)}
+                        className="p-1.5 rounded-md text-[#A7B0B7] hover:text-red-300 hover:bg-red-500/10 transition-colors"
+                        title="Delete"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+            <button
+              type="button"
+              onClick={() => { setEditingTool(null); setEditorOpen(true); }}
+              className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl border border-dashed border-white/15 text-sm text-[#A7B0B7] hover:text-white hover:border-white/30 hover:bg-white/[0.02] transition-colors"
+            >
+              <Plus size={14} />
+              New custom tool
+            </button>
+          </div>
+        </Section>
+      )}
+
       <SampleVoicePickerModal
         open={voicePickerOpen}
         selectedId={config.voice}
@@ -241,6 +525,14 @@ export function AgentConfigForm({ name, type, config, availableModels, onChange 
         onSelectDesigned={(encodedId) => onChange({ config: { voice: encodedId } })}
         onClose={() => setVoicePickerOpen(false)}
       />
+
+      {editorOpen && (
+        <CustomToolEditor
+          initial={editingTool}
+          onClose={() => { setEditorOpen(false); setEditingTool(null); }}
+          onSaved={() => { void refreshCustomTools(); }}
+        />
+      )}
     </div>
   );
 }

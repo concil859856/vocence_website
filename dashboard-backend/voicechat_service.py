@@ -337,6 +337,16 @@ async def maybe_summarize_conversation(conversation: list[ChatMessage]) -> bool:
     else:
         sum_user = f"Conversation excerpt:\n{transcript}\n\nProduce the summary."
 
+    # Summarization runs during voice chat (blocks the turn while we
+    # compress old history), so latency matters. Groq's small/fast
+    # 8B-instant is ideal — compression doesn't need a 70B model and
+    # the 8B is ~3× cheaper + ~2× faster. Falls through to the global
+    # default when Groq isn't configured.
+    from llm_client import groq_llm_configured
+    summary_model: str | None = None
+    if groq_llm_configured():
+        summary_model = f"groq:{os.environ.get('GROQ_SUMMARY_MODEL') or 'llama-3.1-8b-instant'}"
+
     try:
         new_summary = await chat_complete(
             messages=[
@@ -345,6 +355,7 @@ async def maybe_summarize_conversation(conversation: list[ChatMessage]) -> bool:
             ],
             temperature=0.3,
             max_tokens=400,
+            model=summary_model,
         )
     except Exception as exc:  # noqa: BLE001
         _log.warning("conversation summarization failed; leaving history as-is: %s", exc)
@@ -437,16 +448,30 @@ async def stream_llm(
     *,
     temperature: float | None = None,
     max_tokens: int | None = None,
+    model: str | None = None,
 ) -> AsyncIterator[str]:
-    """Yield incremental assistant content deltas. Routes through the
-    unified llm_client, which prefers the local Qwen3-4B endpoint and
-    falls back to Chutes on error.
+    """Yield incremental assistant content deltas.
+
+    Provider routing priority:
+      1. Caller-supplied ``model`` with a provider prefix (e.g.
+         ``cerebras:llama-3.3-70b``) — always wins.
+      2. **Cerebras default for voicechat** — if no model is supplied
+         and CEREBRAS_API_KEY is configured, we force
+         ``cerebras:qwen-3-235b-a22b-instruct-2507`` (Qwen 3 235B MoE,
+         22B active params, served on Cerebras WSE at sub-30ms first-
+         token latency with reliable tool calling and — crucially — no
+         hidden reasoning phase that would block content streaming).
+         On any stream failure before first delta,
+         ``stream_chat_with_tools`` retries against OpenAI automatically
+         (see VOICECHAT_LLM_FALLBACK_TO_OPENAI).
+      3. Otherwise the global ``llm_client`` default (Chutes/OpenAI/local).
 
     The output is filtered of ``<think>...</think>`` reasoning blocks so
     neither the chat UI nor the TTS pipeline ever sees the model's
     internal monologue.
     """
-    from llm_client import stream_chat as _ll_stream  # local import: avoid early circular
+    from llm_client import cerebras_llm_configured, stream_chat as _ll_stream  # local import: avoid early circular
+
     msgs = [{"role": m.role, "content": m.content} for m in messages]
     # Voice chat hits /v1/stream/no-think regardless of LOCAL_LLM_USE_THINK.
     # Reason: the thinking phase generates 500–2000 ms of <think>…</think>
@@ -456,11 +481,33 @@ async def stream_llm(
     # most of the heavy lifting. Override per-call via VOICECHAT_USE_THINK
     # if you want to A/B test thinking on a specific deploy.
     use_think = (os.environ.get("VOICECHAT_USE_THINK") or "").strip().lower() in {"1", "true", "yes"}
+
+    # Voicechat routing (mirrors the priority in routers/voicechat.py):
+    #   1. ``VOICECHAT_FORCE_MODEL`` — emergency override (wins over
+    #      everything including caller-supplied model).
+    #   2. Caller-supplied ``model`` (agent.config.llm_model).
+    #   3. ``VOICECHAT_DEFAULT_MODEL`` env var when slot is empty.
+    #   4. Cerebras if configured (the normal fast path; OpenAI is the
+    #      automatic stream-failure fallback in stream_chat_with_tools).
+    #   5. Fall through to global llm_provider() default.
+    force_model = (os.environ.get("VOICECHAT_FORCE_MODEL") or "").strip()
+    if force_model:
+        effective_model = force_model
+    else:
+        effective_model = model
+        if effective_model is None:
+            override = (os.environ.get("VOICECHAT_DEFAULT_MODEL") or "").strip()
+            if override:
+                effective_model = override
+            elif cerebras_llm_configured():
+                effective_model = f"cerebras:{os.environ.get('CEREBRAS_VOICECHAT_MODEL') or 'qwen-3-235b-a22b-instruct-2507'}"
+
     upstream = _ll_stream(
         msgs,
         temperature=temperature if temperature is not None else VOICECHAT_LLM_TEMPERATURE,
         max_tokens=max_tokens or VOICECHAT_LLM_MAX_TOKENS,
         think=use_think,
+        model=effective_model,
     )
     async for delta in _strip_think_blocks(upstream):
         yield delta
@@ -522,6 +569,128 @@ class TtsChunk:
     """Either a binary PCM frame or an end-of-sentence marker."""
     kind: str  # "meta" | "audio" | "end" | "error"
     payload: dict | bytes | None = None
+
+
+class TtsWsWarmer:
+    """Pre-opens TTS WebSocket connections so chunks 2..N skip the
+    TCP + WS-upgrade handshake.
+
+    The TTS protocol is one-shot per WS (start → audio → end → close), so
+    we can't reuse a WS for multiple sentences. Instead, while chunk N is
+    streaming audio, we open the WS for chunk N+1 in the background; when
+    chunk N+1's text is ready to send, the connection is already there.
+
+    Lifecycle: one warmer per voice-chat turn. The router instantiates it
+    knowing which TTS service URL it'll hit (clone vs qwen3), passes it
+    into ``stream_tts_for_voice``, and calls ``close()`` on cleanup.
+
+    Saves ~30-80ms per chunk after the first (TCP handshake + HTTP
+    Upgrade RTT). On a 4-chunk reply that compounds to ~90-240ms of
+    inter-chunk dead time eliminated.
+    """
+
+    def __init__(self, ws_url: str, headers: dict, timeout_sec: float) -> None:
+        self._ws_url = ws_url
+        self._headers = headers
+        self._timeout_sec = timeout_sec
+        self._warm_session: aiohttp.ClientSession | None = None
+        self._warm_ws: aiohttp.ClientWebSocketResponse | None = None
+        self._prewarm_task: asyncio.Task | None = None
+        self._closed = False
+
+    async def acquire(self) -> tuple[aiohttp.ClientSession, aiohttp.ClientWebSocketResponse]:
+        """Return an open (session, ws) — the pre-warmed one if ready,
+        else open a fresh one synchronously. Caller owns both and must
+        close them when done."""
+        # If a prewarm is in flight, wait briefly for it. Capping at
+        # 500ms guarantees we don't pay MORE than a normal open if
+        # prewarm is slow — we just open synchronously instead.
+        if self._prewarm_task is not None and not self._prewarm_task.done():
+            try:
+                await asyncio.wait_for(asyncio.shield(self._prewarm_task), timeout=0.5)
+            except (asyncio.TimeoutError, Exception):
+                pass
+
+        if self._warm_ws is not None and not self._warm_ws.closed and self._warm_session is not None:
+            session, ws = self._warm_session, self._warm_ws
+            self._warm_session = None
+            self._warm_ws = None
+            return session, ws
+
+        # No warm WS available — open one now.
+        timeout = aiohttp.ClientTimeout(total=self._timeout_sec)
+        session = aiohttp.ClientSession(timeout=timeout)
+        try:
+            ws = await session.ws_connect(self._ws_url, headers=self._headers, heartbeat=20)
+            return session, ws
+        except Exception:
+            try:
+                await session.close()
+            except Exception:
+                pass
+            raise
+
+    def schedule_prewarm(self) -> None:
+        """Open the next WS in the background. Safe to call multiple
+        times — only one prewarm runs at a time."""
+        if self._closed:
+            return
+        if self._warm_ws is not None and not self._warm_ws.closed:
+            return
+        if self._prewarm_task is not None and not self._prewarm_task.done():
+            return
+        self._prewarm_task = asyncio.create_task(self._prewarm())
+
+    async def _prewarm(self) -> None:
+        if self._closed:
+            return
+        timeout = aiohttp.ClientTimeout(total=self._timeout_sec)
+        session = aiohttp.ClientSession(timeout=timeout)
+        try:
+            ws = await session.ws_connect(self._ws_url, headers=self._headers, heartbeat=20)
+        except Exception as exc:
+            _log.debug("tts prewarm failed (%s) — fresh open will happen on next chunk", exc)
+            try:
+                await session.close()
+            except Exception:
+                pass
+            return
+        # Race with close(): if the warmer was closed while we were
+        # opening, throw the connection away rather than leaking it.
+        if self._closed:
+            try:
+                await asyncio.wait_for(ws.close(code=1000), timeout=0.3)
+            except Exception:
+                pass
+            try:
+                await session.close()
+            except Exception:
+                pass
+            return
+        self._warm_session = session
+        self._warm_ws = ws
+
+    async def close(self) -> None:
+        """Tear down the warmer and any pre-opened connection."""
+        self._closed = True
+        if self._prewarm_task is not None and not self._prewarm_task.done():
+            self._prewarm_task.cancel()
+            try:
+                await self._prewarm_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        if self._warm_ws is not None and not self._warm_ws.closed:
+            try:
+                await asyncio.wait_for(self._warm_ws.close(code=1000), timeout=0.3)
+            except (asyncio.TimeoutError, Exception):
+                pass
+        if self._warm_session is not None:
+            try:
+                await asyncio.wait_for(self._warm_session.close(), timeout=0.5)
+            except (asyncio.TimeoutError, Exception):
+                pass
+        self._warm_ws = None
+        self._warm_session = None
 
 
 # ---------------------------------------------------------------------------
@@ -592,11 +761,26 @@ _CLONE_LANGUAGES = {
 }
 
 
+def _clone_ws_url_and_headers() -> tuple[str, dict]:
+    """Return (ws_url, headers) for the cloned-voice TTS service. Shared
+    by the streamer and by the router's TtsWsWarmer."""
+    ws_url = (
+        QWEN3_CLONE_BASE_URL.replace("http://", "ws://").replace("https://", "wss://")
+        + "/v1/voice-clone/stream"
+    )
+    headers: dict = {}
+    if QWEN3_CLONE_API_KEY:
+        headers["Authorization"] = f"Bearer {QWEN3_CLONE_API_KEY}"
+    return ws_url, headers
+
+
 async def _stream_clone_via_service(
     text: str,
     ref_audio_bytes: bytes,
     ref_text: str,
     language: str | None,
+    *,
+    warmer: TtsWsWarmer | None = None,
 ) -> AsyncIterator[TtsChunk]:
     """Open WS to qwen3-clone-streaming and forward meta/binary/end frames
     as TtsChunks. Wire format mirrors the README at
@@ -608,14 +792,13 @@ async def _stream_clone_via_service(
     Protocol errors (auth, bad_request, server_busy, engine_failed) are
     yielded as TtsChunk(kind='error') with the service's code preserved
     so the voicechat router can surface a useful message.
+
+    When a ``warmer`` is provided, we use its pre-opened WS if available
+    (saving the handshake) and schedule a background prewarm of the next
+    WS as soon as our first audio frame arrives — so chunk N+1 starts
+    with a hot connection.
     """
-    ws_url = (
-        QWEN3_CLONE_BASE_URL.replace("http://", "ws://").replace("https://", "wss://")
-        + "/v1/voice-clone/stream"
-    )
-    headers = {}
-    if QWEN3_CLONE_API_KEY:
-        headers["Authorization"] = f"Bearer {QWEN3_CLONE_API_KEY}"
+    ws_url, headers = _clone_ws_url_and_headers()
 
     # Build the start payload — omit `language` when null/empty so the
     # service's "Auto" default kicks in cleanly.
@@ -631,37 +814,77 @@ async def _stream_clone_via_service(
             _log.debug("clone service: unrecognised language %r — passing through", lang)
         start["language"] = lang
 
-    timeout = aiohttp.ClientTimeout(total=QWEN3_CLONE_TIMEOUT_SEC)
-    session = aiohttp.ClientSession(timeout=timeout)
+    # CANCEL SAFETY: when a barge-in cancels the turn, this generator
+    # is closed mid-stream. We MUST tear down the WS promptly or the
+    # upstream clone-streaming server keeps the slot busy and the next
+    # turn's WS hangs (single-slot server). Two pieces:
+    #
+    #   1. Use explicit acquire/release instead of ``async with
+    #      session.ws_connect(...)`` — that pattern calls aiohttp's
+    #      default ``ws.close()`` whose ACK timeout is 10s, which is
+    #      far too long for a barge-in.
+    #   2. In the finally block, close the WS with a TIGHT 300ms cap.
+    #      If the server doesn't ACK in time, we move on and let TCP
+    #      close handle the rest — the alternative (waiting 10s) is
+    #      strictly worse.
+    if warmer is not None:
+        session, ws = await warmer.acquire()
+    else:
+        timeout = aiohttp.ClientTimeout(total=QWEN3_CLONE_TIMEOUT_SEC)
+        session = aiohttp.ClientSession(timeout=timeout)
+        try:
+            ws = await session.ws_connect(ws_url, headers=headers, heartbeat=20)
+        except Exception:
+            try:
+                await session.close()
+            except Exception:
+                pass
+            raise
+
+    first_audio_seen = False
     try:
-        async with session.ws_connect(ws_url, headers=headers, heartbeat=20) as ws:
-            await ws.send_str(json.dumps(start))
-            async for msg in ws:
-                if msg.type == aiohttp.WSMsgType.TEXT:
-                    try:
-                        obj = json.loads(msg.data)
-                    except Exception:
-                        continue
-                    mtype = obj.get("type")
-                    if mtype == "meta":
-                        yield TtsChunk(kind="meta", payload=obj)
-                    elif mtype == "end":
-                        yield TtsChunk(kind="end", payload=obj)
-                        return
-                    elif mtype == "error":
-                        # Verbose log — auth/bad_request/server_busy/engine_failed
-                        # all surface here. Server's code is the canonical signal.
-                        code = obj.get("code") or "unknown"
-                        m = (obj.get("message") or "")[:200]
-                        _log.warning("clone service error code=%s message=%s", code, m)
-                        yield TtsChunk(kind="error", payload=obj)
-                        return
-                elif msg.type == aiohttp.WSMsgType.BINARY:
-                    yield TtsChunk(kind="audio", payload=msg.data)
-                elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+        await ws.send_str(json.dumps(start))
+        async for msg in ws:
+            if msg.type == aiohttp.WSMsgType.TEXT:
+                try:
+                    obj = json.loads(msg.data)
+                except Exception:
+                    continue
+                mtype = obj.get("type")
+                if mtype == "meta":
+                    yield TtsChunk(kind="meta", payload=obj)
+                elif mtype == "end":
+                    yield TtsChunk(kind="end", payload=obj)
                     return
+                elif mtype == "error":
+                    # Verbose log — auth/bad_request/server_busy/engine_failed
+                    # all surface here. Server's code is the canonical signal.
+                    code = obj.get("code") or "unknown"
+                    m = (obj.get("message") or "")[:200]
+                    _log.warning("clone service error code=%s message=%s", code, m)
+                    yield TtsChunk(kind="error", payload=obj)
+                    return
+            elif msg.type == aiohttp.WSMsgType.BINARY:
+                if not first_audio_seen and warmer is not None:
+                    # Kick off the next chunk's connection now — the
+                    # synthesis we're receiving usually runs another
+                    # 100-500ms before end, plenty of time to open
+                    # the next WS in the background.
+                    first_audio_seen = True
+                    warmer.schedule_prewarm()
+                yield TtsChunk(kind="audio", payload=msg.data)
+            elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                return
     finally:
-        await session.close()
+        if ws is not None and not ws.closed:
+            try:
+                await asyncio.wait_for(ws.close(code=1000), timeout=0.3)
+            except (asyncio.TimeoutError, Exception):
+                pass
+        try:
+            await asyncio.wait_for(session.close(), timeout=0.5)
+        except (asyncio.TimeoutError, Exception):
+            pass
 
 
 async def _stream_clone_direct(
@@ -705,13 +928,15 @@ async def _stream_clone_with_refs(
     ref_audio: bytes,
     ref_text: str,
     language: str | None = None,
+    *,
+    warmer: TtsWsWarmer | None = None,
 ) -> AsyncIterator[TtsChunk]:
     """Clone-based TTS given raw reference audio bytes + transcript.
     Prefers the streaming service; falls back to direct one-shot synth
     on transport error."""
     if QWEN3_CLONE_BASE_URL:
         try:
-            async for chunk in _stream_clone_via_service(text, ref_audio, ref_text, language):
+            async for chunk in _stream_clone_via_service(text, ref_audio, ref_text, language, warmer=warmer):
                 yield chunk
             return
         except Exception as exc:  # noqa: BLE001
@@ -725,12 +950,13 @@ async def stream_voice_clone_tts(
     sample_voice_id: str,
     *,
     language: str | None = None,
+    warmer: TtsWsWarmer | None = None,
 ) -> AsyncIterator[TtsChunk]:
     """Voice-cloned TTS for one sample-voice id. Yields the same TtsChunk
     shape as ``stream_qwen3_tts`` so the voicechat router can switch
     between paths."""
     ref_audio, ref_text = await load_sample_voice(sample_voice_id, language=language)
-    async for chunk in _stream_clone_with_refs(text, ref_audio, ref_text, language):
+    async for chunk in _stream_clone_with_refs(text, ref_audio, ref_text, language, warmer=warmer):
         yield chunk
 
 
@@ -828,12 +1054,36 @@ async def stream_designed_voice_tts(
     *,
     user_id: str,
     language: str | None = None,
+    warmer: TtsWsWarmer | None = None,
 ) -> AsyncIterator[TtsChunk]:
     """Voice-cloned TTS using a user's saved 'My Voice'. ``user_id`` is
     required so we don't leak voices across users."""
     ref_audio, ref_text = await _resolve_designed_voice(user_id, voice_id)
-    async for chunk in _stream_clone_with_refs(text, ref_audio, ref_text, language):
+    async for chunk in _stream_clone_with_refs(text, ref_audio, ref_text, language, warmer=warmer):
         yield chunk
+
+
+def voice_uses_clone_service(voice: str | None) -> bool:
+    """Whether a voice value will route to the cloned-voice service
+    (qwen3-clone-streaming) vs the qwen3 built-in TTS. Used by the
+    router so it can spin up the right kind of TtsWsWarmer before any
+    chunk is dispatched."""
+    return parse_designed_voice_id(voice) is not None or is_sample_voice(voice)
+
+
+def make_tts_warmer_for_voice(voice: str | None) -> TtsWsWarmer | None:
+    """Build a TtsWsWarmer pointing at whichever TTS service ``voice``
+    will hit. Returns None if the chosen service isn't configured (so
+    the caller falls back to unwarmed per-chunk opens)."""
+    if voice_uses_clone_service(voice):
+        if not QWEN3_CLONE_BASE_URL:
+            return None
+        ws_url, headers = _clone_ws_url_and_headers()
+        return TtsWsWarmer(ws_url, headers, QWEN3_CLONE_TIMEOUT_SEC)
+    if QWEN3_TTS_BASE_URL:
+        ws_url, headers = _qwen3_tts_ws_url_and_headers()
+        return TtsWsWarmer(ws_url, headers, QWEN3_TTS_TIMEOUT_SEC)
+    return None
 
 
 async def stream_tts_for_voice(
@@ -842,6 +1092,7 @@ async def stream_tts_for_voice(
     *,
     language: str | None = None,
     user_id: str | None = None,
+    warmer: TtsWsWarmer | None = None,
 ) -> AsyncIterator[TtsChunk]:
     """Pick the right TTS backend for ``voice``:
        • ``dv:<id>``     → user-owned designed voice (My Voices)
@@ -850,69 +1101,117 @@ async def stream_tts_for_voice(
 
     ``user_id`` is required for the dv:<id> path so a user can only
     address their own saved voices.
+
+    ``warmer`` (optional) provides pre-opened WS connections so chunks
+    2..N skip the handshake. The router should build one with
+    ``make_tts_warmer_for_voice()`` at turn start and close it at
+    turn end.
     """
     dv_id = parse_designed_voice_id(voice)
     if dv_id is not None:
         if not user_id:
             _log.warning("dv:%d voice requested without user_id — falling back to default", dv_id)
-            async for chunk in stream_qwen3_tts(text, voice=None):
+            async for chunk in stream_qwen3_tts(text, voice=None, warmer=warmer):
                 yield chunk
             return
         try:
-            async for chunk in stream_designed_voice_tts(text, dv_id, user_id=user_id, language=language):
+            async for chunk in stream_designed_voice_tts(text, dv_id, user_id=user_id, language=language, warmer=warmer):
                 yield chunk
             return
         except Exception as exc:  # noqa: BLE001
             _log.warning("designed voice dv:%d failed (%s); falling back to default voice", dv_id, exc)
+            # Default fallback uses qwen3, not clone — warmer is wrong
+            # shape, so don't pass it. Worst case: chunk pays a fresh
+            # handshake on the fallback.
             async for chunk in stream_qwen3_tts(text, voice=None):
                 yield chunk
             return
 
     if is_sample_voice(voice):
-        async for chunk in stream_voice_clone_tts(text, voice or "", language=language):
+        async for chunk in stream_voice_clone_tts(text, voice or "", language=language, warmer=warmer):
             yield chunk
     else:
-        async for chunk in stream_qwen3_tts(text, voice=voice):
+        async for chunk in stream_qwen3_tts(text, voice=voice, warmer=warmer):
             yield chunk
 
 
-async def stream_qwen3_tts(text: str, voice: str | None = None) -> AsyncIterator[TtsChunk]:
-    """Open a WS to qwen3_streaming, yield meta + binary frames + end."""
+def _qwen3_tts_ws_url_and_headers() -> tuple[str, dict]:
+    """Return (ws_url, headers) for the qwen3 built-in TTS service."""
     if not QWEN3_TTS_BASE_URL:
         raise RuntimeError("QWEN3_TTS_BASE_URL not configured")
-
     ws_url = QWEN3_TTS_BASE_URL.replace("http://", "ws://").replace("https://", "wss://") + "/v1/tts/stream"
-    headers = {}
+    headers: dict = {}
     if QWEN3_TTS_API_KEY:
         headers["Authorization"] = f"Bearer {QWEN3_TTS_API_KEY}"
+    return ws_url, headers
 
-    timeout = aiohttp.ClientTimeout(total=QWEN3_TTS_TIMEOUT_SEC)
-    session = aiohttp.ClientSession(timeout=timeout)
+
+async def stream_qwen3_tts(
+    text: str,
+    voice: str | None = None,
+    *,
+    warmer: TtsWsWarmer | None = None,
+) -> AsyncIterator[TtsChunk]:
+    """Open a WS to qwen3_streaming, yield meta + binary frames + end.
+
+    When ``warmer`` is provided, use its pre-opened WS if ready and kick
+    off the next chunk's prewarm on first audio — same pattern as the
+    clone path."""
+    ws_url, headers = _qwen3_tts_ws_url_and_headers()
+
+    # Same cancel-safety treatment as _stream_clone_via_service: explicit
+    # WS acquire + bounded close so a barge-in mid-synthesis doesn't sit
+    # waiting for the upstream server's CLOSE ACK (default 10s).
+    if warmer is not None:
+        session, ws = await warmer.acquire()
+    else:
+        timeout = aiohttp.ClientTimeout(total=QWEN3_TTS_TIMEOUT_SEC)
+        session = aiohttp.ClientSession(timeout=timeout)
+        try:
+            ws = await session.ws_connect(ws_url, headers=headers, heartbeat=20)
+        except Exception:
+            try:
+                await session.close()
+            except Exception:
+                pass
+            raise
+
+    first_audio_seen = False
     try:
-        async with session.ws_connect(ws_url, headers=headers, heartbeat=20) as ws:
-            await ws.send_str(json.dumps({
-                "type": "start",
-                "text": text,
-                "voice": voice or QWEN3_TTS_VOICE,
-            }))
-            async for msg in ws:
-                if msg.type == aiohttp.WSMsgType.TEXT:
-                    try:
-                        obj = json.loads(msg.data)
-                    except Exception:
-                        continue
-                    mtype = obj.get("type")
-                    if mtype == "meta":
-                        yield TtsChunk(kind="meta", payload=obj)
-                    elif mtype == "end":
-                        yield TtsChunk(kind="end", payload=obj)
-                        return
-                    elif mtype == "error":
-                        yield TtsChunk(kind="error", payload=obj)
-                        return
-                elif msg.type == aiohttp.WSMsgType.BINARY:
-                    yield TtsChunk(kind="audio", payload=msg.data)
-                elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+        await ws.send_str(json.dumps({
+            "type": "start",
+            "text": text,
+            "voice": voice or QWEN3_TTS_VOICE,
+        }))
+        async for msg in ws:
+            if msg.type == aiohttp.WSMsgType.TEXT:
+                try:
+                    obj = json.loads(msg.data)
+                except Exception:
+                    continue
+                mtype = obj.get("type")
+                if mtype == "meta":
+                    yield TtsChunk(kind="meta", payload=obj)
+                elif mtype == "end":
+                    yield TtsChunk(kind="end", payload=obj)
                     return
+                elif mtype == "error":
+                    yield TtsChunk(kind="error", payload=obj)
+                    return
+            elif msg.type == aiohttp.WSMsgType.BINARY:
+                if not first_audio_seen and warmer is not None:
+                    first_audio_seen = True
+                    warmer.schedule_prewarm()
+                yield TtsChunk(kind="audio", payload=msg.data)
+            elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                return
     finally:
-        await session.close()
+        if ws is not None and not ws.closed:
+            try:
+                await asyncio.wait_for(ws.close(code=1000), timeout=0.3)
+            except (asyncio.TimeoutError, Exception):
+                pass
+        try:
+            await asyncio.wait_for(session.close(), timeout=0.5)
+        except (asyncio.TimeoutError, Exception):
+            pass

@@ -13,13 +13,14 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { Archive, ArrowLeft, Loader2, MoreVertical, Pause, Play, Trash2 } from 'lucide-react';
+import { Archive, ArrowLeft, BookOpen, Clock, Loader2, MoreVertical, Pause, Play, Sparkles, Target, Trash2 } from 'lucide-react';
 import { StudioShell } from '../../components/StudioShell';
 import { AgentAvatar } from '../../components/agents/AgentAvatar';
 import { AgentChat } from '../../components/agents/AgentChat';
 import { AgentConfigForm } from '../../components/agents/AgentConfigForm';
 import { useAuth } from '../../contexts/AuthContext';
 import { agentsApi, getStoredToken } from '../../lib/agents/api';
+import { avatarGradientPairFor } from '../../data/sampleVoices';
 import type { Agent, AgentConfig, AgentRun, AgentType } from '../../lib/agents/types';
 
 type Tab = 'chat' | 'runs' | 'settings';
@@ -37,6 +38,40 @@ const STATUS_LABEL: Record<Agent['status'], string> = {
   draft: 'Draft',
   archived: 'Archived',
 };
+
+// Chip styling per status so the hero conveys the agent's state at a
+// glance without needing the kebab menu. Mirrors the dot-color palette
+// (active/paused/draft/archived) for cohesion with the rest of the UI.
+const STATUS_CHIP: Record<Agent['status'], string> = {
+  active:   'bg-emerald-500/15 text-emerald-300 border-emerald-400/30',
+  paused:   'bg-amber-500/15 text-amber-200 border-amber-400/30',
+  draft:    'bg-white/[0.06] text-[#A7B0B7] border-white/10',
+  archived: 'bg-white/[0.04] text-[#666] border-white/10',
+};
+
+function formatRelative(iso?: string | null): string {
+  if (!iso) return 'never';
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return iso;
+  const delta = Date.now() - t;
+  const sec = Math.floor(delta / 1000);
+  if (sec < 60) return 'just now';
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const day = Math.floor(hr / 24);
+  if (day < 30) return `${day}d ago`;
+  return new Date(t).toLocaleDateString();
+}
+
+/** Strip vendor/owner prefixes off an LLM model id so the chip in the
+ *  hero stays readable. ``meta-llama/Llama-3-70B`` → ``Llama-3-70B``. */
+function shortenModelLabel(id: string | undefined | null): string {
+  if (!id) return 'default';
+  const tail = id.split('/').pop() || id;
+  return tail.length > 24 ? tail.slice(0, 22) + '…' : tail;
+}
 
 export function AgentDetail() {
   const { id } = useParams<{ id: string }>();
@@ -114,6 +149,11 @@ export function AgentDetail() {
     { id: 'settings', label: 'Settings', show: true },
   ];
 
+  // Agent identity gradient — same pair the avatar uses, so the hero
+  // backdrop "matches" the avatar without us picking colors manually.
+  const grad = avatarGradientPairFor(`agent-${agent.id}`);
+  const isActive = agent.status === 'active';
+
   return (
     <div className="min-h-screen bg-[#07080A] pt-20">
     <StudioShell activeView="agents">
@@ -122,78 +162,185 @@ export function AgentDetail() {
         <Link
           to="/studio/agents"
           onClick={(e) => { if (!confirmLeaveIfDirty()) e.preventDefault(); }}
-          className="text-[#A7B0B7] hover:text-white inline-flex items-center gap-1.5 text-sm mb-4"
+          className="text-[#A7B0B7] hover:text-white inline-flex items-center gap-1.5 text-sm mb-3"
         >
           <ArrowLeft size={14} /> All agents
         </Link>
 
-        {/* Header — one breathing line */}
-        <div className="flex items-center gap-4 mb-6">
-          <AgentAvatar id={agent.id} name={agent.name} size="lg" rounded="xl" />
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2.5">
-              <h1 className="text-2xl font-semibold text-white truncate">{agent.name}</h1>
-              <span
-                className={`shrink-0 w-2 h-2 rounded-full ${STATUS_DOT[agent.status]}`}
-                title={STATUS_LABEL[agent.status]}
-                aria-label={STATUS_LABEL[agent.status]}
-              />
+        {/* ── HERO ─────────────────────────────────────────────────────
+            Identity-tinted hero. The agent's avatar gradient blurs out
+            behind the content as a soft backdrop, then a dark gradient
+            fades it back into the page background. Bleeds to the
+            content area's edges via -mx-6/-mx-10 like the playbook
+            detail hero, so the agent's color reads as a banner.
+
+            The blurred layer lives in its own overflow-hidden wrapper
+            so the kebab/menu popovers inside the hero can drop down
+            past the bottom edge without being clipped. */}
+        <div className="relative -mx-6 lg:-mx-10 px-6 lg:px-10 pb-3 mb-3">
+          <div className="absolute inset-0 overflow-hidden pointer-events-none" aria-hidden>
+            <div className={`absolute inset-0 bg-gradient-to-br ${grad.outer} opacity-20 blur-3xl saturate-150`} />
+            <div className="absolute inset-0 bg-gradient-to-b from-[#07080A]/60 via-[#07080A]/85 to-[#07080A]" />
+          </div>
+
+          <div className="relative pt-3 flex items-center gap-3 pr-10">
+            <div className="shadow-lg shadow-black/40 rounded-full shrink-0">
+              <AgentAvatar id={agent.id} name={agent.name} size="md" rounded="full" />
             </div>
-            <div className="text-[12px] text-[#A7B0B7] mt-0.5">{typeLabel}</div>
-            {agent.config.purpose && (
-              <p className="text-[#A7B0B7] text-sm mt-2 max-w-2xl line-clamp-2">{agent.config.purpose}</p>
+
+            <div className="flex-1 min-w-0">
+              {/* Kicker line — chips on a single row alongside the
+                  status pulse-dot. Compact for the small-hero layout. */}
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-[9px] font-semibold uppercase tracking-[0.18em] text-white/70">Agent</span>
+                <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-medium ${
+                  agent.type === 'goal'
+                    ? 'bg-purple-500/15 text-purple-200 border border-purple-400/30'
+                    : 'bg-[#DFFF00]/15 text-[#DFFF00] border border-[#DFFF00]/30'
+                }`}>
+                  {agent.type === 'goal' ? <Target size={9} /> : <Sparkles size={9} />}
+                  {typeLabel}
+                </span>
+                <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-medium border ${STATUS_CHIP[agent.status]}`}>
+                  <span className="relative inline-flex">
+                    <span className={`block w-1.5 h-1.5 rounded-full ${STATUS_DOT[agent.status]}`} />
+                    {isActive && (
+                      <span className={`absolute inset-0 rounded-full ${STATUS_DOT[agent.status]} animate-ping opacity-60`} />
+                    )}
+                  </span>
+                  {STATUS_LABEL[agent.status]}
+                </span>
+              </div>
+
+              <h1 className="text-lg sm:text-xl font-bold text-white leading-tight tracking-tight truncate mt-0.5">
+                {agent.name}
+              </h1>
+
+              {/* Purpose + stats collapsed onto adjacent rows so the
+                  whole hero stays one short stack. Purpose truncates
+                  to one line; full text still lives in Settings. */}
+              {agent.config.purpose && (
+                <p className="text-[#A7B0B7] text-xs mt-0.5 leading-snug truncate">{agent.config.purpose}</p>
+              )}
+
+              <div className="flex items-center gap-1.5 mt-1 text-[11px] text-[#A7B0B7] flex-wrap">
+                <span className="inline-flex items-center gap-1">
+                  <Play size={10} />
+                  <span className="tabular-nums text-white font-medium">{agent.run_count}</span>
+                  run{agent.run_count === 1 ? '' : 's'}
+                </span>
+                <span className="text-[#444]">·</span>
+                <span className="inline-flex items-center gap-1">
+                  <Clock size={10} />
+                  <span className="text-white">{formatRelative(agent.last_run_at)}</span>
+                </span>
+                <span className="text-[#444]">·</span>
+                <span className="text-[10px] font-mono px-1 py-0.5 rounded bg-white/[0.05] text-[#A7B0B7] border border-white/10" title={agent.config.llm_model}>
+                  {shortenModelLabel(agent.config.llm_model)}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Top-right controls: Guide link + Kebab. Guide opens the
+              docs in a new tab so the user keeps their unsaved edits
+              and live chat session intact. */}
+          <div className="absolute top-2 right-4 lg:right-8 z-20 flex items-center gap-1.5">
+            <Link
+              to="/docs/guide-agents"
+              target="_blank"
+              rel="noopener"
+              title="Open the Agents guide in a new tab"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] hover:bg-white/[0.08] hover:border-white/20 px-2.5 py-1.5 text-[11px] text-[#A7B0B7] hover:text-white transition-colors"
+            >
+              <BookOpen size={12} />
+              <span className="hidden sm:inline">Guide</span>
+            </Link>
+            <KebabMenu
+              agent={agent}
+              token={token}
+              onUpdate={(a) => setAgent(a)}
+              onDelete={() => navigate('/studio/agents')}
+            />
+          </div>
+        </div>
+
+        {/* Tabs — Runs gets a count chip; Settings shows an "unsaved"
+            indicator dot when the form is dirty so the user sees they
+            have pending edits without leaving the current tab. */}
+        <div className="border-b border-white/10 mb-6 flex gap-1">
+          {tabs.filter((t) => t.show).map((t) => {
+            const isCurrent = activeTab === t.id;
+            return (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => {
+                  // Switching AWAY from Settings while dirty asks for confirm.
+                  if (activeTab === 'settings' && t.id !== 'settings' && !confirmLeaveIfDirty()) {
+                    return;
+                  }
+                  setActiveTab(t.id);
+                }}
+                className={`relative inline-flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
+                  isCurrent
+                    ? 'border-[#DFFF00] text-white'
+                    : 'border-transparent text-[#A7B0B7] hover:text-white'
+                }`}
+              >
+                {t.label}
+                {t.id === 'runs' && agent.run_count > 0 && (
+                  <span className="text-[10px] tabular-nums px-1.5 py-0.5 rounded bg-white/[0.06] text-[#A7B0B7]">
+                    {agent.run_count}
+                  </span>
+                )}
+                {t.id === 'settings' && settingsDirty && (
+                  <span
+                    className="w-1.5 h-1.5 rounded-full bg-amber-400"
+                    title="You have unsaved changes"
+                    aria-label="Unsaved changes"
+                  />
+                )}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Tab content. We MOUNT the chat / runs panel continuously and
+            only toggle visibility with `hidden` — unmounting <AgentChat>
+            when the user clicks Settings would (a) drop the messages
+            state, (b) close the WebSocket, and (c) wipe the server's
+            in-memory conversation array. The user would come back to a
+            blank chat with an amnesiac agent. Hiding instead of
+            unmounting keeps the WS alive, the audio worklet running,
+            and the agent's session memory intact.
+
+            Paused / archived agents see a blocked state in the active
+            tab — backend also enforces this; the frontend check is just
+            to avoid a wasted WS attempt. Drafts are NOT blocked so
+            users can test an agent before activating.
+
+            Settings IS conditionally mounted because (a) it has no
+            persistent socket / memory worth preserving, and (b) keeping
+            it mounted while the user types in chat would keep
+            `settingsDirty` stuck. */}
+        {agent.type === 'knowledge' && (
+          <div className={activeTab === 'chat' ? '' : 'hidden'}>
+            {isAgentBlocked(agent.status) ? (
+              <AgentBlockedCard agent={agent} token={token} onUpdate={(a) => setAgent(a)} />
+            ) : (
+              <AgentChat agent={agent} authToken={token} />
             )}
           </div>
-          <KebabMenu
-            agent={agent}
-            token={token}
-            onUpdate={(a) => setAgent(a)}
-            onDelete={() => navigate('/studio/agents')}
-          />
-        </div>
-
-        {/* Tabs */}
-        <div className="border-b border-white/10 mb-6 flex gap-1">
-          {tabs.filter((t) => t.show).map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              onClick={() => {
-                // Switching AWAY from Settings while dirty asks for confirm.
-                if (activeTab === 'settings' && t.id !== 'settings' && !confirmLeaveIfDirty()) {
-                  return;
-                }
-                setActiveTab(t.id);
-              }}
-              className={`px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
-                activeTab === t.id
-                  ? 'border-[#DFFF00] text-white'
-                  : 'border-transparent text-[#A7B0B7] hover:text-white'
-              }`}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
-
-        {/* Tab content. Paused / archived agents see a blocked state in
-            the active tab — backend also enforces this; the frontend
-            check is just to avoid a wasted WS attempt and give a clear
-            empty state. Drafts are NOT blocked so users can test an
-            agent before activating. */}
-        {activeTab === 'chat' && agent.type === 'knowledge' && (
-          isAgentBlocked(agent.status) ? (
-            <AgentBlockedCard agent={agent} token={token} onUpdate={(a) => setAgent(a)} />
-          ) : (
-            <AgentChat agent={agent} authToken={token} />
-          )
         )}
-        {activeTab === 'runs' && agent.type === 'goal' && (
-          isAgentBlocked(agent.status) ? (
-            <AgentBlockedCard agent={agent} token={token} onUpdate={(a) => setAgent(a)} />
-          ) : (
-            <RunsTab agent={agent} token={token} />
-          )
+        {agent.type === 'goal' && (
+          <div className={activeTab === 'runs' ? '' : 'hidden'}>
+            {isAgentBlocked(agent.status) ? (
+              <AgentBlockedCard agent={agent} token={token} onUpdate={(a) => setAgent(a)} />
+            ) : (
+              <RunsTab agent={agent} token={token} />
+            )}
+          </div>
         )}
         {activeTab === 'settings' && (
           <SettingsTab
@@ -356,6 +503,13 @@ function SettingsTab({
       onUpdated(updated);
       setSaveState({ kind: 'saved', at: Date.now() });
       setDirty(false);
+      // Auto-dismiss the confirmation chip after 4s so the bottom bar
+      // can return to ``idle`` and disappear instead of squatting on
+      // screen with a stale "Saved 12m ago". The SaveBar uses ``idle``
+      // + clean to hide itself.
+      window.setTimeout(() => {
+        setSaveState((s) => (s.kind === 'saved' ? { kind: 'idle' } : s));
+      }, 4000);
     } catch (err) {
       setSaveState({ kind: 'error', message: (err as Error).message || 'Save failed' });
     }
@@ -380,6 +534,7 @@ function SettingsTab({
         type={type}
         config={config}
         availableModels={models}
+        agentId={agent.id}
         onChange={(patch) => {
           setDirty(true);
           if (patch.name !== undefined) setName(patch.name);
@@ -422,6 +577,17 @@ function SaveBar({
   onSave: () => void;
 }) {
   const saving = saveState.kind === 'saving';
+  // Hide the bar entirely when there's nothing to communicate. We show
+  // it when (a) the form is dirty, (b) a save is in flight, (c) a save
+  // just succeeded (briefly — auto-cleared by SettingsTab after 4s), or
+  // (d) the last save errored. Otherwise the bar is just visual noise
+  // permanently squatting at the bottom of the page.
+  const shouldShow =
+    dirty ||
+    saveState.kind === 'saving' ||
+    saveState.kind === 'saved' ||
+    saveState.kind === 'error';
+  if (!shouldShow) return null;
   return (
     <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 max-w-3xl w-[calc(100%-2rem)] pointer-events-none">
       <div className={`pointer-events-auto rounded-2xl border backdrop-blur-md shadow-2xl shadow-black/40 px-4 py-3 flex items-center gap-3 transition-colors ${

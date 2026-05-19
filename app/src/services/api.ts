@@ -51,6 +51,13 @@ export interface AccountSummary {
   totalCreditsUsed: number;
 }
 
+export interface CreditTransactionsPage {
+  items: CreditTransaction[];
+  total: number;
+  offset: number;
+  limit: number;
+}
+
 export interface DailyCreditsDay {
   day: string;
   creditsUsed: number;
@@ -122,10 +129,17 @@ export interface DeveloperApiUsageLog {
 }
 
 export interface LoginRequest {
-  email: string;
-  name: string;
+  /** The raw Google ID token (JWT) from Google Identity Services'
+   *  ``credentialResponse.credential``. The backend verifies this
+   *  against Google's tokeninfo endpoint before trusting any claim. */
+  credential: string;
+  /** Optional hints — IGNORED by the backend when ``credential`` is
+   *  present (the verified JWT claims always win). Kept so old
+   *  callers don't break the type checker while we migrate. */
+  email?: string;
+  name?: string;
   picture?: string;
-  googleId: string;
+  googleId?: string;
 }
 
 export interface LoginResponse {
@@ -261,6 +275,25 @@ export const api = {
       });
       if (!response.ok) {
         throw new Error('Failed to fetch account summary');
+      }
+      return response.json();
+    } catch (error) {
+      throw withNetworkHint(error);
+    }
+  },
+
+  async getCreditTransactions(
+    token: string,
+    opts: { offset?: number; limit?: number } = {},
+  ): Promise<CreditTransactionsPage> {
+    const { offset = 0, limit = 25 } = opts;
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/account/transactions?limit=${limit}&offset=${offset}`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      if (!response.ok) {
+        throw new Error('Failed to fetch credit transactions');
       }
       return response.json();
     } catch (error) {

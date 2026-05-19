@@ -13,6 +13,7 @@ import { Mic, Send, Square, X } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useVoiceChat } from '../../lib/voicechat/useVoiceChat';
 import { renderMessage } from '../../lib/voicechat/renderInline';
+import { ToolCallChip } from '../../lib/voicechat/ToolCallChip';
 import { useArchitectOpen } from '../../lib/uiOverlay';
 import { useHasVoiceChatAccess } from '../../lib/voicechatAccess';
 
@@ -147,9 +148,13 @@ export function VocenceBot() {
     setToken(localStorage.getItem(STORAGE_TOKEN_KEY));
   }, [user?.id]);
 
-  const { state, messages, micLevel, error, startRecording, stopRecording, sendText, cancel, reset } = useVoiceChat({
+  // Always-on voice: one tap on Speak starts a hands-free session — VAD
+  // detects each turn, submits it, plays the reply, and reopens the mic.
+  // The user never has to press a "stop talking" button mid-conversation.
+  const { state, messages, micLevel, error, listening, startListening, stopListening, sendText, cancel, reset } = useVoiceChat({
     enabled: open && !!token && !!user,
     authToken: token,
+    alwaysOn: true,
   });
 
   // Auto-scroll to latest
@@ -223,11 +228,15 @@ export function VocenceBot() {
     handleLauncherClick();
   };
 
+  // Always-on toggle: one click starts a hands-free session (mic stays
+  // hot, VAD segments turns automatically); another click ends it. Mid-
+  // conversation the user never needs to touch this button.
   const handleMicClick = async () => {
-    if (state === 'recording') {
-      await stopRecording();
-    } else if (state === 'idle' || state === 'error' || state === 'speaking' || state === 'thinking') {
-      await startRecording();
+    if (listening) {
+      cancel();
+      stopListening();
+    } else {
+      await startListening();
     }
   };
 
@@ -288,7 +297,7 @@ export function VocenceBot() {
   if (architectOpen || onHiddenRoute) return null;
 
   const stateLabel: Record<typeof state, string> = {
-    idle: user ? 'Tap mic to talk' : 'Sign in to chat',
+    idle: user ? 'Tap mic to start' : 'Sign in to chat',
     connecting: 'Connecting…',
     listening: 'Listening…',
     recording: 'Listening…',
@@ -369,6 +378,11 @@ export function VocenceBot() {
                       : 'bg-white/[0.06] text-white border border-white/10'
                   }`}
                 >
+                  {m.role === 'assistant' && m.tool_calls && m.tool_calls.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5 mb-1.5">
+                      {m.tool_calls.map((tc) => <ToolCallChip key={tc.id} call={tc} />)}
+                    </div>
+                  )}
                   {m.pending && !m.text ? (
                     <span className="inline-flex gap-1">
                       <span className="w-1.5 h-1.5 rounded-full bg-current opacity-50 animate-pulse" />
@@ -396,16 +410,16 @@ export function VocenceBot() {
                 <button
                   type="button"
                   onClick={handleMicClick}
-                  disabled={state === 'connecting' || state === 'uploading' || state === 'transcribing'}
+                  disabled={state === 'connecting'}
                   className={`relative shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-colors ${
-                    state === 'recording'
+                    listening
                       ? 'bg-red-500 text-white'
                       : 'bg-[#DFFF00] text-[#07080A] hover:brightness-110 disabled:opacity-50'
                   }`}
-                  aria-label={state === 'recording' ? 'Stop recording' : 'Start recording'}
+                  aria-label={listening ? 'End voice chat' : 'Start voice chat'}
                 >
-                  {state === 'recording' ? <Square size={16} fill="currentColor" /> : <Mic size={18} />}
-                  {state === 'recording' && (
+                  {listening ? <Square size={16} fill="currentColor" /> : <Mic size={18} />}
+                  {listening && (
                     <span
                       className="absolute -inset-1 rounded-full border-2 border-red-400/60 pointer-events-none"
                       style={{ transform: `scale(${1 + micLevel * 0.4})` }}
@@ -437,14 +451,14 @@ export function VocenceBot() {
                         }
                       }
                     }}
-                    placeholder={state === 'recording' ? 'Recording…' : 'Type a message…'}
+                    placeholder="Type a message…"
                     title="Shift+Enter for new line"
-                    disabled={state === 'recording' || state === 'connecting'}
+                    disabled={state === 'connecting'}
                     className="flex-1 bg-white/[0.04] border border-white/10 rounded-2xl px-4 py-2 text-sm text-white placeholder:text-[#666] focus:outline-none focus:border-[#DFFF00]/40 disabled:opacity-50 resize-none leading-snug"
                   />
                   <button
                     type="submit"
-                    disabled={!textInput.trim() || state === 'recording' || state === 'connecting'}
+                    disabled={!textInput.trim() || state === 'connecting'}
                     className="shrink-0 w-9 h-9 rounded-full bg-white/[0.06] hover:bg-white/[0.10] text-white disabled:opacity-30 flex items-center justify-center"
                     aria-label="Send"
                   >

@@ -18,6 +18,9 @@ import {
   Plus,
   X,
   BookOpen,
+  ChevronDown,
+  ChevronRight,
+  Check,
 } from 'lucide-react';
 import gsap from 'gsap';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
@@ -64,6 +67,140 @@ import {
 import { cn } from '@/lib/utils';
 
 const USER_FACING_TRY_AGAIN = 'Something went wrong. Please try again later.';
+
+/**
+ * Languages the Qwen3-ASR self-hosted transcription engine accepts.
+ * The backend forwards whatever we send as ``language`` verbatim to
+ * the miner; the miner rejects anything not in this exact spelling
+ * (e.g. "en" → 500, "US" → 500). Keep this list in sync with the
+ * miner's ``Supported:`` enumeration — surfacing it as a dropdown
+ * means users can't type something invalid in the first place.
+ */
+const STT_LANGUAGES: readonly string[] = [
+  'English',
+  'Chinese',
+  'Cantonese',
+  'Arabic',
+  'German',
+  'French',
+  'Spanish',
+  'Portuguese',
+  'Indonesian',
+  'Italian',
+  'Korean',
+  'Russian',
+  'Thai',
+  'Vietnamese',
+  'Japanese',
+  'Turkish',
+  'Hindi',
+  'Malay',
+  'Dutch',
+  'Swedish',
+  'Danish',
+  'Finnish',
+] as const;
+
+/**
+ * Dark-themed language picker for the Upload Voice modal. Replaces a
+ * native ``<select>`` so the menu surface (border, hover, checkmark)
+ * matches our UI — the OS popup looks wrong on every Windows / Linux
+ * browser we tested. Handles click-outside to close and scrolls when
+ * the option list overflows.
+ */
+function LanguagePicker({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  disabled?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onEsc = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('mousedown', onDocClick);
+    document.addEventListener('keydown', onEsc);
+    return () => {
+      document.removeEventListener('mousedown', onDocClick);
+      document.removeEventListener('keydown', onEsc);
+    };
+  }, [open]);
+  const displayLabel = value || 'Auto-detect';
+  return (
+    <div ref={ref} className="relative w-full">
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => setOpen((o) => !o)}
+        className="w-full flex items-center justify-between rounded-lg bg-white/[0.04] border border-white/10 px-3 py-2 text-sm text-white hover:bg-white/[0.06] hover:border-white/20 focus:outline-none focus:border-white/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+      >
+        <span className={value ? 'text-white' : 'text-[#A7B0B7]'}>{displayLabel}</span>
+        <ChevronDown size={14} className={`text-[#A7B0B7] transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && (
+        <div
+          role="listbox"
+          className="absolute z-50 mt-1 w-full max-h-64 overflow-y-auto rounded-lg border border-white/10 bg-[#0B0D10] shadow-2xl shadow-black/60 py-1"
+        >
+          {/* Auto-detect option pinned at the top — matches the previous
+              "leave blank" semantic. */}
+          <LanguageOption value="" current={value} label="Auto-detect" onPick={(v) => { onChange(v); setOpen(false); }} muted />
+          <div className="border-t border-white/[0.05] my-1" />
+          {STT_LANGUAGES.map((lang) => (
+            <LanguageOption
+              key={lang}
+              value={lang}
+              current={value}
+              label={lang}
+              onPick={(v) => { onChange(v); setOpen(false); }}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LanguageOption({
+  value,
+  current,
+  label,
+  onPick,
+  muted,
+}: {
+  value: string;
+  current: string;
+  label: string;
+  onPick: (v: string) => void;
+  muted?: boolean;
+}) {
+  const active = value === current;
+  return (
+    <button
+      type="button"
+      onClick={() => onPick(value)}
+      className={`w-full flex items-center justify-between px-3 py-2 text-sm text-left transition-colors ${
+        active
+          ? 'bg-white/[0.08] text-white'
+          : muted
+            ? 'text-[#A7B0B7] hover:text-white hover:bg-white/[0.04]'
+            : 'text-[#C5CAD1] hover:text-white hover:bg-white/[0.04]'
+      }`}
+      role="option"
+      aria-selected={active}
+    >
+      <span>{label}</span>
+      {active && <Check size={14} className="text-[#DFFF00]" />}
+    </button>
+  );
+}
 
 // Temporary flag: while launching, only Text-to-Speech is enabled in Studio.
 // Flip back to `true` to re-enable the other Studio views.
@@ -204,7 +341,7 @@ const CLONE_REF_MAX_SEC = 20;
 export function Studio() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const { user, isAuthenticated, updateCredits, setLocalCredits } = useAuth();
+  const { user, isAuthenticated, setLocalCredits } = useAuth();
   const player = useStudioPlayer();
   const generations = useGenerations();
   const routeParams = useParams<{ view?: string; playbookId?: string }>();
@@ -225,6 +362,28 @@ export function Studio() {
   const [studioHistoryPage, setStudioHistoryPage] = useState(1);
   const [studioHistoryDateRange, setStudioHistoryDateRange] = useState<'all' | '24h' | '7d' | '30d'>('all');
   const [studioHistorySelected, setStudioHistorySelected] = useState<Set<string>>(new Set());
+  // Music rows on the Studio history table are expandable — click to
+  // open a details panel that shows lyrics + mode-specific knobs
+  // (variance, repaint window, edit target, etc.) with per-field copy
+  // buttons. Mirrors the behavior on the Account History page.
+  const [studioHistoryExpandedIds, setStudioHistoryExpandedIds] = useState<Set<string>>(new Set());
+  const [studioHistoryCopiedKey, setStudioHistoryCopiedKey] = useState<string | null>(null);
+  const toggleStudioHistoryExpanded = (key: string) =>
+    setStudioHistoryExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  const studioHistoryCopyValue = async (fieldKey: string, value: string) => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setStudioHistoryCopiedKey(fieldKey);
+      window.setTimeout(
+        () => setStudioHistoryCopiedKey((c) => (c === fieldKey ? null : c)),
+        1200,
+      );
+    } catch { /* clipboard unavailable */ }
+  };
   const [studioHistoryAddTarget, setStudioHistoryAddTarget] = useState<number | null>(null);
   const [studioHistoryBulkBusy, setStudioHistoryBulkBusy] = useState(false);
   const [studioHistoryAddOpen, setStudioHistoryAddOpen] = useState(false);
@@ -294,6 +453,14 @@ export function Studio() {
   const [deleteConfirmVoiceId, setDeleteConfirmVoiceId] = useState<number | null>(null);
   const [deleteVoiceLoading, setDeleteVoiceLoading] = useState(false);
   const [myVoicesNotice, setMyVoicesNotice] = useState<{ type: 'error' | 'success'; message: string } | null>(null);
+  // "Upload your voice" modal — saves a real-voice reference clip as a
+  // reusable cloned voice. Server transcribes once on save.
+  const [uploadVoiceOpen, setUploadVoiceOpen] = useState(false);
+  const [uploadVoiceFile, setUploadVoiceFile] = useState<File | null>(null);
+  const [uploadVoiceName, setUploadVoiceName] = useState('');
+  const [uploadVoiceLanguage, setUploadVoiceLanguage] = useState('');
+  const [uploadVoiceBusy, setUploadVoiceBusy] = useState(false);
+  const [uploadVoiceError, setUploadVoiceError] = useState<string | null>(null);
   const [vdSaveNameInvalid, setVdSaveNameInvalid] = useState(false);
   const [abstractImagePool, setAbstractImagePool] = useState<string[]>(DEFAULT_ABSTRACT_CARD_IMAGES);
   const highlightedVoiceRef = useRef<HTMLDivElement | null>(null);
@@ -1129,9 +1296,14 @@ export function Studio() {
         duration: '0:00',
       });
 
-      // Deduct credits
+      // Local-only deduction. We deliberately do NOT call the server
+      // /credits PATCH endpoint here — that endpoint is admin-only (see
+      // routers/auth.py:update_credits) after the 2026-05-14 incident
+      // where a user used it to grant themselves 100k credits. This
+      // chat is a UI demo and not a real LLM call, so deducting in
+      // local state is fine; on refresh the server-side balance wins.
       if (user) {
-        updateCredits(user.credits - 0.5);
+        setLocalCredits(user.credits - 0.5);
       }
     });
   };
@@ -1275,6 +1447,70 @@ export function Studio() {
         setVdSaveLoading(false);
       }
     });
+  };
+
+  // Reset the upload-voice modal state on open/close so a previous
+  // attempt doesn't bleed into the next.
+  const openUploadVoice = () => {
+    setUploadVoiceFile(null);
+    setUploadVoiceName('');
+    setUploadVoiceLanguage('');
+    setUploadVoiceError(null);
+    setUploadVoiceBusy(false);
+    setUploadVoiceOpen(true);
+  };
+  const closeUploadVoice = () => {
+    if (uploadVoiceBusy) return; // don't let user cancel mid-upload
+    setUploadVoiceOpen(false);
+    setUploadVoiceError(null);
+  };
+
+  const submitUploadVoice = async () => {
+    setUploadVoiceError(null);
+    const name = uploadVoiceName.trim();
+    if (!name) {
+      setUploadVoiceError('Give your voice a name.');
+      return;
+    }
+    if (name.length > 40) {
+      setUploadVoiceError('Name must be 40 characters or less.');
+      return;
+    }
+    if (!uploadVoiceFile) {
+      setUploadVoiceError('Pick an audio file (.wav / .mp3 / .m4a / .webm).');
+      return;
+    }
+    const token = localStorage.getItem('vocence_token');
+    setUploadVoiceBusy(true);
+    try {
+      const res = await dashboardApi.saveStudioClonedVoice(
+        {
+          displayName: name,
+          audioFile: uploadVoiceFile,
+          language: uploadVoiceLanguage.trim() || undefined,
+        },
+        token,
+      );
+      // Refresh the list so the new card shows immediately. (We could
+      // splice it into ``designedVoices`` directly, but a refetch also
+      // re-syncs presigned URLs and is simpler.)
+      try {
+        const r = await dashboardApi.listStudioDesignedVoices(token);
+        setDesignedVoices(r.voices);
+      } catch {
+        /* non-fatal */
+      }
+      setUploadVoiceOpen(false);
+      setMyVoicesNotice({
+        type: 'success',
+        message: `Saved “${res.display_name}” to My Voices. You can pick it on any agent or Studio call.`,
+      });
+      window.setTimeout(() => setMyVoicesNotice(null), 6000);
+    } catch (e) {
+      setUploadVoiceError(userFacingApiError(e));
+    } finally {
+      setUploadVoiceBusy(false);
+    }
   };
 
   const executeDeleteDesignedVoice = useCallback(async () => {
@@ -1618,6 +1854,13 @@ export function Studio() {
               </a>
               <button
                 type="button"
+                onClick={() => (user ? openUploadVoice() : setIsAuthModalOpen(true))}
+                className="rounded-xl border border-white/15 bg-white/[0.04] px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-white/[0.08] hover:border-white/25 active:scale-[0.99]"
+              >
+                Upload my voice
+              </button>
+              <button
+                type="button"
                 onClick={() => navigate('/studio/voice-design')}
                 className="rounded-xl border border-white/15 bg-white px-5 py-2.5 text-sm font-semibold text-[#07080A] shadow-sm shadow-black/10 transition-colors hover:bg-white/95 active:scale-[0.99]"
               >
@@ -1697,9 +1940,20 @@ export function Studio() {
                       </button>
                     </div>
                     <div className="px-4 pt-3 pb-1">
-                      <h3 className="font-semibold text-white text-base leading-tight tracking-tight truncate">
-                        {v.display_name || `Voice #${v.id}`}
-                      </h3>
+                      <div className="flex items-center gap-2">
+                        <h3 className="font-semibold text-white text-base leading-tight tracking-tight truncate flex-1 min-w-0">
+                          {v.display_name || `Voice #${v.id}`}
+                        </h3>
+                        {v.source === 'cloned' ? (
+                          <span className="text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-200 border border-purple-400/30 shrink-0">
+                            Cloned
+                          </span>
+                        ) : (
+                          <span className="text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-[#DFFF00]/10 text-[#DFFF00]/85 border border-[#DFFF00]/25 shrink-0">
+                            Designed
+                          </span>
+                        )}
+                      </div>
                       {v.model_name ? (
                         <p className="text-[11px] text-[#6B7280] mt-0.5 truncate">{v.model_name}</p>
                       ) : null}
@@ -1777,6 +2031,102 @@ export function Studio() {
             if (!deleteVoiceLoading) setDeleteConfirmVoiceId(null);
           }}
         />
+
+        {uploadVoiceOpen ? (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60">
+            <div className="bg-[#0B0D10] border border-white/15 rounded-2xl w-full max-w-lg max-h-[90vh] flex flex-col overflow-hidden shadow-2xl shadow-black/60">
+              <div className="flex items-center justify-between px-5 py-4 border-b border-white/10">
+                <h3 className="text-base font-semibold text-white">Upload my voice</h3>
+                <button
+                  type="button"
+                  onClick={closeUploadVoice}
+                  disabled={uploadVoiceBusy}
+                  className="text-[#666] hover:text-white p-1.5 rounded-md hover:bg-white/5 disabled:opacity-40"
+                  aria-label="Close"
+                >
+                  ✕
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-5 space-y-4">
+                <p className="text-sm text-[#A7B0B7] leading-relaxed">
+                  Upload a clear voice clip (5–30 seconds works best) and we'll save it as a reusable voice.
+                  You can pick it on any agent or Studio call without re-uploading. We transcribe the clip
+                  once on save so the reference text is ready when the voice is used.
+                </p>
+
+                <div>
+                  <label className="block text-xs uppercase tracking-wider text-[#A7B0B7] mb-1.5">Voice name</label>
+                  <input
+                    type="text"
+                    value={uploadVoiceName}
+                    onChange={(e) => setUploadVoiceName(e.target.value)}
+                    maxLength={40}
+                    placeholder="e.g. My founder voice"
+                    disabled={uploadVoiceBusy}
+                    className="w-full rounded-lg bg-white/[0.04] border border-white/10 px-3 py-2 text-sm text-white placeholder-[#666] focus:outline-none focus:border-white/30"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs uppercase tracking-wider text-[#A7B0B7] mb-1.5">Audio file</label>
+                  <input
+                    type="file"
+                    accept="audio/*"
+                    onChange={(e) => setUploadVoiceFile(e.target.files?.[0] || null)}
+                    disabled={uploadVoiceBusy}
+                    className="block w-full text-sm text-[#A7B0B7] file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-white/[0.06] file:text-white hover:file:bg-white/[0.12]"
+                  />
+                  {uploadVoiceFile ? (
+                    <p className="text-[11px] text-[#666] mt-1.5">
+                      {uploadVoiceFile.name} · {(uploadVoiceFile.size / 1024 / 1024).toFixed(2)} MB
+                    </p>
+                  ) : null}
+                </div>
+
+                <div>
+                  <label className="block text-xs uppercase tracking-wider text-[#A7B0B7] mb-1.5">
+                    Language <span className="text-[#666] normal-case">(optional — leave on Auto-detect if unsure)</span>
+                  </label>
+                  {/* Fully-custom dropdown so the menu styling matches
+                      the modal — native <select> opens a browser-themed
+                      menu that clashes with our dark UI, especially on
+                      Windows. The options list scrolls when it overflows. */}
+                  <LanguagePicker
+                    value={uploadVoiceLanguage}
+                    onChange={setUploadVoiceLanguage}
+                    disabled={uploadVoiceBusy}
+                  />
+                </div>
+
+                {uploadVoiceError ? (
+                  <div className="rounded-lg border border-red-400/30 bg-red-500/10 text-red-200 text-sm px-3 py-2">
+                    {uploadVoiceError}
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-white/10 bg-white/[0.02]">
+                <button
+                  type="button"
+                  onClick={closeUploadVoice}
+                  disabled={uploadVoiceBusy}
+                  className="px-3 py-2 rounded-lg border border-white/10 text-sm text-[#A7B0B7] hover:text-white hover:border-white/20 disabled:opacity-40"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void submitUploadVoice()}
+                  disabled={uploadVoiceBusy || !uploadVoiceFile || !uploadVoiceName.trim()}
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-[#DFFF00] text-[#07080A] text-sm font-semibold hover:brightness-110 disabled:opacity-40"
+                >
+                  {uploadVoiceBusy ? 'Saving…' : 'Save voice'}
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
       </>
     );
   };
@@ -2858,12 +3208,15 @@ export function Studio() {
                               </tr>
                             </thead>
                             <tbody className="divide-y divide-white/5">
-                              {studioHistoryPageItems.map((item) => {
+                              {studioHistoryPageItems.flatMap((item) => {
                                   const created = new Date(item.created_at);
                                   const timestamp = created.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
                                   const date = created.toLocaleDateString();
                                   const isCloneLike =
                                     item.entry_type === 'clone' || item.entry_type === 'voice_design';
+                                  const isMusic = item.entry_type === 'music';
+                                  const rowKey = `${item.entry_type}-${item.id}`;
+                                  const isExpanded = isMusic && studioHistoryExpandedIds.has(rowKey);
                                   const typeBadge =
                                     item.entry_type === 'stt'
                                       ? 'bg-green-500/15 text-green-400'
@@ -2871,9 +3224,15 @@ export function Studio() {
                                         ? 'bg-cyan-500/15 text-cyan-400'
                                         : item.entry_type === 'voice_design'
                                           ? 'bg-violet-500/15 text-violet-300'
-                                          : 'bg-[#DFFF00]/15 text-[#DFFF00]';
+                                          : isMusic
+                                            ? 'bg-pink-500/15 text-pink-300'
+                                            : 'bg-[#DFFF00]/15 text-[#DFFF00]';
                                   const typeLabel =
-                                    item.entry_type === 'voice_design' ? 'MY VOICE' : item.entry_type.toUpperCase();
+                                    item.entry_type === 'voice_design'
+                                      ? 'MY VOICE'
+                                      : isMusic
+                                        ? 'MUSIC'
+                                        : item.entry_type.toUpperCase();
                                   const contentCell =
                                     item.entry_type === 'stt'
                                       ? item.transcribed_text || item.source_audio_filename || '-'
@@ -2907,6 +3266,17 @@ export function Studio() {
                                         : item.entry_type === 'music'
                                           ? '?entry_type=music'
                                           : '';
+                                  // Parse music metadata lazily — only when this row is music.
+                                  // The schema field is a JSON string ({}-default).
+                                  const musicMeta: Record<string, unknown> = (() => {
+                                    if (!isMusic) return {};
+                                    try {
+                                      return JSON.parse(item.music_metadata_json || '{}');
+                                    } catch {
+                                      return {};
+                                    }
+                                  })();
+                                  const musicTask = item.music_task || 'text2music';
                                   const dlName = isCloneLike
                                     ? item.entry_type === 'voice_design'
                                       ? `vocence-voice-design-${item.id}.wav`
@@ -2914,9 +3284,17 @@ export function Studio() {
                                     : item.entry_type === 'music'
                                       ? `vocence-music-${item.id}.wav`
                                       : `vocence-tts-${item.id}.wav`;
-                                  return (
-                                    <tr key={`${item.entry_type}-${item.id}`} className={`hover:bg-white/5 transition-colors ${studioHistorySelected.has(_historyKey(item)) ? 'bg-[#DFFF00]/[0.04]' : ''}`}>
-                                      <td className="px-3 py-4">
+                                  // Music rows are clickable to toggle the details
+                                  // panel. We don't fire that on the checkbox click,
+                                  // the play/download buttons, or anywhere we use
+                                  // stopPropagation below.
+                                  return [
+                                    <tr
+                                      key={rowKey}
+                                      onClick={isMusic ? () => toggleStudioHistoryExpanded(rowKey) : undefined}
+                                      className={`hover:bg-white/5 transition-colors ${isMusic ? 'cursor-pointer' : ''} ${studioHistorySelected.has(_historyKey(item)) ? 'bg-[#DFFF00]/[0.04]' : ''}`}
+                                    >
+                                      <td className="px-3 py-4" onClick={(e) => e.stopPropagation()}>
                                         <input
                                           type="checkbox"
                                           aria-label="Select item"
@@ -2926,7 +3304,12 @@ export function Studio() {
                                         />
                                       </td>
                                       <td className="px-4 py-4">
-                                        <div className="font-medium">{timestamp}</div>
+                                        <div className="font-medium flex items-center gap-1.5">
+                                          {isMusic && (
+                                            isExpanded ? <ChevronDown size={14} className="text-[#A7B0B7]" /> : <ChevronRight size={14} className="text-[#A7B0B7]" />
+                                          )}
+                                          {timestamp}
+                                        </div>
                                         <div className="text-xs text-[#666]">{date}</div>
                                       </td>
                                       <td className="px-4 py-4">
@@ -2940,7 +3323,7 @@ export function Studio() {
                                           <button
                                             type="button"
                                             className="text-[#666] hover:text-white"
-                                            onClick={() => navigator.clipboard.writeText(contentCopy)}
+                                            onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(contentCopy); }}
                                           >
                                             <Copy size={14} />
                                           </button>
@@ -2953,7 +3336,7 @@ export function Studio() {
                                             <button
                                               type="button"
                                               className="text-[#666] hover:text-white"
-                                              onClick={() => navigator.clipboard.writeText(styleCopy)}
+                                              onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(styleCopy); }}
                                             >
                                               <Copy size={14} />
                                             </button>
@@ -2963,7 +3346,10 @@ export function Studio() {
                                       <td className="px-4 py-4">
                                         <span className="px-2 py-1 bg-[#0a0a0a] rounded text-xs">{item.display_name}</span>
                                       </td>
-                                      <td className="px-4 py-4 text-right">
+                                      <td
+                                        className="px-4 py-4 text-right"
+                                        onClick={(e) => e.stopPropagation()}
+                                      >
                                         <div className="flex items-center justify-end gap-2">
                                           {item.entry_type === 'stt' ? (
                                             <span className="text-xs text-[#A7B0B7]">Text only</span>
@@ -3018,8 +3404,74 @@ export function Studio() {
                                           )}
                                         </div>
                                       </td>
-                                    </tr>
-                                  );
+                                    </tr>,
+                                    isExpanded ? (
+                                      <tr key={`${rowKey}-details`} className="bg-[#0a0a0a]">
+                                        <td colSpan={7} className="p-0">
+                                          {(() => {
+                                            // Mode-specific rows.
+                                            const rows: { label: string; value: string; mono?: boolean }[] = [
+                                              { label: 'Mode', value: musicTask.replace('2', ' to ').replace('_', ' ').replace(/\b\w/g, (c) => c.toUpperCase()) },
+                                              { label: 'Prompt', value: item.prompt_text || '' },
+                                              { label: 'Lyrics', value: item.lyrics || '', mono: true },
+                                            ];
+                                            if (musicTask === 'audio2audio') {
+                                              if (musicMeta.ref_audio_strength != null) rows.push({ label: 'Ref strength', value: String(musicMeta.ref_audio_strength) });
+                                            } else if (musicTask === 'retake') {
+                                              if (musicMeta.retake_variance != null) rows.push({ label: 'Variance', value: String(musicMeta.retake_variance) });
+                                              if (musicMeta.retake_seeds) rows.push({ label: 'Seeds', value: String(musicMeta.retake_seeds) });
+                                            } else if (musicTask === 'repaint') {
+                                              if (musicMeta.repaint_start != null) rows.push({ label: 'Window start', value: `${musicMeta.repaint_start}s` });
+                                              if (musicMeta.repaint_end != null) rows.push({ label: 'Window end', value: `${musicMeta.repaint_end}s` });
+                                              if (musicMeta.retake_variance != null) rows.push({ label: 'Variance', value: String(musicMeta.retake_variance) });
+                                            } else if (musicTask === 'edit') {
+                                              if (musicMeta.edit_target_prompt) rows.push({ label: 'Target prompt', value: String(musicMeta.edit_target_prompt) });
+                                              if (musicMeta.edit_target_lyrics) rows.push({ label: 'Target lyrics', value: String(musicMeta.edit_target_lyrics), mono: true });
+                                              if (musicMeta.edit_n_min != null) rows.push({ label: 'n_min', value: String(musicMeta.edit_n_min) });
+                                              if (musicMeta.edit_n_max != null) rows.push({ label: 'n_max', value: String(musicMeta.edit_n_max) });
+                                            } else if (musicTask === 'extend') {
+                                              if (musicMeta.left_extend_length != null) rows.push({ label: 'Left (sec)', value: String(musicMeta.left_extend_length) });
+                                              if (musicMeta.right_extend_length != null) rows.push({ label: 'Right (sec)', value: String(musicMeta.right_extend_length) });
+                                              if (musicMeta.extend_seeds) rows.push({ label: 'Seeds', value: String(musicMeta.extend_seeds) });
+                                            }
+                                            if (musicMeta.infer_step != null) rows.push({ label: 'Infer step', value: String(musicMeta.infer_step) });
+                                            if (musicMeta.guidance_scale != null) rows.push({ label: 'Guidance', value: String(musicMeta.guidance_scale) });
+                                            return (
+                                              <div className="bg-white/[0.02] border-t border-white/5 px-6 py-3">
+                                                <div className="text-[10px] uppercase tracking-wider text-[#666] mb-2">Generation details</div>
+                                                <div className="space-y-0">
+                                                  {rows.map((r) => {
+                                                    if (!r.value) return null;
+                                                    const fkey = `${rowKey}:${r.label}`;
+                                                    const copied = studioHistoryCopiedKey === fkey;
+                                                    return (
+                                                      <div key={r.label} className="flex items-start gap-3 py-1.5">
+                                                        <div className="text-[10px] uppercase tracking-wider text-[#666] w-32 shrink-0 pt-0.5">{r.label}</div>
+                                                        <div className={`flex-1 min-w-0 text-sm text-[#C5CAD1] ${r.mono ? 'font-mono text-xs' : ''} whitespace-pre-wrap break-words`}>{r.value}</div>
+                                                        <button
+                                                          type="button"
+                                                          onClick={(e) => { e.stopPropagation(); void studioHistoryCopyValue(fkey, r.value); }}
+                                                          className={`shrink-0 inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded border transition-colors ${
+                                                            copied
+                                                              ? 'border-[#DFFF00]/40 text-[#DFFF00] bg-[#DFFF00]/10'
+                                                              : 'border-white/10 text-[#A7B0B7] hover:text-white hover:border-white/30'
+                                                          }`}
+                                                          title={`Copy ${r.label.toLowerCase()}`}
+                                                        >
+                                                          {copied ? <Check size={12} /> : <Copy size={12} />}
+                                                          {copied ? 'Copied' : 'Copy'}
+                                                        </button>
+                                                      </div>
+                                                    );
+                                                  })}
+                                                </div>
+                                              </div>
+                                            );
+                                          })()}
+                                        </td>
+                                      </tr>
+                                    ) : null,
+                                  ];
                                 })}
                             </tbody>
                           </table>

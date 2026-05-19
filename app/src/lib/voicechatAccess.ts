@@ -1,19 +1,19 @@
 import { useAuth } from '../contexts/AuthContext';
+import { ADMIN_EMAIL } from '../config';
 
 /**
- * Temporary launch-gate allowlist for Logos (the floating Vocence Assistant)
- * and the Studio Agents feature. Hard-coded by request — no env var so the
- * list can't drift between Vercel scopes. Add an email here to grant
- * access; remove this whole file (and its callers) once the features are
- * publicly launched.
+ * Launch gate for Logos (the floating Vocence Assistant) and the Studio
+ * Agents feature. Both are admin-only until publicly launched: the hook
+ * returns true only when the signed-in user's email matches the
+ * VITE_ADMIN_EMAIL env. Remove this file (and its callers) once these
+ * features are released to all users.
+ *
+ * The "voicechat access" name is kept so existing callers don't churn —
+ * semantically it now means "may see the not-yet-launched voice agents
+ * and Logos surfaces".
  */
-const VOICE_CHAT_ALLOWLIST: ReadonlySet<string> = new Set([
-  'axe.vldk@gmail.com',     // owner
-  'koyuki@gohalo.ai',
-]);
-
 export function useHasVoiceChatAccess(): boolean {
   const { user, isAuthenticated } = useAuth();
-  if (!isAuthenticated || !user?.email) return false;
-  return VOICE_CHAT_ALLOWLIST.has(user.email.trim().toLowerCase());
+  if (!isAuthenticated || !user?.email || !ADMIN_EMAIL) return false;
+  return user.email === ADMIN_EMAIL;
 }

@@ -48,6 +48,13 @@ function serveVadAssetsInDev(): Plugin {
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "")
   const apiProxyTarget = env.VITE_DEV_API_PROXY || "http://127.0.0.1:8084"
+  // Developer-API (the OpenAPI service powering the Try-It-Out
+  // embedded explorer on the docs page). Defaults to 8031 to match
+  // the production nginx config for api.vocence.ai. The subnet
+  // validator's ``vocence api`` CLI uses 8063 (routed to
+  // subnet.vocence.ai) so there is no collision. Override with
+  // VITE_DEV_DEVAPI_PROXY if you run the developer-api elsewhere.
+  const devApiProxyTarget = env.VITE_DEV_DEVAPI_PROXY || "http://127.0.0.1:8031"
 
   return {
   // Use '/' so assets load from site root when server serves index.html for SPA routes (e.g. /dashboard)
@@ -78,6 +85,34 @@ export default defineConfig(({ mode }) => {
       "/api": {
         target: apiProxyTarget,
         changeOrigin: true,
+      },
+      // Public share + embed pages live at the backend's root (not
+      // under /api) so the user-facing URLs the share menu generates
+      // are short. These dev proxies mirror the production Vercel
+      // rewrites in vercel.json so `localhost:5173/p/{id}` works
+      // exactly like `vocence.ai/p/{id}` will in prod.
+      //
+      // The trailing slash on `/p/` is load-bearing: without it,
+      // Vite's prefix-match catches every path starting with `/p`
+      // (including /prompt_to_speech_image.png and friends) and
+      // proxies them to the backend, which then 404s.
+      "/p/": {
+        target: apiProxyTarget,
+        changeOrigin: true,
+      },
+      "/embed/p/": {
+        target: apiProxyTarget,
+        changeOrigin: true,
+      },
+      // Forward `/devapi/*` to the local developer-api service. The
+      // docs page's Swagger UI fetches the OpenAPI spec from
+      // ``/devapi/openapi.json`` so it stays on the same origin (no
+      // CORS dance) AND so users can hit Try-It-Out against the
+      // running dev API without any extra config.
+      "/devapi": {
+        target: devApiProxyTarget,
+        changeOrigin: true,
+        rewrite: (p) => p.replace(/^\/devapi/, ""),
       },
     },
   },

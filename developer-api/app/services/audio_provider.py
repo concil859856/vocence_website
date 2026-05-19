@@ -15,9 +15,15 @@ import aiohttp
 from minio import Minio
 
 CHUTES_AUTH_KEY = os.environ.get("CHUTES_AUTH_KEY") or os.environ.get("CHUTES_API_KEY", "")
-CHUTES_WHISPER_STT_URL = os.environ.get(
-    "CHUTES_WHISPER_STT_URL",
-    "https://chutes-whisper-large-v3.chutes.ai/transcribe",
+# STT endpoint. We run our own Qwen3-ASR server (POST /transcribe with
+# JSON {audio_b64, language?}). The env var is still named
+# CHUTES_WHISPER_STT_URL for back-compat — the underlying service is
+# Qwen3-ASR. Falls back to STUDIO_STT_URL so a single var on the
+# dashboard-backend powers both services.
+CHUTES_WHISPER_STT_URL = (
+    os.environ.get("CHUTES_WHISPER_STT_URL")
+    or os.environ.get("STUDIO_STT_URL")
+    or ""
 )
 STUDIO_TTS_BUCKET = os.environ.get("STUDIO_TTS_BUCKET", "studio-tts")
 STUDIO_TTS_EXPIRY_DAYS = int(os.environ.get("STUDIO_TTS_EXPIRY_DAYS", "7"))
@@ -96,8 +102,13 @@ async def synthesize_speak(chute_slug: str, text: str, instruction: str) -> tupl
 
 
 async def transcribe_audio(audio_bytes: bytes, language: str | None = None) -> tuple[dict | None, str]:
+    # Qwen3-ASR expects ``audio_base64`` (not ``audio_b64``). We pass the
+    # same value under both keys so the request also works against any
+    # legacy Whisper-shaped chute that might be in front of this code.
+    b64 = base64.b64encode(audio_bytes).decode("utf-8")
     payload: dict[str, str] = {
-        "audio_b64": base64.b64encode(audio_bytes).decode("utf-8"),
+        "audio_base64": b64,
+        "audio_b64": b64,
     }
     if language:
         payload["language"] = language

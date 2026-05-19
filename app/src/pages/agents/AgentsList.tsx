@@ -8,7 +8,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Bot, Loader2, Plus, Search, Sparkles, Target } from 'lucide-react';
+import { BookOpen, Bot, Loader2, Plus, Search, Sparkles, Target } from 'lucide-react';
 import { StudioShell } from '../../components/StudioShell';
 import { AgentCard } from '../../components/agents/AgentCard';
 import { useAuth } from '../../contexts/AuthContext';
@@ -62,12 +62,22 @@ export function AgentsList() {
               Voice agents with custom knowledge or autonomous goals — built by chatting, no code.
             </p>
           </div>
-          <Link
-            to="/studio/agents/new"
-            className="inline-flex items-center gap-2 rounded-xl bg-[#DFFF00] text-[#07080A] px-4 py-2.5 text-sm font-semibold hover:brightness-110 shrink-0"
-          >
-            <Plus size={16} /> New agent
-          </Link>
+          <div className="flex items-center gap-2 shrink-0">
+            <Link
+              to="/docs/guide-agents"
+              target="_blank"
+              rel="noopener"
+              className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] hover:bg-white/[0.08] hover:border-white/20 px-3.5 py-2.5 text-sm text-[#A7B0B7] hover:text-white transition-colors"
+            >
+              <BookOpen size={14} /> Guide
+            </Link>
+            <Link
+              to="/studio/agents/new"
+              className="inline-flex items-center gap-2 rounded-xl bg-[#DFFF00] text-[#07080A] px-4 py-2.5 text-sm font-semibold hover:brightness-110"
+            >
+              <Plus size={16} /> New agent
+            </Link>
+          </div>
         </div>
 
         {agents === null ? (

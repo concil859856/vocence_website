@@ -130,6 +130,143 @@ export const agentsApi = {
       return { models: [] };
     }
   },
+
+  /** Built-in voice-agent tools catalog. Each entry tells the UI
+   *  whether the tool can actually run on this deployment (some
+   *  need API keys server-side). Frontend uses this to render the
+   *  Tools section of the agent config form. */
+  async listBuiltinTools(token: string): Promise<{
+    tools: { name: string; description: string; available: boolean; requires_env: string[] }[];
+  }> {
+    try {
+      return await jsonFetch(`${API_BASE_URL}/dashboard/agents/tools/builtin`, {
+        method: 'GET',
+        headers: authHeaders(token),
+      });
+    } catch {
+      return { tools: [] };
+    }
+  },
+};
+
+export interface BuiltinToolInfo {
+  name: string;
+  description: string;
+  available: boolean;
+  requires_env: string[];
+}
+
+/* ===========================================================================
+   Custom (user-defined) tools
+   ===========================================================================
+
+   Per client spec (5/12 chat): "We need to be able to register custom tools."
+   These are webhook endpoints the LLM can call mid-conversation. The
+   parameters schema is the same JSON Schema shape OpenAI/Groq/Anthropic
+   all accept, so a tool registered in Vocence works identically across
+   any modern LLM provider.
+*/
+
+export type CustomToolMethod = 'POST' | 'GET' | 'PUT' | 'PATCH' | 'DELETE';
+export type CustomToolAuthType = 'none' | 'bearer' | 'header';
+
+export interface CustomTool {
+  id: string;
+  name: string;
+  description: string;
+  /** JSON Schema for the tool's arguments. The LLM uses this to know
+   *  what fields to fill in when it decides to call the tool. */
+  parameters: Record<string, unknown>;
+  endpoint_url: string;
+  method: CustomToolMethod;
+  auth_type: CustomToolAuthType;
+  auth_header_name: string | null;
+  /** Whether a secret is set on the server. The actual secret value
+   *  is never returned to the client — only the boolean indicator,
+   *  so the UI can show "[set]" instead of an empty field on edit. */
+  has_secret: boolean;
+  timeout_ms: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CustomToolCreate {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+  endpoint_url: string;
+  method?: CustomToolMethod;
+  auth_type?: CustomToolAuthType;
+  auth_header_name?: string | null;
+  /** Plaintext secret on create. Stored server-side; never read back. */
+  auth_secret?: string | null;
+  timeout_ms?: number;
+}
+
+export type CustomToolPatch = Partial<CustomToolCreate>;
+
+export const agentCustomToolsApi = {
+  async list(token: string): Promise<{ tools: CustomTool[] }> {
+    return jsonFetch(`${API_BASE_URL}/dashboard/agents/tools/custom`, {
+      method: 'GET',
+      headers: authHeaders(token),
+    });
+  },
+
+  async create(token: string, body: CustomToolCreate): Promise<{ tool: CustomTool }> {
+    return jsonFetch(`${API_BASE_URL}/dashboard/agents/tools/custom`, {
+      method: 'POST',
+      headers: authHeaders(token),
+      body: JSON.stringify(body),
+    });
+  },
+
+  async update(token: string, id: string, body: CustomToolPatch): Promise<{ tool: CustomTool }> {
+    return jsonFetch(`${API_BASE_URL}/dashboard/agents/tools/custom/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: authHeaders(token),
+      body: JSON.stringify(body),
+    });
+  },
+
+  async remove(token: string, id: string): Promise<{ ok: true }> {
+    return jsonFetch(`${API_BASE_URL}/dashboard/agents/tools/custom/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: authHeaders(token),
+    });
+  },
+
+  /** Dry-run a tool with sample arguments to verify the endpoint
+   *  works before binding to a live agent. Returns the parsed body
+   *  the LLM would have seen. */
+  async test(token: string, id: string, args: Record<string, unknown>): Promise<{ result: unknown }> {
+    return jsonFetch(`${API_BASE_URL}/dashboard/agents/tools/custom/${encodeURIComponent(id)}/test`, {
+      method: 'POST',
+      headers: authHeaders(token),
+      body: JSON.stringify({ arguments: args }),
+    });
+  },
+
+  async listBoundToAgent(token: string, agentId: string): Promise<{ tools: CustomTool[] }> {
+    return jsonFetch(`${API_BASE_URL}/dashboard/agents/${encodeURIComponent(agentId)}/tools`, {
+      method: 'GET',
+      headers: authHeaders(token),
+    });
+  },
+
+  async bind(token: string, agentId: string, toolId: string): Promise<{ ok: true }> {
+    return jsonFetch(
+      `${API_BASE_URL}/dashboard/agents/${encodeURIComponent(agentId)}/tools/${encodeURIComponent(toolId)}`,
+      { method: 'POST', headers: authHeaders(token) },
+    );
+  },
+
+  async unbind(token: string, agentId: string, toolId: string): Promise<{ ok: true }> {
+    return jsonFetch(
+      `${API_BASE_URL}/dashboard/agents/${encodeURIComponent(agentId)}/tools/${encodeURIComponent(toolId)}`,
+      { method: 'DELETE', headers: authHeaders(token) },
+    );
+  },
 };
 
 export function getStoredToken(): string | null {

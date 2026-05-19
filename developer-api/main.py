@@ -18,6 +18,13 @@ if __name__ == "__main__":
     uvicorn.run(
         "main:app",
         host="127.0.0.1",
-        port=int(os.environ.get("PORT", "8063")),
+        # Default 8031 — this matches the nginx config for
+        # api.vocence.ai (proxy_pass http://127.0.0.1:8031). The
+        # subnet validator's ``vocence api`` CLI lives on 8063 and is
+        # routed to subnet.vocence.ai (separate origin), so there is
+        # no collision. The website docs page's Swagger explorer
+        # proxies to this exact port via Vite (/devapi/*), so the
+        # two MUST stay in sync.
+        port=int(os.environ.get("PORT", "8031")),
         reload=os.environ.get("RELOAD", "").lower() == "true",
     )

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useSearchParams, useParams } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { api, type AccountSummary, type CreditTransaction, type DeveloperApiKey, type DailyCreditsUsage } from '../services/api';
+import { api, type AccountSummary, type CreditTransactionsPage, type DeveloperApiKey, type DailyCreditsUsage } from '../services/api';
 import {
   User,
   CreditCard,
@@ -14,15 +14,6 @@ import {
 } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { Avatar, AvatarFallback, AvatarImage } from '../components/ui/avatar';
-import { formatCreditsCompact } from '../utils/formatCredits';
-import {
-  CREDIT_MY_VOICE_GENERATE,
-  CREDIT_SIGNUP_BONUS,
-  CREDIT_STT,
-  CREDIT_TTS,
-  CREDIT_VOICE_CLONE,
-  CREDIT_VOICE_DESIGN_PREVIEW,
-} from '../studio/creditCosts';
 import {
   Area,
   AreaChart,
@@ -40,22 +31,25 @@ export function Account() {
   const checkoutStatus = searchParams.get('checkout');
   const params = useParams<{ tab?: string }>();
 
-  type AccountTab = 'profile' | 'credits' | 'settings' | 'developer' | 'usage';
+  type AccountTab = 'profile' | 'credits' | 'settings' | 'developer';
   const pathTab = (params.tab || '').toLowerCase();
   const queryTab = (searchParams.get('tab') || '').toLowerCase();
+  // The standalone Usage tab was folded into Credits — the daily-credits
+  // graph now lives there alongside the balance, with detailed
+  // transactions behind a "View detailed usage" toggle. Legacy
+  // /account/usage URLs map to /account/credits via this same table.
   const tabMap: Record<string, AccountTab> = {
     profile: 'profile',
     credits: 'credits',
     settings: 'settings',
     developer: 'developer',
-    usage: 'usage',
-    // Back-compat alias
+    // Back-compat aliases
+    usage: 'credits',
     api: 'developer',
   };
 
   const activeTab: AccountTab = (pathTab && tabMap[pathTab]) || (queryTab && tabMap[queryTab]) || 'profile';
   const [summary, setSummary] = useState<AccountSummary | null>(null);
-  const [summaryLoading, setSummaryLoading] = useState(false);
   const [apiKeys, setApiKeys] = useState<DeveloperApiKey[]>([]);
   const [dailyCredits, setDailyCredits] = useState<DailyCreditsUsage | null>(null);
   const [dailyCreditsLoading, setDailyCreditsLoading] = useState(false);
@@ -84,24 +78,27 @@ export function Account() {
 
     if (!pathTab || !tabMap[pathTab]) {
       navigate(`/account/profile`, { replace: true });
+      return;
+    }
+    // If the path tab resolves to a *different* canonical tab (e.g.
+    // legacy /account/usage → /account/credits), rewrite the URL so
+    // refresh + back/forward show the new canonical path.
+    if (tabMap[pathTab] !== pathTab) {
+      navigate(`/account/${tabMap[pathTab]}`, { replace: true });
     }
   }, [navigate, params.tab, pathTab, queryTab]);
 
   useEffect(() => {
     const token = localStorage.getItem('vocence_token');
     if (!user || !token) return;
-    setSummaryLoading(true);
     const load = () =>
       api
         .getAccountSummary(token)
         .then(setSummary)
-        .catch(() => setSummary(null))
-        .finally(() => setSummaryLoading(false));
-    load();
+        .catch(() => setSummary(null));
+    void load();
     if (checkoutStatus === 'success') {
-      const timeout = window.setTimeout(() => {
-        load();
-      }, 2000);
+      const timeout = window.setTimeout(() => { void load(); }, 2000);
       return () => window.clearTimeout(timeout);
     }
   }, [user, checkoutStatus]);
@@ -179,7 +176,6 @@ export function Account() {
 
   if (!user) return null;
   const accountUser = summary?.user ?? user;
-  const transactions: CreditTransaction[] = summary?.transactions ?? [];
 
   const getInitials = (name: string) => {
     return name
@@ -250,7 +246,7 @@ export function Account() {
           onValueChange={(v) => navigate(`/account/${v}`)}
           className="w-full"
         >
-          <TabsList className="grid w-full grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 bg-[#0D1117] border border-white/10">
+          <TabsList className="grid w-full grid-cols-2 sm:grid-cols-4 bg-[#0D1117] border border-white/10">
             <TabsTrigger value="profile" className="data-[state=active]:bg-white/10">
               <User size={16} className="mr-2" />
               Profile
@@ -262,10 +258,6 @@ export function Account() {
             <TabsTrigger value="settings" className="data-[state=active]:bg-white/10">
               <Settings size={16} className="mr-2" />
               Settings
-            </TabsTrigger>
-            <TabsTrigger value="usage" className="data-[state=active]:bg-white/10">
-              <BarChart3 size={16} className="mr-2" />
-              Usage
             </TabsTrigger>
             <TabsTrigger value="developer" className="data-[state=active]:bg-white/10">
               <KeyRound size={16} className="mr-2" />
@@ -315,109 +307,16 @@ export function Account() {
             </div>
           </TabsContent>
 
-          {/* Credits Tab */}
+          {/* Credits Tab — simplified per product feedback: lead with
+              the balance + the daily-credits graph; tuck the detailed
+              transaction table behind a "View detailed usage" toggle
+              so the resting page isn't a wall of numbers. */}
           <TabsContent value="credits" className="mt-6">
-            <div className="card-vocence p-6 space-y-6">
-              <div>
-                <h3 className="text-xl font-semibold mb-4">Credit Balance</h3>
-                <div className="bg-gradient-to-br from-[#DFFF00]/20 to-[#2E7D32]/20 border border-[#DFFF00]/30 rounded-2xl p-8 text-center mb-6">
-                  <div className="text-5xl font-bold text-[#DFFF00] mb-2">
-                    {accountUser.credits}
-                  </div>
-                  <p className="text-[#A7B0B7]">Available Credits</p>
-                </div>
-
-                <div className="space-y-4">
-                  <div className="bg-[#0a0a0a] border border-white/10 rounded-xl p-4">
-                    <h4 className="font-medium mb-2">How Credits Work</h4>
-                    <p className="text-sm text-[#A7B0B7] mb-3">
-                      Top-ups are not one single price: <span className="text-[#C6CDD4]">card (Stripe)</span> and{' '}
-                      <span className="text-[#C6CDD4]">crypto (NOWPayments)</span> sell different pack sizes. You get the
-                      credits for whichever checkout you complete.
-                    </p>
-                    <ul className="text-sm text-[#A7B0B7] space-y-1 list-disc list-inside">
-                      <li>
-                        Studio — TTS: {CREDIT_TTS} cr · STT: {CREDIT_STT} cr · Voice clone: {CREDIT_VOICE_CLONE} cr ·
-                        Voice design (preview): {CREDIT_VOICE_DESIGN_PREVIEW} cr · Generate with My voice:{' '}
-                        {CREDIT_MY_VOICE_GENERATE} cr
-                      </li>
-                      <li>Every new account starts with {CREDIT_SIGNUP_BONUS} free credits</li>
-                      <li>
-                        Normal — card: $12 → {formatCreditsCompact(4000)} credits · crypto: $20 →{' '}
-                        {formatCreditsCompact(7000)} credits
-                      </li>
-                      <li>
-                        Premium — card: $24 → {formatCreditsCompact(10000)} credits · crypto: $40 →{' '}
-                        {formatCreditsCompact(16000)} credits (unlocks Developer API)
-                      </li>
-                    </ul>
-                  </div>
-                  {summary ? (
-                    <div className="bg-[#0a0a0a] border border-white/10 rounded-xl p-4 grid gap-4 md:grid-cols-2">
-                      <div>
-                        <p className="text-xs text-[#666] mb-1">Current plan</p>
-                        <p className="text-sm text-white capitalize">{summary.user.planCode ?? 'normal'}</p>
-                      </div>
-                      <div>
-                        <p className="text-xs text-[#666] mb-1">Total TTS generations</p>
-                        <p className="text-sm text-white">{summary.totalTtsGenerations}</p>
-                      </div>
-                      <div>
-                        <p className="text-xs text-[#666] mb-1">Total credits used</p>
-                        <p className="text-sm text-white">{summary.totalCreditsUsed}</p>
-                      </div>
-                      <div>
-                        <p className="text-xs text-[#666] mb-1">Plan status</p>
-                        <p className="text-sm text-white capitalize">{summary.user.planStatus ?? 'active'}</p>
-                      </div>
-                    </div>
-                  ) : null}
-
-                  <Link to="/pricing" className="btn-primary w-full justify-center">
-                    <CreditCard size={16} className="mr-2" />
-                    Upgrade Plan
-                  </Link>
-                </div>
-              </div>
-
-              {/* Transaction History */}
-              <div>
-                <h3 className="text-lg font-semibold mb-4">Recent Transactions</h3>
-                <div className="space-y-2">
-                  {summaryLoading ? (
-                    <div className="bg-[#0a0a0a] border border-white/10 rounded-xl p-4 text-sm text-[#A7B0B7]">
-                      Loading transactions...
-                    </div>
-                  ) : transactions.length === 0 ? (
-                    <div className="bg-[#0a0a0a] border border-white/10 rounded-xl p-4 text-sm text-[#A7B0B7]">
-                      No transactions yet.
-                    </div>
-                  ) : transactions.map((transaction) => (
-                    <div
-                      key={transaction.id}
-                      className="bg-[#0a0a0a] border border-white/10 rounded-xl p-4 flex items-center justify-between"
-                    >
-                      <div>
-                        <p className="font-medium">{transaction.description}</p>
-                        <p className="text-xs text-[#666]">
-                          {new Date(transaction.createdAt).toLocaleString()}
-                        </p>
-                      </div>
-                      <span
-                        className={`font-mono ${
-                          transaction.amount >= 0
-                            ? 'text-green-400'
-                            : 'text-red-400'
-                        }`}
-                      >
-                        {transaction.amount >= 0 ? '+' : ''}
-                        {transaction.amount}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
+            <CreditsTabContent
+              credits={accountUser.credits}
+              dailyCredits={dailyCredits}
+              dailyCreditsLoading={dailyCreditsLoading}
+            />
           </TabsContent>
 
           {/* Settings Tab */}
@@ -444,94 +343,6 @@ export function Account() {
                   </div>
                 </div>
               </div>
-            </div>
-          </TabsContent>
-
-          {/* Usage Tab */}
-          <TabsContent value="usage" className="mt-6">
-            <div className="card-vocence p-6 space-y-6">
-              <div>
-                <h3 className="text-xl font-semibold mb-2">Credits consumed (daily)</h3>
-                <p className="text-sm text-[#A7B0B7]">
-                  Shows daily credit burn across Studio, Voice Chat, and Developer API.
-                </p>
-              </div>
-
-              {dailyCreditsLoading ? (
-                <div className="bg-[#0a0a0a] border border-white/10 rounded-xl p-4 text-sm text-[#A7B0B7]">
-                  Loading daily usage...
-                </div>
-              ) : dailyCredits && dailyCredits.days.length > 0 ? (
-                (() => {
-                  const todayIso = new Date().toISOString().slice(0, 10);
-                  const todayRow = dailyCredits.days.find((d) => d.day === todayIso);
-                  const todayCredits = todayRow?.creditsUsed ?? 0;
-
-                  return (
-                    <>
-                      <div className="bg-[#0a0a0a] border border-white/10 rounded-xl p-4 flex items-center justify-between gap-4">
-                        <div>
-                          <p className="text-xs text-[#666] mb-1">Today</p>
-                          <p className="text-lg font-semibold text-white">{todayCredits.toLocaleString()} credits</p>
-                        </div>
-                        <div className="text-right">
-                          <p className="text-xs text-[#666] mb-1">Total (last {dailyCredits.days.length} days)</p>
-                          <p className="text-lg font-semibold text-white">
-                            {dailyCredits.totalCreditsUsed.toLocaleString()} credits
-                          </p>
-                        </div>
-                      </div>
-
-                      <div className="bg-[#0a0a0a] border border-white/10 rounded-xl p-4">
-                        <div className="h-64">
-                          <ResponsiveContainer width="100%" height="100%">
-                            <AreaChart data={dailyCredits.days} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-                              <defs>
-                                <linearGradient id="creditsFill" x1="0" y1="0" x2="0" y2="1">
-                                  <stop offset="5%" stopColor="#D1F840" stopOpacity={0.35} />
-                                  <stop offset="95%" stopColor="#D1F840" stopOpacity={0} />
-                                </linearGradient>
-                              </defs>
-                              <CartesianGrid stroke="rgba(255,255,255,0.05)" />
-                              <XAxis
-                                dataKey="day"
-                                tickFormatter={(v) => String(v).slice(5)}
-                                stroke="rgba(255,255,255,0.45)"
-                                fontSize={12}
-                              />
-                              <YAxis
-                                stroke="rgba(255,255,255,0.45)"
-                                fontSize={12}
-                                tickFormatter={(v) => `${v}`}
-                              />
-                              <Tooltip
-                                contentStyle={{
-                                  background: '#0a0a0a',
-                                  border: '1px solid rgba(255,255,255,0.1)',
-                                  borderRadius: 10,
-                                }}
-                                labelFormatter={(label) => `Day ${label}`}
-                                formatter={(value: any) => [`${value} credits`, 'credits burned']}
-                              />
-                              <Area
-                                type="monotone"
-                                dataKey="creditsUsed"
-                                stroke="#D1F840"
-                                fill="url(#creditsFill)"
-                                strokeWidth={2}
-                              />
-                            </AreaChart>
-                          </ResponsiveContainer>
-                        </div>
-                      </div>
-                    </>
-                  );
-                })()
-              ) : (
-                <div className="bg-[#0a0a0a] border border-white/10 rounded-xl p-4 text-sm text-[#A7B0B7]">
-                  No credits consumption data yet.
-                </div>
-              )}
             </div>
           </TabsContent>
 
@@ -595,12 +406,249 @@ export function Account() {
               <div className="rounded-xl border border-white/10 bg-[#0a0a0a] p-4">
                 <h4 className="font-medium">Credits usage</h4>
                 <p className="text-sm text-[#A7B0B7] mt-1">
-                  Daily credits consumed is shown in the <span className="text-white">Usage</span> tab.
+                  Daily credits consumed is shown in the <span className="text-white">Credits</span> tab.
                 </p>
               </div>
             </div>
           </TabsContent>
         </Tabs>
+      </div>
+    </div>
+  );
+}
+
+
+/* ==========================================================================
+   CreditsTabContent — simplified Credits tab body.
+   ==========================================================================
+
+   The previous layout dumped balance + how-credits-work + summary stats +
+   recent transactions all at once. The new layout is:
+
+     1. Balance card with an "Add Credits" CTA
+     2. Daily credit-consumption graph (was a separate Usage tab)
+     3. A single "View detailed usage" button that expands an
+        inline paginated transaction table
+
+   Pagination is server-side via /account/transactions?offset&limit
+   so we can stream through thousands of rows without breaking.
+*/
+
+const TRANSACTIONS_PAGE_SIZE = 25;
+
+interface CreditsTabContentProps {
+  credits: number;
+  dailyCredits: DailyCreditsUsage | null;
+  dailyCreditsLoading: boolean;
+}
+
+function CreditsTabContent({ credits, dailyCredits, dailyCreditsLoading }: CreditsTabContentProps) {
+  const [showDetails, setShowDetails] = useState(false);
+  const [page, setPage] = useState(0);
+  const [txPage, setTxPage] = useState<CreditTransactionsPage | null>(null);
+  const [txLoading, setTxLoading] = useState(false);
+
+  // Lazy-fetch: don't pull transactions until the user opens the
+  // detail panel. Each page-change re-fetches; previous pages aren't
+  // cached because the dataset can grow between visits and stale
+  // state would mislead more than it'd help.
+  useEffect(() => {
+    if (!showDetails) return;
+    const token = localStorage.getItem('vocence_token');
+    if (!token) return;
+    setTxLoading(true);
+    api
+      .getCreditTransactions(token, {
+        offset: page * TRANSACTIONS_PAGE_SIZE,
+        limit: TRANSACTIONS_PAGE_SIZE,
+      })
+      .then(setTxPage)
+      .catch(() => setTxPage(null))
+      .finally(() => setTxLoading(false));
+  }, [showDetails, page]);
+
+  const totalPages = txPage ? Math.max(1, Math.ceil(txPage.total / TRANSACTIONS_PAGE_SIZE)) : 1;
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const todayCredits = dailyCredits?.days.find((d) => d.day === todayIso)?.creditsUsed ?? 0;
+  const hasGraphData = dailyCredits && dailyCredits.days.length > 0;
+
+  return (
+    <div className="card-vocence p-6 space-y-6">
+      {/* Balance card — compact, single action. The detailed price
+          breakdown moved to /pricing where it's actually relevant. */}
+      <div className="bg-gradient-to-br from-[#DFFF00]/15 to-[#2E7D32]/10 border border-[#DFFF00]/30 rounded-2xl p-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div>
+          <p className="text-xs uppercase tracking-wider text-[#A7B0B7] mb-1">Available credits</p>
+          <p className="text-4xl font-bold text-[#DFFF00]">{credits.toLocaleString()}</p>
+        </div>
+        <Link to="/pricing" className="btn-primary self-start sm:self-auto">
+          <CreditCard size={16} className="mr-2" />
+          Add credits
+        </Link>
+      </div>
+
+      {/* Daily consumption graph — at-a-glance burn rate. */}
+      <div>
+        <div className="flex items-end justify-between gap-4 mb-3">
+          <div>
+            <h3 className="text-sm font-semibold text-white">Credits consumed</h3>
+            <p className="text-xs text-[#666]">Daily burn across Studio, Voice Chat, and Developer API.</p>
+          </div>
+          {hasGraphData && (
+            <div className="text-right">
+              <p className="text-[10px] uppercase tracking-wider text-[#666]">Today</p>
+              <p className="text-sm font-semibold text-white tabular-nums">{todayCredits.toLocaleString()}</p>
+            </div>
+          )}
+        </div>
+        {dailyCreditsLoading ? (
+          <div className="bg-[#0a0a0a] border border-white/10 rounded-xl p-4 text-sm text-[#A7B0B7]">
+            Loading…
+          </div>
+        ) : hasGraphData ? (
+          <div className="bg-[#0a0a0a] border border-white/10 rounded-xl p-4">
+            <div className="h-56">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={dailyCredits!.days} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id="creditsFill" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#D1F840" stopOpacity={0.35} />
+                      <stop offset="95%" stopColor="#D1F840" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid stroke="rgba(255,255,255,0.05)" />
+                  <XAxis
+                    dataKey="day"
+                    tickFormatter={(v) => String(v).slice(5)}
+                    stroke="rgba(255,255,255,0.45)"
+                    fontSize={12}
+                  />
+                  <YAxis stroke="rgba(255,255,255,0.45)" fontSize={12} />
+                  <Tooltip
+                    contentStyle={{
+                      background: '#0a0a0a',
+                      border: '1px solid rgba(255,255,255,0.1)',
+                      borderRadius: 10,
+                    }}
+                    labelFormatter={(label) => `Day ${label}`}
+                    formatter={(value: number | string) => [`${value} credits`, 'credits burned']}
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey="creditsUsed"
+                    stroke="#D1F840"
+                    fill="url(#creditsFill)"
+                    strokeWidth={2}
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        ) : (
+          <div className="bg-[#0a0a0a] border border-white/10 rounded-xl p-4 text-sm text-[#A7B0B7]">
+            No consumption data yet. Generate something in Studio and refresh.
+          </div>
+        )}
+      </div>
+
+      {/* Detailed transactions — collapsed by default. Once expanded
+          the panel loads page 0 and reveals pagination controls. */}
+      <div>
+        <button
+          type="button"
+          onClick={() => setShowDetails((s) => !s)}
+          className="w-full flex items-center justify-between gap-2 px-4 py-3 rounded-xl border border-white/10 bg-[#0a0a0a] text-sm text-white hover:border-white/20 transition-colors"
+          aria-expanded={showDetails}
+        >
+          <span className="flex items-center gap-2">
+            <BarChart3 size={14} className="text-[#A7B0B7]" />
+            {showDetails ? 'Hide detailed usage' : 'View detailed usage'}
+          </span>
+          <span className="text-xs text-[#666]">{showDetails ? '−' : '+'}</span>
+        </button>
+
+        {showDetails && (
+          <div className="mt-3 rounded-xl border border-white/10 overflow-hidden">
+            {/* Header row */}
+            <div className="hidden md:grid grid-cols-[1fr_minmax(0,2fr)_minmax(0,6rem)_minmax(0,6rem)_minmax(0,6rem)] gap-3 px-4 py-2 border-b border-white/10 bg-white/[0.02] text-[10px] uppercase tracking-wider text-[#555]">
+              <div>Date</div>
+              <div>Description</div>
+              <div>Type</div>
+              <div className="text-right">Amount</div>
+              <div className="text-right">Balance</div>
+            </div>
+
+            {txLoading ? (
+              <div className="px-4 py-6 text-sm text-[#A7B0B7]">Loading transactions…</div>
+            ) : !txPage || txPage.items.length === 0 ? (
+              <div className="px-4 py-6 text-sm text-[#A7B0B7]">No transactions yet.</div>
+            ) : (
+              <div>
+                {txPage.items.map((tx) => (
+                  <div
+                    key={tx.id}
+                    className="grid grid-cols-[1fr_minmax(0,6rem)] md:grid-cols-[1fr_minmax(0,2fr)_minmax(0,6rem)_minmax(0,6rem)_minmax(0,6rem)] items-center gap-3 px-4 py-2.5 border-b border-white/[0.04] last:border-b-0"
+                  >
+                    <span className="text-xs text-[#9ca3af] tabular-nums">
+                      {new Date(tx.createdAt).toLocaleString(undefined, {
+                        year: 'numeric', month: 'short', day: '2-digit',
+                        hour: '2-digit', minute: '2-digit',
+                      })}
+                    </span>
+                    <span className="hidden md:block text-sm text-white truncate" title={tx.description}>
+                      {tx.description || '—'}
+                    </span>
+                    <span className="hidden md:block text-xs text-[#888] truncate" title={tx.transactionType}>
+                      {tx.transactionType}
+                    </span>
+                    <span
+                      className={`text-sm font-mono tabular-nums text-right ${
+                        tx.amount >= 0 ? 'text-green-400' : 'text-red-400'
+                      }`}
+                    >
+                      {tx.amount >= 0 ? '+' : ''}{tx.amount}
+                    </span>
+                    <span className="hidden md:block text-xs text-[#888] tabular-nums text-right">
+                      {tx.balanceAfter.toLocaleString()}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Pagination — Prev / Page X of N / Next. Disabled state
+                handles the edge pages without hiding the controls so
+                the layout doesn't shift mid-flip. */}
+            {txPage && txPage.total > 0 && (
+              <div className="flex items-center justify-between gap-3 px-4 py-3 border-t border-white/10 bg-white/[0.02] text-xs">
+                <span className="text-[#666] tabular-nums">
+                  {txPage.offset + 1}–{Math.min(txPage.offset + txPage.items.length, txPage.total)} of {txPage.total}
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setPage((p) => Math.max(0, p - 1))}
+                    disabled={page === 0 || txLoading}
+                    className="px-3 py-1 rounded-md border border-white/10 text-[#A7B0B7] hover:text-white hover:border-white/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                  >
+                    Prev
+                  </button>
+                  <span className="text-[#A7B0B7] tabular-nums">
+                    Page {page + 1} of {totalPages}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setPage((p) => p + 1)}
+                    disabled={page + 1 >= totalPages || txLoading}
+                    className="px-3 py-1 rounded-md border border-white/10 text-[#A7B0B7] hover:text-white hover:border-white/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

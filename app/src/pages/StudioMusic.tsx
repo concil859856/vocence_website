@@ -144,35 +144,169 @@ Living in color in a black-and-white maze`,
   },
   {
     label: 'Club EDM',
-    // Curated: House / Electro House — actual club music.
-    value: 'electronic, house, electro house, synthesizer, drums, bass, percussion, 128 bpm, energetic, uplifting, exciting, instrumental',
+    // Curated: House / Electro House — peak-time club energy with a
+    // catchy female hook (the model handles four-on-the-floor + 808s
+    // cleanly when you ask for vocals over them).
+    value: 'electronic, house, electro house, synthesizer, drums, bass, percussion, 128 bpm, energetic, uplifting, exciting, female vocals, catchy hook',
     emoji: '⚡',
     image: '/samples/images/genre_4.webp',
-    lyrics: '[inst]',
+    lyrics: `[verse]
+Counting down the seconds till the lights go red
+Every move you make is playing in my head
+Floor is moving, can't stand still
+Take me higher, give me the thrill
+
+[chorus]
+Take me up, take me up, where the night never ends
+Hands above, hands above with my closest friends
+Take me up, take me up, let the bassline fly
+We don't stop till the morning sky
+
+[verse]
+Strobes are flashing as the speakers roar
+Every drop is making me crave more
+City pulses like a beating heart
+This is where the night will start
+
+[bridge]
+Lose yourself, find yourself
+Nothing else, no one else
+Feel the rhythm in your spine
+This whole moment is mine
+
+[chorus]
+Take me up, take me up, where the night never ends
+Hands above, hands above with my closest friends
+Take me up, take me up, let the bassline fly
+We don't stop till the morning sky
+
+[outro]
+Take me up, take me up
+We don't stop tonight`,
   },
   {
     label: 'Smooth Jazz',
-    // Curated: Lounge / Cocktail Jazz — sophisticated, instrumental.
-    value: 'lounge jazz, soft piano, brushed drums, double bass, vibraphone, 90 bpm, smooth, relaxing, sophisticated, instrumental',
+    // Curated: Lounge / Cocktail Jazz — late-night, intimate, sultry
+    // vocals over piano-trio backing.
+    value: 'lounge jazz, soft piano, brushed drums, double bass, vibraphone, 90 bpm, smooth, relaxing, sophisticated, smoky female vocals',
     emoji: '🎷',
     image: '/samples/images/genre_5.webp',
-    lyrics: '[inst]',
+    lyrics: `[verse]
+Velvet hush of a quarter past nine
+Candle on the table, glass of wine
+Piano spilling like a secret you keep
+This is where the city falls asleep
+
+[chorus]
+Stay a while, the night is kind
+Leave the rest of the world behind
+Stay a while, stay with me
+Let the music set us free
+
+[verse]
+Smoke curls slow above the silver tray
+Every note has something soft to say
+Saxophone breathing in the corner room
+Painting hours in the lamp-light bloom
+
+[bridge]
+We don't need a single word tonight
+Just the way the rhythm holds us tight
+Time forgets the way that hours run
+Here with you is where the song's begun
+
+[chorus]
+Stay a while, the night is kind
+Leave the rest of the world behind
+Stay a while, stay with me
+Let the music set us free
+
+[outro]
+Stay a while, stay with me
+Let it be, let it be`,
   },
   {
     label: 'Orchestral',
-    // Curated: Cinematic / Film Score — epic, dramatic, choir + brass.
-    value: 'cinematic, orchestral, full strings, brass swells, choir, percussion, 80 bpm, epic, dramatic, instrumental',
+    // Curated: Cinematic / Film Score — epic, dramatic, with choir
+    // singing in English over swelling strings and brass. The model
+    // does long-vowel choral parts well when you say "choir vocals".
+    value: 'cinematic, orchestral, full strings, brass swells, choir, percussion, 80 bpm, epic, dramatic, choir vocals, soaring vocals',
     emoji: '🎻',
     image: '/samples/images/genre_6.webp',
-    lyrics: '[inst]',
+    lyrics: `[verse]
+Dawn breaks open on the longest road
+Carry every name we ever owed
+Stones that watched us count the years
+Hold the weight of all our fears
+
+[chorus]
+Rise, rise into the open sky
+Brave the storm and never wonder why
+Rise, rise, we'll carry on
+Till the dark of night is gone
+
+[verse]
+Banners moving in the rising wind
+Every promise we have ever pinned
+Voices joined into a single sound
+This is where the brave are found
+
+[bridge]
+We were forged inside the flame
+None of us will be the same
+Hand in hand, we hold the line
+Yours and mine, yours and mine
+
+[chorus]
+Rise, rise into the open sky
+Brave the storm and never wonder why
+Rise, rise, we'll carry on
+Till the dark of night is gone
+
+[outro]
+Rise, rise, carry on
+Till the dawn, till the dawn`,
   },
   {
     label: 'Chill Lo-fi',
-    // Curated: Lo-Fi Hip-Hop — canonical "lofi beats" vibe.
-    value: 'lofi hip hop, mellow piano, jazz drums, vinyl crackle, soft bass, 80 bpm, chill, nostalgic, instrumental',
+    // Curated: Lo-Fi Hip-Hop — soft, half-whispered female vocal sits
+    // above the canonical "lofi beats to study/relax to" backing.
+    value: 'lofi hip hop, mellow piano, jazz drums, vinyl crackle, soft bass, 80 bpm, chill, nostalgic, soft female vocals, intimate',
     emoji: '☕',
     image: '/samples/images/genre_7.webp',
-    lyrics: '[inst]',
+    lyrics: `[verse]
+Rain is talking on the windowpane
+Coffee cooling in my hand again
+Pages turning at a quiet pace
+Soft light falling on your face
+
+[chorus]
+Slow it down, slow it down with me
+Nothing here we really need to be
+Slow it down, slow it down inside
+Hold the moment, let it ride
+
+[verse]
+Old cassettes are humming in the corner
+Yellow lamp light on the calendar
+Every minute drifting like a song
+Nothing right and nothing wrong
+
+[bridge]
+Empty streets and quiet doors
+Stories told in winter floors
+Take a breath and breathe it in
+Let the simple things begin
+
+[chorus]
+Slow it down, slow it down with me
+Nothing here we really need to be
+Slow it down, slow it down inside
+Hold the moment, let it ride
+
+[outro]
+Slow it down, slow it down
+Just stay around`,
   },
   {
     label: 'Soulful R&B',
@@ -231,6 +365,110 @@ const TASK_TABS: { id: MusicTask; label: string; icon: typeof Music; desc: strin
 
 interface StatusMsg { type: 'success' | 'error' | 'info'; message: string; }
 
+/**
+ * Compact inline guide that explains the current music task — what the
+ * prompt/lyrics fields mean *in this mode*, what audio file to upload,
+ * and the one or two knobs that actually matter. Sits right above the
+ * form so users learn by doing instead of bouncing to the docs page.
+ *
+ * One source of truth for the inline copy. The fuller version lives at
+ * /docs/guide-music.
+ */
+function ModeGuide({ task }: { task: MusicTask }) {
+  const guide = MODE_GUIDES[task];
+  return (
+    <div className="rounded-xl border border-[#2e2f33] bg-[#0f131a] px-4 py-3 -mt-2 text-xs leading-relaxed text-[#A7B0B7]">
+      <div className="flex items-start gap-2.5">
+        <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-[#DFFF00]/10 text-[#DFFF00] border border-[#DFFF00]/30 shrink-0 mt-0.5">
+          {guide.tag}
+        </span>
+        <div className="min-w-0 flex-1 space-y-1.5">
+          <p className="text-white">{guide.summary}</p>
+          <ul className="space-y-0.5 text-[#9ca3af]">
+            {guide.bullets.map((b, i) => (
+              <li key={i}>
+                <span className="text-[#A7B0B7]">{b.label}:</span> {b.text}
+              </li>
+            ))}
+          </ul>
+          <a
+            href="/docs/guide-music"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 text-[#DFFF00] hover:underline text-[11px]"
+          >
+            Full music guide →
+          </a>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const MODE_GUIDES: Record<MusicTask, { tag: string; summary: string; bullets: { label: string; text: string }[] }> = {
+  text2music: {
+    tag: 'New track',
+    summary: 'Generate a full track from a text description plus optional lyrics.',
+    bullets: [
+      { label: 'Prompt', text: 'genre, instruments, tempo, mood — e.g. "upbeat synth-pop, 128 bpm, female vocals".' },
+      { label: 'Lyrics', text: 'use [verse] / [chorus] / [bridge] markers. For an instrumental, set this to [inst].' },
+      { label: 'Duration', text: 'pick the song length. Higher Quality modes cap shorter to stay inside the engine timeout.' },
+    ],
+  },
+  audio2audio: {
+    tag: 'Style transfer',
+    summary: 'Generate a new track that has the vibe of your reference audio but follows your prompt for genre and instruments.',
+    bullets: [
+      { label: 'Reference audio', text: 'upload any clip — your own recording, an existing track. Notes/melody aren\'t copied; only the energy and feel influence the output.' },
+      { label: 'Prompt', text: 'describe what you want the OUTPUT to be (genre, instruments). Not the reference.' },
+      { label: 'Lyrics', text: 'optional — use [inst] for an instrumental result.' },
+      { label: 'Reference Strength', text: '0 = mostly text, 0.5 (default) = balanced, 1 = reference dominates.' },
+    ],
+  },
+  retake: {
+    tag: 'Variation',
+    summary: 'Reroll the dice on the same prompt and lyrics — get a different take of the same idea. The source audio is only used to copy its duration.',
+    bullets: [
+      { label: 'Source audio', text: 'upload the original (only its duration is used; the audio itself does NOT influence the new generation).' },
+      { label: 'Prompt + Lyrics', text: 'use the same prompt and lyrics that produced the original — that\'s the whole point.' },
+      { label: 'Variance', text: '0.2 (default) = small variations, 0.5 = different feel, 1.0 = essentially a fresh text2music.' },
+      { label: 'Seeds', text: 'leave empty for random; pin a number if you want a specific roll to recur.' },
+    ],
+  },
+  repaint: {
+    tag: 'Inpaint',
+    summary: 'Replace a specific time window of an existing track while keeping everything outside that window byte-identical. Surgical fix for a bad section.',
+    bullets: [
+      { label: 'Source audio', text: 'upload the track you want to fix. The audio outside your window is preserved exactly.' },
+      { label: 'Start / End', text: 'seconds defining the window to regenerate, e.g. start=60, end=90 to redo a bridge.' },
+      { label: 'Prompt + Lyrics', text: 'describe what should be in the NEW content (the replacement). [inst] for instrumental.' },
+      { label: 'Variance', text: '0.2 keeps the new content close in feel; 0.8+ makes it dramatically different.' },
+    ],
+  },
+  edit: {
+    tag: 'Restyle',
+    summary: 'Change a track\'s style and/or lyrics while preserving its structural shape — verses fall in the same places, drums hit at the same times, but the genre or words change.',
+    bullets: [
+      { label: 'Source audio', text: 'upload the track you want to restyle.' },
+      { label: 'Prompt', text: 'describe the ORIGINAL track (what it currently is).' },
+      { label: 'Lyrics', text: 'paste the original lyrics — used to anchor the structure.' },
+      { label: 'Target Prompt', text: 'describe what you WANT it to become (e.g. "country, acoustic guitar"). Required.' },
+      { label: 'Target Lyrics', text: 'new lyrics you want sung. Same structure tags ([verse], [chorus]) as the original.' },
+      { label: 'Type', text: '"Lyrics only" preserves more of the original sound; "Remix" allows aggressive style change.' },
+    ],
+  },
+  extend: {
+    tag: 'Lengthen',
+    summary: 'Add new content before and/or after an existing track. Used to add an intro, an outro, or both. The original audio is preserved byte-for-byte.',
+    bullets: [
+      { label: 'Source audio', text: 'upload the track to extend.' },
+      { label: 'Left (sec)', text: 'seconds to add BEFORE the original. Use for intros / build-ups.' },
+      { label: 'Right (sec)', text: 'seconds to add AFTER the original. Use for outros / fade-outs.' },
+      { label: 'Prompt + Lyrics', text: 'describe what the FULL track should be, including the new sections. Helps the model continue naturally.' },
+    ],
+  },
+};
+
 export function StudioMusic() {
   const { user, isAuthenticated, setLocalCredits } = useAuth();
   const { play: playAudio } = useStudioPlayer();
@@ -250,7 +488,7 @@ export function StudioMusic() {
   // Initial lyrics match the first preset so the page loads in a
   // self-consistent state. Switching genre tiles overwrites this.
   const [lyrics, setLyrics] = useState(GENRE_PRESETS[0].lyrics);
-  const [duration, setDuration] = useState(90);
+  const [duration, setDuration] = useState(140);
   const [format, setFormat] = useState('wav');
   const [selectedGenre, setSelectedGenre] = useState<string | null>(GENRE_PRESETS[0].label);
 
@@ -295,7 +533,41 @@ export function StudioMusic() {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [audioFile, setAudioFile] = useState<File | null>(null);
+  const [isDragActive, setIsDragActive] = useState(false);
   const needsAudioFile = activeTask !== 'text2music';
+
+  // Accept dropped audio. ``dataTransfer.files`` is the standard source;
+  // we read only the first file and only accept ``audio/*`` MIME types
+  // (matches the file input's ``accept`` attribute). Empty drops are
+  // ignored. The drag-counter pattern using ``relatedTarget`` would be
+  // cleaner but is brittle in nested elements; ``dragenter``/``leave``
+  // on the root suffices for a single dropzone.
+  const handleAudioDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragActive(false);
+    const file = e.dataTransfer.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('audio/') && !/\.(wav|mp3|m4a|ogg|flac|webm)$/i.test(file.name)) {
+      setStatus({ type: 'error', message: `“${file.name}” doesn't look like an audio file.` });
+      return;
+    }
+    setAudioFile(file);
+    setStatus(null);
+  };
+  const handleAudioDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    // ``copy`` shows the user a "+" cursor — the standard signal that
+    // a drop will create something here rather than move.
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+    if (!isDragActive) setIsDragActive(true);
+  };
+  const handleAudioDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragActive(false);
+  };
 
   // Lyric textarea ref so the structure-tag helper buttons can insert
   // tags at the user's cursor position rather than always appending.
@@ -448,11 +720,6 @@ export function StudioMusic() {
       );
       if (!ok) return;
     }
-    if (activeTask !== 'text2music') {
-      setStatus({ type: 'error', message: `${activeTask} is not yet supported via the queued backend. Coming soon.` });
-      return;
-    }
-
     if (generations.hasPending('music')) {
       const ok = window.confirm('You already have a music generation in progress. Start another anyway?');
       if (!ok) return;
@@ -460,6 +727,84 @@ export function StudioMusic() {
 
     setStatus(null); setResultAudioUrl(null); setLoading(true); startTimer();
     const token = localStorage.getItem('vocence_token');
+
+    // ---- Audio-input modes (synchronous, multipart). ----
+    // These five modes accept a src/ref audio file and run on the same
+    // music pod as text2music. We don't go through ``startJob`` here
+    // because the queued worker only knows about text2music; the
+    // synchronous endpoints handle the full lifecycle (charge credits,
+    // upload result to R2, insert history row) and return the audio
+    // URL inline. Latency is the same as a queued run; the trade-off
+    // is no global queue-position pill, which is acceptable for tasks
+    // that need an explicit file upload.
+    if (activeTask !== 'text2music') {
+      try {
+        if (!audioFile) {
+          throw new Error('Please select a source audio file.');
+        }
+        const form = new FormData();
+        form.append('user_id', user.id);
+        form.append('prompt', prompt);
+        form.append('lyrics', lyrics);
+        form.append('format', format);
+        form.append('infer_step', String(inferStep));
+        form.append('guidance_scale', String(guidanceScale));
+        form.append('src_audio', audioFile, audioFile.name);
+        if (activeTask === 'audio2audio') {
+          // audio2audio uses ``ref_audio`` not ``src_audio``. The same
+          // file is fine; the field name is what the backend expects.
+          form.delete('src_audio');
+          form.append('ref_audio', audioFile, audioFile.name);
+          form.append('audio_duration', String(duration));
+          form.append('ref_audio_strength', String(refAudioStrength));
+        } else if (activeTask === 'retake') {
+          form.append('retake_variance', String(retakeVariance));
+          form.append('retake_seeds', retakeSeeds);
+        } else if (activeTask === 'repaint') {
+          form.append('repaint_start', String(repaintStart));
+          form.append('repaint_end', String(repaintEnd));
+          form.append('retake_variance', String(retakeVariance));
+        } else if (activeTask === 'edit') {
+          if (!editTargetPrompt.trim()) {
+            throw new Error('Target prompt is required for Edit mode.');
+          }
+          form.append('edit_target_prompt', editTargetPrompt);
+          form.append('edit_target_lyrics', editTargetLyrics);
+          form.append('edit_n_min', String(editNMin));
+          form.append('edit_n_max', String(editNMax));
+        } else if (activeTask === 'extend') {
+          form.append('left_extend_length', String(leftExtend));
+          form.append('right_extend_length', String(rightExtend));
+          form.append('extend_seeds', extendSeeds);
+        }
+
+        const res = await dashboardApi.generateStudioMusicWithAudio(
+          activeTask,
+          form,
+          token,
+        );
+        setLocalCredits(res.credits ?? (user.credits ?? 0) - CREDIT_MUSIC);
+        const audioUrl = res.audio_url || '';
+        setResultAudioUrl(audioUrl);
+        setStatus({ type: 'success', message: 'Music ready.' });
+        if (audioUrl) {
+          playAudio({
+            src: audioUrl,
+            title: title.trim() || prompt.slice(0, 60),
+            subtitle: `Music · ${activeTask}`,
+            downloadFilename: `${slugify(title)}-${Date.now()}.${format}`,
+          });
+        }
+      } catch (e: unknown) {
+        const msg = humanizeApiError(e, 'Music generation failed. Please try again.');
+        setStatus({ type: 'error', message: msg });
+      } finally {
+        setLoading(false);
+        stopTimer();
+      }
+      return;
+    }
+
     try {
       const submission = await dashboardApi.startJob({
         type: 'music',
@@ -594,12 +939,9 @@ export function StudioMusic() {
             <button
               key={tab.id}
               onClick={() => {
-                if (tab.id !== 'text2music') {
-                  setStatus({ type: 'info', message: `${tab.label} is currently under development. Stay tuned!` });
-                  setResultAudioUrl(null);
-                  return;
-                }
-                setActiveTask(tab.id); setStatus(null); setResultAudioUrl(null);
+                setActiveTask(tab.id);
+                setStatus(null);
+                setResultAudioUrl(null);
               }}
               className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all ${
                 active
@@ -614,18 +956,32 @@ export function StudioMusic() {
         })}
       </div>
 
-      {/* Tab description */}
-      <p className="text-xs text-[#9ca3af] -mt-4">{activeTabInfo.desc}</p>
+      {/* Per-mode inline guide. Compact, scannable, sits right above
+          the form so users don't have to open the docs to know what
+          each field means in the current mode. Full guide at
+          /docs/guide-music. */}
+      <ModeGuide task={activeTask} />
 
       {/* Two-column layout */}
       <div className="flex flex-col lg:flex-row gap-6">
         {/* LEFT — Main input area */}
         <div className="flex-1 min-w-0 space-y-5">
-          {/* Audio upload for non-text2music */}
+          {/* Audio upload for non-text2music. Supports both click-to-browse
+              and drag-and-drop. ``isDragActive`` paints the dropzone in the
+              brand lime while a drag is hovering, so the user has clear
+              visual feedback that a drop will be accepted. */}
           {needsAudioFile && (
             <div
               onClick={() => fileInputRef.current?.click()}
-              className="border-2 border-dashed border-[#2e2f33] rounded-2xl p-8 text-center cursor-pointer hover:border-[#444] transition-colors group"
+              onDragEnter={handleAudioDragOver}
+              onDragOver={handleAudioDragOver}
+              onDragLeave={handleAudioDragLeave}
+              onDrop={handleAudioDrop}
+              className={`border-2 border-dashed rounded-2xl p-8 text-center cursor-pointer transition-colors group ${
+                isDragActive
+                  ? 'border-[#DFFF00] bg-[#DFFF00]/[0.05]'
+                  : 'border-[#2e2f33] hover:border-[#444]'
+              }`}
             >
               <input ref={fileInputRef} type="file" accept="audio/*" className="hidden" onChange={(e) => setAudioFile(e.target.files?.[0] || null)} />
               {audioFile ? (
@@ -639,9 +995,13 @@ export function StudioMusic() {
                 </div>
               ) : (
                 <>
-                  <Upload size={24} className="mx-auto text-[#666] group-hover:text-[#999] mb-2" />
-                  <p className="text-sm text-[#9ca3af]">Drop {activeTask === 'audio2audio' ? 'reference' : 'source'} audio here or click to browse</p>
-                  <p className="text-xs text-[#666] mt-1">WAV, MP3, OGG, FLAC — max 100MB</p>
+                  <Upload size={24} className={`mx-auto mb-2 ${isDragActive ? 'text-[#DFFF00]' : 'text-[#666] group-hover:text-[#999]'}`} />
+                  <p className={`text-sm ${isDragActive ? 'text-[#DFFF00]' : 'text-[#9ca3af]'}`}>
+                    {isDragActive
+                      ? 'Drop to upload'
+                      : `Drop ${activeTask === 'audio2audio' ? 'reference' : 'source'} audio here or click to browse`}
+                  </p>
+                  <p className="text-xs text-[#666] mt-1">WAV, MP3, OGG, FLAC, M4A, WebM — max 100MB</p>
                 </>
               )}
             </div>

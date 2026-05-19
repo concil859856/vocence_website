@@ -28,11 +28,33 @@ import { VadController, arrayBufferToBase64 } from './vadController';
 
 export type BotState = 'idle' | 'connecting' | 'listening' | 'recording' | 'uploading' | 'transcribing' | 'thinking' | 'speaking' | 'error';
 
+export interface ToolCallStatus {
+  /** LLM-emitted call id — stable across started/completed events. */
+  id: string;
+  /** Tool name as the LLM saw it (e.g. ``web_search``, ``get_weather``,
+   *  or a user-defined name like ``lookup_order``). */
+  name: string;
+  /** ``builtin`` or ``custom`` — drives the chip icon/color so the user
+   *  can tell at a glance whether the agent called a Vocence built-in
+   *  or one of their own webhook tools. */
+  kind: 'builtin' | 'custom';
+  /** ``running`` while the dispatcher is executing, ``done`` once the
+   *  result has come back, ``error`` when the dispatcher returned an
+   *  ``{error: ...}`` payload. */
+  status: 'running' | 'done' | 'error';
+  /** Optional short preview of the result (first ~280 chars). */
+  resultPreview?: string;
+}
+
 export interface BotMessage {
   id: string;
   role: 'user' | 'assistant';
   text: string;
   pending?: boolean;
+  /** Tool calls the agent made during *this* assistant turn. Rendered
+   *  as inline chips above the message text — "🔍 Searching the web…"
+   *  while running, then the result preview when complete. */
+  tool_calls?: ToolCallStatus[];
 }
 
 export interface UseVoiceChatOptions {
@@ -233,6 +255,75 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
           });
           setState('thinking');
           break;
+        case 'tool_call_started': {
+          // The agent decided to invoke a tool. Render a chip on the
+          // current assistant bubble so the user knows why the LLM
+          // hasn't replied yet ("Searching the web…" beats silence).
+          // If no assistant bubble exists yet, create one now — the
+          // LLM may emit tool_calls before any content tokens.
+          const tc: ToolCallStatus = {
+            id: String(payload.id || makeId()),
+            name: String(payload.name || ''),
+            kind: payload.kind === 'custom' ? 'custom' : 'builtin',
+            status: 'running',
+          };
+          // SYNC: claim the ref BEFORE setMessages — the previous version
+          // mutated the ref inside the state-updater callback, which only
+          // runs at commit time. A token frame arriving in the same
+          // microtask would still see ``currentBotMsgIdRef.current === null``
+          // and either create a duplicate bubble or, after my earlier
+          // patch, fail to bind the reveal buffer. Setting it here makes
+          // the ordering deterministic.
+          const existingMsgId = currentBotMsgIdRef.current;
+          const msgId = existingMsgId || makeId();
+          if (!existingMsgId) {
+            currentBotMsgIdRef.current = msgId;
+            // Bind the reveal buffer to this bubble proactively so any
+            // content tokens that arrive after the tool result have a
+            // home — without this, every post-tool-call token gets
+            // dropped on the floor (audio plays, text doesn't show).
+            revealStateRef.current = { msgId, full: '', shown: 0, ended: false };
+          }
+          setMessages((prev) => {
+            if (!existingMsgId) {
+              return [
+                ...prev,
+                { id: msgId, role: 'assistant', text: '', pending: true, tool_calls: [tc] },
+              ];
+            }
+            return prev.map((m) =>
+              m.id === msgId
+                ? { ...m, tool_calls: [...(m.tool_calls || []), tc] }
+                : m,
+            );
+          });
+          break;
+        }
+        case 'tool_call_completed': {
+          const idStr = String(payload.id || '');
+          const preview = String(payload.result_preview || '');
+          // Detect dispatcher error envelope ({"error": "..."}).
+          let status: ToolCallStatus['status'] = 'done';
+          try {
+            const parsed = JSON.parse(preview);
+            if (parsed && typeof parsed === 'object' && 'error' in parsed) status = 'error';
+          } catch { /* not JSON, treat as text result */ }
+          const targetMsgId = currentBotMsgIdRef.current;
+          if (!targetMsgId) break;
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === targetMsgId && m.tool_calls
+                ? {
+                    ...m,
+                    tool_calls: m.tool_calls.map((t) =>
+                      t.id === idStr ? { ...t, status, resultPreview: preview } : t,
+                    ),
+                  }
+                : m,
+            ),
+          );
+          break;
+        }
         case 'token': {
           // Tokens go into the reveal buffer, NOT directly into the
           // visible message — the timer copies them out at reading
@@ -247,6 +338,22 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
             setMessages((prev) => [...prev, { id, role: 'assistant', text: '', pending: true }]);
           } else if (revealStateRef.current) {
             revealStateRef.current.full += incoming;
+          } else {
+            // The assistant message already exists (e.g. tool_call_started
+            // created it) but no tokens had arrived yet, so revealStateRef
+            // was never initialised. Bind it to the existing bubble now —
+            // otherwise every post-tool-call token falls on the floor and
+            // the user hears audio with no on-screen text.
+            revealStateRef.current = {
+              msgId: currentBotMsgIdRef.current,
+              full: incoming,
+              shown: 0,
+              ended: false,
+            };
+            // If audio is already playing for this turn, the binary-frame
+            // handler won't trigger again — kick the reveal timer here so
+            // the text actually appears.
+            if (audioStartedForTurnRef.current) startRevealTimer();
           }
           // Functional updater so this handler doesn't depend on `state`
           // (reading it would cause `connect` to be recreated each render
@@ -420,7 +527,7 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
             setListening(false);
           },
         },
-        { endSilenceMs: 700, minSpeechMs: 250 },
+        { endSilenceMs: 350, minSpeechMs: 250 },
       );
       vadRef.current = vad;
       await vad.start();

@@ -35,3 +35,15 @@ API_MUSIC_CREDITS_PER_REQUEST = int(os.environ.get("API_MUSIC_CREDITS_PER_REQUES
 MUSIC_GEN_API_URL = (os.environ.get("MUSIC_GEN_API_URL") or "").strip()
 MUSIC_GEN_TIMEOUT_SEC = int(os.environ.get("MUSIC_GEN_TIMEOUT_SEC", "300"))
 
+# Voice-agent WS API. Public callers hit developer-api at
+# ``/v1/agents/{id}/session`` (this service). We then open an inner WS
+# to the dashboard-backend voice pipeline at ``DASHBOARD_VOICECHAT_WS_URL``
+# authenticated with ``INTERNAL_SERVICE_TOKEN`` (a shared secret that
+# must match the value on the dashboard-backend side). For local dev
+# the default points at the on-box dashboard-backend on :8085.
+DASHBOARD_VOICECHAT_WS_URL = (
+    os.environ.get("DASHBOARD_VOICECHAT_WS_URL")
+    or "ws://127.0.0.1:8085/api/dashboard/voicechat/session"
+).strip()
+INTERNAL_SERVICE_TOKEN = (os.environ.get("INTERNAL_SERVICE_TOKEN") or "").strip()
+

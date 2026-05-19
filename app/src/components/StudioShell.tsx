@@ -3,6 +3,7 @@ import { AlertTriangle, Home } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { studioSidebarItems, type StudioView } from '../studio/studioNav';
 import { ActiveJobsPill } from './ActiveJobsPill';
+import { useHasVoiceChatAccess } from '../lib/voicechatAccess';
 
 const LOW_CREDIT_THRESHOLD = 50;
 
@@ -16,6 +17,12 @@ type Props = {
 export function StudioShell({ activeView, children, mainClassName = '' }: Props) {
   const navigate = useNavigate();
   const { user } = useAuth();
+  // Agents is admin-only until publicly launched — drop the item from
+  // the sidebar entirely for non-admins so they don't see it.
+  const hasAgentsAccess = useHasVoiceChatAccess();
+  const visibleSidebarItems = hasAgentsAccess
+    ? studioSidebarItems
+    : studioSidebarItems.filter((item) => item.id !== 'agents');
 
   return (
       <div className="flex">
@@ -34,7 +41,7 @@ export function StudioShell({ activeView, children, mainClassName = '' }: Props)
           </button>
           <div className="border-b border-white/5 mb-2" />
           <div className="space-y-1">
-            {studioSidebarItems.map((item) => (
+            {visibleSidebarItems.map((item) => (
               <button
                 key={item.id}
                 type="button"
@@ -79,7 +86,7 @@ export function StudioShell({ activeView, children, mainClassName = '' }: Props)
             >
               <Home size={20} />
             </button>
-            {studioSidebarItems.map((item) => (
+            {visibleSidebarItems.map((item) => (
               <button
                 key={item.id}
                 type="button"

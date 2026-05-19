@@ -38,7 +38,29 @@ from stripe_service import (
 
 _np_log = logging.getLogger(__name__)
 
-JWT_SECRET = os.environ.get("JWT_SECRET", "your-secret-key-change-in-production")
+# SECURITY: JWT_SECRET must be a high-entropy value set via env. We refuse
+# to boot if it's missing, too short, or the well-known placeholder — those
+# are the conditions under which an attacker could forge any user/admin
+# session and silently take over the deployment.
+_INSECURE_DEFAULTS = {
+    "",
+    "your-secret-key-change-in-production",
+    "change-me",
+    "secret",
+    "changeme",
+}
+JWT_SECRET = (os.environ.get("JWT_SECRET") or "").strip()
+if JWT_SECRET in _INSECURE_DEFAULTS:
+    raise RuntimeError(
+        "JWT_SECRET is unset or uses a known-weak placeholder. Set a strong "
+        "random value in dashboard-backend/.env before starting the server."
+    )
+if len(JWT_SECRET) < 32:
+    raise RuntimeError(
+        f"JWT_SECRET is too short ({len(JWT_SECRET)} chars). Use at least 32 "
+        "random characters (e.g. `python -c 'import secrets; print(secrets.token_urlsafe(48))'`)."
+    )
+
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRY_DAYS = 30
 SIGNUP_CREDITS = int(os.environ.get("SIGNUP_CREDITS", "300"))
@@ -47,10 +69,23 @@ router = APIRouter(prefix="/api", tags=["auth"])
 
 
 class LoginRequest(BaseModel):
-    email: str
-    name: str
+    """Login payload.
+
+    SECURITY: ``credential`` is the Google-issued ID token (JWT) the
+    frontend receives from Google Identity Services. The backend
+    verifies it against Google before trusting anything inside it.
+    The legacy fields (``email``, ``name``, ``googleId``) are
+    deprecated — the verified claims always win when ``credential``
+    is present. New deployments should require ``credential``.
+    """
+    credential: str | None = None
+    # Legacy / fallback fields — IGNORED when credential is present.
+    # Kept on the schema so old clients can still send them without
+    # a 422; the server-side verification logic decides what to trust.
+    email: str | None = None
+    name: str | None = None
     picture: str | None = None
-    googleId: str
+    googleId: str | None = None
 
 
 class UserOut(BaseModel):
@@ -127,6 +162,17 @@ class AccountSummaryResponse(BaseModel):
     transactions: list[CreditTransactionOut]
     totalTtsGenerations: int
     totalCreditsUsed: int
+
+
+class AccountTransactionsPageResponse(BaseModel):
+    """Paged window over the user's credit_transactions, served by
+    ``GET /account/transactions``. ``total`` is the unfiltered count so
+    the client can render pagination controls (Prev / 1 of N / Next)
+    without making a second request."""
+    items: list[CreditTransactionOut]
+    total: int
+    offset: int
+    limit: int
 
 
 class CheckoutSessionRequest(BaseModel):
@@ -275,12 +321,56 @@ async def _get_user_by_id(user_id: str) -> UserOut | None:
         await conn.close()
 
 
-def require_auth(authorization: str | None = Header(None, alias="Authorization")) -> str:
+def require_auth(
+    authorization: str | None = Header(None, alias="Authorization"),
+    x_internal_service_token: str | None = Header(None, alias="X-Internal-Service-Token"),
+    x_internal_user_id: str | None = Header(None, alias="X-Internal-User-Id"),
+) -> str:
+    """Returns the authenticated user_id.
+
+    Two accepted auth paths:
+
+    1. ``Authorization: Bearer <jwt>`` — the standard website session
+       token. This is the only path public callers should ever use.
+
+    2. ``X-Internal-Service-Token`` + ``X-Internal-User-Id`` — a
+       service-to-service trust path used by the developer-api proxy
+       (api.vocence.ai). The developer-api validates the caller's
+       API key on its side, then forwards the request to us with the
+       shared secret + the resolved user_id. We trust the user_id
+       only when the secret matches. The ingress / reverse proxy
+       MUST strip ``X-Internal-Service-Token`` and ``X-Internal-User-Id``
+       from public requests — see the voicechat WS handler for the
+       full rationale; same threat model applies here.
+    """
+    expected_internal = (os.environ.get("INTERNAL_SERVICE_TOKEN") or "").strip()
+    if (
+        x_internal_service_token
+        and expected_internal
+        and hmac.compare_digest(x_internal_service_token, expected_internal)
+        and x_internal_user_id
+    ):
+        return x_internal_user_id.strip()
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="No token provided")
     token = authorization.split(" ", 1)[1]
     decoded = _decode_token(token)
     return decoded["userId"]
+
+
+def optional_auth(authorization: str | None = Header(None, alias="Authorization")) -> str | None:
+    """Like ``require_auth`` but returns None instead of raising when no
+    valid Bearer token is present. Use for endpoints that are public but
+    want to enrich the response when the viewer happens to be signed in
+    (e.g. include their own thumb state on a public playbook listing)."""
+    if not authorization or not authorization.startswith("Bearer "):
+        return None
+    token = authorization.split(" ", 1)[1]
+    try:
+        decoded = _decode_token(token)
+    except HTTPException:
+        return None
+    return decoded.get("userId")
 
 
 def require_admin_session(authorization: str | None = Header(None, alias="Authorization")) -> str:
@@ -1070,10 +1160,95 @@ async def _create_subscription_payment(
     return await (await conn.execute("SELECT * FROM payments WHERE id = ?", (payment_id,))).fetchone()
 
 
+# Google's documented allowed issuers for ID tokens. The Google
+# Identity Services library issues tokens with either form depending
+# on the flow; both are equivalent.
+_GOOGLE_TOKEN_ISSUERS = {"https://accounts.google.com", "accounts.google.com"}
+
+# Backend's expected ``aud`` claim. Must match the OAuth client ID the
+# frontend uses (VITE_GOOGLE_CLIENT_ID). Set in env so devs / staging /
+# prod can have different OAuth client IDs.
+GOOGLE_CLIENT_ID = (os.environ.get("GOOGLE_CLIENT_ID") or "").strip()
+
+
+async def _verify_google_id_token(credential: str) -> dict:
+    """Verify a Google-issued ID token (JWT) by calling Google's
+    tokeninfo endpoint, which returns the decoded + verified claims
+    only when the signature is valid AND the token isn't expired.
+
+    Raises HTTPException on any failure — caller never sees an
+    unverified token.
+
+    SECURITY history: before this function existed, ``/auth/login``
+    trusted whatever email/googleId the client posted. A user
+    exploited that to create accounts under spam domains
+    (``@nowhere.com``, etc.) without ever going through Google,
+    and then abused the (now-fixed) ``PATCH /credits`` endpoint to
+    grant themselves 100k credits. Verifying the credential closes
+    the account-creation half of that chain.
+    """
+    if not credential or not isinstance(credential, str):
+        raise HTTPException(status_code=400, detail="Missing Google credential")
+    if not GOOGLE_CLIENT_ID:
+        # Refuse to authenticate when we can't validate ``aud`` —
+        # otherwise an attacker who got any Google JWT (e.g. issued for
+        # some other app) could log into ours.
+        raise HTTPException(
+            status_code=500,
+            detail="GOOGLE_CLIENT_ID not configured on this deployment",
+        )
+    timeout = aiohttp.ClientTimeout(total=8)
+    url = "https://oauth2.googleapis.com/tokeninfo"
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url, params={"id_token": credential}) as resp:
+                if resp.status != 200:
+                    raise HTTPException(status_code=401, detail="Invalid Google credential")
+                data = await resp.json()
+    except aiohttp.ClientError as exc:
+        # Don't let a transient network blip fall through to "trust the
+        # client" — fail closed.
+        raise HTTPException(status_code=502, detail=f"Google verification unavailable: {exc}") from exc
+
+    # Verify the critical claims. Google's tokeninfo endpoint already
+    # checks the signature + expiry, but ``aud`` (our app) and ``iss``
+    # (Google) we have to enforce ourselves.
+    if data.get("aud") != GOOGLE_CLIENT_ID:
+        raise HTTPException(status_code=401, detail="Google credential audience mismatch")
+    if data.get("iss") not in _GOOGLE_TOKEN_ISSUERS:
+        raise HTTPException(status_code=401, detail="Google credential issuer mismatch")
+    if (data.get("email_verified") or "").lower() not in {"true", "1", "yes"} and data.get("email_verified") is not True:
+        # Reject unverified-email accounts so attackers can't game us
+        # with a domain they don't actually control.
+        raise HTTPException(status_code=401, detail="Google account email not verified")
+    if not data.get("email") or not data.get("sub"):
+        raise HTTPException(status_code=401, detail="Google credential missing required claims")
+    return data
+
+
 @router.post("/auth/login", response_model=LoginResponse)
 async def auth_login(body: LoginRequest):
-    if not body.email or not body.name or not body.googleId:
-        raise HTTPException(status_code=400, detail="Missing required fields")
+    # SECURITY: require a verified Google credential. The legacy
+    # ``email/name/googleId`` fields the frontend used to send are
+    # IGNORED — we use the claims from the verified JWT instead so
+    # an attacker can't forge an account by posting arbitrary values.
+    claims = await _verify_google_id_token(body.credential or "")
+    verified_email = (claims.get("email") or "").strip().lower()
+    verified_google_id = str(claims.get("sub") or "").strip()
+    verified_name = (claims.get("name") or body.name or verified_email.split("@")[0]).strip()
+    verified_picture = claims.get("picture") or body.picture
+    if not verified_email or not verified_google_id:
+        raise HTTPException(status_code=401, detail="Google credential missing email or sub")
+
+    # Override whatever the client posted. The remainder of this
+    # function uses ``body.email`` / ``body.googleId`` references —
+    # rebind them to the verified values so the rest of the existing
+    # logic flows through unchanged.
+    body.email = verified_email
+    body.name = verified_name
+    body.picture = verified_picture
+    body.googleId = verified_google_id
+
     await ensure_tables()
     conn = await get_connection()
     try:
@@ -1172,9 +1347,27 @@ async def get_user(user_id: str, userId: str = Depends(require_auth)):
 
 
 @router.patch("/users/{user_id}/credits", response_model=UserOut)
-async def update_credits(user_id: str, body: CreditsUpdateRequest, userId: str = Depends(require_auth)):
-    if user_id != userId:
-        raise HTTPException(status_code=403, detail="Unauthorized")
+async def update_credits(
+    user_id: str,
+    body: CreditsUpdateRequest,
+    admin_email: str = Depends(require_admin_session),
+):
+    """ADMIN-ONLY manual credit adjustment.
+
+    !!! SECURITY: prior to 2026-05-14 this endpoint was guarded only
+    by ``require_auth`` + an ``if user_id != caller`` check, which
+    means a normal user could set THEIR OWN balance to any integer.
+    A user did exactly that — granted themselves 100k credits. The
+    fix is to require an admin session (matched against ADMIN_EMAIL).
+
+    Any legitimate "user deducts their own credits" flow needs a
+    server-side endpoint that takes the operation, NOT the absolute
+    balance. The chat-demo deduction that used to call this is now
+    a no-op on the server (the frontend will get 403 if it still
+    attempts the call); the canonical credit deduction happens in
+    the Studio / Voicechat code paths via the credit_transactions
+    ledger and ``record_credit_transaction``."""
+    _ = admin_email  # silence unused-arg warning; admin-gate is the side effect
     conn = await get_connection()
     try:
         cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
@@ -1440,25 +1633,41 @@ async def get_account_summary(userId: str = Depends(require_auth)):
         await conn.close()
 
 
-@router.get("/account/transactions", response_model=list[CreditTransactionOut])
+@router.get("/account/transactions", response_model=AccountTransactionsPageResponse)
 async def get_account_transactions(
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(25, ge=1, le=100),
+    offset: int = Query(0, ge=0),
     userId: str = Depends(require_auth),
 ):
+    """Paged window over the user's credit_transactions.
+
+    Used by the Account / Credits page when the user expands the
+    "View detailed usage" panel. Returns the slice plus a ``total`` so
+    the client can render pagination controls. The summary endpoint
+    still returns its own (un-paged, last-20-by-default) list for the
+    overview card — the two have different "noise level" requirements
+    so we keep them on separate endpoints rather than overloading one.
+    """
     conn = await get_connection()
     try:
+        total_row = await (await conn.execute(
+            "SELECT COUNT(*) AS n FROM credit_transactions WHERE user_id = ?",
+            (userId,),
+        )).fetchone()
+        total = int(total_row["n"] or 0)
+
         cursor = await conn.execute(
             """
             SELECT id, transaction_type, amount, balance_after, description, reference_type, reference_id, created_at
             FROM credit_transactions
             WHERE user_id = ?
             ORDER BY created_at DESC
-            LIMIT ?
+            LIMIT ? OFFSET ?
             """,
-            (userId, limit),
+            (userId, limit, offset),
         )
         rows = await cursor.fetchall()
-        return [
+        items = [
             CreditTransactionOut(
                 id=r["id"],
                 transactionType=r["transaction_type"],
@@ -1473,6 +1682,8 @@ async def get_account_transactions(
         ]
     finally:
         await conn.close()
+
+    return AccountTransactionsPageResponse(items=items, total=total, offset=offset, limit=limit)
 
 
 @router.post("/developer/keys", response_model=DeveloperKeyCreateResponse)
@@ -1758,8 +1969,12 @@ async def create_checkout_session(body: CheckoutSessionRequest, userId: str = De
             )
         except HTTPException:
             raise
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Checkout session creation failed: {exc}") from exc
+        except Exception:
+            # Stripe/NOWPayments error messages can include internal config
+            # details (price IDs, customer ids, API tier hints). Log full
+            # detail server-side; return a generic message to the client.
+            _np_log.exception("checkout session creation failed for user=%s plan=%s", userId, plan_code)
+            raise HTTPException(status_code=500, detail="Checkout session creation failed")
     finally:
         await conn.close()
 
@@ -2043,8 +2258,51 @@ async def nowpayments_webhook(request: Request):
         await conn.close()
 
 
+# In-memory per-IP rate limiter for /sales/contact. The endpoint is
+# unauthenticated and sends real email, so it's a natural spam vector —
+# limit to SALES_CONTACT_PER_HOUR submissions per IP per hour. This is
+# best-effort (per-process, lost on restart) but cuts off a casual abuser
+# from sending thousands of emails before we notice. For production-grade
+# rate limiting plug in Redis here.
+_SALES_RL_PER_HOUR = int(os.environ.get("SALES_CONTACT_PER_HOUR", "5"))
+_SALES_RL_WINDOW_SEC = 3600
+_sales_rl_state: dict[str, list[float]] = {}
+
+
+def _sales_rate_limit_ok(client_ip: str) -> bool:
+    import time as _time
+    now = _time.time()
+    bucket = _sales_rl_state.setdefault(client_ip, [])
+    # Drop timestamps outside the window
+    cutoff = now - _SALES_RL_WINDOW_SEC
+    while bucket and bucket[0] < cutoff:
+        bucket.pop(0)
+    if len(bucket) >= _SALES_RL_PER_HOUR:
+        return False
+    bucket.append(now)
+    # Keep the global state bounded — purge entries whose bucket is empty
+    # once the dict grows large enough to matter.
+    if len(_sales_rl_state) > 10000:
+        for ip in list(_sales_rl_state.keys()):
+            if not _sales_rl_state[ip]:
+                _sales_rl_state.pop(ip, None)
+    return True
+
+
 @router.post("/sales/contact")
-async def sales_contact(body: SalesContactRequest):
+async def sales_contact(body: SalesContactRequest, request: Request):
+    # Use the first hop in X-Forwarded-For if behind a trusted proxy,
+    # otherwise the direct client. (Trust assumption: ingress strips
+    # client-supplied XFF and appends the real one — standard nginx /
+    # cloudflare config.)
+    fwd = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+    client_ip = fwd or (request.client.host if request.client else "unknown")
+    if not _sales_rate_limit_ok(client_ip):
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many contact submissions. Try again in an hour.",
+        )
+
     clean_name = (body.name or "").strip()
     clean_email = (body.email or "").strip()
     clean_message = (body.message or "").strip()
@@ -2052,6 +2310,12 @@ async def sales_contact(body: SalesContactRequest):
 
     if not clean_name or not clean_email or not clean_message:
         raise HTTPException(status_code=400, detail="name, email, and message are required")
+    # Cheap input bounds — keeps the SMTP body sane and prevents a single
+    # message from filling the mailbox.
+    if len(clean_name) > 200 or len(clean_email) > 320 or len(clean_message) > 5000:
+        raise HTTPException(status_code=400, detail="One or more fields exceed the maximum allowed length")
+    if "@" not in clean_email or "." not in clean_email.rsplit("@", 1)[-1]:
+        raise HTTPException(status_code=400, detail="Invalid email address")
 
     try:
         await asyncio.to_thread(
@@ -2064,5 +2328,9 @@ async def sales_contact(body: SalesContactRequest):
         return {"success": True, "message": "Message sent to sales successfully."}
     except HTTPException:
         raise
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to send sales email: {exc}") from exc
+    except Exception:
+        # SMTP errors may leak the configured host/port/auth scheme to
+        # an unauthenticated caller. Log full detail server-side, return
+        # a generic message to the client.
+        _np_log.exception("sales_contact send failed for %s", clean_email)
+        raise HTTPException(status_code=500, detail="Failed to send sales email")

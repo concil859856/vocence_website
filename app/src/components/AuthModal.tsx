@@ -17,33 +17,33 @@ export function AuthModal({ isOpen, onClose, initialMode = 'login' }: AuthModalP
   if (!isOpen) return null;
 
   const handleGoogleSuccess = async (credentialResponse: CredentialResponse) => {
-    if (credentialResponse.credential) {
-      // Decode JWT token (in production, verify on backend)
-      try {
-        const base64Url = credentialResponse.credential.split('.')[1];
-        const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
-        const jsonPayload = decodeURIComponent(
-          atob(base64)
-            .split('')
-            .map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
-            .join('')
-        );
-        const payload = JSON.parse(jsonPayload);
-
-        // Create user object
-        const userData = {
-          id: payload.sub,
-          email: payload.email,
-          name: payload.name || payload.email.split('@')[0],
-          picture: payload.picture,
-        };
-
-        await login(userData);
-        onClose();
-      } catch (error) {
-        console.error('Failed to decode Google token:', error);
-        alert('Failed to authenticate. Please try again.');
-      }
+    if (!credentialResponse.credential) return;
+    // SECURITY: we still client-side-decode the JWT to populate hint
+    // fields for the offline localStorage fallback path, but those
+    // values are NOT trusted by the backend. The backend verifies the
+    // raw credential against Google's tokeninfo endpoint and uses the
+    // verified claims; the client-decoded values are advisory only.
+    try {
+      const base64Url = credentialResponse.credential.split('.')[1];
+      const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+      const jsonPayload = decodeURIComponent(
+        atob(base64)
+          .split('')
+          .map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
+          .join('')
+      );
+      const payload = JSON.parse(jsonPayload);
+      await login({
+        id: payload.sub,
+        email: payload.email,
+        name: payload.name || payload.email.split('@')[0],
+        picture: payload.picture,
+        credential: credentialResponse.credential,
+      });
+      onClose();
+    } catch (error) {
+      console.error('Failed to authenticate:', error);
+      alert('Failed to authenticate. Please try again.');
     }
   };
 

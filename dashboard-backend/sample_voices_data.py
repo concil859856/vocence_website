@@ -63,6 +63,46 @@ SAMPLE_VOICE_LOCAL_FILES: dict[str, str] = {
 }
 
 
+# Human-friendly catalog metadata. Mirrors the labels/descriptions in
+# the frontend's app/src/data/sampleVoices.ts. Kept here so the same
+# values can be served from the API and rendered in clients without a
+# round trip through the website bundle. Update both files together.
+SAMPLE_VOICE_METADATA: dict[str, dict[str, str]] = {
+    # Local-disk voices
+    "voc-atlas":    {"name": "Atlas",    "description": "Deep, commanding male voice"},
+    "voc-roman":    {"name": "Roman",    "description": "Rich, classical male tone"},
+    "voc-vincent":  {"name": "Vincent",  "description": "Refined, baritone male voice"},
+    "voc-maximus":  {"name": "Maximus",  "description": "Bold, authoritative male voice"},
+    "voc-iris":     {"name": "Iris",     "description": "Bright, articulate female voice"},
+    "voc-camille":  {"name": "Camille",  "description": "Smooth, polished female voice"},
+    "voc-harper":   {"name": "Harper",   "description": "Warm, conversational podcast voice"},
+    "voc-chase":    {"name": "Chase",    "description": "Energetic, engaging podcast host"},
+    "voc-lyle":     {"name": "Lyle",     "description": "Smooth, easy-listening male voice"},
+    "voc-theo":     {"name": "Theo",     "description": "Thoughtful, measured male voice"},
+    "voc-jasper":   {"name": "Jasper",   "description": "Warm, friendly storytelling voice"},
+    "voc-owen":     {"name": "Owen",     "description": "Clear, professional podcast voice"},
+    # Voice Design CDN voices
+    "design-aria":   {"name": "Aria",   "description": "Bright, energetic female voice"},
+    "design-aurora": {"name": "Aurora", "description": "Soft, dreamy female voice"},
+    "design-dante":  {"name": "Dante",  "description": "Deep, confident male voice"},
+    "design-ember":  {"name": "Ember",  "description": "Warm, soulful female voice"},
+    "design-kai":    {"name": "Kai",    "description": "Smooth, friendly male voice"},
+    "design-luna":   {"name": "Luna",   "description": "Mysterious, ethereal female voice"},
+    "design-marcus": {"name": "Marcus", "description": "Authoritative, mature male voice"},
+    "design-rafael": {"name": "Rafael", "description": "Charismatic, expressive male voice"},
+    "design-yuki":   {"name": "Yuki",   "description": "Calm, gentle female voice"},
+    # Character styles
+    "char-epic-warrior":          {"name": "Epic Warrior",       "description": "Heroic, booming battle voice"},
+    "char-friendly-ai-assistant": {"name": "Friendly AI",        "description": "Pleasant, helpful assistant voice"},
+    "char-happy-female":          {"name": "Happy Female",       "description": "Cheerful, upbeat female voice"},
+    "char-little-girl":           {"name": "Little Girl",        "description": "Young, playful child voice"},
+    "char-military-commander":    {"name": "Military Commander", "description": "Stern, commanding officer voice"},
+    "char-neutral-male":          {"name": "Neutral Male",       "description": "Clear, neutral male narrator"},
+    # Real voice
+    "real-sophia":   {"name": "Sophia", "description": "Warm, expressive female voice"},
+}
+
+
 def is_known_sample(voice_id: str) -> bool:
     return voice_id in SAMPLE_VOICE_AUDIO_URLS or voice_id in SAMPLE_VOICE_LOCAL_FILES
 

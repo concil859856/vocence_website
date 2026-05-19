@@ -877,7 +877,9 @@ export const dashboardApi = {
   },
 
   getStudioHistory(userId: string): Promise<{ items: StudioHistoryItem[] }> {
-    return fetchJson(`/api/dashboard/studio/history?user_id=${encodeURIComponent(userId)}`);
+    return fetchJson(`/api/dashboard/studio/history?user_id=${encodeURIComponent(userId)}`, {
+      headers: adminAuthHeaders(),
+    });
   },
 
   deleteStudioHistory(
@@ -907,7 +909,8 @@ export const dashboardApi = {
             ? '&entry_type=music'
             : '';
     return fetchJson(
-      `/api/dashboard/studio/history/${historyId}/audio-url?user_id=${encodeURIComponent(userId)}${et}`
+      `/api/dashboard/studio/history/${historyId}/audio-url?user_id=${encodeURIComponent(userId)}${et}`,
+      { headers: adminAuthHeaders() },
     );
   },
 
@@ -960,6 +963,29 @@ export const dashboardApi = {
     return fetchJson(`/api/dashboard/studio/voice-design/voices/${voiceId}`, {
       method: 'DELETE',
       headers,
+    });
+  },
+
+  /** Upload a voice clip and save it as a reusable "cloned" voice in My
+   *  Voices. The backend transcribes the clip once on save and stores both
+   *  the reference audio (long-retention R2 object) and transcription. The
+   *  returned voice_id is selectable as `dv:<voice_id>` anywhere voices are
+   *  used (agents, Studio clone target, designed-voice speak). */
+  saveStudioClonedVoice(
+    args: { displayName: string; audioFile: File; language?: string; referenceText?: string },
+    token: string | null,
+  ): Promise<StudioClonedVoiceSaveResponse> {
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    const form = new FormData();
+    form.append('display_name', args.displayName);
+    form.append('audio_file', args.audioFile);
+    if (args.language) form.append('language', args.language);
+    if (args.referenceText) form.append('reference_text', args.referenceText);
+    return fetchJson('/api/dashboard/studio/voice-design/cloned-voices', {
+      method: 'POST',
+      headers,
+      body: form,
     });
   },
 
@@ -1044,12 +1070,15 @@ export const dashboardApi = {
   },
 
   getStudioMusicHistory(userId: string): Promise<{ items: StudioMusicHistoryItem[] }> {
-    return fetchJson(`/api/dashboard/studio/music/history?user_id=${encodeURIComponent(userId)}`);
+    return fetchJson(`/api/dashboard/studio/music/history?user_id=${encodeURIComponent(userId)}`, {
+      headers: adminAuthHeaders(),
+    });
   },
 
   getStudioMusicHistoryAudioUrl(historyId: number, userId: string): Promise<{ audio_url: string }> {
     return fetchJson(
-      `/api/dashboard/studio/music/history/${historyId}/audio-url?user_id=${encodeURIComponent(userId)}`
+      `/api/dashboard/studio/music/history/${historyId}/audio-url?user_id=${encodeURIComponent(userId)}`,
+      { headers: adminAuthHeaders() },
     );
   },
 
@@ -1061,8 +1090,35 @@ export const dashboardApi = {
     return fetchJson('/api/dashboard/playbooks', { method: 'POST', headers, body: JSON.stringify(body) });
   },
 
-  browsePublicPlaybooks(limit = 20): Promise<{ playbooks: PublicPlaybook[] }> {
-    return fetchJson(`/api/dashboard/playbooks/public/browse?limit=${limit}`);
+  browsePublicPlaybooks(limit = 20, token?: string | null): Promise<{ playbooks: PublicPlaybook[] }> {
+    // Auth is optional: when a token is supplied each item's
+    // ``viewer_voted`` reflects whether the signed-in user already
+    // thumbed it; anonymous callers always see viewer_voted = false.
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson(`/api/dashboard/playbooks/public/browse?limit=${limit}`, { headers });
+  },
+
+  votePlaybook(id: number, token: string | null): Promise<{ vote_count: number; viewer_voted: boolean }> {
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson(`/api/dashboard/playbooks/${id}/vote`, { method: 'POST', headers });
+  },
+
+  unvotePlaybook(id: number, token: string | null): Promise<{ vote_count: number; viewer_voted: boolean }> {
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson(`/api/dashboard/playbooks/${id}/vote`, { method: 'DELETE', headers });
+  },
+
+  recordPlaybookPlay(id: number, token?: string | null): Promise<{ play_count: number }> {
+    // Auth is optional. Anonymous viewers (via shared links) get
+    // counted too; private playbooks silently no-op server-side.
+    // Callers should fire-and-forget — the play UI shouldn't wait
+    // on the increment to complete.
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson(`/api/dashboard/playbooks/${id}/play`, { method: 'POST', headers });
   },
 
   listPlaybooks(token: string | null): Promise<{ playbooks: Playbook[] }> {
@@ -1234,6 +1290,15 @@ export interface StudioHistoryItem {
   reference_text?: string | null;
   target_text?: string | null;
   clone_source?: string | null;
+  // Music-only metadata. ``music_task`` is the generation type
+  // ('text2music' | 'audio2audio' | 'retake' | 'repaint' | 'edit' |
+  // 'extend'); ``music_metadata_json`` is a JSON string of the
+  // task-specific params (variance, repaint window, edit target, etc.).
+  // The history UI parses it lazily to render mode-specific rows and
+  // copy-buttons. Always null for non-music entries.
+  lyrics?: string | null;
+  music_task?: string | null;
+  music_metadata_json?: string | null;
 }
 
 export interface StudioVoiceDesignConfig {
@@ -1279,6 +1344,22 @@ export interface StudioDesignedVoiceItem {
   expires_at: string;
   created_at: string;
   expired: boolean;
+  // ``source`` tells the UI whether this row came from Voice Design's
+  // LLM-driven preview flow ("designed") or from the user uploading a
+  // real-voice reference clip and saving it ("cloned"). Defaults to
+  // 'designed' for rows that pre-date the column.
+  source?: 'designed' | 'cloned';
+  source_language?: string | null;
+}
+
+export interface StudioClonedVoiceSaveResponse {
+  voice_id: number;
+  display_name: string;
+  ref_script: string;
+  source_language: string | null;
+  audio_url: string | null;
+  expires_at: string;
+  credits: number;
 }
 
 // ----- Playbooks -----
@@ -1303,6 +1384,13 @@ export interface Playbook {
   visibility: string;
   track_count: number;
   total_duration: number;
+  // Public-playbook play counter. Always 0 for private playbooks.
+  play_count: number;
+  // Thumb-up vote count (public on all playbooks). ``viewer_voted`` is
+  // true only when the request was authenticated and the signed-in user
+  // has thumbed this playbook.
+  vote_count: number;
+  viewer_voted: boolean;
   created_at: string;
   updated_at: string;
 }

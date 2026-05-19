@@ -70,7 +70,7 @@ export class VadController {
   constructor(events: VadEvents, opts: VadOptions = {}) {
     this.events = events;
     this.opts = {
-      endSilenceMs: opts.endSilenceMs ?? 700,
+      endSilenceMs: opts.endSilenceMs ?? 350,
       minSpeechMs: opts.minSpeechMs ?? 250,
     };
   }

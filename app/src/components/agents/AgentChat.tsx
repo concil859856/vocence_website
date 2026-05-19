@@ -13,6 +13,7 @@ import { Loader2, Mic, Send, Square } from 'lucide-react';
 import type { Agent } from '../../lib/agents/types';
 import { useVoiceChat } from '../../lib/voicechat/useVoiceChat';
 import { renderMessage } from '../../lib/voicechat/renderInline';
+import { ToolCallChip } from '../../lib/voicechat/ToolCallChip';
 import { AgentAvatar } from './AgentAvatar';
 
 interface Props {
@@ -24,32 +25,40 @@ export function AgentChat({ agent, authToken }: Props) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [input, setInput] = useState('');
 
+  // Always-on voice: one tap on the mic starts a hands-free conversation
+  // (VAD segments each turn, plays the reply, then reopens the mic).
+  // The user only clicks again when they want to end the session.
   const {
     state,
     messages,
     micLevel,
     error,
-    startRecording,
-    stopRecording,
+    listening,
+    startListening,
+    stopListening,
     sendText,
     cancel,
-  } = useVoiceChat({ enabled: !!authToken, authToken, agentId: agent.id });
+  } = useVoiceChat({ enabled: !!authToken, authToken, agentId: agent.id, alwaysOn: true });
 
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [messages, state]);
 
-  // Tear down on unmount: cancel any in-flight turn so the WS releases
-  // the session promptly when the user navigates away.
+  // Tear down on unmount: stop the mic + cancel any in-flight turn so the
+  // VAD/media stream is released and the WS frees the session promptly.
   useEffect(() => {
-    return () => cancel();
-  }, [cancel]);
+    return () => {
+      stopListening();
+      cancel();
+    };
+  }, [cancel, stopListening]);
 
   const onMicClick = async () => {
-    if (state === 'recording') {
-      await stopRecording();
-    } else if (state === 'idle' || state === 'error' || state === 'speaking' || state === 'thinking') {
-      await startRecording();
+    if (listening) {
+      cancel();
+      stopListening();
+    } else {
+      await startListening();
     }
   };
 
@@ -62,7 +71,7 @@ export function AgentChat({ agent, authToken }: Props) {
   };
 
   const stateLabel: Record<typeof state, string> = {
-    idle: authToken ? 'Tap mic to talk' : 'Sign in to chat',
+    idle: authToken ? 'Tap mic to start' : 'Sign in to chat',
     connecting: 'Connecting…',
     listening: 'Listening…',
     recording: 'Listening…',
@@ -75,11 +84,11 @@ export function AgentChat({ agent, authToken }: Props) {
 
   return (
     <div className="rounded-2xl border border-white/10 bg-[#0B0D10] flex flex-col h-[calc(100vh-16rem)] min-h-[480px]">
-      <div className="px-4 py-3 border-b border-white/10 flex items-center gap-3">
-        <AgentAvatar id={agent.id} name={agent.name} size="sm" rounded="full" />
+      <div className="px-3 py-2 border-b border-white/10 flex items-center gap-2.5">
+        <AgentAvatar id={agent.id} name={agent.name} size="xs" rounded="full" />
         <div className="flex-1 min-w-0">
-          <div className="text-sm font-semibold text-white leading-tight truncate">{agent.name}</div>
-          <div className="text-[11px] text-[#A7B0B7] leading-tight">{stateLabel[state]}</div>
+          <div className="text-[13px] font-semibold text-white leading-tight truncate">{agent.name}</div>
+          <div className="text-[10px] text-[#A7B0B7] leading-tight">{stateLabel[state]}</div>
         </div>
       </div>
 
@@ -98,6 +107,16 @@ export function AgentChat({ agent, authToken }: Props) {
                   : 'bg-white/[0.06] text-white border border-white/10'
               }`}
             >
+              {/* Tool-call chips — rendered above the message text so
+                  the user sees "Searching the web…" while the LLM is
+                  fetching the data it needs to answer. */}
+              {m.role === 'assistant' && m.tool_calls && m.tool_calls.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 mb-1.5">
+                  {m.tool_calls.map((tc) => (
+                    <ToolCallChip key={tc.id} call={tc} />
+                  ))}
+                </div>
+              )}
               {m.pending && !m.text ? (
                 <span className="inline-flex gap-1">
                   <span className="w-1.5 h-1.5 rounded-full bg-current opacity-60 animate-pulse" />
@@ -119,16 +138,16 @@ export function AgentChat({ agent, authToken }: Props) {
           <button
             type="button"
             onClick={onMicClick}
-            disabled={state === 'connecting' || state === 'uploading' || state === 'transcribing'}
+            disabled={state === 'connecting'}
             className={`relative shrink-0 w-12 h-12 rounded-full flex items-center justify-center transition-colors ${
-              state === 'recording'
+              listening
                 ? 'bg-red-500 text-white'
                 : 'bg-[#DFFF00] text-[#07080A] hover:brightness-110 disabled:opacity-50'
             }`}
-            aria-label={state === 'recording' ? 'Stop' : 'Talk'}
+            aria-label={listening ? 'End voice chat' : 'Start voice chat'}
           >
-            {state === 'recording' ? <Square size={18} fill="currentColor" /> : <Mic size={20} />}
-            {state === 'recording' && (
+            {listening ? <Square size={18} fill="currentColor" /> : <Mic size={20} />}
+            {listening && (
               <span
                 className="absolute -inset-1 rounded-full border-2 border-red-400/60 pointer-events-none"
                 style={{ transform: `scale(${1 + micLevel * 0.4})` }}
@@ -157,14 +176,14 @@ export function AgentChat({ agent, authToken }: Props) {
                   }
                 }
               }}
-              placeholder={state === 'recording' ? 'Recording…' : 'Type a message…'}
+              placeholder="Type a message…"
               title="Shift+Enter for new line"
-              disabled={state === 'recording' || state === 'connecting' || !authToken}
+              disabled={state === 'connecting' || !authToken}
               className="flex-1 bg-white/[0.04] border border-white/10 rounded-2xl px-4 py-2 text-sm text-white placeholder:text-[#666] focus:outline-none focus:border-[#DFFF00]/40 disabled:opacity-50 resize-none leading-snug"
             />
             <button
               type="submit"
-              disabled={!input.trim() || state === 'recording' || state === 'connecting'}
+              disabled={!input.trim() || state === 'connecting'}
               className="shrink-0 w-10 h-10 rounded-full bg-white/[0.06] hover:bg-white/[0.10] text-white disabled:opacity-30 flex items-center justify-center"
               aria-label="Send"
             >
@@ -176,3 +195,4 @@ export function AgentChat({ agent, authToken }: Props) {
     </div>
   );
 }
+

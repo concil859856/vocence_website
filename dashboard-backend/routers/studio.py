@@ -5,7 +5,7 @@ import os
 import re
 import secrets
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 
@@ -18,6 +18,7 @@ from ranking import (
 )
 from routers.auth import require_auth
 from schemas import (
+    StudioClonedVoiceSaveResponse,
     StudioCloneResponse,
     StudioDesignedVoiceItem,
     StudioDesignedVoiceSpeakRequest,
@@ -144,6 +145,26 @@ def _configured_studio_models() -> list[StudioTopModelResponse]:
             )
         )
     return models
+
+
+@router.get("/builtin-voices")
+async def list_builtin_voices(_: str = Depends(require_auth)) -> dict:
+    """Pre-defined sample voices users can pass to TTS. Stable ids + a
+    short human-readable name/description.
+
+    Only CDN-hosted voices are exposed via the public API for now —
+    local-disk voices depend on the dashboard-backend process having
+    fresh module state for ``SAMPLE_VOICE_LOCAL_FILES`` and are
+    therefore unreliable to advertise. Studio's UI still uses the full
+    catalog directly."""
+    from sample_voices_data import SAMPLE_VOICE_METADATA, get_sample_url
+    return {
+        "voices": [
+            {"id": vid, "name": meta["name"], "description": meta["description"]}
+            for vid, meta in SAMPLE_VOICE_METADATA.items()
+            if get_sample_url(vid)  # CDN-hosted only — local files are filtered out
+        ]
+    }
 
 
 @router.get("/top-models", response_model=StudioTopModelsResponse)
@@ -1079,7 +1100,8 @@ async def list_designed_voices(user_id: str = Depends(require_auth)):
             await conn.execute(
                 """
                 SELECT id, display_name, voice_description, revised_instruction, chosen_variant, ref_script,
-                       miner_hotkey, model_name, chute_slug, audio_s3_bucket, audio_s3_key, expires_at, created_at
+                       miner_hotkey, model_name, chute_slug, audio_s3_bucket, audio_s3_key, expires_at, created_at,
+                       COALESCE(source, 'designed') AS source, source_language
                 FROM studio_user_designed_voices
                 WHERE user_id = ?
                 ORDER BY datetime(created_at) DESC
@@ -1115,6 +1137,8 @@ async def list_designed_voices(user_id: str = Depends(require_auth)):
                 expires_at=exp.isoformat() if exp else "",
                 created_at=str(r["created_at"] or ""),
                 expired=expired,
+                source=(r["source"] if "source" in r.keys() else "designed") or "designed",
+                source_language=(r["source_language"] if "source_language" in r.keys() else None),
             )
         )
     return StudioDesignedVoicesResponse(voices=voices)
@@ -1144,6 +1168,145 @@ async def delete_designed_voice(voice_id: int, user_id: str = Depends(require_au
         await conn.close()
     delete_object(row["audio_s3_bucket"], row["audio_s3_key"])
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Cloned voices — user uploads a real-voice reference clip once, we transcribe
+# it once, and save both so the user can pick this voice anywhere (Studio,
+# voice agents, designed-voice speak) without re-uploading. Reuses the
+# ``studio_user_designed_voices`` table with ``source='cloned'`` so the
+# existing dv:<id> voice routing keeps working out of the box.
+# ---------------------------------------------------------------------------
+
+# Saved cloned voices retain their reference audio for the long haul (5 years).
+# Designed-voice rows ride the 7-day STUDIO_TTS_EXPIRY_DAYS retention because
+# their R2 file is in the same "/voice-design/preview" subfolder that the
+# preview cleanup job sweeps. Cloned voices land under "/voice-design/cloned"
+# and never get swept — they're explicit user uploads, not cheap LLM
+# previews, so deletion is user-initiated only.
+_CLONED_VOICE_RETENTION_DAYS = 365 * 5
+
+
+@router.post("/voice-design/cloned-voices", response_model=StudioClonedVoiceSaveResponse)
+async def save_cloned_voice(
+    display_name: str = Form(...),
+    audio_file: UploadFile = File(...),
+    language: str | None = Form(None),
+    reference_text: str | None = Form(None, description="Optional manual transcript; skips STT when provided."),
+    user_id: str = Depends(require_auth),
+):
+    """Upload a voice clip, transcribe it once, and save it as a reusable
+    voice in the user's My Voices. After saving, the voice is addressable
+    as ``dv:<voice_id>`` from anywhere voices are selected (agents, Studio
+    clone target, designed-voice speak)."""
+    name = (display_name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="display_name is required")
+    if len(name) > 40:
+        raise HTTPException(status_code=400, detail="display_name must be at most 40 characters")
+
+    if not audio_file.filename:
+        raise HTTPException(status_code=400, detail="audio_file is required")
+    raw = await audio_file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Empty audio file")
+    # Same size cap the regular /clone endpoint uses — keeps the contract
+    # consistent and protects us from a user trying to save a 500MB clip.
+    if len(raw) > CLONE_MAX_REF_AUDIO_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Audio exceeds max size ({CLONE_MAX_REF_AUDIO_BYTES} bytes)",
+        )
+
+    # Enforce the same Normal/Premium tier limit Voice Design uses, since
+    # cloned voices share the same My Voices list. Counts BOTH designed
+    # and cloned together to keep the limit meaningful.
+    NORMAL_VOICE_LIMIT = int(os.environ.get("STUDIO_NORMAL_VOICE_LIMIT", "5"))
+    is_premium = await _is_premium_user(user_id)
+    if not is_premium:
+        conn = await get_connection()
+        try:
+            count_row = await (await conn.execute(
+                "SELECT COUNT(*) AS n FROM studio_user_designed_voices WHERE user_id = ?",
+                (user_id,),
+            )).fetchone()
+            voice_count = int(count_row["n"] or 0) if count_row else 0
+            if voice_count >= NORMAL_VOICE_LIMIT:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Normal plan allows up to {NORMAL_VOICE_LIMIT} saved voices. "
+                           f"Upgrade to Premium for unlimited, or delete an existing voice.",
+                )
+        finally:
+            await conn.close()
+
+    # Transcribe once. If the user provided a manual transcript, trust it
+    # (faster + lets users override a flaky STT result for niche accents).
+    lang = (language or "").strip() or None
+    user_ref = (reference_text or "").strip()
+    detected_language: str | None = lang
+    if user_ref:
+        ref_text = user_ref
+    else:
+        stt_result, stt_err = await transcribe_audio(audio_bytes=raw, language=lang)
+        if not stt_result:
+            detail = "Could not transcribe the audio."
+            if stt_err:
+                detail += f" ({stt_err})"
+            raise HTTPException(status_code=502, detail=detail)
+        ref_text = str(stt_result.get("text") or "").strip()
+        if not ref_text:
+            raise HTTPException(
+                status_code=400,
+                detail="Transcription returned empty text — try a clearer clip or set the language.",
+            )
+        if isinstance(stt_result.get("language"), str):
+            detected_language = stt_result.get("language")
+
+    # Upload to permanent storage. ``upload_wav_to_hippius`` writes
+    # under ``{user_id}/{subdir}/{uuid}.wav`` and returns the bucket+key.
+    # The default ``STUDIO_TTS_EXPIRY_DAYS`` it stamps is too short for
+    # a "save for forever" voice — we override below.
+    bucket, key, _short_expiry = upload_wav_to_hippius(user_id, raw, subdir="voice-design/cloned")
+    long_expires = datetime.now(timezone.utc) + timedelta(days=_CLONED_VOICE_RETENTION_DAYS)
+
+    conn = await get_connection()
+    try:
+        cur = await conn.execute(
+            """
+            INSERT INTO studio_user_designed_voices
+            (user_id, display_name, voice_description, revised_instruction, chosen_variant,
+             ref_script, miner_hotkey, model_name, chute_slug,
+             audio_s3_bucket, audio_s3_key, expires_at, source, source_language, created_at)
+            VALUES (?, ?, '', '', '', ?, '', '', '', ?, ?, ?, 'cloned', ?, datetime('now'))
+            """,
+            (
+                user_id,
+                name,
+                ref_text,
+                bucket,
+                key,
+                long_expires.isoformat(),
+                detected_language,
+            ),
+        )
+        voice_id = int(cur.lastrowid)
+        credit_row = await (await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))).fetchone()
+        new_credits = int(credit_row["credits"]) if credit_row else 0
+        await conn.commit()
+    finally:
+        await conn.close()
+
+    audio_url = get_presigned_url(bucket, key, long_expires, public=is_premium) or ""
+    return StudioClonedVoiceSaveResponse(
+        voice_id=voice_id,
+        display_name=name,
+        ref_script=ref_text,
+        source_language=detected_language,
+        audio_url=audio_url,
+        expires_at=long_expires.isoformat(),
+        credits=new_credits,
+    )
 
 
 @router.post("/voice-design/speak", response_model=StudioCloneResponse)
@@ -1281,8 +1444,20 @@ async def designed_voice_speak(body: StudioDesignedVoiceSpeakRequest, user_id: s
 
 
 @router.get("/history", response_model=StudioHistoryResponse)
-async def get_history(user_id: str = Query(..., description="Website user id (e.g. from auth)")):
-    """List Studio history for user (TTS + STT)."""
+async def get_history(
+    user_id: str = Query(..., description="Must match the authenticated user"),
+    auth_user_id: str = Depends(require_auth),
+):
+    """List Studio history for user (TTS + STT).
+
+    SECURITY (2026-05-14): prior to this patch the endpoint had NO auth
+    and trusted the ``user_id`` query param, so anyone could read any
+    user's Studio history (TTS prompts, STT transcribed text, clone
+    samples) just by guessing user ids. Now requires a valid Bearer
+    JWT and rejects requests where ``user_id`` doesn't match the
+    authenticated user."""
+    if user_id != auth_user_id:
+        raise HTTPException(status_code=403, detail="user_id does not match authenticated user")
     conn = await get_connection()
     try:
         tts_rows = await (await conn.execute("""
@@ -1310,7 +1485,7 @@ async def get_history(user_id: str = Query(..., description="Website user id (e.
             LIMIT 100
         """, (user_id,))).fetchall()
         music_rows = await (await conn.execute("""
-            SELECT id, task, prompt_text, lyrics, audio_duration,
+            SELECT id, task, prompt_text, lyrics, audio_duration, metadata_json,
                    audio_s3_bucket, audio_s3_key, expires_at, created_at
             FROM studio_music_history
             WHERE user_id = ?
@@ -1436,6 +1611,13 @@ async def get_history(user_id: str = Query(..., description="Website user id (e.
                 expires_at=expires_at.isoformat() if expires_at else "",
                 created_at=str(r["created_at"] or ""),
                 expired=expired,
+                # New: surface the lyrics + the raw task + the mode-specific
+                # metadata blob to the frontend, so the history card can show
+                # everything that went into this generation and let the user
+                # copy / rerun.
+                lyrics=r["lyrics"] or "",
+                music_task=r["task"] or "text2music",
+                music_metadata_json=(r["metadata_json"] if "metadata_json" in r.keys() else None) or "{}",
             )
         )
     items.sort(key=lambda x: x.created_at, reverse=True)
@@ -1493,8 +1675,15 @@ async def get_history_audio_url(
     history_id: int,
     user_id: str = Query(...),
     entry_type: str = Query("tts", description="tts, clone, or voice_design (latter two use clone history table)"),
+    auth_user_id: str = Depends(require_auth),
 ):
-    """Get a fresh presigned audio URL for a history entry (if not expired)."""
+    """Get a fresh presigned audio URL for a history entry (if not expired).
+
+    SECURITY (2026-05-14): require auth and reject mismatched user_id —
+    the WHERE filter on user_id alone is not enough since an attacker
+    could brute force history_ids against guessed user_ids."""
+    if user_id != auth_user_id:
+        raise HTTPException(status_code=403, detail="user_id does not match authenticated user")
     kind = (entry_type or "tts").strip().lower()
     if kind in ("clone", "voice_design", "designed_voice"):
         table = "studio_clone_history"
@@ -1942,14 +2131,25 @@ async def music_generate_retake(
 
     bucket, key, expires_at = upload_wav_to_hippius(user_id, wav_bytes, subdir="music")
 
+    import json as _json
     conn = await get_connection()
     try:
+        # Persist mode-specific params so the History page can show
+        # the user EXACTLY how this track was generated and let them
+        # rerun / tweak / copy. Without this the user only sees the
+        # prompt + lyrics and forgets that variance=0.7 was the magic.
+        meta = {
+            "retake_variance": retake_variance,
+            "retake_seeds": retake_seeds,
+            "infer_step": infer_step,
+            "guidance_scale": guidance_scale,
+        }
         cursor = await conn.execute(
             """INSERT INTO studio_music_history
             (user_id, task, prompt_text, lyrics, audio_duration, audio_format,
-             audio_s3_bucket, audio_s3_key, expires_at, credits_used, latency_ms, status, created_at)
-            VALUES (?, 'retake', ?, ?, 0, ?, ?, ?, ?, ?, ?, 'completed', datetime('now'))""",
-            (user_id, prompt, lyrics, format, bucket, key, expires_at.isoformat(), MUSIC_CREDITS_COST, latency_ms),
+             audio_s3_bucket, audio_s3_key, expires_at, credits_used, latency_ms, status, metadata_json, created_at)
+            VALUES (?, 'retake', ?, ?, 0, ?, ?, ?, ?, ?, ?, 'completed', ?, datetime('now'))""",
+            (user_id, prompt, lyrics, format, bucket, key, expires_at.isoformat(), MUSIC_CREDITS_COST, latency_ms, _json.dumps(meta)),
         )
         history_id = int(cursor.lastrowid)
         await conn.execute("UPDATE auth_users SET credits = credits - ?, updated_at = datetime('now') WHERE id = ?",
@@ -2024,14 +2224,22 @@ async def music_generate_repaint(
 
     bucket, key, expires_at = upload_wav_to_hippius(user_id, wav_bytes, subdir="music")
 
+    import json as _json
     conn = await get_connection()
     try:
+        meta = {
+            "repaint_start": repaint_start,
+            "repaint_end": repaint_end,
+            "retake_variance": retake_variance,
+            "infer_step": infer_step,
+            "guidance_scale": guidance_scale,
+        }
         cursor = await conn.execute(
             """INSERT INTO studio_music_history
             (user_id, task, prompt_text, lyrics, audio_duration, audio_format,
-             audio_s3_bucket, audio_s3_key, expires_at, credits_used, latency_ms, status, created_at)
-            VALUES (?, 'repaint', ?, ?, 0, ?, ?, ?, ?, ?, ?, 'completed', datetime('now'))""",
-            (user_id, prompt, lyrics, format, bucket, key, expires_at.isoformat(), MUSIC_CREDITS_COST, latency_ms),
+             audio_s3_bucket, audio_s3_key, expires_at, credits_used, latency_ms, status, metadata_json, created_at)
+            VALUES (?, 'repaint', ?, ?, 0, ?, ?, ?, ?, ?, ?, 'completed', ?, datetime('now'))""",
+            (user_id, prompt, lyrics, format, bucket, key, expires_at.isoformat(), MUSIC_CREDITS_COST, latency_ms, _json.dumps(meta)),
         )
         history_id = int(cursor.lastrowid)
         await conn.execute("UPDATE auth_users SET credits = credits - ?, updated_at = datetime('now') WHERE id = ?",
@@ -2109,14 +2317,24 @@ async def music_generate_edit(
 
     bucket, key, expires_at = upload_wav_to_hippius(user_id, wav_bytes, subdir="music")
 
+    import json as _json
     conn = await get_connection()
     try:
+        meta = {
+            "edit_target_prompt": edit_target_prompt,
+            "edit_target_lyrics": edit_target_lyrics,
+            "edit_n_min": edit_n_min,
+            "edit_n_max": edit_n_max,
+            "retake_seeds": retake_seeds,
+            "infer_step": infer_step,
+            "guidance_scale": guidance_scale,
+        }
         cursor = await conn.execute(
             """INSERT INTO studio_music_history
             (user_id, task, prompt_text, lyrics, audio_duration, audio_format,
-             audio_s3_bucket, audio_s3_key, expires_at, credits_used, latency_ms, status, created_at)
-            VALUES (?, 'edit', ?, ?, 0, ?, ?, ?, ?, ?, ?, 'completed', datetime('now'))""",
-            (user_id, prompt, lyrics, format, bucket, key, expires_at.isoformat(), MUSIC_CREDITS_COST, latency_ms),
+             audio_s3_bucket, audio_s3_key, expires_at, credits_used, latency_ms, status, metadata_json, created_at)
+            VALUES (?, 'edit', ?, ?, 0, ?, ?, ?, ?, ?, ?, 'completed', ?, datetime('now'))""",
+            (user_id, prompt, lyrics, format, bucket, key, expires_at.isoformat(), MUSIC_CREDITS_COST, latency_ms, _json.dumps(meta)),
         )
         history_id = int(cursor.lastrowid)
         await conn.execute("UPDATE auth_users SET credits = credits - ?, updated_at = datetime('now') WHERE id = ?",
@@ -2192,14 +2410,22 @@ async def music_generate_extend(
 
     bucket, key, expires_at = upload_wav_to_hippius(user_id, wav_bytes, subdir="music")
 
+    import json as _json
     conn = await get_connection()
     try:
+        meta = {
+            "left_extend_length": left_extend_length,
+            "right_extend_length": right_extend_length,
+            "extend_seeds": extend_seeds,
+            "infer_step": infer_step,
+            "guidance_scale": guidance_scale,
+        }
         cursor = await conn.execute(
             """INSERT INTO studio_music_history
             (user_id, task, prompt_text, lyrics, audio_duration, audio_format,
-             audio_s3_bucket, audio_s3_key, expires_at, credits_used, latency_ms, status, created_at)
-            VALUES (?, 'extend', ?, ?, 0, ?, ?, ?, ?, ?, ?, 'completed', datetime('now'))""",
-            (user_id, prompt, lyrics, format, bucket, key, expires_at.isoformat(), MUSIC_CREDITS_COST, latency_ms),
+             audio_s3_bucket, audio_s3_key, expires_at, credits_used, latency_ms, status, metadata_json, created_at)
+            VALUES (?, 'extend', ?, ?, 0, ?, ?, ?, ?, ?, ?, 'completed', ?, datetime('now'))""",
+            (user_id, prompt, lyrics, format, bucket, key, expires_at.isoformat(), MUSIC_CREDITS_COST, latency_ms, _json.dumps(meta)),
         )
         history_id = int(cursor.lastrowid)
         await conn.execute("UPDATE auth_users SET credits = credits - ?, updated_at = datetime('now') WHERE id = ?",
@@ -2226,8 +2452,16 @@ async def music_generate_extend(
 
 
 @router.get("/music/history", response_model=StudioMusicHistoryResponse)
-async def get_music_history(user_id: str = Query(...)):
-    """List music generation history for a user."""
+async def get_music_history(
+    user_id: str = Query(...),
+    auth_user_id: str = Depends(require_auth),
+):
+    """List music generation history for a user.
+
+    SECURITY (2026-05-14): require auth + user_id match. See note on
+    ``get_history`` above — the same IDOR existed here."""
+    if user_id != auth_user_id:
+        raise HTTPException(status_code=403, detail="user_id does not match authenticated user")
     conn = await get_connection()
     try:
         rows = await (await conn.execute("""
@@ -2267,8 +2501,17 @@ async def get_music_history(user_id: str = Query(...)):
 
 
 @router.get("/music/history/{history_id}/audio-url")
-async def get_music_history_audio_url(history_id: int, user_id: str = Query(...)):
-    """Get a fresh presigned audio URL for a music history entry."""
+async def get_music_history_audio_url(
+    history_id: int,
+    user_id: str = Query(...),
+    auth_user_id: str = Depends(require_auth),
+):
+    """Get a fresh presigned audio URL for a music history entry.
+
+    SECURITY (2026-05-14): require auth + user_id match. Same IDOR as
+    the TTS/STT history endpoint above."""
+    if user_id != auth_user_id:
+        raise HTTPException(status_code=403, detail="user_id does not match authenticated user")
     conn = await get_connection()
     try:
         row = await (await conn.execute(

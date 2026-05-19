@@ -70,11 +70,37 @@ _LOCAL_LLM_USE_THINK_DEFAULT = (os.environ.get("LOCAL_LLM_USE_THINK") or "").str
     "1", "true", "yes", "on",
 )
 
-# OpenAI endpoint (or any OpenAI-compatible service like Groq, Together,
+# OpenAI endpoint (or any OpenAI-compatible service like Together,
 # Fireworks — just point OPENAI_BASE_URL at their /v1).
 OPENAI_API_KEY = (os.environ.get("OPENAI_API_KEY") or "").strip()
 OPENAI_BASE_URL = (os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1").strip().rstrip("/")
 OPENAI_MODEL = (os.environ.get("OPENAI_MODEL") or "gpt-5-mini").strip()
+
+# Groq endpoint — purpose-built for low-latency voice agents. The Groq
+# API is OpenAI-compatible (same /chat/completions shape, same tool-call
+# JSON), so the streaming/tool plumbing below is shared. We keep Groq
+# distinct from OpenAI so per-agent selection can target it explicitly
+# via a ``groq:<model>`` prefix in agent.config.llm_model — and so a
+# missing GROQ_API_KEY doesn't silently fall back to OpenAI.
+GROQ_API_KEY = (os.environ.get("GROQ_API_KEY") or "").strip()
+GROQ_BASE_URL = (os.environ.get("GROQ_BASE_URL") or "https://api.groq.com/openai/v1").strip().rstrip("/")
+GROQ_MODEL = (os.environ.get("GROQ_MODEL") or "llama-3.3-70b-versatile").strip()
+
+# Cerebras endpoint — primary LLM for voice chat. Same OpenAI-compatible
+# wire shape as Groq/OpenAI; we keep it as its own provider so per-agent
+# overrides via ``cerebras:<model>`` and the voice-chat fallback ladder
+# stay explicit (Cerebras → OpenAI on stream failure).
+CEREBRAS_API_KEY = (os.environ.get("CEREBRAS_API_KEY") or "").strip()
+CEREBRAS_BASE_URL = (os.environ.get("CEREBRAS_BASE_URL") or "https://api.cerebras.ai/v1").strip().rstrip("/")
+CEREBRAS_MODEL = (os.environ.get("CEREBRAS_MODEL") or "qwen-3-235b-a22b-instruct-2507").strip()
+
+# Voice-chat fallback: if the primary stream (Cerebras) fails before
+# emitting any tokens, retry once against OpenAI. Only kicks in for
+# ``stream_chat_with_tools`` and only when this flag is on, so other
+# callers (voice design, summaries, etc.) keep their existing behaviour.
+VOICECHAT_LLM_FALLBACK_TO_OPENAI = (
+    os.environ.get("VOICECHAT_LLM_FALLBACK_TO_OPENAI") or "1"
+).strip() not in ("0", "false", "no", "")
 
 # Provider selection: explicit override via env, else auto-detect.
 # Accepts: "openai" | "local" | "chutes" | "" (auto).
@@ -173,8 +199,46 @@ def openai_llm_configured() -> bool:
     return bool(OPENAI_API_KEY and OPENAI_MODEL)
 
 
+def groq_llm_configured() -> bool:
+    return bool(GROQ_API_KEY and GROQ_MODEL)
+
+
+def cerebras_llm_configured() -> bool:
+    return bool(CEREBRAS_API_KEY and CEREBRAS_MODEL)
+
+
 def llm_configured() -> bool:
-    return local_llm_configured() or openai_llm_configured() or chutes_llm_configured()
+    return (
+        local_llm_configured()
+        or openai_llm_configured()
+        or groq_llm_configured()
+        or cerebras_llm_configured()
+        or chutes_llm_configured()
+    )
+
+
+# Model-prefix routing. Agent configs use ``groq:<model>`` to force a
+# specific provider regardless of the system-wide default. This keeps
+# per-agent routing explicit and lets callers mix providers within one
+# deployment (Logos on Claude/Chutes, voice agents on Groq for speed).
+_PROVIDER_PREFIXES = {"groq:", "openai:", "chutes:", "anthropic:", "cerebras:"}
+
+
+def split_provider_prefix(model: str | None) -> tuple[str | None, str | None]:
+    """Parse ``provider:model`` into ``(provider, model)``. Returns
+    ``(None, model)`` when no recognised prefix is present so callers
+    fall back to default routing. ``anthropic:`` is treated as Chutes
+    since Claude on this stack is served via Chutes."""
+    if not model:
+        return None, None
+    s = model.strip()
+    for pref in _PROVIDER_PREFIXES:
+        if s.lower().startswith(pref):
+            prov = pref[:-1]
+            if prov == "anthropic":
+                prov = "chutes"
+            return prov, s[len(pref):].strip() or None
+    return None, s
 
 
 def llm_provider() -> str:
@@ -225,6 +289,20 @@ def _openai_headers() -> dict:
     return {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {OPENAI_API_KEY}",
+    }
+
+
+def _groq_headers() -> dict:
+    return {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+    }
+
+
+def _cerebras_headers() -> dict:
+    return {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {CEREBRAS_API_KEY}",
     }
 
 
@@ -329,11 +407,16 @@ async def _openai_chat_complete(
     if not OPENAI_API_KEY:
         raise RuntimeError("OPENAI_API_KEY not set")
     url = f"{OPENAI_BASE_URL}/chat/completions"
+    # gpt-5* / o-series: ``max_tokens`` is renamed to
+    # ``max_completion_tokens`` (the old name 400s) and custom
+    # ``temperature`` is rejected entirely (only default 1 is allowed
+    # for reasoning models). Both quirks: just omit temperature and
+    # use the new max-token field. Older OpenAI models still accept
+    # this shape — default temperature is 1, which is fine.
     body = {
         "model": OPENAI_MODEL,
         "messages": messages,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
+        "max_completion_tokens": max_tokens,
     }
     timeout = aiohttp.ClientTimeout(total=LOCAL_LLM_TIMEOUT_SEC)
     async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -349,6 +432,84 @@ async def _openai_chat_complete(
             content = _extract_content(obj)
             if not content:
                 raise RuntimeError("openai LLM returned empty content")
+            return content
+
+
+async def _groq_chat_complete(
+    messages: list[dict],
+    *,
+    temperature: float,
+    max_tokens: int,
+    model: str | None,
+) -> str:
+    """Non-streaming Groq chat completion. Same OpenAI-compatible
+    wire shape; we keep it on a separate function so per-provider
+    error surfaces and headers stay decoupled."""
+    if not GROQ_API_KEY:
+        raise RuntimeError("GROQ_API_KEY not set")
+    use_model = (model or GROQ_MODEL).strip()
+    if not use_model:
+        raise RuntimeError("No Groq model configured")
+    url = f"{GROQ_BASE_URL}/chat/completions"
+    body = {
+        "model": use_model,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+    timeout = aiohttp.ClientTimeout(total=LOCAL_LLM_TIMEOUT_SEC)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.post(url, headers=_groq_headers(), json=body) as resp:
+            raw = await resp.read()
+            if resp.status != 200:
+                snippet = raw[:400].decode("utf-8", errors="replace")
+                raise RuntimeError(f"groq LLM returned {resp.status}: {snippet}")
+            try:
+                obj = json.loads(raw.decode("utf-8"))
+            except Exception as exc:
+                raise RuntimeError(f"groq LLM returned non-JSON: {exc}")
+            content = _extract_content(obj)
+            if not content:
+                raise RuntimeError("groq LLM returned empty content")
+            return content
+
+
+async def _cerebras_chat_complete(
+    messages: list[dict],
+    *,
+    temperature: float,
+    max_tokens: int,
+    model: str | None,
+) -> str:
+    """Non-streaming Cerebras chat completion. OpenAI-compatible wire
+    shape; isolated function so error surfaces / headers stay decoupled
+    from the other providers."""
+    if not CEREBRAS_API_KEY:
+        raise RuntimeError("CEREBRAS_API_KEY not set")
+    use_model = (model or CEREBRAS_MODEL).strip()
+    if not use_model:
+        raise RuntimeError("No Cerebras model configured")
+    url = f"{CEREBRAS_BASE_URL}/chat/completions"
+    body = {
+        "model": use_model,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+    timeout = aiohttp.ClientTimeout(total=LOCAL_LLM_TIMEOUT_SEC)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.post(url, headers=_cerebras_headers(), json=body) as resp:
+            raw = await resp.read()
+            if resp.status != 200:
+                snippet = raw[:400].decode("utf-8", errors="replace")
+                raise RuntimeError(f"cerebras LLM returned {resp.status}: {snippet}")
+            try:
+                obj = json.loads(raw.decode("utf-8"))
+            except Exception as exc:
+                raise RuntimeError(f"cerebras LLM returned non-JSON: {exc}")
+            content = _extract_content(obj)
+            if not content:
+                raise RuntimeError("cerebras LLM returned empty content")
             return content
 
 
@@ -411,9 +572,36 @@ async def chat_complete(
         config selecting a specific Chutes model.
     """
     if model:
-        # Caller explicitly wants a specific Chutes model — use Chutes.
+        # Detect explicit provider prefix (``groq:llama-3.3-70b-versatile``,
+        # ``openai:gpt-5-mini``, ``chutes:...``). The prefix wins over the
+        # system default so per-agent routing is unambiguous.
+        forced_provider, bare_model = split_provider_prefix(model)
+        if forced_provider == "groq":
+            return await _retry(
+                lambda: _groq_chat_complete(messages, temperature=temperature, max_tokens=max_tokens, model=bare_model),
+                retries,
+            )
+        if forced_provider == "cerebras":
+            return await _retry(
+                lambda: _cerebras_chat_complete(messages, temperature=temperature, max_tokens=max_tokens, model=bare_model),
+                retries,
+            )
+        if forced_provider == "openai":
+            # OpenAI's slot uses OPENAI_MODEL globally; an explicit
+            # provider:model overrides for this single call.
+            global OPENAI_MODEL  # noqa: PLW0603 — narrow per-call override is intentional
+            prior, OPENAI_MODEL = OPENAI_MODEL, (bare_model or OPENAI_MODEL)
+            try:
+                return await _retry(
+                    lambda: _openai_chat_complete(messages, temperature=temperature, max_tokens=max_tokens),
+                    retries,
+                )
+            finally:
+                OPENAI_MODEL = prior
+        # Bare model id or ``chutes:`` prefix → Chutes (the existing
+        # behaviour for agent configs that specified a Chutes model id).
         return await _retry(
-            lambda: _chutes_chat_complete(messages, temperature=temperature, max_tokens=max_tokens, model=model),
+            lambda: _chutes_chat_complete(messages, temperature=temperature, max_tokens=max_tokens, model=bare_model),
             retries,
         )
 
@@ -543,12 +731,13 @@ async def _openai_stream_chat(
     if not OPENAI_API_KEY:
         raise RuntimeError("OPENAI_API_KEY not set")
     url = f"{OPENAI_BASE_URL}/chat/completions"
+    # Same provider quirks as ``_openai_chat_complete``: omit temperature
+    # (gpt-5* only allows default) + use max_completion_tokens.
     body = {
         "model": OPENAI_MODEL,
         "messages": messages,
         "stream": True,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
+        "max_completion_tokens": max_tokens,
     }
     headers = {**_openai_headers(), "Accept": "text/event-stream"}
     # Same streaming-timeout shape as Chutes/local: cap the connect and the
@@ -563,6 +752,68 @@ async def _openai_stream_chat(
             if resp.status != 200:
                 snippet = (await resp.read())[:400].decode("utf-8", errors="replace")
                 raise RuntimeError(f"openai LLM stream returned {resp.status}: {snippet}")
+            async for delta in _iter_sse_content(resp):
+                yield delta
+
+
+async def _groq_stream_chat(
+    messages: list[dict],
+    *,
+    temperature: float,
+    max_tokens: int,
+    model: str | None,
+) -> AsyncIterator[str]:
+    if not GROQ_API_KEY:
+        raise RuntimeError("GROQ_API_KEY not set")
+    use_model = (model or GROQ_MODEL).strip()
+    if not use_model:
+        raise RuntimeError("No Groq model configured for streaming")
+    url = f"{GROQ_BASE_URL}/chat/completions"
+    body = {
+        "model": use_model,
+        "messages": messages,
+        "stream": True,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+    headers = {**_groq_headers(), "Accept": "text/event-stream"}
+    timeout = aiohttp.ClientTimeout(total=None, sock_connect=15, sock_read=60)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.post(url, headers=headers, json=body) as resp:
+            if resp.status != 200:
+                snippet = (await resp.read())[:400].decode("utf-8", errors="replace")
+                raise RuntimeError(f"groq LLM stream returned {resp.status}: {snippet}")
+            async for delta in _iter_sse_content(resp):
+                yield delta
+
+
+async def _cerebras_stream_chat(
+    messages: list[dict],
+    *,
+    temperature: float,
+    max_tokens: int,
+    model: str | None,
+) -> AsyncIterator[str]:
+    if not CEREBRAS_API_KEY:
+        raise RuntimeError("CEREBRAS_API_KEY not set")
+    use_model = (model or CEREBRAS_MODEL).strip()
+    if not use_model:
+        raise RuntimeError("No Cerebras model configured for streaming")
+    url = f"{CEREBRAS_BASE_URL}/chat/completions"
+    body = {
+        "model": use_model,
+        "messages": messages,
+        "stream": True,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+    headers = {**_cerebras_headers(), "Accept": "text/event-stream"}
+    timeout = aiohttp.ClientTimeout(total=None, sock_connect=15, sock_read=60)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.post(url, headers=headers, json=body) as resp:
+            if resp.status != 200:
+                snippet = (await resp.read())[:400].decode("utf-8", errors="replace")
+                raise RuntimeError(f"cerebras LLM stream returned {resp.status}: {snippet}")
             async for delta in _iter_sse_content(resp):
                 yield delta
 
@@ -650,7 +901,26 @@ async def stream_chat(
     silently restart.
     """
     if model:
-        async for d in _chutes_stream_chat(messages, temperature=temperature, max_tokens=max_tokens, model=model):
+        forced_provider, bare_model = split_provider_prefix(model)
+        if forced_provider == "groq":
+            async for d in _groq_stream_chat(messages, temperature=temperature, max_tokens=max_tokens, model=bare_model):
+                yield d
+            return
+        if forced_provider == "cerebras":
+            async for d in _cerebras_stream_chat(messages, temperature=temperature, max_tokens=max_tokens, model=bare_model):
+                yield d
+            return
+        if forced_provider == "openai":
+            global OPENAI_MODEL  # noqa: PLW0603 — narrow per-call override is intentional
+            prior, OPENAI_MODEL = OPENAI_MODEL, (bare_model or OPENAI_MODEL)
+            try:
+                async for d in _openai_stream_chat(messages, temperature=temperature, max_tokens=max_tokens):
+                    yield d
+            finally:
+                OPENAI_MODEL = prior
+            return
+        # Bare or ``chutes:`` → Chutes
+        async for d in _chutes_stream_chat(messages, temperature=temperature, max_tokens=max_tokens, model=bare_model):
             yield d
         return
 
@@ -691,3 +961,263 @@ async def stream_chat(
     # primary == "chutes" (or fallthrough)
     async for d in _chutes_stream_chat(messages, temperature=temperature, max_tokens=max_tokens, model=None):
         yield d
+
+
+# ---------------------------------------------------------------------------
+# Tool-aware streaming (OpenAI-compatible function calling)
+# ---------------------------------------------------------------------------
+#
+# stream_chat_with_tools yields a uniform event stream so callers don't
+# have to learn the SSE fragmentation rules each provider uses. Content
+# deltas pass through one-at-a-time (TTS can chunk them as they arrive);
+# tool calls are accumulated across deltas (each chunk carries partial
+# JSON in ``function.arguments``) and emitted as a single complete tool
+# call once the stream's finish_reason resolves.
+#
+# Event shape:
+#   {"type": "content", "text": "...delta..."}
+#   {"type": "tool_call", "tool_call": {"id": "...", "name": "...", "arguments": "json-string"}}
+#   {"type": "done", "finish_reason": "stop" | "tool_calls" | "length" | ...}
+
+
+def _route_for_streaming(model: str | None) -> tuple[str, str, dict, str]:
+    """Resolve (url, model_id, headers, provider_name) for a streaming
+    chat-completions call. Honors the ``provider:model`` prefix on the
+    explicit model argument; otherwise falls back to the default
+    routing from ``llm_provider()``."""
+    if model:
+        forced, bare = split_provider_prefix(model)
+        if forced == "groq":
+            if not GROQ_API_KEY:
+                raise RuntimeError("GROQ_API_KEY not set")
+            return (
+                f"{GROQ_BASE_URL}/chat/completions",
+                (bare or GROQ_MODEL),
+                {**_groq_headers(), "Accept": "text/event-stream"},
+                "groq",
+            )
+        if forced == "cerebras":
+            if not CEREBRAS_API_KEY:
+                raise RuntimeError("CEREBRAS_API_KEY not set")
+            return (
+                f"{CEREBRAS_BASE_URL}/chat/completions",
+                (bare or CEREBRAS_MODEL),
+                {**_cerebras_headers(), "Accept": "text/event-stream"},
+                "cerebras",
+            )
+        if forced == "openai":
+            if not OPENAI_API_KEY:
+                raise RuntimeError("OPENAI_API_KEY not set")
+            return (
+                f"{OPENAI_BASE_URL}/chat/completions",
+                (bare or OPENAI_MODEL),
+                {**_openai_headers(), "Accept": "text/event-stream"},
+                "openai",
+            )
+        # Bare or ``chutes:`` prefix → Chutes
+        if not CHUTES_AUTH_KEY:
+            raise RuntimeError("CHUTES_AUTH_KEY not set")
+        return (
+            f"{VOICE_DESIGN_LLM_BASE_URL}/chat/completions",
+            (bare or DEFAULT_CHUTES_MODEL),
+            {**_chutes_headers(), "Accept": "text/event-stream"},
+            "chutes",
+        )
+
+    # No explicit model — use the system-default provider.
+    primary = llm_provider()
+    if primary == "groq":
+        return (
+            f"{GROQ_BASE_URL}/chat/completions", GROQ_MODEL,
+            {**_groq_headers(), "Accept": "text/event-stream"}, "groq",
+        )
+    if primary == "openai":
+        return (
+            f"{OPENAI_BASE_URL}/chat/completions", OPENAI_MODEL,
+            {**_openai_headers(), "Accept": "text/event-stream"}, "openai",
+        )
+    return (
+        f"{VOICE_DESIGN_LLM_BASE_URL}/chat/completions", DEFAULT_CHUTES_MODEL,
+        {**_chutes_headers(), "Accept": "text/event-stream"}, "chutes",
+    )
+
+
+async def stream_chat_with_tools(
+    messages: list[dict],
+    *,
+    tools: list[dict] | None = None,
+    tool_choice: str | dict = "auto",
+    temperature: float = 0.6,
+    max_tokens: int = 1500,
+    model: str | None = None,
+) -> AsyncIterator[dict]:
+    """Stream a chat-completions call with optional tool calling.
+
+    ``tools`` follows the OpenAI / Groq function-calling JSON schema:
+      [{"type": "function",
+        "function": {"name": "...", "description": "...",
+                     "parameters": <JSON Schema>}}]
+
+    The function yields events the voicechat WS layer can fan out
+    directly: ``content`` deltas go to TTS, ``tool_call`` events
+    trigger the tool dispatcher, and ``done`` signals the turn end.
+
+    Local Qwen3-4B doesn't speak OpenAI tool calls — when the local
+    path is selected and ``tools`` are provided, we fall back to
+    streaming without tools and warn. Real tool calling needs Groq/
+    OpenAI/Chutes (the OpenAI-compatible providers)."""
+    # Local path doesn't support OpenAI tool-call JSON. If the caller
+    # provides tools while routed to local, drop them and warn — the
+    # call still works, just without tool selection.
+    if not model and llm_provider() == "local" and tools:
+        _log.warning("local LLM doesn't support tool calls; dropping ``tools`` for this stream")
+        async for d in _local_stream_chat(messages, temperature=temperature, max_tokens=max_tokens, think=_LOCAL_LLM_USE_THINK_DEFAULT):
+            yield {"type": "content", "text": d}
+        yield {"type": "done", "finish_reason": "stop"}
+        return
+
+    url, model_id, headers, provider = _route_for_streaming(model)
+    if not model_id:
+        raise RuntimeError(f"{provider}: no model id configured for streaming")
+
+    # Voice-chat fallback ladder: Cerebras can be transiently unavailable
+    # (rate limits, brief outages). If the *primary* stream fails BEFORE
+    # we've emitted any content/tool-call deltas, retry once against
+    # OpenAI with the same prompt + tools. Once any delta has been
+    # emitted, errors propagate — partial replies should not silently
+    # restart on a different provider mid-sentence.
+    #
+    # Eligibility: only when the resolved provider is Cerebras AND the
+    # caller didn't pin a specific model (caller-pinned overrides should
+    # respect the user's intent, not silently redirect). The flag
+    # ``VOICECHAT_LLM_FALLBACK_TO_OPENAI`` gates the whole behaviour.
+    primary_eligible_for_fallback = (
+        provider == "cerebras"
+        and VOICECHAT_LLM_FALLBACK_TO_OPENAI
+        and openai_llm_configured()
+    )
+    emitted_any = False
+    try:
+        async for evt in _stream_chat_with_tools_once(
+            url, model_id, headers, provider, messages,
+            tools=tools, tool_choice=tool_choice,
+            temperature=temperature, max_tokens=max_tokens,
+        ):
+            if evt.get("type") in ("content", "tool_call"):
+                emitted_any = True
+            yield evt
+        return
+    except Exception as exc:  # noqa: BLE001
+        if emitted_any or not primary_eligible_for_fallback:
+            raise
+        _log.warning(
+            "cerebras stream failed before first delta (%s); "
+            "falling back to OpenAI", exc,
+        )
+
+    # Fallback: re-resolve route as OpenAI explicitly.
+    fb_url = f"{OPENAI_BASE_URL}/chat/completions"
+    fb_headers = {**_openai_headers(), "Accept": "text/event-stream"}
+    async for evt in _stream_chat_with_tools_once(
+        fb_url, OPENAI_MODEL, fb_headers, "openai", messages,
+        tools=tools, tool_choice=tool_choice,
+        temperature=temperature, max_tokens=max_tokens,
+    ):
+        yield evt
+
+
+async def _stream_chat_with_tools_once(
+    url: str,
+    model_id: str,
+    headers: dict,
+    provider: str,
+    messages: list[dict],
+    *,
+    tools: list[dict] | None,
+    tool_choice: str | dict,
+    temperature: float,
+    max_tokens: int,
+) -> AsyncIterator[dict]:
+    """Single-shot streaming chat-completions reader. Yields the same
+    event envelope as ``stream_chat_with_tools`` but performs no
+    fallback — that lives one level up so we can decide based on
+    whether anything was emitted yet."""
+    # Provider-specific body shape. OpenAI's gpt-5* / o-series:
+    #   • reject ``max_tokens`` with a 400 → use ``max_completion_tokens``
+    #   • reject custom ``temperature`` (only the default 1 is allowed)
+    #     → omit temperature entirely
+    # Groq, Cerebras, and Chutes still want the legacy ``max_tokens`` +
+    # custom temp.
+    body: dict = {
+        "model": model_id,
+        "messages": messages,
+        "stream": True,
+    }
+    if provider == "openai":
+        body["max_completion_tokens"] = max_tokens
+        # Intentionally omit ``temperature`` — gpt-5* models only
+        # accept default. Older models default to 1 which is fine.
+    else:
+        body["max_tokens"] = max_tokens
+        body["temperature"] = temperature
+    if tools:
+        body["tools"] = tools
+        body["tool_choice"] = tool_choice
+
+    # Accumulate tool-call deltas keyed by ``index`` so we can emit each
+    # complete call when the stream finishes. The OpenAI streaming
+    # protocol fragments ``function.arguments`` across many chunks; we
+    # concatenate them in arrival order.
+    tool_calls_accum: dict[int, dict[str, str]] = {}
+    finish_reason: str | None = None
+
+    timeout = aiohttp.ClientTimeout(total=None, sock_connect=15, sock_read=60)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.post(url, headers=headers, json=body) as resp:
+            if resp.status != 200:
+                snippet = (await resp.read())[:400].decode("utf-8", errors="replace")
+                raise RuntimeError(f"{provider} stream returned {resp.status}: {snippet}")
+            async for raw in resp.content:
+                line = raw.decode("utf-8", errors="replace").strip()
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    obj = json.loads(data)
+                except Exception:
+                    continue
+                choices = obj.get("choices") or []
+                if not choices:
+                    continue
+                c0 = choices[0] or {}
+                fr = c0.get("finish_reason")
+                if fr:
+                    finish_reason = fr
+                delta = c0.get("delta") or {}
+                # Content tokens — yield immediately so TTS can sentence-
+                # chunk them with no buffering on our side.
+                content = delta.get("content")
+                if isinstance(content, str) and content:
+                    yield {"type": "content", "text": content}
+                # Tool-call deltas — accumulate, don't emit yet.
+                for tcd in (delta.get("tool_calls") or []):
+                    idx = int(tcd.get("index", 0))
+                    acc = tool_calls_accum.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+                    if tcd.get("id"):
+                        acc["id"] = tcd["id"]
+                    fn = tcd.get("function") or {}
+                    if fn.get("name"):
+                        acc["name"] = fn["name"]
+                    args_chunk = fn.get("arguments")
+                    if isinstance(args_chunk, str):
+                        acc["arguments"] += args_chunk
+
+    # Stream done — emit any accumulated tool calls in index order, then
+    # the terminal done event so the caller can decide whether to loop.
+    for idx in sorted(tool_calls_accum.keys()):
+        tc = tool_calls_accum[idx]
+        if tc.get("name"):  # skip incomplete frames
+            yield {"type": "tool_call", "tool_call": tc}
+    yield {"type": "done", "finish_reason": finish_reason or "stop"}

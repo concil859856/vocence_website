@@ -30,6 +30,12 @@ export interface AgentConfig {
   success_metric?: string;
   /** For Goal agents — hard cap on iterations. */
   max_iterations?: number;
+  /** Built-in tools this agent is allowed to call. Names match the
+   *  backend ``agent_tools_service`` registry (e.g. "web_search",
+   *  "get_weather", "get_time"). When undefined, the backend enables
+   *  every tool whose API key is configured server-side. Empty array
+   *  explicitly disables tool calling for this agent. */
+  enabled_tools?: string[];
 }
 
 export interface Agent {

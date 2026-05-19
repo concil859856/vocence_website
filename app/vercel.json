@@ -1,5 +1,13 @@
 {
   "rewrites": [
+    {
+      "source": "/p/:id",
+      "destination": "https://backend.vocence.ai/p/:id"
+    },
+    {
+      "source": "/embed/p/:id",
+      "destination": "https://backend.vocence.ai/embed/p/:id"
+    },
     { "source": "/((?!assets/).*)", "destination": "/index.html" }
   ]
 }

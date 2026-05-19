@@ -3319,12 +3319,6 @@ print(audio["audio_url"])`} />
       <div className="flex">
         <aside className="docs-sidebar sticky top-[4.5rem] hidden h-[calc(100vh-4.5rem)] w-[260px] shrink-0 overflow-y-auto border-r border-white/[0.06] bg-[#07080A] px-4 py-8 lg:block">
           <div className="space-y-3 pr-2">
-            <Link
-              to="/"
-              className="mb-2 block text-xs font-medium uppercase tracking-[0.12em] text-zinc-500 hover:text-zinc-400"
-            >
-              ← Vocence
-            </Link>
             {Object.entries(groupedLinks).map(([category, links]) => {
               const shouldShow = !collapsedCats.has(category);
               return (

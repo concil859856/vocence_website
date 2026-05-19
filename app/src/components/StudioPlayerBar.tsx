@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Play, Pause, X, Volume2, VolumeX, SkipBack, SkipForward, Shuffle, Repeat, Repeat1, Download } from 'lucide-react';
 import { useStudioPlayer } from '../contexts/StudioPlayerContext';
 import { avatarGradientPairFor } from '../data/sampleVoices';
+import { fallbackCoverFor } from '../data/playbookCovers';
 
 async function downloadTrack(url: string, filename: string) {
   try {
@@ -56,8 +57,18 @@ export function StudioPlayerBar() {
     .map((p) => p[0]!.toUpperCase())
     .join('') || '?';
   // Deterministic two-ring gradient seeded from the track title (or src
-  // as fallback) — same palette as agents / designed voices.
+  // as fallback) — same palette as agents / designed voices. Used as the
+  // final fallback only if both ``track.image`` and the abstract image
+  // pool resolve to nothing.
   const grad = avatarGradientPairFor(track.title || track.src || 'track');
+  // When the track has no explicit artwork, pick a stable image from the
+  // pre-generated abstract pool — keyed on title+src so the same track
+  // always gets the same image across plays / sessions. This replaces
+  // the bare gradient tile that was showing on freshly generated music
+  // (and any history item without a stored cover).
+  const fallbackArt = !track.image
+    ? fallbackCoverFor(`player-${track.title || ''}-${track.src || ''}`)
+    : '';
   const hasQueue = queue.length > 1;
 
   const handleSeek = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -71,20 +82,20 @@ export function StudioPlayerBar() {
   };
 
   return (
-    <div className={`fixed bottom-5 left-4 lg:left-[calc(256px+16px)] right-4 z-[60] pointer-events-none transition-all duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] ${visible ? 'translate-y-0 opacity-100' : 'translate-y-12 opacity-0'}`}>
+    <div className={`fixed bottom-5 left-4 lg:left-[calc(256px+16px)] right-4 z-[60] pointer-events-none transition-all duration-500 ease-smooth ${visible ? 'translate-y-0 opacity-100' : 'translate-y-12 opacity-0'}`}>
       <div className="max-w-5xl mx-auto pointer-events-auto rounded-[20px] bg-[#111215]/90 backdrop-blur-2xl border border-white/[0.06] shadow-[0_8px_60px_rgba(0,0,0,0.6),0_0_0_1px_rgba(255,255,255,0.03)] p-3 pr-4">
         <div className="flex items-center gap-3">
           {/* Artwork — image when present, otherwise a two-ring gradient
               tile with the track's initials. Same palette as the rest of
               Studio (agents, designed voices) for visual consistency. */}
           <div className="relative shrink-0">
-            {track.image ? (
+            {track.image || fallbackArt ? (
               <div
                 className={`w-12 h-12 rounded-lg overflow-hidden flex items-center justify-center transition-transform duration-700 ${
                   playing ? 'scale-100' : 'scale-95'
                 }`}
               >
-                <img src={track.image} alt="" className="w-full h-full object-cover" />
+                <img src={track.image || fallbackArt} alt="" className="w-full h-full object-cover" />
               </div>
             ) : (
               <div

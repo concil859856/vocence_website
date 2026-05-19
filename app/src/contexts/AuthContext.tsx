@@ -6,7 +6,7 @@ import { dashboardApi } from '../services/dashboardApi';
 
 interface AuthContextType {
   user: User | null;
-  login: (userData: { id: string; email: string; name: string; picture?: string }) => Promise<void>;
+  login: (userData: { id: string; email: string; name: string; picture?: string; credential: string }) => Promise<void>;
   logout: () => void;
   /** Persist a new absolute credit balance to the server (writes a `manual_adjustment` ledger row).
    *  Use ONLY for client-side flows that don't go through a server-side job (e.g. the chat demo).
@@ -90,12 +90,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     checkSession();
   }, []);
 
-  const login = async (userData: { id: string; email: string; name: string; picture?: string }) => {
+  const login = async (userData: { id: string; email: string; name: string; picture?: string; credential: string }) => {
     try {
       setIsLoading(true);
-      
-      // Try to login/signup via API
+
+      // SECURITY: backend verifies ``credential`` against Google's
+      // tokeninfo endpoint and IGNORES the email/name/picture/googleId
+      // fields. We still forward them as hints for the localStorage
+      // fallback path (which can't verify on its own).
       const response = await api.loginOrSignup({
+        credential: userData.credential,
         email: userData.email,
         name: userData.name,
         picture: userData.picture,
@@ -113,9 +117,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         picture: userData.picture,
       }).catch(() => {});
     } catch (error) {
-      // Fallback to localStorage if API is not available
+      // Fallback to localStorage if API is not available. The
+      // ``credential`` arg the new ``loginOrSignup`` type requires
+      // isn't useful here — the offline path can't verify with
+      // Google anyway — but we satisfy the type to keep callers
+      // strict-typed.
       console.warn('API not available, using localStorage fallback');
       const response = localStorageFallback.loginOrSignup({
+        credential: userData.credential,
         email: userData.email,
         name: userData.name,
         picture: userData.picture,

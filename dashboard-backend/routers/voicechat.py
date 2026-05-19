@@ -27,9 +27,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hmac
 import json
 import logging
 import os
+import random
 import time
 from typing import Any, Optional
 
@@ -57,6 +59,13 @@ from voicechat_service import (
     stream_tts_for_voice,
     VOICECHAT_EXTRA_SYSTEM_PROMPT,
 )
+import agent_tools_service
+from llm_client import stream_chat_with_tools
+
+# Tool calling: cap how many LLM↔tool round-trips a single turn can do.
+# Most legit queries finish in 1 tool call ("what's the weather in Tokyo");
+# pathological loops (LLM keeps re-calling the same tool) are stopped here.
+MAX_TOOL_DEPTH = int(os.environ.get("VOICECHAT_MAX_TOOL_DEPTH") or "5")
 
 
 # Cumulative chars emitted to TTS via the per-sentence path before we flip
@@ -65,6 +74,52 @@ from voicechat_service import (
 # replies switch to accumulating the rest into one final TTS call so the
 # bulk of the answer keeps coherent prosody.
 WHOLE_REPLY_CHUNK_THRESHOLD = int(os.environ.get("VOICECHAT_WHOLE_REPLY_THRESHOLD") or "300")
+
+
+# -----------------------------------------------------------------------
+# Filler audio ("Hmm, let me check…") — fired when the LLM is going to
+# take a perceptible amount of time to produce its first content token.
+# The goal is perceived responsiveness: even when real TTFT is 800ms,
+# the user hears something natural-sounding within ~400ms so it feels
+# instant. The filler is synthesised through the same TTS path as the
+# real reply (same voice), queued ahead of real audio, and shown in
+# the chat bubble so text + audio stay in lockstep. If the LLM is fast
+# enough that real content arrives before the filler timer fires, no
+# filler is emitted at all and the turn behaves exactly as before.
+VOICECHAT_FILLERS_ENABLED = os.environ.get("VOICECHAT_FILLERS_ENABLED", "1").strip().lower() not in {"0", "false", "no", ""}
+# How long to wait for the first real LLM content token before kicking
+# off a filler. Tuned so a fast Groq turn (TTFT ~150ms) never fires a
+# filler, but a slow OpenAI gpt-4o-mini turn (TTFT ~500ms) does.
+VOICECHAT_FILLER_DELAY_MS = int(os.environ.get("VOICECHAT_FILLER_DELAY_MS") or "350")
+
+# Short, low-stakes phrases that fit any voice/persona. Keep them
+# under ~6 words — anything longer eats into the latency win because
+# the user hears the filler play out before the real reply starts.
+# Grouped by depth: round 0 = "I'm thinking", later rounds = "I have
+# the data, now let me respond" (used after a tool call returns).
+_FILLER_PHRASES_INITIAL: tuple[str, ...] = (
+    "Hmm,",
+    "Hmm, let me think.",
+    "Okay,",
+    "One sec,",
+    "Let me see.",
+    "Right,",
+    "Mm-hmm,",
+    "Sure,",
+)
+_FILLER_PHRASES_AFTER_TOOL: tuple[str, ...] = (
+    "Okay, got it.",
+    "Right, so",
+    "Here's what I found.",
+    "Got the data.",
+    "Alright,",
+    "Let me put it together.",
+)
+
+
+def _pick_filler(round_depth: int) -> str:
+    pool = _FILLER_PHRASES_AFTER_TOOL if round_depth > 0 else _FILLER_PHRASES_INITIAL
+    return random.choice(pool)
 
 # Optional: STT capacity gate (lazy import — fall back to None if jobs system unavailable)
 try:
@@ -156,18 +211,111 @@ async def _load_agent_for_user(agent_id: str, user_id: str) -> dict | None:
         await conn.close()
 
 
+async def _load_custom_tools_for_agent(
+    agent_id: str, user_id: str,
+) -> list[agent_tools_service.CustomToolDef]:
+    """Load every custom tool currently bound to this agent. Filtered
+    by ``user_id`` on the tool definition as a double-check: a binding
+    row alone isn't enough to authorize execution — the tool's owner
+    must match the caller. This matters when an agent gets transferred
+    or copied across users in the future."""
+    conn = await get_connection()
+    try:
+        rows = await (await conn.execute(
+            """
+            SELECT t.id, t.user_id, t.name, t.description, t.parameters_json,
+                   t.endpoint_url, t.method, t.auth_type, t.auth_header_name,
+                   t.auth_secret, t.timeout_ms
+            FROM agent_custom_tool_bindings b
+            JOIN agent_custom_tools t ON t.id = b.tool_id
+            WHERE b.agent_id = ? AND t.user_id = ?
+            """,
+            (agent_id, user_id),
+        )).fetchall()
+    finally:
+        await conn.close()
+    out: list[agent_tools_service.CustomToolDef] = []
+    for r in rows:
+        try:
+            params = json.loads(r["parameters_json"] or "{}")
+        except json.JSONDecodeError:
+            params = {"type": "object", "properties": {}}
+        out.append(agent_tools_service.CustomToolDef(
+            id=r["id"],
+            user_id=r["user_id"],
+            name=r["name"],
+            description=r["description"] or "",
+            parameters=params,
+            endpoint_url=r["endpoint_url"],
+            method=r["method"] or "POST",
+            auth_type=r["auth_type"] or "none",
+            auth_header_name=r["auth_header_name"],
+            auth_secret=r["auth_secret"],
+            timeout_ms=int(r["timeout_ms"] or 5000),
+        ))
+    return out
+
+
 @router.websocket("/session")
 async def voicechat_session(
     ws: WebSocket,
     token: str | None = Query(default=None),
     agent_id: str | None = Query(default=None),
+    user_id_override: str | None = Query(default=None, alias="user_id"),
 ) -> None:
-    # Auth: query param first, then Authorization header
-    auth_user_id: str | None = _decode_user_from_token(token)
-    if not auth_user_id:
-        auth_header = ws.headers.get("authorization") or ws.headers.get("Authorization")
-        if auth_header and auth_header.lower().startswith("bearer "):
-            auth_user_id = _decode_user_from_token(auth_header.split(" ", 1)[1])
+    # Auth — three accepted paths, in priority order:
+    #   1. INTERNAL: service-to-service. The developer-api service
+    #      (the public agent API) authenticates the API-key caller on
+    #      its side, then proxies into us with an ``X-Internal-Service-Token``
+    #      header + an explicit ``user_id`` query param. We trust the
+    #      user_id only when (a) the shared secret matches AND (b) the
+    #      source IP is in INTERNAL_TRUST_ALLOWED_IPS (defaults to
+    #      loopback only). If the token were to leak, this IP check
+    #      still prevents public abuse — an attacker would also need to
+    #      get a request to arrive from a trusted source IP, which
+    #      requires either compromising the box or finding a SSRF in
+    #      a trusted neighbor.
+    #   2. JWT via ``token`` query param (the website's voice chat flow,
+    #      where the JWT can't easily ride in headers from a browser WS).
+    #   3. JWT via ``Authorization: Bearer ...`` header (fallback for
+    #      non-browser clients).
+    auth_user_id: str | None = None
+    internal_token = ws.headers.get("x-internal-service-token") or ws.headers.get(
+        "X-Internal-Service-Token"
+    )
+    expected_internal_token = (os.environ.get("INTERNAL_SERVICE_TOKEN") or "").strip()
+    # Comma-separated list of source IPs allowed to use the internal-trust
+    # path. Defaults to loopback. Add the developer-api's IP if it runs on
+    # a separate box (or use a private subnet CIDR via a real ACL).
+    allowed_internal_ips = {
+        ip.strip()
+        for ip in (os.environ.get("INTERNAL_TRUST_ALLOWED_IPS") or "127.0.0.1,::1").split(",")
+        if ip.strip()
+    }
+    client_host = (ws.client.host if ws.client else "") or ""
+    if (
+        internal_token
+        and expected_internal_token
+        and hmac.compare_digest(internal_token, expected_internal_token)
+        and user_id_override
+        and client_host in allowed_internal_ips
+    ):
+        auth_user_id = user_id_override.strip() or None
+    elif internal_token and (client_host not in allowed_internal_ips):
+        # Someone is sending the internal-trust header from an untrusted
+        # source IP. Either a misconfigured proxy or an attacker probing.
+        # Log so operators see this; do NOT honor the header.
+        _log.warning(
+            "voicechat: rejected internal-trust header from untrusted client_host=%s",
+            client_host,
+        )
+        auth_user_id = None
+    else:
+        auth_user_id = _decode_user_from_token(token)
+        if not auth_user_id:
+            auth_header = ws.headers.get("authorization") or ws.headers.get("Authorization")
+            if auth_header and auth_header.lower().startswith("bearer "):
+                auth_user_id = _decode_user_from_token(auth_header.split(" ", 1)[1])
 
     await ws.accept()
     if not auth_user_id:
@@ -228,6 +376,49 @@ async def voicechat_session(
         _log.debug("voicechat: client disconnected before ready ack", exc_info=False)
         return
 
+    # Resolve which tools this agent can call this session — we need
+    # this BOTH for the per-turn tool_specs (further down) AND for the
+    # system prompt so the LLM is explicitly told to USE the tools when
+    # it doesn't know something, rather than just saying "I don't know".
+    # Without this nudge, models like gpt-4o-mini wait to be told
+    # "search the web" before they ever fire a tool — by the time the
+    # user has to ask twice, the latency advantage of having tools is
+    # gone. ``None`` means "every available tool" (Logos / no-agent).
+    agent_enabled_tools_cfg = (agent_ctx and (agent_ctx.get("config") or {}).get("enabled_tools"))
+    if isinstance(agent_enabled_tools_cfg, list):
+        enabled_tools_set: set[str] | None = {str(t) for t in agent_enabled_tools_cfg if isinstance(t, str)}
+    else:
+        enabled_tools_set = None  # None means "all available"
+    # Compute the builtin spec list once. Custom tools are loaded
+    # per-turn (the user can rebind them mid-session), but their
+    # purpose hints are added below if any are bound at session-start.
+    session_builtin_specs = agent_tools_service.tool_specs(enabled=enabled_tools_set)
+    session_custom_tools: list[agent_tools_service.CustomToolDef] = []
+    if agent_ctx and agent_id:
+        try:
+            session_custom_tools = await _load_custom_tools_for_agent(agent_id, auth_user_id)
+        except Exception:
+            session_custom_tools = []
+
+    def _tool_one_liner(name: str, description: str) -> str:
+        # Trim long tool descriptions to a single line for the prompt —
+        # the LLM has the full spec separately when it decides to call.
+        first = (description or "").strip().split("\n", 1)[0]
+        if len(first) > 140:
+            first = first[:137].rstrip() + "…"
+        return f"- `{name}` — {first}" if first else f"- `{name}`"
+
+    tool_hints: list[str] = []
+    for spec in session_builtin_specs:
+        fn = spec.get("function") or {}
+        tool_hints.append(_tool_one_liner(fn.get("name") or "", fn.get("description") or ""))
+    for t in session_custom_tools:
+        tool_hints.append(_tool_one_liner(t.name, t.description))
+    has_research_tool = any(
+        name in (enabled_tools_set or {"web_search", "fetch_url", "wikipedia_lookup"})
+        for name in ("web_search", "fetch_url", "wikipedia_lookup")
+    ) if session_builtin_specs else False
+
     # Build the system prompt. Layered structure so the LLM has a clear
     # mental model of who it is, what it's for, what it knows, and how to
     # behave during the conversation. The previous version dropped the
@@ -272,21 +463,50 @@ async def voicechat_session(
                 "guess from training data."
             )
 
-        sections.append(
-            "# Conversation guidelines\n"
-            "- This is one continuous voice conversation with a single user. "
-            "Remember everything they've told you so far in this session — "
-            "their name, preferences, what you've already discussed, decisions "
-            "you've made together. Reference earlier parts when relevant "
-            "(\"you mentioned earlier…\", \"going back to your question about…\").\n"
-            "- Stay in character as defined above. Don't break role to apologise "
-            "for being an AI unless the user directly asks.\n"
+        if tool_hints:
+            tool_block_lines = [
+                "# Your tools",
+                "Call a tool when the user asks for something you don't already "
+                "know — live data, recent facts, a specific URL, or anything "
+                "your training wouldn't cover. Don't announce \"I'm going to "
+                "search\" first; just call it and answer.",
+                "",
+                "When the tool returns:",
+                "- Quick-data tools (weather, time, prices): one short sentence "
+                "with the fact and a tiny bit of context. Like \"It's 19 in "
+                "Tokyo right now, pretty mild.\"",
+                "- Research tools (web_search, wikipedia_lookup, fetch_url) "
+                "that returned real content: give a substantive answer — lead "
+                "with the direct answer, then the specifics (names, numbers, "
+                "dates), then the why if it matters. Skip filler. The user "
+                "waited for you to look it up, so deliver.",
+                "- Never read JSON, raw URLs, or source code aloud. Refer to "
+                "sources by name (\"per Reuters\", \"the Wikipedia article\").",
+                "- If two tools ran together, weave the answers into one reply.",
+                "",
+                "Available tools:",
+                *tool_hints,
+            ]
+            sections.append("\n".join(tool_block_lines))
+
+        # The "say you don't know" rule is softer when research tools are
+        # available — for those agents we want the LLM to TRY the tool
+        # before giving up. Without tools it stays strict.
+        unknown_rule = (
+            "- If something is outside your purpose and none of your tools can answer it, "
+            "say so plainly — do not invent facts, prices, names, or features.\n"
+            if has_research_tool
+            else
             "- If something is outside your purpose or knowledge, say so plainly — "
             "do not invent facts, prices, names, or features.\n"
-            "- Keep replies short and natural — usually 2–3 sentences. The user "
-            "is listening, not reading. Long monologues are wrong here.\n"
-            "- Use \"we\" / \"you\" — you're in conversation with them, not "
-            "lecturing at them."
+        )
+        sections.append(
+            "# Conversation guidelines\n"
+            "- One continuous voice conversation with one user. Remember what "
+            "they've told you — name, preferences, what's already been "
+            "discussed. Reference it when it fits (\"you mentioned earlier…\").\n"
+            "- Stay in character. Don't break role to apologise for being an AI.\n"
+            + unknown_rule
         )
 
         # Voice-chat format rules apply to EVERY agent regardless of how
@@ -321,12 +541,22 @@ async def voicechat_session(
     current_turn: asyncio.Task | None = None
 
     async def _cancel_current() -> None:
+        """Cancel the in-flight turn and wait for it to tear down — but
+        DON'T wait forever. The TTS streamers maintain a WebSocket to
+        the clone-streaming service whose default close-ACK timeout is
+        10 seconds. If we await the cancelled task unbounded, a barge-in
+        will appear stuck for up to 10s before the next turn can start.
+
+        After this timeout we return regardless and let the old task
+        finish in the background. The streamers themselves (patched in
+        voicechat_service.py) cap their own WS close to ~300ms so the
+        old task usually exits well before this outer timeout fires."""
         nonlocal current_turn
         if current_turn and not current_turn.done():
             current_turn.cancel()
             try:
-                await current_turn
-            except (asyncio.CancelledError, Exception):
+                await asyncio.wait_for(current_turn, timeout=1.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
                 pass
         current_turn = None
 
@@ -389,6 +619,36 @@ async def voicechat_session(
             else:
                 rag_id = None
 
+            # Routing priority for voicechat LLM:
+            #   1. ``VOICECHAT_FORCE_MODEL`` — emergency override that wins
+            #      over EVERYTHING including the agent's stored model.
+            #      Use during outages: set it to ``openai:gpt-4o-mini`` and
+            #      every voice chat routes there. Unset to restore normal.
+            #   2. Agent's stored ``config.llm_model`` (per-agent customization).
+            #   3. ``VOICECHAT_DEFAULT_MODEL`` — applies only when the agent's
+            #      slot is blank; useful for picking a "default for new
+            #      agents" without touching saved ones.
+            #   4. Cerebras if configured (the normal fast path; OpenAI
+            #      is the automatic stream-failure fallback inside
+            #      stream_chat_with_tools).
+            #   5. Fall through to global default routing in llm_client.
+            force_model = (os.environ.get("VOICECHAT_FORCE_MODEL") or "").strip()
+            if force_model:
+                agent_llm_model = force_model
+            else:
+                agent_llm_model = (agent_ctx and (agent_ctx.get("config") or {}).get("llm_model")) or None
+                if not agent_llm_model:
+                    default_model = (os.environ.get("VOICECHAT_DEFAULT_MODEL") or "").strip()
+                    if default_model:
+                        agent_llm_model = default_model
+                    else:
+                        from llm_client import cerebras_llm_configured
+                        if cerebras_llm_configured():
+                            agent_llm_model = f"cerebras:{os.environ.get('CEREBRAS_VOICECHAT_MODEL') or 'qwen-3-235b-a22b-instruct-2507'}"
+
+            # ``enabled_tools_set`` was resolved once at session start
+            # (used by both the system prompt and the tool-spec list) —
+            # we reuse it here instead of recomputing per turn.
             current_turn = asyncio.create_task(
                 _run_turn(
                     ws=ws,
@@ -397,6 +657,9 @@ async def voicechat_session(
                     conversation=conversation,
                     voice=agent_voice,
                     rag_agent_id=rag_id,
+                    agent_id=agent_id,
+                    llm_model=agent_llm_model,
+                    enabled_tools=enabled_tools_set,
                 )
             )
     finally:
@@ -411,6 +674,9 @@ async def _run_turn(
     conversation: list[ChatMessage],
     voice: str | None = None,
     rag_agent_id: str | None = None,
+    agent_id: str | None = None,
+    llm_model: str | None = None,
+    enabled_tools: set[str] | None = None,
 ) -> None:
     mode = payload.get("type")
     started = time.perf_counter()
@@ -604,53 +870,305 @@ async def _run_turn(
         # player would enter rebuffering.
         sentence_q: asyncio.Queue[str | None] = asyncio.Queue(maxsize=8)
 
+        # Build the tool specs the LLM is allowed to call this turn.
+        # Built-ins come from the global registry (filtered to the
+        # agent's enabled list); custom user-defined tools come from
+        # the DB for this specific agent (Phase 3). Custom tool names
+        # take precedence over built-ins when there's a collision —
+        # the user explicitly registered their version, they probably
+        # mean it.
+        builtin_specs = agent_tools_service.tool_specs(enabled=enabled_tools)
+        custom_tools: list[agent_tools_service.CustomToolDef] = []
+        if agent_id:
+            try:
+                custom_tools = await _load_custom_tools_for_agent(agent_id, user_id)
+            except Exception:
+                _log.exception("failed to load custom tools for agent %s; continuing without them", agent_id)
+        custom_specs = [ct.as_spec() for ct in custom_tools]
+        # Custom-first so collisions resolve to the user's version.
+        custom_names = {ct.name for ct in custom_tools}
+        turn_tool_specs = custom_specs + [
+            spec for spec in builtin_specs
+            if spec["function"]["name"] not in custom_names
+        ]
+        custom_tools_by_name = {ct.name: ct for ct in custom_tools}
+
         async def llm_producer() -> None:
+            """Streams LLM output to TTS, with a tool-call loop.
+
+            One turn can span multiple LLM round-trips: if the LLM asks
+            for a tool call, we dispatch it, append the result to the
+            message list, and call the LLM again. Content tokens from
+            every round of the loop feed into the same SentenceChunker
+            so the user hears one continuous reply (the model usually
+            stays silent during tool-call rounds and only speaks once
+            it has the result).
+
+            Bounded by MAX_TOOL_DEPTH to stop runaway loops.
+            """
             nonlocal ttft_ms, ttfs_ms
             chunker = SentenceChunker()
             chunking_active = True
             emitted_chars = 0
             tail_buffer = ""
+
+            # The tool loop mutates its own working list of dict messages
+            # (not ChatMessage) so we can attach OpenAI-format tool_calls
+            # + tool result messages, which ChatMessage doesn't model.
+            working_messages: list[dict] = [
+                {"role": m.role, "content": m.content} for m in llm_messages
+            ]
+
+            async def _feed_content_to_tts(delta: str) -> bool:
+                """Reuse of the existing chunker/TTS flow for a single
+                content delta. Returns False if the client has hung up
+                (so the caller breaks out of the loop)."""
+                nonlocal ttft_ms, ttfs_ms, chunking_active, emitted_chars, tail_buffer
+                if ttft_ms is None:
+                    ttft_ms = int((time.perf_counter() - started) * 1000)
+                bot_text_full.append(delta)
+                try:
+                    await ws.send_json({"type": "token", "text": delta})
+                except Exception:
+                    return False
+                if not VOICECHAT_TTS_ENABLED:
+                    return True
+                if chunking_active:
+                    for sentence in chunker.feed(delta):
+                        if chunking_active:
+                            spoken = sanitize_for_tts(sentence)
+                            if spoken:
+                                if ttfs_ms is None:
+                                    ttfs_ms = int((time.perf_counter() - started) * 1000)
+                                    _log.info(
+                                        "voicechat: TTFT=%dms TTFS=%dms first chunk (%d chars) voice=%s: %r",
+                                        ttft_ms or 0, ttfs_ms, len(spoken),
+                                        voice or "default", spoken[:120],
+                                    )
+                                await sentence_q.put(spoken)
+                                emitted_chars += len(spoken)
+                                if emitted_chars >= WHOLE_REPLY_CHUNK_THRESHOLD:
+                                    chunking_active = False
+                                    leftover = (chunker.flush() or "").lstrip()
+                                    if leftover:
+                                        tail_buffer = leftover
+                        else:
+                            tail_buffer = (
+                                (tail_buffer + " " + sentence).lstrip()
+                                if tail_buffer else sentence
+                            )
+                else:
+                    tail_buffer += delta
+                return True
+
+            # Track filler emission across the whole turn (NOT per round)
+            # so we don't say "Hmm…" then "Okay…" back-to-back if the
+                #  user asked a tool-using question. One filler per turn
+            # maximum — any more starts to feel chatty / artificial.
+            filler_emitted_this_turn = False
+
             try:
-                async for delta in stream_llm(llm_messages):
-                    if ttft_ms is None:
-                        ttft_ms = int((time.perf_counter() - started) * 1000)
-                    bot_text_full.append(delta)
+                for depth in range(MAX_TOOL_DEPTH):
+                    accumulated_tool_calls: list[dict] = []
+                    round_assistant_content: list[str] = []
+                    aborted = False
+
+                    # On the final allowed round, force ``tool_choice="none"``
+                    # so the LLM MUST produce content rather than queue up
+                    # yet another tool call we'd never get to dispatch.
+                    # Without this, a model stuck in tool-loop behaviour
+                    # (some reasoning models do this) burns through all
+                    # depth slots and the user hears silence.
+                    is_last_round = depth == MAX_TOOL_DEPTH - 1
+                    tool_choice = "none" if is_last_round else "auto"
+
+                    # Schedule a filler synth in the background. It only
+                    # fires if no real content has arrived within the
+                    # delay window AND we haven't already emitted one
+                    # this turn. The task is cancelled the moment the
+                    # first content token streams in. The filler is
+                    # pushed straight into ``sentence_q`` ahead of real
+                    # audio so playback order is: filler → real reply.
+                    filler_task: asyncio.Task | None = None
+                    round_first_content_seen = False
+
+                    async def _maybe_emit_filler(round_depth: int) -> None:
+                        nonlocal filler_emitted_this_turn
+                        try:
+                            await asyncio.sleep(VOICECHAT_FILLER_DELAY_MS / 1000.0)
+                        except asyncio.CancelledError:
+                            return
+                        if (
+                            round_first_content_seen
+                            or filler_emitted_this_turn
+                            or not VOICECHAT_TTS_ENABLED
+                            or not VOICECHAT_FILLERS_ENABLED
+                        ):
+                            return
+                        phrase = _pick_filler(round_depth)
+                        filler_emitted_this_turn = True
+                        # ORDERING IS CRITICAL: put the filler into the
+                        # TTS queue SYNCHRONOUSLY (put_nowait) BEFORE any
+                        # await. Previously this used `await sentence_q.put`
+                        # AFTER `await ws.send_json` — both awaits yield
+                        # control, and during those yields the LLM stream
+                        # could push its first real sentence onto sentence_q
+                        # ahead of the filler. The TTS consumer then played
+                        # the real answer first and the filler last (i.e.
+                        # "Hmm, let me think" came AFTER the answer audio).
+                        # put_nowait is non-blocking; the queue's maxsize=8
+                        # means it never raises QueueFull at this point
+                        # because no other producer has run yet for this
+                        # round.
+                        try:
+                            sentence_q.put_nowait(phrase)
+                        except asyncio.QueueFull:
+                            return
+                        # Now the queue order is locked in. The chat-bubble
+                        # token send can take its time without affecting
+                        # audio ordering.
+                        try:
+                            await ws.send_json({"type": "token", "text": phrase + " "})
+                        except Exception:
+                            pass
+
+                    if VOICECHAT_FILLERS_ENABLED and VOICECHAT_TTS_ENABLED and not filler_emitted_this_turn:
+                        filler_task = asyncio.create_task(_maybe_emit_filler(depth))
+
                     try:
-                        await ws.send_json({"type": "token", "text": delta})
+                        async for event in stream_chat_with_tools(
+                            working_messages,
+                            tools=turn_tool_specs or None,
+                            tool_choice=tool_choice,
+                            model=llm_model,
+                        ):
+                            et = event.get("type")
+                            if et == "content":
+                                txt = event.get("text") or ""
+                                if txt:
+                                    # First real content for this round —
+                                    # kill the pending filler so we don't
+                                    # speak "Hmm…" when the LLM was fast.
+                                    if not round_first_content_seen:
+                                        round_first_content_seen = True
+                                        if filler_task and not filler_task.done():
+                                            filler_task.cancel()
+                                    round_assistant_content.append(txt)
+                                    if not await _feed_content_to_tts(txt):
+                                        aborted = True
+                                        break
+                            elif et == "tool_call":
+                                accumulated_tool_calls.append(event["tool_call"])
+                            elif et == "done":
+                                # Stream finished — exit the inner SSE loop and
+                                # decide below whether to dispatch tools and
+                                # recall, or finish the turn.
+                                pass
+                    finally:
+                        # Guarantee the filler task doesn't outlive its
+                        # round — if the LLM stream errored or returned
+                        # only tool_calls (no content), cancel now so we
+                        # don't double-fire on the next round.
+                        if filler_task and not filler_task.done():
+                            filler_task.cancel()
+
+                    if aborted:
+                        return
+
+                    # No tool calls? The LLM is done — content (if any)
+                    # is already streaming to TTS. Break out, flush the
+                    # tail, end the turn.
+                    if not accumulated_tool_calls:
+                        break
+
+                    # The LLM wants tools. Append its assistant message
+                    # (with the tool_calls) to working_messages so the
+                    # next LLM call sees the chain, then dispatch.
+                    asst_msg: dict = {
+                        "role": "assistant",
+                        "content": "".join(round_assistant_content) or None,
+                        "tool_calls": [
+                            {
+                                "id": tc["id"],
+                                "type": "function",
+                                "function": {"name": tc["name"], "arguments": tc["arguments"]},
+                            }
+                            for tc in accumulated_tool_calls
+                        ],
+                    }
+                    working_messages.append(asst_msg)
+
+                    # Run all tool calls in parallel — Groq can emit
+                    # multiple in one turn (e.g. weather AND time) and
+                    # serializing them would blow our latency budget.
+                    async def _run_one(tc: dict) -> tuple[dict, str]:
+                        # Notify the frontend so it can render a
+                        # "Searching the web…" chip in the chat bubble.
+                        tc_name = tc.get("name") or ""
+                        try:
+                            await ws.send_json({
+                                "type": "tool_call_started",
+                                "id": tc.get("id"),
+                                "name": tc_name,
+                                "arguments": tc.get("arguments"),
+                                # Tag the source so the UI can differentiate
+                                # "🔧 Custom: my_webhook" from "🔍 web_search".
+                                "kind": "custom" if tc_name in custom_tools_by_name else "builtin",
+                            })
+                        except Exception:
+                            pass
+                        # Custom tools (user-defined webhooks) get dispatched
+                        # via the SSRF-safe HTTP executor; everything else
+                        # goes through the built-in registry.
+                        custom_def = custom_tools_by_name.get(tc_name)
+                        if custom_def is not None:
+                            result_str = await agent_tools_service.dispatch_custom_tool(
+                                custom_def, tc.get("arguments") or "{}",
+                            )
+                        else:
+                            result_str = await agent_tools_service.dispatch_tool_call(
+                                tc_name, tc.get("arguments") or "{}",
+                            )
+                        try:
+                            await ws.send_json({
+                                "type": "tool_call_completed",
+                                "id": tc.get("id"),
+                                "name": tc.get("name"),
+                                # Trim the preview so the WS frame stays small;
+                                # full result still goes back to the LLM.
+                                "result_preview": result_str[:280],
+                            })
+                        except Exception:
+                            pass
+                        return tc, result_str
+
+                    results = await asyncio.gather(*(_run_one(tc) for tc in accumulated_tool_calls))
+
+                    for tc, res in results:
+                        working_messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc.get("id") or "",
+                            "name": tc.get("name") or "",
+                            "content": res,
+                        })
+
+                    # Loop continues: next LLM call sees the tool results.
+                else:
+                    # Exited the for-loop without break → hit MAX_TOOL_DEPTH.
+                    # Surface this as a user-visible warning so they know
+                    # the agent gave up rather than just going silent.
+                    _log.warning(
+                        "voicechat: tool depth cap hit (%d) — abandoning further tool calls",
+                        MAX_TOOL_DEPTH,
+                    )
+                    try:
+                        await ws.send_json({
+                            "type": "warning",
+                            "code": "tool_depth_exceeded",
+                            "message": f"agent exceeded {MAX_TOOL_DEPTH} tool calls in one turn",
+                        })
                     except Exception:
-                        return  # client disconnected — abort turn
-
-                    if not VOICECHAT_TTS_ENABLED:
-                        continue
-
-                    if chunking_active:
-                        for sentence in chunker.feed(delta):
-                            if chunking_active:
-                                spoken = sanitize_for_tts(sentence)
-                                if spoken:
-                                    if ttfs_ms is None:
-                                        ttfs_ms = int((time.perf_counter() - started) * 1000)
-                                        _log.info(
-                                            "voicechat: TTFT=%dms TTFS=%dms first chunk (%d chars) voice=%s: %r",
-                                            ttft_ms or 0, ttfs_ms, len(spoken),
-                                            voice or "default", spoken[:120],
-                                        )
-                                    await sentence_q.put(spoken)
-                                    emitted_chars += len(spoken)
-                                    if emitted_chars >= WHOLE_REPLY_CHUNK_THRESHOLD:
-                                        chunking_active = False
-                                        leftover = (chunker.flush() or "").lstrip()
-                                        if leftover:
-                                            tail_buffer = leftover
-                            else:
-                                # Threshold just flipped mid-batch; fold
-                                # remaining yielded sentences into tail.
-                                tail_buffer = (
-                                    (tail_buffer + " " + sentence).lstrip()
-                                    if tail_buffer else sentence
-                                )
-                    else:
-                        tail_buffer += delta
+                        pass
 
                 # LLM stream ended. Emit whatever's left as one final chunk:
                 #   • sentence mode: chunker buffer with no terminator yet
@@ -667,6 +1185,14 @@ async def _run_turn(
             finally:
                 # Sentinel to release the consumer no matter what.
                 await sentence_q.put(None)
+
+        # Pre-warm the TTS WS for chunks 2..N. The warmer is created once
+        # per turn knowing which TTS service the voice will hit, and the
+        # streamers below schedule a background open of the next WS as
+        # soon as the current chunk's first audio frame arrives. Saves
+        # ~30-80ms per chunk after the first.
+        from voicechat_service import make_tts_warmer_for_voice  # local import: keeps cold-start lean
+        tts_warmer = make_tts_warmer_for_voice(voice)
 
         async def tts_consumer() -> None:
             nonlocal ttfa_ms
@@ -691,7 +1217,7 @@ async def _run_turn(
                 except Exception:
                     return
                 try:
-                    async for chunk in stream_tts_for_voice(spoken, voice, user_id=user_id):
+                    async for chunk in stream_tts_for_voice(spoken, voice, user_id=user_id, warmer=tts_warmer):
                         if chunk.kind == "audio" and isinstance(chunk.payload, (bytes, bytearray)):
                             if ttfa_ms is None:
                                 ttfa_ms = int((time.perf_counter() - started) * 1000)
@@ -732,7 +1258,17 @@ async def _run_turn(
                         pass
                     return
 
-        await asyncio.gather(llm_producer(), tts_consumer())
+        try:
+            await asyncio.gather(llm_producer(), tts_consumer())
+        finally:
+            # Always release the prewarmed WS (and any background prewarm
+            # task) — including on barge-in cancel. Otherwise the WS sits
+            # against the cap=2 server slot until its server-side timeout.
+            if tts_warmer is not None:
+                try:
+                    await tts_warmer.close()
+                except Exception:
+                    _log.debug("tts_warmer.close() raised; ignoring", exc_info=True)
 
         bot_text_joined = "".join(bot_text_full).strip()
         if bot_text_joined:

@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 import agent_knowledge
 import agents_service
+import llm_client
 from local_db import get_connection
 from routers.auth import require_auth
 
@@ -40,6 +41,12 @@ class AgentConfigIn(BaseModel):
     goal: Optional[str] = None
     success_metric: Optional[str] = None
     max_iterations: Optional[int] = None
+    # Built-in tools the agent is allowed to call. Names match
+    # agent_tools_service registry keys (e.g. "web_search", "get_time").
+    # Empty list = no tools. None (omitted from JSON) = "all available"
+    # — the no-config default keeps Logos powered up across the full
+    # built-in library without explicit setup.
+    enabled_tools: Optional[list[str]] = None
 
 
 class AgentCreateIn(BaseModel):
@@ -130,13 +137,70 @@ async def list_agents(user_id: str = Depends(require_auth)) -> dict:
 
 @router.get("/models")
 async def list_models(user_id: str = Depends(require_auth)) -> dict:
-    """Available LLM models. v1: returns the configured default; later wire to
-    a real Chutes model-discovery endpoint."""
+    """Available LLM models for the agent settings picker.
+
+    The model id stored in ``agent.config.llm_model`` uses a
+    ``provider:model`` prefix so the voicechat WS knows where to route
+    each agent. ``groq:`` models hit Groq's LPU (purpose-built for
+    sub-300ms voice-turn latency); the Chutes default sits behind the
+    bare default id for backwards compatibility. The picker label
+    surfaces the provider for clarity, but the id is the round-trip
+    string we get back on save."""
+    models: list[dict[str, str]] = []
+
+    # Groq — only listed when an API key is configured server-side, so
+    # users don't pick a model the deployment can't actually serve.
+    if llm_client.groq_llm_configured():
+        models.extend([
+            {
+                "id": "groq:llama-3.3-70b-versatile",
+                "label": "Groq · Llama-3.3-70B (versatile, recommended for tool use)",
+            },
+            {
+                "id": "groq:llama-3.1-8b-instant",
+                "label": "Groq · Llama-3.1-8B (instant, fastest)",
+            },
+            {
+                "id": "groq:llama-3.1-70b-versatile",
+                "label": "Groq · Llama-3.1-70B (versatile)",
+            },
+            # Compound models bundle web_search + code execution INSIDE
+            # the Groq inference server. Pick this and the agent gets
+            # real-time web search with zero extra setup — no Tavily
+            # key needed. Trade-off: the built-in web_search runs
+            # inside the LLM call so its result doesn't surface as a
+            # separate ``tool_call`` event (no chip in the chat bubble
+            # for those searches). Custom and other built-in tools
+            # still work normally.
+            {
+                "id": "groq:compound-beta",
+                "label": "Groq · Compound (web search + code built-in, no extra keys)",
+            },
+            {
+                "id": "groq:compound-beta-mini",
+                "label": "Groq · Compound Mini (faster, smaller)",
+            },
+        ])
+
+    # Chutes default — kept as the unprefixed id so legacy agents that
+    # already stored a Chutes model id keep working without migration.
     default = agents_service.AGENTS_LLM_MODEL
-    models = []
-    if default:
-        models.append({"id": default, "label": default})
+    if default and not any(m["id"] == default for m in models):
+        models.append({"id": default, "label": f"Chutes · {default}"})
+
     return {"models": models}
+
+
+@router.get("/tools/builtin")
+async def list_builtin_tools(user_id: str = Depends(require_auth)) -> dict:
+    """Catalog of built-in tools the voice agents can call.
+
+    Each entry includes whether the tool is actually available on this
+    deployment (some need API keys like Tavily/OpenWeatherMap). The
+    frontend uses this to render checkboxes in the agent's Tools
+    section and grey out the ones whose env keys aren't set."""
+    import agent_tools_service
+    return {"tools": agent_tools_service.tool_catalog()}
 
 
 @router.post("/draft")
