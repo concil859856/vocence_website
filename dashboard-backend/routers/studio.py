@@ -63,6 +63,7 @@ from studio_tts_service import (
     get_presigned_url,
     synthesize_speak,
     transcribe_audio,
+    upload_audio_bytes_to_bucket,
     upload_wav_preview,
     upload_wav_to_hippius,
     voice_clone_chute_configured,
@@ -1838,6 +1839,38 @@ async def music_generate_lyrics(
     if not cleaned:
         raise HTTPException(status_code=502, detail="lyric generation returned empty")
     return StudioMusicLyricsResponse(lyrics=cleaned)
+
+
+@router.post("/music/upload-source")
+async def music_upload_source(
+    user_id_form: str = Form(..., alias="user_id"),
+    src_audio: UploadFile = File(...),
+    user_id: str = Depends(require_auth),
+):
+    """Upload the source/reference audio for retake/repaint/edit/extend/audio2audio
+    to R2. Returns ``{src_audio_bucket, src_audio_key}`` which the caller then
+    passes inside the /jobs/start payload — keeps the job payload tiny (no
+    base64) so the music tasks behave the same as text2music over the wire.
+    """
+    if user_id_form != user_id:
+        raise HTTPException(status_code=403, detail="user_id does not match authenticated user")
+    raw = await src_audio.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Empty audio file")
+    if len(raw) > MUSIC_MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Audio file too large")
+    # Pull the extension off the filename; fall back to wav.
+    filename = src_audio.filename or "source.wav"
+    dot = filename.rfind(".")
+    ext = filename[dot + 1:] if dot >= 0 and dot < len(filename) - 1 else "wav"
+    bucket, key = upload_audio_bytes_to_bucket(
+        user_id,
+        raw,
+        subdir="music-source",
+        extension=ext,
+        content_type=src_audio.content_type or "application/octet-stream",
+    )
+    return {"src_audio_bucket": bucket, "src_audio_key": key, "src_audio_filename": filename}
 
 
 @router.post("/music/text2music", response_model=StudioMusicGenerateResponse)

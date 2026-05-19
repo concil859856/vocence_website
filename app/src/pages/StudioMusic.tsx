@@ -730,9 +730,13 @@ export function StudioMusic() {
 
     // All six music tasks (text2music + the five audio-input modes) go
     // through the same /jobs/start queue. The worker dispatches on
-    // payload.task. Source audio (when needed) is sent as base64 in the
-    // payload so the existing JSON pipeline doesn't need a multipart leg.
-    let srcAudioB64: string | undefined;
+    // payload.task. For tasks that need a source/reference audio we
+    // upload the file first to /studio/music/upload-source (multipart,
+    // small endpoint, R2) and put just the bucket+key in the job
+    // payload — keeps every job payload the same shape and size as
+    // text2music so they all behave identically through Cloudflare/HTTP2.
+    let srcAudioBucket: string | undefined;
+    let srcAudioKey: string | undefined;
     let srcAudioFilename: string | undefined;
     if (activeTask !== 'text2music') {
       if (!audioFile) {
@@ -748,21 +752,12 @@ export function StudioMusic() {
         return;
       }
       try {
-        // FileReader.readAsDataURL is a native, off-thread base64 encoder.
-        // The hot loop / string-concat version above this used to OOM and
-        // freeze the tab on multi-MB audio uploads.
-        const dataUrl = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
-          reader.onerror = () => reject(reader.error ?? new Error('FileReader failed'));
-          reader.readAsDataURL(audioFile);
-        });
-        const commaIdx = dataUrl.indexOf(',');
-        srcAudioB64 = commaIdx >= 0 ? dataUrl.slice(commaIdx + 1) : '';
-        srcAudioFilename = audioFile.name;
-        if (!srcAudioB64) throw new Error('Empty audio after encoding');
+        const uploaded = await dashboardApi.uploadStudioMusicSource(user.id, audioFile, token);
+        srcAudioBucket = uploaded.src_audio_bucket;
+        srcAudioKey = uploaded.src_audio_key;
+        srcAudioFilename = uploaded.src_audio_filename || audioFile.name;
       } catch (e: unknown) {
-        const msg = humanizeApiError(e, 'Could not read the source audio file.');
+        const msg = humanizeApiError(e, 'Could not upload the source audio file.');
         setStatus({ type: 'error', message: msg });
         setLoading(false);
         stopTimer();
@@ -798,7 +793,8 @@ export function StudioMusic() {
         lora_name_or_path: loraPath,
       });
     } else {
-      basePayload.src_audio_b64 = srcAudioB64;
+      basePayload.src_audio_bucket = srcAudioBucket;
+      basePayload.src_audio_key = srcAudioKey;
       basePayload.src_audio_filename = srcAudioFilename;
       if (activeTask === 'audio2audio') {
         basePayload.ref_audio_strength = refAudioStrength;

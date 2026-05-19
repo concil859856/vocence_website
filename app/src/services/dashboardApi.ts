@@ -1053,6 +1053,27 @@ export const dashboardApi = {
     });
   },
 
+  /** Upload the source/reference audio for retake/repaint/edit/extend/audio2audio
+   * to the backend bucket. Returns ``{src_audio_bucket, src_audio_key}`` which
+   * the caller passes inside the /jobs/start payload — keeps the job payload
+   * tiny (no base64) so all 6 music tasks behave identically over the wire. */
+  uploadStudioMusicSource(
+    userId: string,
+    file: File,
+    token: string | null,
+  ): Promise<{ src_audio_bucket: string; src_audio_key: string; src_audio_filename: string }> {
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    const form = new FormData();
+    form.append('user_id', userId);
+    form.append('src_audio', file, file.name);
+    return fetchJson('/api/dashboard/studio/music/upload-source', {
+      method: 'POST',
+      headers,
+      body: form,
+    });
+  },
+
   /** AI-generate lyrics from a topic. Free; no credits charged. The
    * server uses the same LLM router as agents and enforces the
    * ACE-Step structure-tag format ([verse]/[chorus]/...). */

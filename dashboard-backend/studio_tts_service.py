@@ -781,6 +781,33 @@ def upload_wav_to_hippius(user_id: str, wav_bytes: bytes, subdir: str = "") -> t
     return bucket, key, expires_at
 
 
+def upload_audio_bytes_to_bucket(
+    user_id: str,
+    audio_bytes: bytes,
+    *,
+    subdir: str,
+    extension: str = "wav",
+    content_type: str = "audio/wav",
+) -> tuple[str, str]:
+    """Upload arbitrary audio bytes (any format) to the active bucket.
+    Returns (bucket, key). Used for short-lived source-audio uploads
+    submitted by the user for retake/repaint/edit/extend/audio2audio.
+    """
+    bucket = _active_bucket()
+    client = _minio_client()
+    ensure_bucket(client, bucket)
+    safe_ext = (extension or "wav").lstrip(".").lower() or "wav"
+    key = f"{user_id}/{subdir}/{uuid.uuid4().hex}.{safe_ext}"
+    client.put_object(
+        bucket,
+        key,
+        BytesIO(audio_bytes),
+        length=len(audio_bytes),
+        content_type=content_type or "application/octet-stream",
+    )
+    return bucket, key
+
+
 def get_presigned_url(bucket: str, key: str, expires_at: datetime, *, public: bool = False) -> str | None:
     """Return a URL for the audio object.
 

@@ -32,7 +32,12 @@ from studio_music_service import (
     generate_retake,
     generate_text2music,
 )
-from studio_tts_service import get_presigned_url, upload_wav_to_hippius
+from studio_tts_service import (
+    delete_object,
+    download_object_bytes,
+    get_presigned_url,
+    upload_wav_to_hippius,
+)
 
 from .. import state
 from ..registry import MUSIC_POOL
@@ -47,18 +52,43 @@ _AUDIO_REQUIRED_TASKS = {"audio2audio", "retake", "repaint", "edit", "extend"}
 
 
 def _decode_source_audio(payload: dict) -> tuple[bytes, str]:
-    """Pull base64-encoded source audio out of the payload."""
+    """Resolve source audio for this job — either from an R2 key or inline base64.
+
+    Preferred path: ``src_audio_bucket`` + ``src_audio_key`` (browser uploads
+    the file via /studio/music/upload-source first, then puts just the key in
+    the job payload). Fallback path: ``src_audio_b64`` inline. Returns
+    (raw_bytes, filename).
+    """
+    bucket = (payload.get("src_audio_bucket") or "").strip()
+    key = (payload.get("src_audio_key") or "").strip()
+    filename = payload.get("src_audio_filename") or "source.wav"
+    if bucket and key:
+        raw = download_object_bytes(bucket, key)
+        if not raw:
+            raise RuntimeError(f"Could not fetch source audio from bucket={bucket} key={key}")
+        return raw, filename
+
     b64 = payload.get("src_audio_b64") or ""
     if not b64:
-        raise RuntimeError("src_audio_b64 is required for this task")
+        raise RuntimeError("source audio is required for this task (provide src_audio_bucket+src_audio_key or src_audio_b64)")
     try:
         raw = base64.b64decode(b64, validate=False)
     except (binascii.Error, ValueError) as e:
         raise RuntimeError(f"Invalid src_audio_b64: {e}") from e
     if not raw:
         raise RuntimeError("src_audio_b64 decoded to empty bytes")
-    filename = payload.get("src_audio_filename") or "source.wav"
     return raw, filename
+
+
+def _maybe_cleanup_source(payload: dict) -> None:
+    """Best-effort delete of the uploaded source audio in R2 once the job is done."""
+    bucket = (payload.get("src_audio_bucket") or "").strip()
+    key = (payload.get("src_audio_key") or "").strip()
+    if bucket and key:
+        try:
+            delete_object(bucket, key)
+        except Exception:
+            _log.warning("[music] failed to delete source audio bucket=%s key=%s", bucket, key)
 
 
 async def _run_task(task: str, payload: dict, pod_url: str):
@@ -282,6 +312,9 @@ async def process_music(job: state.Job) -> dict:
         await conn.close()
 
     audio_url = get_presigned_url(bucket, key, expires_at, public=False) or ""
+
+    # Source audio is no longer needed once the result is uploaded.
+    _maybe_cleanup_source(payload)
 
     return {
         "audio_url": audio_url,
