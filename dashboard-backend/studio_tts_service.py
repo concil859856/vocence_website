@@ -781,6 +781,19 @@ def upload_wav_to_hippius(user_id: str, wav_bytes: bytes, subdir: str = "") -> t
     return bucket, key, expires_at
 
 
+def presigned_put_url(bucket: str, key: str, expires_seconds: int = 900) -> str:
+    """Generate a presigned PUT URL the browser can use to upload directly to R2.
+    The signed URL is valid for ``expires_seconds`` (default 15 minutes) and
+    points at the storage provider's domain (e.g. ``*.r2.cloudflarestorage.com``),
+    not your API domain — so the byte transfer bypasses your domain's Cloudflare
+    proxy entirely.
+    """
+    from datetime import timedelta as _td
+    client = _minio_client()
+    ensure_bucket(client, bucket)
+    return client.presigned_put_object(bucket, key, expires=_td(seconds=expires_seconds))
+
+
 def upload_audio_bytes_to_bucket(
     user_id: str,
     audio_bytes: bytes,

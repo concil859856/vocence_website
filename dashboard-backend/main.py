@@ -43,6 +43,7 @@ from routers.agents import router as agents_router
 from routers.agent_custom_tools import router as agent_custom_tools_router
 from routers.share import router as share_router
 from routers.cli_auth import router as cli_auth_router
+from routers.uploads import router as uploads_router
 from jobs import start_workers, stop_workers
 
 
@@ -168,6 +169,7 @@ app.include_router(dashboard.router)
 app.include_router(studio.router, prefix="/api/dashboard")
 app.include_router(playbooks_router, prefix="/api/dashboard")
 app.include_router(jobs_router, prefix="/api/dashboard")
+app.include_router(uploads_router, prefix="/api/dashboard")
 app.include_router(voicechat_router, prefix="/api/dashboard")
 app.include_router(agents_router, prefix="/api/dashboard")
 # Custom (user-defined) voice-agent tools — webhook executors the LLM

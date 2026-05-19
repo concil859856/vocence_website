@@ -752,10 +752,15 @@ export function StudioMusic() {
         return;
       }
       try {
-        const uploaded = await dashboardApi.uploadStudioMusicSource(user.id, audioFile, token);
-        srcAudioBucket = uploaded.src_audio_bucket;
-        srcAudioKey = uploaded.src_audio_key;
-        srcAudioFilename = uploaded.src_audio_filename || audioFile.name;
+        // Direct browser → R2 PUT via presigned URL. The bytes do NOT
+        // pass through Cloudflare's proxy on backend.vocence.ai, so this
+        // works for files much larger than the proxy's per-request body
+        // limit and avoids the HTTP/2 upload stalls that broke the
+        // previous multipart endpoint for big files.
+        const uploaded = await dashboardApi.uploadDirectToR2('music-source', audioFile, token);
+        srcAudioBucket = uploaded.bucket;
+        srcAudioKey = uploaded.key;
+        srcAudioFilename = uploaded.filename || audioFile.name;
       } catch (e: unknown) {
         const msg = humanizeApiError(e, 'Could not upload the source audio file.');
         setStatus({ type: 'error', message: msg });

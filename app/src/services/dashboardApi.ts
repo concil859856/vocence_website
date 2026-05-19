@@ -1056,7 +1056,9 @@ export const dashboardApi = {
   /** Upload the source/reference audio for retake/repaint/edit/extend/audio2audio
    * to the backend bucket. Returns ``{src_audio_bucket, src_audio_key}`` which
    * the caller passes inside the /jobs/start payload — keeps the job payload
-   * tiny (no base64) so all 6 music tasks behave identically over the wire. */
+   * tiny (no base64) so all 6 music tasks behave identically over the wire.
+   * @deprecated prefer ``presignUpload`` + direct PUT so the bytes skip the
+   * Cloudflare proxy entirely. Kept for backward compat. */
   uploadStudioMusicSource(
     userId: string,
     file: File,
@@ -1072,6 +1074,49 @@ export const dashboardApi = {
       headers,
       body: form,
     });
+  },
+
+  /** Ask the backend for a presigned PUT URL pointing directly at R2.
+   *  The browser then PUTs the file straight to R2 — the bytes do NOT
+   *  traverse the API's Cloudflare proxy, so we sidestep the per-request
+   *  body-size limits and large HTTP/2 upload stalls that plague big
+   *  multipart POSTs to ``backend.vocence.ai``. The caller passes the
+   *  returned ``key`` into whichever job/start endpoint needs it. */
+  presignUpload(
+    body: { kind: 'music-source' | 'playbook-audio' | 'voice-clone-ref' | 'stt-source'; filename: string; content_type?: string; size: number },
+    token: string | null,
+  ): Promise<{ put_url: string; bucket: string; key: string; filename: string; expires_at: string; max_bytes: number }> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson('/api/dashboard/uploads/presign', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+  },
+
+  /** Convenience: presign + PUT in one call. Returns the bucket/key the
+   *  caller should put in the job payload. PUT goes browser → R2 directly
+   *  so it bypasses Cloudflare and isn't subject to your API's body limits. */
+  async uploadDirectToR2(
+    kind: 'music-source' | 'playbook-audio' | 'voice-clone-ref' | 'stt-source',
+    file: File,
+    token: string | null,
+  ): Promise<{ bucket: string; key: string; filename: string }> {
+    const presigned = await this.presignUpload(
+      { kind, filename: file.name, content_type: file.type || 'application/octet-stream', size: file.size },
+      token,
+    );
+    const putRes = await fetch(presigned.put_url, {
+      method: 'PUT',
+      body: file,
+      headers: file.type ? { 'Content-Type': file.type } : undefined,
+    });
+    if (!putRes.ok) {
+      const text = await putRes.text().catch(() => '');
+      throw new Error(`Upload to storage failed (${putRes.status}): ${text.slice(0, 200)}`);
+    }
+    return { bucket: presigned.bucket, key: presigned.key, filename: presigned.filename };
   },
 
   /** AI-generate lyrics from a topic. Free; no credits charged. The
