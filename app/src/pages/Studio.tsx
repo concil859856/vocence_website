@@ -41,7 +41,6 @@ import {
   CREDIT_VOICE_DESIGN_PREVIEW,
 } from '../studio/creditCosts';
 import { blobToCloneReferenceWav, getAudioDurationSec } from '../utils/cloneReferenceAudio';
-import { fileToBase64 } from '../utils/fileToBase64';
 import {
   dashboardApi,
   humanizeApiError,
