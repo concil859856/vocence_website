@@ -728,110 +728,97 @@ export function StudioMusic() {
     setStatus(null); setResultAudioUrl(null); setLoading(true); startTimer();
     const token = localStorage.getItem('vocence_token');
 
-    // ---- Audio-input modes (synchronous, multipart). ----
-    // These five modes accept a src/ref audio file and run on the same
-    // music pod as text2music. We don't go through ``startJob`` here
-    // because the queued worker only knows about text2music; the
-    // synchronous endpoints handle the full lifecycle (charge credits,
-    // upload result to R2, insert history row) and return the audio
-    // URL inline. Latency is the same as a queued run; the trade-off
-    // is no global queue-position pill, which is acceptable for tasks
-    // that need an explicit file upload.
+    // All six music tasks (text2music + the five audio-input modes) go
+    // through the same /jobs/start queue. The worker dispatches on
+    // payload.task. Source audio (when needed) is sent as base64 in the
+    // payload so the existing JSON pipeline doesn't need a multipart leg.
+    let srcAudioB64: string | undefined;
+    let srcAudioFilename: string | undefined;
     if (activeTask !== 'text2music') {
-      try {
-        if (!audioFile) {
-          throw new Error('Please select a source audio file.');
-        }
-        const form = new FormData();
-        form.append('user_id', user.id);
-        form.append('prompt', prompt);
-        form.append('lyrics', lyrics);
-        form.append('format', format);
-        form.append('infer_step', String(inferStep));
-        form.append('guidance_scale', String(guidanceScale));
-        form.append('src_audio', audioFile, audioFile.name);
-        if (activeTask === 'audio2audio') {
-          // audio2audio uses ``ref_audio`` not ``src_audio``. The same
-          // file is fine; the field name is what the backend expects.
-          form.delete('src_audio');
-          form.append('ref_audio', audioFile, audioFile.name);
-          form.append('audio_duration', String(duration));
-          form.append('ref_audio_strength', String(refAudioStrength));
-        } else if (activeTask === 'retake') {
-          form.append('retake_variance', String(retakeVariance));
-          form.append('retake_seeds', retakeSeeds);
-        } else if (activeTask === 'repaint') {
-          form.append('repaint_start', String(repaintStart));
-          form.append('repaint_end', String(repaintEnd));
-          form.append('retake_variance', String(retakeVariance));
-        } else if (activeTask === 'edit') {
-          if (!editTargetPrompt.trim()) {
-            throw new Error('Target prompt is required for Edit mode.');
-          }
-          form.append('edit_target_prompt', editTargetPrompt);
-          form.append('edit_target_lyrics', editTargetLyrics);
-          form.append('edit_n_min', String(editNMin));
-          form.append('edit_n_max', String(editNMax));
-        } else if (activeTask === 'extend') {
-          form.append('left_extend_length', String(leftExtend));
-          form.append('right_extend_length', String(rightExtend));
-          form.append('extend_seeds', extendSeeds);
-        }
-
-        const res = await dashboardApi.generateStudioMusicWithAudio(
-          activeTask,
-          form,
-          token,
-        );
-        setLocalCredits(res.credits ?? (user.credits ?? 0) - CREDIT_MUSIC);
-        const audioUrl = res.audio_url || '';
-        setResultAudioUrl(audioUrl);
-        setStatus({ type: 'success', message: 'Music ready.' });
-        if (audioUrl) {
-          playAudio({
-            src: audioUrl,
-            title: title.trim() || prompt.slice(0, 60),
-            subtitle: `Music · ${activeTask}`,
-            downloadFilename: `${slugify(title)}-${Date.now()}.${format}`,
-          });
-        }
-      } catch (e: unknown) {
-        const msg = humanizeApiError(e, 'Music generation failed. Please try again.');
-        setStatus({ type: 'error', message: msg });
-      } finally {
+      if (!audioFile) {
+        setStatus({ type: 'error', message: 'Please select a source audio file.' });
         setLoading(false);
         stopTimer();
+        return;
       }
-      return;
+      if (activeTask === 'edit' && !editTargetPrompt.trim()) {
+        setStatus({ type: 'error', message: 'Target prompt is required for Edit mode.' });
+        setLoading(false);
+        stopTimer();
+        return;
+      }
+      try {
+        const buf = await audioFile.arrayBuffer();
+        const bytes = new Uint8Array(buf);
+        let binary = '';
+        for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+        srcAudioB64 = btoa(binary);
+        srcAudioFilename = audioFile.name;
+      } catch (e: unknown) {
+        const msg = humanizeApiError(e, 'Could not read the source audio file.');
+        setStatus({ type: 'error', message: msg });
+        setLoading(false);
+        stopTimer();
+        return;
+      }
+    }
+
+    const basePayload: Record<string, unknown> = {
+      task: activeTask,
+      title: title.trim(),
+      prompt,
+      lyrics,
+      audio_duration: duration,
+      format,
+      infer_step: inferStep,
+      guidance_scale: guidanceScale,
+    };
+    if (activeTask === 'text2music') {
+      Object.assign(basePayload, {
+        scheduler_type: schedulerType,
+        cfg_type: cfgType,
+        omega_scale: omegaScale,
+        manual_seeds: manualSeeds,
+        guidance_interval: guidanceInterval,
+        guidance_interval_decay: guidanceIntervalDecay,
+        min_guidance_scale: minGuidanceScale,
+        use_erg_tag: useErgTag,
+        use_erg_lyric: useErgLyric,
+        use_erg_diffusion: useErgDiffusion,
+        oss_steps: ossSteps,
+        guidance_scale_text: guidanceScaleText,
+        guidance_scale_lyric: guidanceScaleLyric,
+        lora_name_or_path: loraPath,
+      });
+    } else {
+      basePayload.src_audio_b64 = srcAudioB64;
+      basePayload.src_audio_filename = srcAudioFilename;
+      if (activeTask === 'audio2audio') {
+        basePayload.ref_audio_strength = refAudioStrength;
+      } else if (activeTask === 'retake') {
+        basePayload.retake_variance = retakeVariance;
+        basePayload.retake_seeds = retakeSeeds;
+      } else if (activeTask === 'repaint') {
+        basePayload.repaint_start = repaintStart;
+        basePayload.repaint_end = repaintEnd;
+        basePayload.retake_variance = retakeVariance;
+      } else if (activeTask === 'edit') {
+        basePayload.edit_target_prompt = editTargetPrompt;
+        basePayload.edit_target_lyrics = editTargetLyrics;
+        basePayload.edit_n_min = editNMin;
+        basePayload.edit_n_max = editNMax;
+      } else if (activeTask === 'extend') {
+        basePayload.left_extend_length = leftExtend;
+        basePayload.right_extend_length = rightExtend;
+        basePayload.extend_seeds = extendSeeds;
+      }
     }
 
     try {
       const submission = await dashboardApi.startJob({
         type: 'music',
         credits: CREDIT_MUSIC,
-        payload: {
-          title: title.trim(),
-          prompt,
-          lyrics,
-          audio_duration: duration,
-          format,
-          infer_step: inferStep,
-          guidance_scale: guidanceScale,
-          scheduler_type: schedulerType,
-          cfg_type: cfgType,
-          omega_scale: omegaScale,
-          manual_seeds: manualSeeds,
-          guidance_interval: guidanceInterval,
-          guidance_interval_decay: guidanceIntervalDecay,
-          min_guidance_scale: minGuidanceScale,
-          use_erg_tag: useErgTag,
-          use_erg_lyric: useErgLyric,
-          use_erg_diffusion: useErgDiffusion,
-          oss_steps: ossSteps,
-          guidance_scale_text: guidanceScaleText,
-          guidance_scale_lyric: guidanceScaleLyric,
-          lora_name_or_path: loraPath,
-        },
+        payload: basePayload,
       }, token);
       setLocalCredits((user.credits ?? 0) - CREDIT_MUSIC);
       setStatus({
