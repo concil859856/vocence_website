@@ -705,6 +705,12 @@ export function StudioMusic() {
     if (!title.trim()) { setTitleInvalid(true); setStatus({ type: 'error', message: 'Please enter a title.' }); return; }
     setTitleInvalid(false);
     if (needsAudioFile && !audioFile) { setStatus({ type: 'error', message: 'Please select a source audio file.' }); return; }
+    // Fast client-side size cap so the user doesn't wait on a presign+413
+    // round-trip when their file is too big. Server still re-checks.
+    if (audioFile && audioFile.size > 300 * 1024 * 1024) {
+      setStatus({ type: 'error', message: `Audio file is ${(audioFile.size / 1024 / 1024).toFixed(0)}MB — max is 300MB. Pick a smaller file.` });
+      return;
+    }
     if (!prompt.trim()) { setStatus({ type: 'error', message: 'Please enter a prompt.' }); return; }
     // Lyrics required — empty lyrics is an engine error. ``[inst]`` is
     // the official instrumental sentinel.
@@ -995,7 +1001,7 @@ export function StudioMusic() {
                       ? 'Drop to upload'
                       : `Drop ${activeTask === 'audio2audio' ? 'reference' : 'source'} audio here or click to browse`}
                   </p>
-                  <p className="text-xs text-[#666] mt-1">WAV, MP3, OGG, FLAC, M4A, WebM — max 100MB</p>
+                  <p className="text-xs text-[#666] mt-1">WAV, MP3, OGG, FLAC, M4A, WebM — max 300MB</p>
                 </>
               )}
             </div>

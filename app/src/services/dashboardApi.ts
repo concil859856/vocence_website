@@ -1284,7 +1284,8 @@ export const dashboardApi = {
 
   /** Two-step upload: PUT the file directly to R2 (no Cloudflare in the path)
    * then register the track on the backend with the resulting key. Use this
-   * for files larger than ~50 MB or whenever you want to skip the proxy. */
+   * for any file you want to skip the API proxy for — supports up to the
+   * presign endpoint's cap (300 MB by default). */
   async uploadPlaybookTrackDirect(
     playbookId: number,
     file: File,

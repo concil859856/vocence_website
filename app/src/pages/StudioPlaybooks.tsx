@@ -1365,6 +1365,13 @@ function AddTracksModal({ playbookId, onClose, onAdded }: { playbookId: number; 
 
   const handleUpload = async (file: File) => {
     if (!token) return;
+    // Fast client-side cap so the user doesn't wait on a presign+413
+    // round-trip when they pick a too-big file. Server still re-checks.
+    const MAX_BYTES = 300 * 1024 * 1024;
+    if (file.size > MAX_BYTES) {
+      alert(`File is ${(file.size / 1024 / 1024).toFixed(0)}MB — max is 300MB. Pick a smaller file.`);
+      return;
+    }
     setUploading(true);
     try {
       await dashboardApi.uploadPlaybookTrackDirect(playbookId, file, file.name.replace(/\.[^.]+$/, ''), token);
@@ -1477,7 +1484,7 @@ function AddTracksModal({ playbookId, onClose, onAdded }: { playbookId: number; 
                 <>
                   <Upload size={28} className="mx-auto text-[#444] mb-3" />
                   <p className="text-sm text-[#9ca3af]">Drop audio file here or click to browse</p>
-                  <p className="text-xs text-[#555] mt-1">WAV, MP3, OGG, FLAC — max 50MB</p>
+                  <p className="text-xs text-[#555] mt-1">WAV, MP3, OGG, FLAC — max 300MB</p>
                 </>
               )}
             </div>
