@@ -1071,10 +1071,22 @@ def voice_uses_clone_service(voice: str | None) -> bool:
     return parse_designed_voice_id(voice) is not None or is_sample_voice(voice)
 
 
+# Kill-switch for the TTS pre-warmer. Default ON (=1) so the latency
+# optimisation stays active. Set to 0 to disable when diagnosing audio-
+# quality regressions — with the warmer off, every chunk opens a fresh
+# WS, which is slower but matches the pre-warmer-era behaviour exactly.
+TTS_PREWARM_ENABLED = (os.environ.get("TTS_PREWARM_ENABLED") or "1").strip() not in (
+    "0", "false", "no", "",
+)
+
+
 def make_tts_warmer_for_voice(voice: str | None) -> TtsWsWarmer | None:
     """Build a TtsWsWarmer pointing at whichever TTS service ``voice``
-    will hit. Returns None if the chosen service isn't configured (so
-    the caller falls back to unwarmed per-chunk opens)."""
+    will hit. Returns None if the chosen service isn't configured OR if
+    ``TTS_PREWARM_ENABLED=0`` (in which case the streamers open a fresh
+    WS per chunk — same code path that existed before the warmer landed)."""
+    if not TTS_PREWARM_ENABLED:
+        return None
     if voice_uses_clone_service(voice):
         if not QWEN3_CLONE_BASE_URL:
             return None

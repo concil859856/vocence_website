@@ -24,19 +24,24 @@ const SAMPLE_RATE = 24000;
 // enough that *any* expected gap fits inside the cushion at any moment
 // during playback. 1500 ms covers the worst-case observed.
 const DEFAULT_PREBUFFER_MS = 1500;
-// Once playback starts, watch the queue. If it falls below this floor
-// while audio is still arriving, briefly pause (output silence) and
-// wait for it to refill to REBUFFER_RESUME_MS before resuming. Both
-// values are kept SMALL on purpose: brief dips (TTS server burst gaps,
-// inter-sentence WS handshake on the upstream side, normal network
-// jitter) shouldn't be visible to the user.
+// Mid-stream rebuffering is DISABLED (FLOOR=0). Reason: the server
+// delivers frames at near-real-time pace (Qwen3 TTS doesn't run faster
+// than realtime on the streaming endpoint), so the queue spends most
+// of its life near the floor. With any non-zero floor, the player
+// thrashes: drain to floor → pause → refill to RESUME → drain again
+// → pause → ... up to 4-5 times per second. The user hears that
+// thrashing as "broken / glitchy audio" — far worse than the brief
+// natural silence that occurs if the queue genuinely empties for a
+// few ms (which the worklet handles by outputting zeros).
 //
-// FLOOR=80 and RESUME=200 are tuned together: anything between 80 ms
-// and the natural play-down naturally rides through without entering
-// the rebuffer state at all. Only a true underrun (queue <80 ms) pauses,
-// and recovery is fast (just 200 ms of refill). Earlier thresholds of
-// 200/400 fired on every tiny gap and produced perceptible stalls.
-const REBUFFER_FLOOR_MS = 80;
+// If the TTS server ever stalls for >>100 ms, the worklet outputs
+// silence for that duration. That sounds like a tiny micro-pause —
+// unnoticeable, much better than the rebuffer-thrash pattern.
+//
+// Earlier values tried: 200/400 (too aggressive — fired on every
+// inter-sentence gap), 80/200 (less aggressive but still thrashed
+// continuously once the prebuffer cushion was drained).
+const REBUFFER_FLOOR_MS = 0;
 const REBUFFER_RESUME_MS = 200;
 
 const WORKLET_SOURCE = `

@@ -95,12 +95,25 @@ CEREBRAS_BASE_URL = (os.environ.get("CEREBRAS_BASE_URL") or "https://api.cerebra
 CEREBRAS_MODEL = (os.environ.get("CEREBRAS_MODEL") or "qwen-3-235b-a22b-instruct-2507").strip()
 
 # Voice-chat fallback: if the primary stream (Cerebras) fails before
-# emitting any tokens, retry once against OpenAI. Only kicks in for
-# ``stream_chat_with_tools`` and only when this flag is on, so other
-# callers (voice design, summaries, etc.) keep their existing behaviour.
-VOICECHAT_LLM_FALLBACK_TO_OPENAI = (
-    os.environ.get("VOICECHAT_LLM_FALLBACK_TO_OPENAI") or "1"
+# emitting any tokens, retry once against xAI's Grok. Only kicks in
+# for ``stream_chat_with_tools`` and only when this flag is on, so
+# other callers (voice design, summaries, etc.) keep their existing
+# behaviour.
+VOICECHAT_LLM_FALLBACK_ENABLED = (
+    os.environ.get("VOICECHAT_LLM_FALLBACK_ENABLED")
+    or os.environ.get("VOICECHAT_LLM_FALLBACK_TO_OPENAI")  # back-compat alias
+    or "1"
 ).strip() not in ("0", "false", "no", "")
+
+# xAI / Grok endpoint — used as the voice-chat fallback when Cerebras
+# 429s. OpenAI-compatible wire shape (api.x.ai/v1/chat/completions).
+# Grok 3 Mini Fast is non-reasoning, supports tool calls, and TTFT is
+# ~150-300ms — fast enough that the user shouldn't notice the swap.
+XAI_API_KEY = (os.environ.get("XAI_API_KEY") or "").strip()
+XAI_BASE_URL = (os.environ.get("XAI_BASE_URL") or "https://api.x.ai/v1").strip().rstrip("/")
+VOICECHAT_GROK_FALLBACK_MODEL = (
+    os.environ.get("VOICECHAT_GROK_FALLBACK_MODEL") or "grok-4.20-0309-non-reasoning"
+).strip()
 
 # Provider selection: explicit override via env, else auto-detect.
 # Accepts: "openai" | "local" | "chutes" | "" (auto).
@@ -304,6 +317,17 @@ def _cerebras_headers() -> dict:
         "Content-Type": "application/json",
         "Authorization": f"Bearer {CEREBRAS_API_KEY}",
     }
+
+
+def _xai_headers() -> dict:
+    return {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {XAI_API_KEY}",
+    }
+
+
+def xai_llm_configured() -> bool:
+    return bool(XAI_API_KEY)
 
 
 def _extract_content(obj: dict) -> str:
@@ -1083,18 +1107,17 @@ async def stream_chat_with_tools(
     # Voice-chat fallback ladder: Cerebras can be transiently unavailable
     # (rate limits, brief outages). If the *primary* stream fails BEFORE
     # we've emitted any content/tool-call deltas, retry once against
-    # OpenAI with the same prompt + tools. Once any delta has been
+    # xAI's Grok with the same prompt + tools. Once any delta has been
     # emitted, errors propagate — partial replies should not silently
     # restart on a different provider mid-sentence.
     #
-    # Eligibility: only when the resolved provider is Cerebras AND the
-    # caller didn't pin a specific model (caller-pinned overrides should
-    # respect the user's intent, not silently redirect). The flag
-    # ``VOICECHAT_LLM_FALLBACK_TO_OPENAI`` gates the whole behaviour.
+    # Eligibility: only when the resolved provider is Cerebras AND xAI
+    # is configured. The flag ``VOICECHAT_LLM_FALLBACK_ENABLED`` gates
+    # the whole behaviour.
     primary_eligible_for_fallback = (
         provider == "cerebras"
-        and VOICECHAT_LLM_FALLBACK_TO_OPENAI
-        and openai_llm_configured()
+        and VOICECHAT_LLM_FALLBACK_ENABLED
+        and xai_llm_configured()
     )
     emitted_any = False
     try:
@@ -1112,14 +1135,20 @@ async def stream_chat_with_tools(
             raise
         _log.warning(
             "cerebras stream failed before first delta (%s); "
-            "falling back to OpenAI", exc,
+            "falling back to Grok", exc,
         )
 
-    # Fallback: re-resolve route as OpenAI explicitly.
-    fb_url = f"{OPENAI_BASE_URL}/chat/completions"
-    fb_headers = {**_openai_headers(), "Accept": "text/event-stream"}
+    # Fallback: route to xAI's Grok. xAI's API is OpenAI-compatible so
+    # the same SSE reader handles it. The provider tag is "xai" so the
+    # body builder uses the standard ``max_tokens`` + ``temperature``
+    # shape (the "openai" branch is reserved for gpt-5*/o-series which
+    # require different keys).
+    fb_url = f"{XAI_BASE_URL}/chat/completions"
+    fb_headers = {**_xai_headers(), "Accept": "text/event-stream"}
+    fb_model = VOICECHAT_GROK_FALLBACK_MODEL
+    _log.info("voicechat fallback using grok model=%s", fb_model)
     async for evt in _stream_chat_with_tools_once(
-        fb_url, OPENAI_MODEL, fb_headers, "openai", messages,
+        fb_url, fb_model, fb_headers, "xai", messages,
         tools=tools, tool_choice=tool_choice,
         temperature=temperature, max_tokens=max_tokens,
     ):

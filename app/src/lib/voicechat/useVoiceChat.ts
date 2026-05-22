@@ -173,16 +173,30 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
 
   const ensurePlayer = useCallback(async () => {
     if (!playerRef.current) {
+      // DIAGNOSTIC: surface buffer-underrun events to the browser console
+      // so we can see if the "audio gets bad after 7-9s" symptom is a
+      // queue-drain pattern (rebuffering fires mid-reply) or something
+      // else entirely. Remove the console.* lines once the bug is fixed.
+      const turnStart = performance.now();
       playerRef.current = new StreamingAudioPlayer({
         onIdle: () => {
-          // When the worklet drains and we're in 'speaking', consider turn done UX-wise.
+          console.log(`[audio] idle  t=${Math.round(performance.now() - turnStart)}ms`);
         },
         onPlayingStart: () => {
+          console.log(`[audio] playing  t=${Math.round(performance.now() - turnStart)}ms`);
           // The agent's audio just started hitting the speakers. Arm
           // the VAD lock so the agent's own first syllable bleeding
           // through speakers doesn't trip a false barge-in before the
           // echo canceller settles.
           vadRef.current?.lockSpeechStartFor(POST_SPEAK_LOCK_MS);
+        },
+        onRebuffering: (queuedMs) => {
+          // This firing mid-reply means the audio buffer ran out of
+          // queued frames while the user was still hearing the bot
+          // talk — almost always perceived as "broken/glitchy audio".
+          console.warn(
+            `[audio] REBUFFERING (underrun)  t=${Math.round(performance.now() - turnStart)}ms  queued=${queuedMs.toFixed(0)}ms`,
+          );
         },
       });
       await playerRef.current.init();
