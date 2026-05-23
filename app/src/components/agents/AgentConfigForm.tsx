@@ -38,7 +38,14 @@ interface Props {
   agentId?: string | null;
 }
 
-const LANGUAGE_OPTIONS = ['English', 'Chinese', 'Japanese', 'Korean', 'German', 'French', 'Russian', 'Portuguese', 'Spanish', 'Italian'];
+// The 10 languages supported by Qwen/Qwen3-TTS-12Hz-1.7B-Base (per its
+// model card). Picking anything outside this set produces unusable audio —
+// the synthesis server's lenient "pass-through unknown languages" path
+// would still accept it but the 1.7B base model has no phoneme coverage
+// for it. Keep this list in sync with the model on any base swap.
+// English is intentionally first so it's the visible default in the
+// Select; DEFAULT_AGENT_CONFIG.language pins it as the saved default too.
+const LANGUAGE_OPTIONS = ['English', 'Chinese', 'Japanese', 'Korean', 'Spanish', 'French', 'German', 'Portuguese', 'Italian', 'Russian'];
 
 export function AgentConfigForm({ name, type, config, availableModels, onChange, agentId }: Props) {
   const isGoal = type === 'goal';

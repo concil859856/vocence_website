@@ -30,6 +30,18 @@ export function AgentBuilder() {
   const [name, setName] = useState('');
   const [type, setType] = useState<AgentType>(seedTemplate?.type ?? 'knowledge');
   const [config, setConfig] = useState<AgentConfig>(() => {
+    // Voice templates with a full system_prompt prefill directly (industry-
+    // standard pattern — what Vapi/Retell/ElevenLabs/OpenAI GPTs do). Goal
+    // templates carry only a seed_prompt and rely on the Architect drawer
+    // to draft a config.
+    if (seedTemplate?.system_prompt) {
+      return {
+        ...DEFAULT_AGENT_CONFIG,
+        system_prompt: seedTemplate.system_prompt,
+        knowledge: seedTemplate.knowledge_starter ?? '',
+        purpose: seedTemplate.purpose_placeholder ?? '',
+      };
+    }
     if (seedTemplate?.type === 'goal') {
       return { ...DEFAULT_AGENT_CONFIG, max_iterations: 5 };
     }
@@ -39,14 +51,21 @@ export function AgentBuilder() {
   const [models, setModels] = useState<{ id: string; label: string }[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Architect drawer opens by default — describing the agent in plain
-  // English is the fastest path; user can hide it any time via the button.
-  const [architectOpen, setArchitectOpen] = useState(true);
+  // Architect drawer opens by default for templates that need AI drafting
+  // (i.e. those without a pre-filled system_prompt — typically goal agents).
+  // Voice templates already arrive pre-filled, so the form is the focus and
+  // the Architect stays collapsed until the user asks for it.
+  const [architectOpen, setArchitectOpen] = useState(
+    !(seedTemplate?.system_prompt),
+  );
 
-  // Auto-open the architect on first load if we came from a template
-  // (so the user immediately gets a draft from the seed prompt) — opt-in via button otherwise.
+  // If we navigated in with a voice template whose system_prompt is already
+  // pre-filled, keep the Architect closed — the user can open it manually.
+  // For goal templates (Architect-drafted), keep it open.
   useEffect(() => {
-    if (seedTemplate) setArchitectOpen(true);
+    if (seedTemplate && !seedTemplate.system_prompt) {
+      setArchitectOpen(true);
+    }
   }, [seedTemplate]);
 
   useEffect(() => {

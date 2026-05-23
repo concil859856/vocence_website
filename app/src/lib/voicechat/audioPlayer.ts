@@ -24,6 +24,13 @@ const SAMPLE_RATE = 24000;
 // enough that *any* expected gap fits inside the cushion at any moment
 // during playback. 1500 ms covers the worst-case observed.
 const DEFAULT_PREBUFFER_MS = 1500;
+// Low-latency prebuffer used when the next sentence is a filler ("Hmm,",
+// "Okay,"). The intent of fillers is to mask LLM latency — but if they sit
+// inside the 1500 ms cold-start prebuffer, the user hears them AFTER the
+// LLM has already finished, which defeats the point. Dropping to 80 ms
+// makes filler audio start playing as soon as 2 frames are queued. The
+// real-reply audio queues behind it and plays seamlessly once filler ends.
+const FILLER_PREBUFFER_MS = 80;
 // Mid-stream rebuffering is DISABLED (FLOOR=0). Reason: the server
 // delivers frames at near-real-time pace (Qwen3 TTS doesn't run faster
 // than realtime on the streaming endpoint), so the queue spends most
@@ -100,6 +107,20 @@ class PcmPlayer extends AudioWorkletProcessor {
         }
         if (typeof d.rebufferResumeSamples === 'number') {
           this._rebufferResumeSamples = d.rebufferResumeSamples;
+        }
+      } else if (d.type === 'set_prebuffer') {
+        // Adjust the prebuffer target on the fly. Used when a filler
+        // sentence is about to arrive: dropping to ~80 ms lets the filler
+        // start playing immediately so it actually masks LLM latency
+        // instead of being hidden inside the cold-start cushion.
+        if (typeof d.samples === 'number') {
+          this._prebufferSamples = d.samples;
+          // If we're already buffering AND the queue is now past the new
+          // (lower) threshold, flip straight to playing.
+          if (this._state === 'buffering' && this._queuedSamples >= this._prebufferSamples) {
+            this._state = 'playing';
+            this.port.postMessage({ type: 'playing' });
+          }
         }
       } else if (d.type === 'end') {
         // Caller declares the stream complete. Once the queue drains we
@@ -281,6 +302,22 @@ export class StreamingAudioPlayer {
   /** Drop everything queued (barge-in). */
   flush(): void {
     this.worklet?.port.postMessage({ type: 'flush' });
+    // Reset prebuffer to default after a barge-in so the next turn's
+    // first content sentence gets the full cold-start cushion.
+    this.setPrebufferMs(this.prebufferMs);
+  }
+
+  /** Lower the prebuffer threshold for the next buffering session.
+   * Called when the backend announces a filler sentence (is_filler=true in
+   * audio_meta) — the small prebuffer lets the filler start playing
+   * immediately so it actually masks LLM latency. Subsequent non-filler
+   * sentences should call ``setPrebufferMs(defaultMs)`` to restore the
+   * full cushion, though in practice once playback is in 'playing' state
+   * no buffering happens until the next flush. */
+  setPrebufferMs(ms: number): void {
+    if (!this.worklet) return;
+    const samples = Math.round((Math.max(0, ms) / 1000) * this.outputRate);
+    this.worklet.port.postMessage({ type: 'set_prebuffer', samples });
   }
 
   /** Tell the player no more frames are coming. After this, when the

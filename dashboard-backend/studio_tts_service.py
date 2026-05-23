@@ -48,6 +48,13 @@ CHUTES_BASE_URL = os.environ.get("CHUTES_BASE_URL", "https://api.chutes.ai")
 CHUTES_AUTH_KEY = os.environ.get("CHUTES_AUTH_KEY") or os.environ.get("CHUTES_API_KEY", "")
 # Miner endpoint: https://{slug}.chutes.ai/speak (slug from API response)
 CHUTE_TTS_PATH = "/speak"
+
+# Local voice-design server (replaces Chutes for the /speak endpoint).
+# When VOICE_DESIGN_BASE_URL is set, synthesize_speak routes here instead of
+# building a per-slug Chutes URL — keeps PromptTTS + VoiceDesign-preview
+# entirely on-prem. See /workspace/development/qwen3-voice-design/README.md.
+VOICE_DESIGN_BASE_URL = (os.environ.get("VOICE_DESIGN_BASE_URL") or "").strip()
+VOICE_DESIGN_API_KEY = (os.environ.get("VOICE_DESIGN_API_KEY") or "").strip()
 CHUTE_STT_PATH = "/transcribe"
 CHUTES_WHISPER_STT_URL = os.environ.get(
     "CHUTES_WHISPER_STT_URL",
@@ -176,13 +183,33 @@ async def fetch_chute_slug(chute_id: str) -> str | None:
 
 
 async def synthesize_speak(chute_slug: str, text: str, instruction: str, *, base_url: str | None = None) -> tuple[bytes | None, str]:
-    """POST to https://{slug}.chutes.ai/speak (or `base_url` override) with JSON { text, instruction }.
+    """POST to the voice-design /speak endpoint with JSON {text, instruction}.
+
+    URL precedence:
+      1. explicit ``base_url`` argument (test/override path)
+      2. ``VOICE_DESIGN_BASE_URL`` env (local qwen3-voice-design server)
+      3. ``https://{chute_slug}.chutes.ai/speak`` (legacy Chutes path)
+
+    Auth: ``VOICE_DESIGN_API_KEY`` when the local server is used; falls
+    back to ``CHUTES_AUTH_KEY`` for the Chutes path. The local server's
+    wire format is byte-identical to Chutes' so the call site doesn't
+    need to care which one answered.
+
     Returns (wav_bytes, error_message). On success: (bytes, ""). On failure: (None, "reason")."""
-    url = (base_url or _chute_speak_url(chute_slug)).strip()
+    if base_url:
+        url = base_url.strip()
+        auth_key = VOICE_DESIGN_API_KEY or CHUTES_AUTH_KEY
+    elif VOICE_DESIGN_BASE_URL:
+        url = VOICE_DESIGN_BASE_URL
+        auth_key = VOICE_DESIGN_API_KEY
+    else:
+        url = _chute_speak_url(chute_slug).strip()
+        auth_key = CHUTES_AUTH_KEY
+
     payload = {"text": text or "Hello.", "instruction": instruction or "neutral voice"}
     headers = {"Content-Type": "application/json"}
-    if CHUTES_AUTH_KEY:
-        headers["Authorization"] = f"Bearer {CHUTES_AUTH_KEY}"
+    if auth_key:
+        headers["Authorization"] = f"Bearer {auth_key}"
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(

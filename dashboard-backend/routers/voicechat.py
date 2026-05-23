@@ -40,6 +40,7 @@ from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconn
 import json
 
 import agent_knowledge
+import agent_templates
 from assistant_knowledge_indexer import ASSISTANT_AGENT_ID
 from local_db import get_connection
 from routers.auth import _decode_token, _get_user_by_id  # type: ignore
@@ -86,34 +87,39 @@ WHOLE_REPLY_CHUNK_THRESHOLD = int(os.environ.get("VOICECHAT_WHOLE_REPLY_THRESHOL
 # the chat bubble so text + audio stay in lockstep. If the LLM is fast
 # enough that real content arrives before the filler timer fires, no
 # filler is emitted at all and the turn behaves exactly as before.
-VOICECHAT_FILLERS_ENABLED = os.environ.get("VOICECHAT_FILLERS_ENABLED", "1").strip().lower() not in {"0", "false", "no", ""}
-# How long to wait for the first real LLM content token before kicking
-# off a filler. Tuned so a fast Groq turn (TTFT ~150ms) never fires a
-# filler, but a slow OpenAI gpt-4o-mini turn (TTFT ~500ms) does.
-VOICECHAT_FILLER_DELAY_MS = int(os.environ.get("VOICECHAT_FILLER_DELAY_MS") or "350")
+# Fillers ("Hmm,", "Okay,") are DISABLED by default.
+# Reason: Qwen3-TTS voice cloning needs ~100-200 ms of acoustic frames to
+# settle into the target voice. For ≤8-char fillers (~300 ms audio) the
+# entire utterance falls inside that unsettled prefix — the user hears the
+# filler in a noticeably off voice. With the new qwen3-tts-streaming server
+# hitting ~200 ms TTFA, the filler doesn't meaningfully mask LLM latency
+# anyway. Set VOICECHAT_FILLERS_ENABLED=1 to re-enable for experimentation.
+VOICECHAT_FILLERS_ENABLED = os.environ.get("VOICECHAT_FILLERS_ENABLED", "0").strip().lower() in {"1", "true", "yes"}
+# How long to wait for the first real LLM content token before kicking off
+# a filler. Tightened from 350 → 250 ms now that the frontend bypasses the
+# prebuffer for filler audio (audio_meta.is_filler=true → 80 ms prebuffer
+# instead of 1500 ms). With fast LLMs (Cerebras TTFT ~150 ms) the filler
+# still never fires; with slow LLMs (OpenAI 500+ ms) it fires ~100 ms
+# sooner so the user hears something sooner.
+VOICECHAT_FILLER_DELAY_MS = int(os.environ.get("VOICECHAT_FILLER_DELAY_MS") or "250")
 
-# Short, low-stakes phrases that fit any voice/persona. Keep them
-# under ~6 words — anything longer eats into the latency win because
-# the user hears the filler play out before the real reply starts.
-# Grouped by depth: round 0 = "I'm thinking", later rounds = "I have
-# the data, now let me respond" (used after a tool call returns).
+# Filler phrases — kept short (≤ 8 chars / ~400 ms of audio) so the audio
+# stops by the time real reply audio arrives. Longer fillers (e.g.
+# "Hmm, let me think.") just delay the real answer without adding
+# perceived responsiveness. Round 0 = pre-content; later rounds = post-tool.
 _FILLER_PHRASES_INITIAL: tuple[str, ...] = (
     "Hmm,",
-    "Hmm, let me think.",
     "Okay,",
-    "One sec,",
-    "Let me see.",
     "Right,",
-    "Mm-hmm,",
     "Sure,",
+    "Mm-hmm,",
+    "One sec,",
 )
 _FILLER_PHRASES_AFTER_TOOL: tuple[str, ...] = (
-    "Okay, got it.",
+    "Got it.",
     "Right, so",
-    "Here's what I found.",
-    "Got the data.",
+    "Okay,",
     "Alright,",
-    "Let me put it together.",
 )
 
 
@@ -419,12 +425,21 @@ async def voicechat_session(
         for name in ("web_search", "fetch_url", "wikipedia_lookup")
     ) if session_builtin_specs else False
 
-    # Build the system prompt. Layered structure so the LLM has a clear
-    # mental model of who it is, what it's for, what it knows, and how to
-    # behave during the conversation. The previous version dropped the
-    # agent's `purpose` field entirely and gave only minimal guidance.
-    # ``knowledge_uses_rag`` is set inside the agent_ctx branch; default
-    # False so the no-agent (Vocence Assistant) path is well-defined too.
+    # Build the system prompt. Strategy:
+    #
+    #   • Modern agents (created via the template gallery) already contain a
+    #     complete, sectioned system_prompt in cfg.system_prompt. We use it
+    #     AS-IS and prepend agent_templates.SAFETY_PREAMBLE for non-overridable
+    #     TTS-format rules. What the user sees in the Studio editor is exactly
+    #     what runs — no hidden section assembly.
+    #
+    #   • Legacy agents (created before templates existed) have an empty
+    #     cfg.system_prompt. For those we fall through to the old layered
+    #     assembly so they keep working without a migration.
+    #
+    #   • The standalone Vocence Assistant uses its own get_system_prompt().
+    #
+    # Knowledge is still injected per-turn via RAG below (no change).
     knowledge_uses_rag = False
     if agent_ctx:
         cfg = agent_ctx["config"]
@@ -432,88 +447,112 @@ async def voicechat_session(
         purpose = (cfg.get("purpose") or "").strip()
         sp = (cfg.get("system_prompt") or "").strip()
         knowledge = (cfg.get("knowledge") or "").strip()
-
-        sections: list[str] = [f"You are {agent_name}, a voice assistant."]
-
-        if purpose:
-            sections.append(f"# Your purpose\n{purpose}")
+        knowledge_uses_rag = agent_knowledge.should_use_rag(knowledge)
 
         if sp:
-            sections.append(f"# How you behave\n{sp}")
+            # Modern path — the agent owns its full prompt.
+            sections: list[str] = [agent_templates.SAFETY_PREAMBLE.strip()]
+            # Stamp the agent's display name + purpose so the LLM has the
+            # frame even when the user's prompt template doesn't include it
+            # verbatim. Cheap, ~30 tokens.
+            header = f"You are {agent_name}."
+            if purpose:
+                header += f" {purpose}"
+            sections.append(header)
+            # Language hint — separate from the user-editable system prompt so
+            # changing the agent's language in Studio takes effect immediately
+            # without the user re-editing their prompt. Omitted when the agent
+            # is set to "Auto" (= match whatever language the user speaks).
+            if agent_language:
+                sections.append(f"Always reply in {agent_language}, regardless of what language the user writes in.")
+            sections.append(sp)
 
-        # Knowledge handling:
-        #   - Short bodies (≤ RAG_DUMP_BELOW_CHARS): dump verbatim (current behaviour)
-        #   - Larger bodies: skip the dump here; we'll retrieve relevant chunks
-        #     per user turn via FTS5 and inject them just before the LLM call.
-        knowledge_uses_rag = agent_knowledge.should_use_rag(knowledge)
-        if knowledge and not knowledge_uses_rag:
-            sections.append(
-                "# Reference knowledge (your authority on this topic)\n"
-                "Use this knowledge as your source of truth. If a user asks "
-                "something outside it, say you don't know rather than guess.\n\n"
-                f"---\n{knowledge}\n---"
+            if knowledge and not knowledge_uses_rag:
+                sections.append(
+                    "# Reference knowledge\n"
+                    "Treat the following as your source of truth.\n\n"
+                    f"---\n{knowledge}\n---"
+                )
+            elif knowledge_uses_rag:
+                sections.append(
+                    "# Reference knowledge\n"
+                    "Relevant excerpts from your knowledge base will be injected "
+                    "before each user message — treat them as authoritative."
+                )
+
+            if tool_hints:
+                sections.append("# Available tools\n" + "\n".join(tool_hints))
+
+            system_prompt_text = "\n\n".join(sections)
+        else:
+            # Legacy path — agent saved before templates. Keep the old
+            # layered assembly so existing agents keep responding the same way.
+            sections = [f"You are {agent_name}, a voice assistant."]
+            if purpose:
+                sections.append(f"# Your purpose\n{purpose}")
+
+            if knowledge and not knowledge_uses_rag:
+                sections.append(
+                    "# Reference knowledge (your authority on this topic)\n"
+                    "Use this knowledge as your source of truth. If a user asks "
+                    "something outside it, say you don't know rather than guess.\n\n"
+                    f"---\n{knowledge}\n---"
+                )
+            elif knowledge_uses_rag:
+                sections.append(
+                    "# Reference knowledge\n"
+                    "You have access to a larger knowledge base. The most relevant "
+                    "excerpts will be injected just before each user message — treat "
+                    "those excerpts as your authority. If something the user asks "
+                    "isn't covered in the excerpts, say you don't know rather than "
+                    "guess from training data."
+                )
+
+            if tool_hints:
+                tool_block_lines = [
+                    "# Your tools",
+                    "Call a tool when the user asks for something you don't already "
+                    "know — live data, recent facts, a specific URL, or anything "
+                    "your training wouldn't cover. Don't announce \"I'm going to "
+                    "search\" first; just call it and answer.",
+                    "",
+                    "When the tool returns:",
+                    "- Quick-data tools (weather, time, prices): one short sentence "
+                    "with the fact and a tiny bit of context. Like \"It's 19 in "
+                    "Tokyo right now, pretty mild.\"",
+                    "- Research tools (web_search, wikipedia_lookup, fetch_url) "
+                    "that returned real content: give a substantive answer — lead "
+                    "with the direct answer, then the specifics (names, numbers, "
+                    "dates), then the why if it matters. Skip filler. The user "
+                    "waited for you to look it up, so deliver.",
+                    "- Never read JSON, raw URLs, or source code aloud. Refer to "
+                    "sources by name (\"per Reuters\", \"the Wikipedia article\").",
+                    "- If two tools ran together, weave the answers into one reply.",
+                    "",
+                    "Available tools:",
+                    *tool_hints,
+                ]
+                sections.append("\n".join(tool_block_lines))
+
+            unknown_rule = (
+                "- If something is outside your purpose and none of your tools can answer it, "
+                "say so plainly — do not invent facts, prices, names, or features.\n"
+                if has_research_tool
+                else
+                "- If something is outside your purpose or knowledge, say so plainly — "
+                "do not invent facts, prices, names, or features.\n"
             )
-        elif knowledge_uses_rag:
             sections.append(
-                "# Reference knowledge\n"
-                "You have access to a larger knowledge base. The most relevant "
-                "excerpts will be injected just before each user message — treat "
-                "those excerpts as your authority. If something the user asks "
-                "isn't covered in the excerpts, say you don't know rather than "
-                "guess from training data."
+                "# Conversation guidelines\n"
+                "- One continuous voice conversation with one user. Remember what "
+                "they've told you — name, preferences, what's already been "
+                "discussed. Reference it when it fits (\"you mentioned earlier…\").\n"
+                "- Stay in character. Don't break role to apologise for being an AI.\n"
+                + unknown_rule
             )
 
-        if tool_hints:
-            tool_block_lines = [
-                "# Your tools",
-                "Call a tool when the user asks for something you don't already "
-                "know — live data, recent facts, a specific URL, or anything "
-                "your training wouldn't cover. Don't announce \"I'm going to "
-                "search\" first; just call it and answer.",
-                "",
-                "When the tool returns:",
-                "- Quick-data tools (weather, time, prices): one short sentence "
-                "with the fact and a tiny bit of context. Like \"It's 19 in "
-                "Tokyo right now, pretty mild.\"",
-                "- Research tools (web_search, wikipedia_lookup, fetch_url) "
-                "that returned real content: give a substantive answer — lead "
-                "with the direct answer, then the specifics (names, numbers, "
-                "dates), then the why if it matters. Skip filler. The user "
-                "waited for you to look it up, so deliver.",
-                "- Never read JSON, raw URLs, or source code aloud. Refer to "
-                "sources by name (\"per Reuters\", \"the Wikipedia article\").",
-                "- If two tools ran together, weave the answers into one reply.",
-                "",
-                "Available tools:",
-                *tool_hints,
-            ]
-            sections.append("\n".join(tool_block_lines))
-
-        # The "say you don't know" rule is softer when research tools are
-        # available — for those agents we want the LLM to TRY the tool
-        # before giving up. Without tools it stays strict.
-        unknown_rule = (
-            "- If something is outside your purpose and none of your tools can answer it, "
-            "say so plainly — do not invent facts, prices, names, or features.\n"
-            if has_research_tool
-            else
-            "- If something is outside your purpose or knowledge, say so plainly — "
-            "do not invent facts, prices, names, or features.\n"
-        )
-        sections.append(
-            "# Conversation guidelines\n"
-            "- One continuous voice conversation with one user. Remember what "
-            "they've told you — name, preferences, what's already been "
-            "discussed. Reference it when it fits (\"you mentioned earlier…\").\n"
-            "- Stay in character. Don't break role to apologise for being an AI.\n"
-            + unknown_rule
-        )
-
-        # Voice-chat format rules apply to EVERY agent regardless of how
-        # the user wrote its system prompt — TTS quality depends on this.
-        sections.append(VOICE_CHAT_FORMAT_RULES)
-
-        system_prompt_text = "\n\n".join(sections)
+            sections.append(VOICE_CHAT_FORMAT_RULES)
+            system_prompt_text = "\n\n".join(sections)
     else:
         system_prompt_text = get_system_prompt(VOICECHAT_EXTRA_SYSTEM_PROMPT)
 
@@ -536,6 +575,17 @@ async def voicechat_session(
         v = (VOCENCE_ASSISTANT_VOICE or "").strip()
         if v:
             agent_voice = v
+
+    # Agent's configured TTS / LLM language. Forwarded to the clone-streaming
+    # server (so Qwen3-TTS picks the right phonetic model) and prepended as
+    # a system-prompt hint so the LLM replies in the same language regardless
+    # of what the user types in. When the agent didn't set one, falls back to
+    # "Auto" — TTS auto-detects from the text, LLM mirrors the user.
+    agent_language: str | None = None
+    if agent_ctx:
+        lang = (agent_ctx["config"].get("language") or "").strip()
+        if lang and lang.lower() != "auto":
+            agent_language = lang
 
     # Track current turn task so we can cancel on barge-in
     current_turn: asyncio.Task | None = None
@@ -656,6 +706,7 @@ async def voicechat_session(
                     payload=payload,
                     conversation=conversation,
                     voice=agent_voice,
+                    language=agent_language,
                     rag_agent_id=rag_id,
                     agent_id=agent_id,
                     llm_model=agent_llm_model,
@@ -673,6 +724,7 @@ async def _run_turn(
     payload: dict,
     conversation: list[ChatMessage],
     voice: str | None = None,
+    language: str | None = None,
     rag_agent_id: str | None = None,
     agent_id: str | None = None,
     llm_model: str | None = None,
@@ -868,7 +920,13 @@ async def _run_turn(
         # mid-reply stops — we'd block the LLM stream while awaiting
         # each TTS round-trip, the audio queue would underrun, and the
         # player would enter rebuffering.
-        sentence_q: asyncio.Queue[str | None] = asyncio.Queue(maxsize=8)
+        # Items are (text, is_filler) tuples; sentinel None marks end-of-turn.
+        # The is_filler flag rides through audio_meta so the frontend can
+        # bypass its 1500 ms prebuffer for filler audio — otherwise the
+        # filler is buffered alongside real reply audio and the user hears
+        # both together AFTER the LLM is done, defeating the latency-masking
+        # intent.
+        sentence_q: asyncio.Queue[tuple[str, bool] | None] = asyncio.Queue(maxsize=8)
 
         # Build the tool specs the LLM is allowed to call this turn.
         # Built-ins come from the global registry (filtered to the
@@ -945,7 +1003,7 @@ async def _run_turn(
                                         ttft_ms or 0, ttfs_ms, len(spoken),
                                         voice or "default", spoken[:120],
                                     )
-                                await sentence_q.put(spoken)
+                                await sentence_q.put((spoken, False))
                                 emitted_chars += len(spoken)
                                 if emitted_chars >= WHOLE_REPLY_CHUNK_THRESHOLD:
                                     chunking_active = False
@@ -1021,7 +1079,7 @@ async def _run_turn(
                         # because no other producer has run yet for this
                         # round.
                         try:
-                            sentence_q.put_nowait(phrase)
+                            sentence_q.put_nowait((phrase, True))  # True = is_filler
                         except asyncio.QueueFull:
                             return
                         # Now the queue order is locked in. The chat-bubble
@@ -1181,7 +1239,7 @@ async def _run_turn(
                     if tail:
                         spoken_tail = sanitize_for_tts(tail)
                         if spoken_tail:
-                            await sentence_q.put(spoken_tail)
+                            await sentence_q.put((spoken_tail, False))
             finally:
                 # Sentinel to release the consumer no matter what.
                 await sentence_q.put(None)
@@ -1198,26 +1256,35 @@ async def _run_turn(
             nonlocal ttfa_ms
             sentence_id = 0
             while True:
-                spoken = await sentence_q.get()
-                if spoken is None:
+                item = await sentence_q.get()
+                if item is None:
                     return
+                spoken, is_filler = item
                 sentence_id += 1
                 sid = sentence_id
                 frames = 0
                 bytes_sent = 0
+                # `is_filler=true` tells the frontend audio player to start
+                # playback as soon as the first frame arrives, bypassing the
+                # 1500 ms prebuffer. Without this the filler is hidden inside
+                # the prebuffer and the user hears it AFTER the LLM has
+                # already finished — defeating the latency-masking intent.
+                meta = {
+                    "type": "audio_meta",
+                    "sentence_id": sid,
+                    "sample_rate": 24000,
+                    "frame_ms": 40,
+                    "encoding": "pcm16le",
+                    "channels": 1,
+                }
+                if is_filler:
+                    meta["is_filler"] = True
                 try:
-                    await ws.send_json({
-                        "type": "audio_meta",
-                        "sentence_id": sid,
-                        "sample_rate": 24000,
-                        "frame_ms": 40,
-                        "encoding": "pcm16le",
-                        "channels": 1,
-                    })
+                    await ws.send_json(meta)
                 except Exception:
                     return
                 try:
-                    async for chunk in stream_tts_for_voice(spoken, voice, user_id=user_id, warmer=tts_warmer):
+                    async for chunk in stream_tts_for_voice(spoken, voice, user_id=user_id, language=language, warmer=tts_warmer):
                         if chunk.kind == "audio" and isinstance(chunk.payload, (bytes, bytearray)):
                             if ttfa_ms is None:
                                 ttfa_ms = int((time.perf_counter() - started) * 1000)

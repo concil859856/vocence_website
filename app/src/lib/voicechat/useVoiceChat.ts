@@ -376,7 +376,14 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
           break;
         }
         case 'audio_meta':
-          // server is about to send PCM frames for sentence N
+          // server is about to send PCM frames for sentence N.
+          // is_filler=true means "Hmm,", "Okay," etc. — drop the
+          // prebuffer to ~80 ms so the filler plays immediately and
+          // actually masks LLM latency instead of sitting hidden inside
+          // the cold-start cushion.
+          if (payload.is_filler) {
+            playerRef.current?.setPrebufferMs(80);
+          }
           break;
         case 'audio_end':
           // sentence N done; further audio belongs to the next sentence
@@ -541,7 +548,7 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
             setListening(false);
           },
         },
-        { endSilenceMs: 350, minSpeechMs: 250 },
+        { endSilenceMs: 450, minSpeechMs: 250 },
       );
       vadRef.current = vad;
       await vad.start();

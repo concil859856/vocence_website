@@ -23,6 +23,7 @@ from time import time
 from typing import AsyncIterator, Optional
 
 import base64
+import hashlib
 import io
 import wave
 
@@ -114,14 +115,31 @@ SUMMARIZE_KEEP_RECENT = int(os.environ.get("VOICECHAT_SUMMARIZE_KEEP_RECENT") or
 #     emitted as one sentence at the final period.
 #   - "1. First item." → "1." is too short, absorbed.
 #
-# SENTENCE_MAX_CHARS is intentionally large (300, matching the
-# whole-reply switchover threshold). The hard-cut path is the
-# ugly fallback for runaway sentences — bumping it well past
-# normal sentence lengths means real sentences hit it almost
-# never, so we don't audibly cut a sentence in half.
+# Two-phase chunker tuned for the qwen3-tts-streaming server (1000-char hard cap).
+#
+# Phase 1 — first chunk of a reply (TTFA-critical, kept small):
+#   Emit at the FIRST sentence boundary once at least FIRST_CHUNK_MIN chars
+#   are buffered, up to FIRST_CHUNK_MAX. The user perceives this chunk's
+#   latency as "how long until the agent starts speaking", so we trade a
+#   tiny prosody hit for ~2× faster TTFA.
+#
+# Phase 2 — subsequent chunks (throughput-optimized, packed):
+#   Accumulate up to PACK_TARGET chars, then cut at the LAST sentence
+#   boundary within that window. Drastically fewer chunks → fewer WS
+#   handshakes, less ref-audio re-upload, and the frontend's 1500 ms
+#   prebuffer easily masks the per-chunk gaps. If no sentence boundary
+#   appears by PACK_HARD_FLOOR (rare runaway no-punctuation text), we
+#   hard-cut at the last word.
+#
+# All thresholds stay safely under the server's MAX_TEXT_CHARS=1000.
 SENTENCE_END_PATTERN = re.compile(r"(?<=\S)[\.!\?]+\s+|[。！？]+|\n+")
-SENTENCE_MAX_CHARS = int(os.environ.get("VOICECHAT_SENTENCE_MAX_CHARS") or "300")
-SENTENCE_MIN_CHARS = int(os.environ.get("VOICECHAT_SENTENCE_MIN_CHARS") or "12")
+FIRST_CHUNK_MIN = int(os.environ.get("VOICECHAT_FIRST_CHUNK_MIN") or "30")
+FIRST_CHUNK_MAX = int(os.environ.get("VOICECHAT_FIRST_CHUNK_MAX") or "200")
+PACK_TARGET = int(os.environ.get("VOICECHAT_PACK_TARGET") or "700")
+PACK_HARD_FLOOR = int(os.environ.get("VOICECHAT_PACK_HARD_FLOOR") or "900")
+# Kept for backward compat with any external import; no longer used internally.
+SENTENCE_MAX_CHARS = PACK_HARD_FLOOR
+SENTENCE_MIN_CHARS = FIRST_CHUNK_MIN
 
 # Abbreviations whose trailing period must NOT be treated as sentence end.
 # Lowercase, no trailing dot. We check the word immediately before the
@@ -182,79 +200,157 @@ async def check_rate_limit(user_id: str) -> tuple[bool, int]:
 
 
 class SentenceChunker:
-    """Accumulates streamed text and yields complete sentences.
+    """Two-phase chunker for the voice-agent TTS pipeline.
 
-    A sentence is emitted when:
-      - A boundary punctuation is hit (. ! ? ; :) followed by whitespace, OR
-      - A newline is hit, OR
-      - Buffer length >= SENTENCE_MAX_CHARS (we cut at the last space)
+    Phase 1 (first chunk): emit at the first sentence boundary once the
+    buffer crosses FIRST_CHUNK_MIN, up to FIRST_CHUNK_MAX. Optimized for
+    fast TTFA so the agent starts talking sooner.
+
+    Phase 2 (chunks 2..N): pack up to PACK_TARGET chars, cut at the LAST
+    sentence boundary in that window. If no boundary appears by
+    PACK_HARD_FLOOR we hard-cut at the last word. Optimized for throughput
+    so a typical reply uses 2-3 chunks instead of one-per-sentence.
+
     Trailing fragment is flushed via ``flush()`` at end-of-stream.
     """
 
     def __init__(self) -> None:
         self._buf = ""
+        self._first_emitted = False
 
     def feed(self, text: str) -> list[str]:
         if not text:
             return []
         self._buf += text
         out: list[str] = []
-
+        # Keep extracting until no more chunks are ready. A single feed()
+        # can legitimately emit multiple chunks if the LLM delivers a big
+        # burst (e.g. a short reply arriving in one delta).
         while True:
-            # Find the FIRST sentence boundary whose preceding content is
-            # long enough to be a real sentence AND isn't an abbreviation
-            # like "Mr." or "U.S." Anything shorter (e.g. "1.") or
-            # whose preceding word is in the abbreviation set is
-            # skipped — we keep scanning past it in the same buffer
-            # instead of bailing out, so a long stretch with
-            # abbreviations still emits cleanly when its true end arrives.
-            chosen_end: int | None = None
-            for m in SENTENCE_END_PATTERN.finditer(self._buf):
-                if len(self._buf[:m.end()].strip()) < SENTENCE_MIN_CHARS:
-                    continue
-                # Abbreviation guard — only relevant for Western
-                # punctuation matches (CJK match is a single character
-                # with no preceding "word" baggage).
-                if m.start() < len(self._buf) and self._buf[m.start()] in ".!?":
-                    word = _word_before(self._buf, m.start())
-                    if word and word in _SENTENCE_ABBREVIATIONS:
-                        continue
-                chosen_end = m.end()
+            chunk = self._try_extract()
+            if chunk is None:
                 break
-
-            if chosen_end is not None:
-                out.append(self._buf[:chosen_end].strip())
-                self._buf = self._buf[chosen_end:]
-                continue
-
-            # No usable boundary in the buffer.
-            # Hard cut on max length so a runaway sentence still ships.
-            # This path is undesirable — it cuts mid-sentence and the user
-            # hears the cut as an audible gap. Log when it fires so we
-            # can spot which inputs trigger it.
-            if len(self._buf) >= SENTENCE_MAX_CHARS:
-                cut = self._buf.rfind(" ", 0, SENTENCE_MAX_CHARS)
-                if cut <= SENTENCE_MIN_CHARS:
-                    cut = SENTENCE_MAX_CHARS
-                _log.warning(
-                    "SentenceChunker: hard-cut at %d chars (no .!?。！？\\n in buffer); "
-                    "this will sound mid-sentence to the user. head=%r",
-                    cut, self._buf[:80],
-                )
-                out.append(self._buf[:cut].strip())
-                self._buf = self._buf[cut:].lstrip()
-                continue
-
-            break
-
+            out.append(chunk)
         return out
 
     def flush(self) -> str | None:
         tail = self._buf.strip()
         self._buf = ""
+        # Mark phase 2 active going forward — next reply's first chunk
+        # restarts with a fresh chunker instance, so this is just for
+        # safety inside one chunker's lifecycle.
+        self._first_emitted = True
         if tail and len(tail) >= 2:
             return tail
         return None
+
+    # ---- internals -------------------------------------------------------
+
+    def _try_extract(self) -> str | None:
+        if not self._first_emitted:
+            return self._extract_first()
+        return self._extract_packed()
+
+    def _extract_first(self) -> str | None:
+        # Earliest sentence boundary whose preceding content is at least
+        # FIRST_CHUNK_MIN chars AND isn't an abbreviation. Anything shorter
+        # is skipped, scanning continues forward — so "Sure." followed by
+        # the real sentence becomes one chunk, not a stilted "Sure." alone.
+        for m in SENTENCE_END_PATTERN.finditer(self._buf):
+            if m.end() > FIRST_CHUNK_MAX:
+                break
+            stripped_len = len(self._buf[:m.end()].strip())
+            if stripped_len < FIRST_CHUNK_MIN:
+                continue
+            if self._is_abbreviation_boundary(m):
+                continue
+            chunk = self._buf[:m.end()].strip()
+            self._buf = self._buf[m.end():].lstrip()
+            self._first_emitted = True
+            return chunk
+
+        # No usable sentence boundary in the FIRST_CHUNK_MAX window yet.
+        # If we already have ≥ FIRST_CHUNK_MAX chars buffered, the LLM is
+        # producing a very long opening sentence (or no punctuation at all).
+        # Cut at the last word so TTFA doesn't drift further.
+        if len(self._buf) >= FIRST_CHUNK_MAX:
+            cut = self._buf.rfind(" ", 0, FIRST_CHUNK_MAX)
+            if cut <= 0:
+                cut = FIRST_CHUNK_MAX
+            chunk = self._buf[:cut].strip()
+            self._buf = self._buf[cut:].lstrip()
+            self._first_emitted = True
+            if chunk:
+                _log.info(
+                    "SentenceChunker: phase-1 word-cut at %d chars (no .!?。！？\\n yet); "
+                    "head=%r", cut, chunk[:80],
+                )
+                return chunk
+
+        return None  # wait for more text
+
+    def _extract_packed(self) -> str | None:
+        # Hold off until we have at least PACK_TARGET buffered — emitting
+        # earlier would fragment the reply into more chunks than needed.
+        # The frontend's prebuffer hides the wait.
+        if len(self._buf) < PACK_TARGET:
+            return None
+
+        # Last sentence boundary at or before PACK_TARGET. Pack tight.
+        chosen_end = self._last_boundary_at_or_before(PACK_TARGET)
+        if chosen_end is not None:
+            chunk = self._buf[:chosen_end].strip()
+            self._buf = self._buf[chosen_end:].lstrip()
+            return chunk
+
+        # No boundary in 0..PACK_TARGET. Allow scanning further up to
+        # PACK_HARD_FLOOR before giving up on natural prosody — gives the
+        # LLM a chance to land a period in the gap window.
+        if len(self._buf) < PACK_HARD_FLOOR:
+            return None
+
+        chosen_end = self._last_boundary_at_or_before(PACK_HARD_FLOOR)
+        if chosen_end is not None:
+            chunk = self._buf[:chosen_end].strip()
+            self._buf = self._buf[chosen_end:].lstrip()
+            return chunk
+
+        # Runaway no-punctuation text. Hard-cut at the last word boundary.
+        cut = self._buf.rfind(" ", 0, PACK_HARD_FLOOR)
+        if cut <= 0:
+            cut = PACK_HARD_FLOOR
+        chunk = self._buf[:cut].strip()
+        self._buf = self._buf[cut:].lstrip()
+        if chunk:
+            _log.warning(
+                "SentenceChunker: phase-2 hard-cut at %d chars (no .!?。！？\\n in window); "
+                "head=%r", cut, chunk[:80],
+            )
+            return chunk
+        return None
+
+    def _last_boundary_at_or_before(self, max_pos: int) -> int | None:
+        """Return the end-position of the LAST sentence boundary at or before
+        ``max_pos`` in the current buffer, skipping abbreviation false
+        positives. None if there is no usable boundary in that range."""
+        last: int | None = None
+        for m in SENTENCE_END_PATTERN.finditer(self._buf):
+            if m.end() > max_pos:
+                break
+            if self._is_abbreviation_boundary(m):
+                continue
+            last = m.end()
+        return last
+
+    def _is_abbreviation_boundary(self, m: "re.Match[str]") -> bool:
+        # Only Western .!? matches can be abbreviation false-positives — the
+        # CJK punctuation matches are full sentence-stops by definition.
+        if m.start() >= len(self._buf):
+            return False
+        if self._buf[m.start()] not in ".!?":
+            return False
+        word = _word_before(self._buf, m.start())
+        return bool(word) and word in _SENTENCE_ABBREVIATIONS
 
 
 # ---------------------------------------------------------------------------
@@ -761,6 +857,20 @@ _CLONE_LANGUAGES = {
 }
 
 
+# Hashes the backend believes the TTS server currently has cached. Lets chunks
+# 2..N of a reply (same voice) send a 32-byte sha256 instead of the full ~540 KB
+# base64 ref_audio. The new qwen3-tts-streaming server honors this via
+# `ref_audio_sha256`. On `ref_not_cached` (e.g. server LRU evicted, or the
+# server restarted) we discard the entry and retry once with the full bytes.
+_REF_HASH_SEEN: set[str] = set()
+
+
+class _RefNotCachedRetry(Exception):
+    """Sentinel raised by the attempt helper when the server reports
+    ref_not_cached and the call was hash-only. Triggers a single retry with
+    the full ref bytes."""
+
+
 def _clone_ws_url_and_headers() -> tuple[str, dict]:
     """Return (ws_url, headers) for the cloned-voice TTS service. Shared
     by the streamer and by the router's TtsWsWarmer."""
@@ -782,11 +892,16 @@ async def _stream_clone_via_service(
     *,
     warmer: TtsWsWarmer | None = None,
 ) -> AsyncIterator[TtsChunk]:
-    """Open WS to qwen3-clone-streaming and forward meta/binary/end frames
-    as TtsChunks. Wire format mirrors the README at
-    /workspace/qwen3-clone-streaming/README.md (auth via Authorization
+    """Open WS to the qwen3-tts-streaming server and forward meta/binary/end
+    frames as TtsChunks. Wire format follows
+    ``dashboard-backend/docs/tts_server_spec.md`` (auth via Authorization
     header, JSON ``start`` frame, binary PCM16LE @ 24 kHz, terminal ``end``
     or ``error`` JSON).
+
+    Ref-audio dedup: chunks 2..N of a reply send only ``ref_audio_sha256``
+    (32 bytes) instead of the full ~540 KB base64 payload. If the server
+    LRU-evicted (or restarted), it returns ``error{ref_not_cached}`` and we
+    retry once with the full bytes, repopulating the cache.
 
     Transport errors raise — the caller falls back to direct synthesis.
     Protocol errors (auth, bad_request, server_busy, engine_failed) are
@@ -795,38 +910,88 @@ async def _stream_clone_via_service(
 
     When a ``warmer`` is provided, we use its pre-opened WS if available
     (saving the handshake) and schedule a background prewarm of the next
-    WS as soon as our first audio frame arrives — so chunk N+1 starts
-    with a hot connection.
+    WS as soon as our first audio frame arrives.
     """
+    hash_hex = hashlib.sha256(ref_audio_bytes).hexdigest()
+
+    # Build a hash-only `start` payload first if we believe the server has
+    # the voice cached. The warmer pre-opens a WS that we want to use, so
+    # the hash-only path applies whether or not we have a warmer.
+    if hash_hex in _REF_HASH_SEEN:
+        try:
+            async for chunk in _clone_attempt(
+                text=text,
+                ref_audio_bytes=None,   # send hash-only
+                ref_hash=hash_hex,
+                ref_text=ref_text,
+                language=language,
+                warmer=warmer,
+            ):
+                yield chunk
+            return
+        except _RefNotCachedRetry:
+            # Server doesn't have the cache entry we thought it did
+            # (LRU evicted, server restarted, etc.). Drop our belief and
+            # fall through to a fresh attempt with the full bytes. The
+            # warmer's pre-opened WS was consumed by the failed attempt;
+            # the retry opens a new one.
+            _REF_HASH_SEEN.discard(hash_hex)
+            _log.info("clone service: ref_not_cached for %s — retrying with full bytes", hash_hex[:12])
+            warmer = None
+
+    async for chunk in _clone_attempt(
+        text=text,
+        ref_audio_bytes=ref_audio_bytes,  # send full bytes + hash
+        ref_hash=hash_hex,
+        ref_text=ref_text,
+        language=language,
+        warmer=warmer,
+    ):
+        yield chunk
+    # If we got here without raising or yielding an error chunk, the
+    # server now has this voice cached. (We add eagerly — even if the WS
+    # ended early via cancel, the server cache was populated by the
+    # `start` frame before any audio came out.)
+    _REF_HASH_SEEN.add(hash_hex)
+
+
+async def _clone_attempt(
+    *,
+    text: str,
+    ref_audio_bytes: bytes | None,
+    ref_hash: str,
+    ref_text: str,
+    language: str | None,
+    warmer: TtsWsWarmer | None,
+) -> AsyncIterator[TtsChunk]:
+    """Single WS round-trip to the clone server. Raises _RefNotCachedRetry
+    when the server reports ref_not_cached AND ref_audio_bytes was None
+    (hash-only mode) — the outer caller catches and retries with full bytes."""
     ws_url, headers = _clone_ws_url_and_headers()
 
-    # Build the start payload — omit `language` when null/empty so the
-    # service's "Auto" default kicks in cleanly.
     start: dict = {
         "type": "start",
         "text": text,
-        "ref_audio_b64": base64.b64encode(ref_audio_bytes).decode("ascii"),
         "ref_text": ref_text,
+        "ref_audio_sha256": ref_hash,
     }
+    if ref_audio_bytes is not None:
+        start["ref_audio_b64"] = base64.b64encode(ref_audio_bytes).decode("ascii")
     lang = (language or "").strip()
     if lang:
         if lang not in _CLONE_LANGUAGES:
             _log.debug("clone service: unrecognised language %r — passing through", lang)
         start["language"] = lang
 
-    # CANCEL SAFETY: when a barge-in cancels the turn, this generator
-    # is closed mid-stream. We MUST tear down the WS promptly or the
-    # upstream clone-streaming server keeps the slot busy and the next
-    # turn's WS hangs (single-slot server). Two pieces:
-    #
-    #   1. Use explicit acquire/release instead of ``async with
-    #      session.ws_connect(...)`` — that pattern calls aiohttp's
-    #      default ``ws.close()`` whose ACK timeout is 10s, which is
-    #      far too long for a barge-in.
-    #   2. In the finally block, close the WS with a TIGHT 300ms cap.
-    #      If the server doesn't ACK in time, we move on and let TCP
-    #      close handle the rest — the alternative (waiting 10s) is
-    #      strictly worse.
+    # CANCEL SAFETY: when a barge-in cancels the turn, this generator is
+    # closed mid-stream. We MUST tear down the WS promptly or the upstream
+    # server keeps the GPU slot busy and the next turn's WS hangs. Two pieces:
+    #   1. Explicit acquire/release instead of `async with session.ws_connect`
+    #      (the latter's default close timeout is 10s — far too long for
+    #      barge-in).
+    #   2. The finally block closes the WS with a TIGHT 300 ms cap. If the
+    #      server doesn't ACK in time, we move on and let TCP close handle
+    #      the rest.
     if warmer is not None:
         session, ws = await warmer.acquire()
     else:
@@ -857,19 +1022,21 @@ async def _stream_clone_via_service(
                     yield TtsChunk(kind="end", payload=obj)
                     return
                 elif mtype == "error":
-                    # Verbose log — auth/bad_request/server_busy/engine_failed
-                    # all surface here. Server's code is the canonical signal.
                     code = obj.get("code") or "unknown"
                     m = (obj.get("message") or "")[:200]
+                    # `ref_not_cached` is only retryable when we sent hash-only.
+                    # If the client already included full bytes, retrying won't
+                    # help — surface the error as-is.
+                    if code == "ref_not_cached" and ref_audio_bytes is None:
+                        raise _RefNotCachedRetry()
                     _log.warning("clone service error code=%s message=%s", code, m)
                     yield TtsChunk(kind="error", payload=obj)
                     return
             elif msg.type == aiohttp.WSMsgType.BINARY:
                 if not first_audio_seen and warmer is not None:
-                    # Kick off the next chunk's connection now — the
-                    # synthesis we're receiving usually runs another
-                    # 100-500ms before end, plenty of time to open
-                    # the next WS in the background.
+                    # Kick off the next chunk's WS now — synthesis usually runs
+                    # another 100-500 ms before `end`, plenty of time to open
+                    # the next connection in the background.
                     first_audio_seen = True
                     warmer.schedule_prewarm()
                 yield TtsChunk(kind="audio", payload=msg.data)

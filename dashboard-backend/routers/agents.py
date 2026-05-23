@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 import agent_knowledge
+import agent_templates
 import agents_service
 import llm_client
 from local_db import get_connection
@@ -135,58 +136,62 @@ async def list_agents(user_id: str = Depends(require_auth)) -> dict:
         await conn.close()
 
 
+@router.get("/templates")
+async def list_templates(user_id: str = Depends(require_auth)) -> dict:
+    """Starter-template gallery for the agent-create UI. Lightweight summaries
+    only — call ``GET /agents/templates/{id}`` for the full system_prompt +
+    knowledge_starter body."""
+    return {"templates": agent_templates.template_summaries()}
+
+
+@router.get("/templates/{template_id}")
+async def get_template(template_id: str, user_id: str = Depends(require_auth)) -> dict:
+    """Full template body for pre-filling the agent-create form. Snapshot
+    semantics: once the user saves an agent, their config owns its own
+    copy — later changes to the template do NOT propagate automatically."""
+    detail = agent_templates.template_detail(template_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail=f"unknown template: {template_id}")
+    return detail
+
+
 @router.get("/models")
 async def list_models(user_id: str = Depends(require_auth)) -> dict:
-    """Available LLM models for the agent settings picker.
+    """Voice-agent LLM picker.
 
-    The model id stored in ``agent.config.llm_model`` uses a
-    ``provider:model`` prefix so the voicechat WS knows where to route
-    each agent. ``groq:`` models hit Groq's LPU (purpose-built for
-    sub-300ms voice-turn latency); the Chutes default sits behind the
-    bare default id for backwards compatibility. The picker label
-    surfaces the provider for clarity, but the id is the round-trip
-    string we get back on save."""
+    Intentionally narrow — two Cerebras models, picked for the voice-chat
+    sweet spot of ~150-300 ms TTFT with reliable tool calling:
+
+      • ``cerebras:qwen-3-235b-a22b-instruct-2507`` — higher quality,
+        recommended default. Bigger model, slightly slower per-token.
+      • ``cerebras:llama-3.3-70b`` — faster, lower latency. Use for
+        snappier turn-taking when raw quality matters less.
+
+    Both options only appear when Cerebras is configured server-side
+    (``CEREBRAS_API_KEY`` set). Legacy agents whose ``llm_model`` is
+    something else (Chutes default, Groq, OpenAI) still route correctly
+    via llm_client — the picker just doesn't surface those for new
+    agents."""
     models: list[dict[str, str]] = []
 
-    # Groq — only listed when an API key is configured server-side, so
-    # users don't pick a model the deployment can't actually serve.
-    if llm_client.groq_llm_configured():
+    if llm_client.cerebras_llm_configured():
         models.extend([
             {
-                "id": "groq:llama-3.3-70b-versatile",
-                "label": "Groq · Llama-3.3-70B (versatile, recommended for tool use)",
+                "id": "cerebras:qwen-3-235b-a22b-instruct-2507",
+                "label": "Cerebras · Qwen 3 235B (quality, recommended)",
             },
             {
-                "id": "groq:llama-3.1-8b-instant",
-                "label": "Groq · Llama-3.1-8B (instant, fastest)",
-            },
-            {
-                "id": "groq:llama-3.1-70b-versatile",
-                "label": "Groq · Llama-3.1-70B (versatile)",
-            },
-            # Compound models bundle web_search + code execution INSIDE
-            # the Groq inference server. Pick this and the agent gets
-            # real-time web search with zero extra setup — no Tavily
-            # key needed. Trade-off: the built-in web_search runs
-            # inside the LLM call so its result doesn't surface as a
-            # separate ``tool_call`` event (no chip in the chat bubble
-            # for those searches). Custom and other built-in tools
-            # still work normally.
-            {
-                "id": "groq:compound-beta",
-                "label": "Groq · Compound (web search + code built-in, no extra keys)",
-            },
-            {
-                "id": "groq:compound-beta-mini",
-                "label": "Groq · Compound Mini (faster, smaller)",
+                "id": "cerebras:llama-3.3-70b",
+                "label": "Cerebras · Llama 3.3 70B (faster, lower latency)",
             },
         ])
 
-    # Chutes default — kept as the unprefixed id so legacy agents that
-    # already stored a Chutes model id keep working without migration.
-    default = agents_service.AGENTS_LLM_MODEL
-    if default and not any(m["id"] == default for m in models):
-        models.append({"id": default, "label": f"Chutes · {default}"})
+    # Surface legacy default if Cerebras isn't configured — keeps the
+    # picker non-empty in dev setups without a Cerebras key.
+    if not models:
+        default = agents_service.AGENTS_LLM_MODEL
+        if default:
+            models.append({"id": default, "label": f"Chutes · {default}"})
 
     return {"models": models}
 

@@ -325,8 +325,11 @@ const TTS_STYLE_PRESETS = [
 ];
 const PRIORITY_PRESET_COUNT = 6;
 
-/** TTS main content: character cap (shown to user only if they try to exceed it). */
-const TTS_CONTENT_MAX_CHARS = 300;
+/** TTS main content: character cap (shown to user only if they try to exceed it).
+ *  Raised from 300 → 2000 now that PromptTTS routes through the local
+ *  qwen3-voice-design server (Qwen3-TTS-12Hz-1.7B-VoiceDesign on RTX 4090)
+ *  instead of Chutes. Match the server's QWEN3_VD_MAX_CHARS. */
+const TTS_CONTENT_MAX_CHARS = 2000;
 
 /** Voice cloning target text: character cap (shown to user only if they try to exceed it). */
 const CLONE_TARGET_MAX_CHARS = 2000;
