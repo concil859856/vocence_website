@@ -17,7 +17,14 @@ from ranking import (
     get_ranked_miner_stats_for_validator,
     sort_miners_for_display,
 )
-from routers.auth import _get_user_by_id, require_admin_session, require_auth
+from routers.auth import _get_user_by_id, require_auth
+# require_admin_unlocked layers the sudo-mode password gate on top of the
+# Google-OAuth admin check (require_admin_session). Every endpoint in this
+# file that touches blocklist / users / validators / posts / overview /
+# website-usage requires it: even an admin who's logged in via Google
+# must enter the separate ADMIN_PASSWORD_HASH password to mint an
+# X-Admin-Token before these routes accept the request.
+from routers.admin_auth import require_admin_unlocked as require_admin_session
 from schemas import (
     ADMIN_EMAIL,
     ActivityBucketResponse,

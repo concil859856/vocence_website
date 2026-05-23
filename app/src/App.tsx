@@ -33,6 +33,11 @@ const History = lazy(() => import('./pages/History').then((m) => ({ default: m.H
 const CliAuthorize = lazy(() => import('./pages/CliAuthorize').then((m) => ({ default: m.CliAuthorize })));
 const Admin = lazy(() => import('./pages/Admin').then((m) => ({ default: m.Admin })));
 const AdminOps = lazy(() => import('./pages/AdminOps').then((m) => ({ default: m.AdminOps })));
+
+// AdminGate isn't lazy — it's a thin wrapper that needs to render the
+// unlock modal synchronously, and the chunk overhead would only save ~3 KB.
+// eslint-disable-next-line import/order
+import { AdminGate } from './components/admin/AdminGate';
 const DashboardEvaluations = lazy(() => import('./pages/DashboardEvaluations').then((m) => ({ default: m.DashboardEvaluations })));
 const Pricing = lazy(() => import('./pages/Pricing').then((m) => ({ default: m.Pricing })));
 const Privacy = lazy(() => import('./pages/Privacy').then((m) => ({ default: m.Privacy })));
@@ -83,10 +88,13 @@ function App() {
               <Route path="/studio" element={<Navigate to="/studio/home" replace />} />
               <Route path="/studio/my-voices/:voiceId" element={<StudioDesignedVoiceWorkspace />} />
               <Route path="/studio/playbooks/:playbookId" element={<Studio />} />
-              {/* Admin-only fleet manager. Lives under /admin/ops (NOT /studio/ops)
-                  to match the existing /admin page's namespace. Non-admins are
-                  silently redirected home — no splash, no hint the page exists. */}
-              <Route path="/admin/ops" element={<AdminOps />} />
+              {/* Admin pages. All three are gated by <AdminGate>:
+                    1. Anonymous / non-ADMIN_EMAIL → silent <Navigate to="/">
+                    2. Admin without a valid sudo unlock → AdminUnlockModal pops
+                    3. Admin with unlock → renders the cross-link nav + child
+                  /admin/ops lives here (NOT /studio/ops) so admin surfaces
+                  share a namespace. Non-admins discover nothing. */}
+              <Route path="/admin/ops" element={<AdminGate><AdminOps /></AdminGate>} />
               <Route path="/studio/agents" element={<AgentRouteGate><AgentsList /></AgentRouteGate>} />
               <Route path="/studio/agents/new" element={<AgentRouteGate><AgentBuilder /></AgentRouteGate>} />
               <Route path="/studio/agents/:id/runs/:runId" element={<AgentRouteGate><AgentRunViewer /></AgentRouteGate>} />
@@ -100,8 +108,8 @@ function App() {
               <Route path="/account/:tab" element={<Account />} />
               <Route path="/history" element={<History />} />
               <Route path="/cli/authorize" element={<CliAuthorize />} />
-              <Route path="/admin" element={<Admin />} />
-              <Route path="/admin/website_usage" element={<AdminWebsiteUsage />} />
+              <Route path="/admin" element={<AdminGate><Admin /></AdminGate>} />
+              <Route path="/admin/website_usage" element={<AdminGate><AdminWebsiteUsage /></AdminGate>} />
               <Route path="/pricing" element={<Pricing />} />
               <Route path="/sales" element={<Sales />} />
               <Route path="/sales/email" element={<SalesEmail />} />

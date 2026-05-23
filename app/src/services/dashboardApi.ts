@@ -6,16 +6,27 @@ import { API_ORIGIN_BASE } from './baseUrl';
 const DASHBOARD_BASE = API_ORIGIN_BASE;
 
 /**
- * Build the Authorization header for admin-only dashboard calls.
+ * Build the Authorization + X-Admin-Token headers for admin-only dashboard calls.
  *
- * Admin auth on the backend is gated by `require_admin_session`, which
- * verifies a JWT from `Authorization: Bearer <token>` and checks the decoded
- * email matches `ADMIN_EMAIL`. The token is the same one the website issues
- * after Google OAuth login, stored under `vocence_token` in localStorage.
+ * Backend gates admin routes on TWO layers (see routers/admin_auth.py):
+ *   1. `Authorization: Bearer <JWT>` — Google OAuth + email == ADMIN_EMAIL
+ *   2. `X-Admin-Token: <admin_token>` — sudo-mode unlock (separate password)
+ *
+ * Both must be sent or the backend rejects with 401 code=admin_unlock_required,
+ * which the AdminGate wrapper interprets by popping the AdminUnlockModal.
+ *
+ * The JWT lives in localStorage (survives browser close). The admin_token
+ * lives in sessionStorage (cleared on browser close — by design; admin
+ * should re-auth after closing their laptop).
  */
 function adminAuthHeaders(): Record<string, string> {
-  const token = typeof window !== 'undefined' ? window.localStorage.getItem('vocence_token') || '' : '';
-  return token ? { Authorization: `Bearer ${token}` } : {};
+  const headers: Record<string, string> = {};
+  if (typeof window === 'undefined') return headers;
+  const token = window.localStorage.getItem('vocence_token') || '';
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  const adminToken = window.sessionStorage.getItem('vocence.admin_token') || '';
+  if (adminToken) headers['X-Admin-Token'] = adminToken;
+  return headers;
 }
 
 /**
