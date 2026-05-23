@@ -168,6 +168,11 @@ app.add_middleware(
         "Content-Type",
         "Accept",
         "Authorization",
+        # Admin sudo-mode token (see routers/admin_auth.py). Missing here
+        # silently breaks every /api/dashboard/ops/* + admin call from a
+        # browser, because the CORS preflight rejects the custom header
+        # before the actual request even hits the server.
+        "X-Admin-Token",
     ],
 )
 
