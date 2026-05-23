@@ -134,11 +134,20 @@ async def _trigger_auto_restart(pod: dict, server: dict, reason: str) -> None:
     cid = pod.get("container_id") or ""
     await db.log_pod_event(pod_id, "auto_restart", reason, {"container_id": cid})
     _log.warning("pod %s: auto-restarting (%s)", pod["name"], reason)
+    if not cid:
+        # No container to restart — pod row exists but its initial docker_run
+        # never produced a container (failed deploy, manual db insert, etc.).
+        # Previously this just logged and fell through, so next health cycle
+        # the pod hit threshold again and we'd loop "no container_id; cannot
+        # restart" forever. Mark it stopped + guard so the poller leaves it
+        # alone until the admin redeploys.
+        _log.error("pod %s has no container_id; marking stopped (admin must redeploy)", pod_id)
+        await db.log_pod_event(pod_id, "auto_restart_failed", "no container_id; marked stopped")
+        await db.update_pod(pod_id, status="stopped", consecutive_failures=0)
+        _ALREADY_AUTO_RESTARTED.add(pod_id)
+        return
     try:
-        if cid:
-            await ssh.docker_restart(server, cid)
-        else:
-            _log.error("pod %s has no container_id; cannot restart", pod_id)
+        await ssh.docker_restart(server, cid)
     except ssh.SshError as e:
         _log.error("pod %s: docker restart failed: %s", pod_id, e)
         await db.log_pod_event(pod_id, "auto_restart_failed", str(e))
