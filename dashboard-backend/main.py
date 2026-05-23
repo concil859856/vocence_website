@@ -196,6 +196,11 @@ app.include_router(agents_router, prefix="/api/dashboard")
 # can call mid-conversation. Lives under /api/dashboard/agents/tools/
 # alongside the built-in /agents/tools/builtin endpoint.
 app.include_router(agent_custom_tools_router, prefix="/api/dashboard")
+# Admin sudo-mode auth (separate password on top of Google OAuth for
+# /studio/ops + other admin surfaces). Routes live at /api/dashboard/auth/admin/*.
+from routers.admin_auth import router as admin_auth_router  # noqa: E402
+app.include_router(admin_auth_router, prefix="/api/dashboard")
+
 # Ops fleet manager — admin-only. Surfaces /studio/ops UI endpoints
 # (servers + pods CRUD, deploy/stop/restart, analytics queries).
 from routers.ops import router as ops_router  # noqa: E402 — keep ops import lazy so a missing dep doesn't crash boot

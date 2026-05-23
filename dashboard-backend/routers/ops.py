@@ -1,7 +1,9 @@
 """Vocence Studio /ops admin endpoints.
 
-All routes here gate on ``require_admin_session`` so only addresses in
-ADMIN_EMAIL can see/modify the fleet.
+All routes here gate on ``require_admin_unlocked`` — two layers:
+  1. ``require_admin_session`` (transitively): JWT email == ADMIN_EMAIL
+  2. Valid ``X-Admin-Token`` from POST /auth/admin/unlock (separate password
+     enforced by routers/admin_auth.py — see that module for details).
 
 Surface (mounted at ``/api/dashboard/ops``):
 
@@ -42,7 +44,7 @@ import ops.db as ops_db
 import ops.docker_hub as ops_docker_hub
 import ops.pool as ops_pool
 import ops.ssh as ops_ssh
-from routers.auth import require_admin_session
+from routers.admin_auth import require_admin_unlocked
 
 _log = logging.getLogger(__name__)
 router = APIRouter(prefix="/ops", tags=["ops"])
@@ -109,7 +111,7 @@ class PodDeployIn(BaseModel):
 # ---------------------------------------------------------------------------
 
 @router.get("/servers")
-async def list_servers_endpoint(_: str = Depends(require_admin_session)) -> dict:
+async def list_servers_endpoint(_: str = Depends(require_admin_unlocked)) -> dict:
     servers = await ops_db.list_servers()
     out: list[dict] = []
     for s in servers:
@@ -135,7 +137,7 @@ async def list_servers_endpoint(_: str = Depends(require_admin_session)) -> dict
 
 
 @router.post("/servers")
-async def add_server(body: ServerIn, _: str = Depends(require_admin_session)) -> dict:
+async def add_server(body: ServerIn, _: str = Depends(require_admin_unlocked)) -> dict:
     _validate_name(body.name)
     if not ops_crypto.is_configured() and body.ssh_private_key:
         raise HTTPException(status_code=503, detail="OPS_FERNET_KEY not set on backend — cannot store per-server SSH key")
@@ -187,7 +189,7 @@ async def add_server(body: ServerIn, _: str = Depends(require_admin_session)) ->
 
 
 @router.delete("/servers/{server_id}")
-async def remove_server(server_id: int, _: str = Depends(require_admin_session)) -> dict:
+async def remove_server(server_id: int, _: str = Depends(require_admin_unlocked)) -> dict:
     server = await ops_db.get_server(server_id)
     if server is None:
         raise HTTPException(status_code=404, detail="server not found")
@@ -200,7 +202,7 @@ async def remove_server(server_id: int, _: str = Depends(require_admin_session))
 
 
 @router.post("/servers/{server_id}/probe")
-async def reprobe_server(server_id: int, _: str = Depends(require_admin_session)) -> dict:
+async def reprobe_server(server_id: int, _: str = Depends(require_admin_unlocked)) -> dict:
     server = await ops_db.get_server(server_id)
     if server is None:
         raise HTTPException(status_code=404, detail="server not found")
@@ -227,7 +229,7 @@ async def reprobe_server(server_id: int, _: str = Depends(require_admin_session)
 async def list_pods_endpoint(
     service: str | None = None,
     server_id: int | None = None,
-    _: str = Depends(require_admin_session),
+    _: str = Depends(require_admin_unlocked),
 ) -> dict:
     statuses = ("deploying", "online", "unhealthy", "restarting", "draining", "stopped")
     pods = await ops_db.list_pods(service=service, server_id=server_id, statuses=statuses)
@@ -243,7 +245,7 @@ async def list_pods_endpoint(
 
 
 @router.post("/pods")
-async def deploy_pod(body: PodDeployIn, _: str = Depends(require_admin_session)) -> dict:
+async def deploy_pod(body: PodDeployIn, _: str = Depends(require_admin_unlocked)) -> dict:
     if not ops_crypto.is_configured():
         raise HTTPException(status_code=503, detail="OPS_FERNET_KEY not set on backend")
     if body.service not in ops_db.SERVICE_NAMES:
@@ -332,7 +334,7 @@ async def deploy_pod(body: PodDeployIn, _: str = Depends(require_admin_session))
 
 
 @router.post("/pods/{pod_id}/stop")
-async def stop_pod(pod_id: int, _: str = Depends(require_admin_session)) -> dict:
+async def stop_pod(pod_id: int, _: str = Depends(require_admin_unlocked)) -> dict:
     pod, server = await _pod_and_server(pod_id)
     cid = pod.get("container_id")
     if cid:
@@ -347,7 +349,7 @@ async def stop_pod(pod_id: int, _: str = Depends(require_admin_session)) -> dict
 
 
 @router.post("/pods/{pod_id}/restart")
-async def restart_pod(pod_id: int, _: str = Depends(require_admin_session)) -> dict:
+async def restart_pod(pod_id: int, _: str = Depends(require_admin_unlocked)) -> dict:
     pod, server = await _pod_and_server(pod_id)
     cid = pod.get("container_id")
     if not cid:
@@ -362,7 +364,7 @@ async def restart_pod(pod_id: int, _: str = Depends(require_admin_session)) -> d
 
 
 @router.post("/pods/{pod_id}/update")
-async def update_pod_endpoint(pod_id: int, _: str = Depends(require_admin_session)) -> dict:
+async def update_pod_endpoint(pod_id: int, _: str = Depends(require_admin_unlocked)) -> dict:
     """Rolling update: pull latest image, restart container. Container
     keeps its name + env so the run command is `docker stop + docker rm
     + docker run` under the hood."""
@@ -421,7 +423,7 @@ async def update_pod_endpoint(pod_id: int, _: str = Depends(require_admin_sessio
 
 
 @router.post("/pods/{pod_id}/drain")
-async def drain_pod(pod_id: int, _: str = Depends(require_admin_session)) -> dict:
+async def drain_pod(pod_id: int, _: str = Depends(require_admin_unlocked)) -> dict:
     pod = await ops_db.get_pod(pod_id)
     if pod is None:
         raise HTTPException(status_code=404, detail="pod not found")
@@ -432,7 +434,7 @@ async def drain_pod(pod_id: int, _: str = Depends(require_admin_session)) -> dic
 
 
 @router.delete("/pods/{pod_id}")
-async def remove_pod(pod_id: int, _: str = Depends(require_admin_session)) -> dict:
+async def remove_pod(pod_id: int, _: str = Depends(require_admin_unlocked)) -> dict:
     pod, server = await _pod_and_server(pod_id)
     cid = pod.get("container_id")
     if cid:
@@ -448,7 +450,7 @@ async def remove_pod(pod_id: int, _: str = Depends(require_admin_session)) -> di
 
 
 @router.get("/pods/{pod_id}/logs")
-async def pod_logs(pod_id: int, tail: int = 200, _: str = Depends(require_admin_session)) -> dict:
+async def pod_logs(pod_id: int, tail: int = 200, _: str = Depends(require_admin_unlocked)) -> dict:
     pod, server = await _pod_and_server(pod_id)
     cid = pod.get("container_id")
     if not cid:
@@ -465,7 +467,7 @@ async def pod_logs(pod_id: int, tail: int = 200, _: str = Depends(require_admin_
 # ---------------------------------------------------------------------------
 
 @router.get("/overview")
-async def overview(_: str = Depends(require_admin_session)) -> dict:
+async def overview(_: str = Depends(require_admin_unlocked)) -> dict:
     """Fleet summary tiles for the Studio dashboard."""
     servers = await ops_db.list_servers()
     pods_all = await ops_db.list_pods(statuses=(
@@ -494,7 +496,7 @@ async def overview(_: str = Depends(require_admin_session)) -> dict:
 
 
 @router.get("/dispatcher")
-async def dispatcher_snapshot(_: str = Depends(require_admin_session)) -> dict:
+async def dispatcher_snapshot(_: str = Depends(require_admin_unlocked)) -> dict:
     return {"services": ops_pool.snapshot()}
 
 
@@ -502,7 +504,7 @@ async def dispatcher_snapshot(_: str = Depends(require_admin_session)) -> dict:
 async def pod_timeseries(
     pod_id: int,
     range_hours: int = 24,
-    _: str = Depends(require_admin_session),
+    _: str = Depends(require_admin_unlocked),
 ) -> dict:
     """Per-minute requests/errors/latency for a single pod, last N hours."""
     pod = await ops_db.get_pod(pod_id)
@@ -548,7 +550,7 @@ async def list_events(
     pod_id: int | None = None,
     kind: str | None = None,
     limit: int = 100,
-    _: str = Depends(require_admin_session),
+    _: str = Depends(require_admin_unlocked),
 ) -> dict:
     limit = min(500, max(1, limit))
     sql = "SELECT id, pod_id, kind, message, details_json, created_at FROM ops_pod_events WHERE 1=1"

@@ -13,3 +13,5 @@ numpy>=1.26.0
 asyncssh>=2.14.0
 # ops module: Fernet at-rest encryption of SSH keys + per-pod API keys
 cryptography>=42.0.0
+# admin sudo-mode password hashing
+argon2-cffi>=23.1.0

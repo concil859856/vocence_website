@@ -6,6 +6,7 @@
  */
 
 import { API_BASE_URL, withNetworkHint } from '../../services/baseUrl';
+import { clearStoredAdminToken, getStoredAdminToken } from '../admin/api';
 import type {
   DispatcherSnapshot,
   OverviewTiles,
@@ -19,8 +20,12 @@ import type {
 } from './types';
 
 function authHeaders(token: string | null): HeadersInit {
+  // Every ops call needs BOTH layers: the regular Google JWT AND the
+  // sudo-mode admin_token from sessionStorage. Backend gates on both.
   const h: Record<string, string> = { 'Content-Type': 'application/json' };
   if (token) h.Authorization = `Bearer ${token}`;
+  const adminToken = getStoredAdminToken();
+  if (adminToken) h['X-Admin-Token'] = adminToken;
   return h;
 }
 
@@ -37,11 +42,34 @@ async function jsonFetch<T>(url: string, init: RequestInit): Promise<T> {
     try { body = JSON.parse(text); } catch { /* keep raw */ }
   }
   if (!res.ok) {
-    const detail =
-      body && typeof body === 'object' && 'detail' in body && typeof (body as { detail?: string }).detail === 'string'
-        ? (body as { detail: string }).detail
+    // Surface the admin_unlock_required signal as a typed error so the
+    // caller (StudioOps) can pop the AdminUnlockModal instead of just
+    // showing "unauthorized".
+    const rawDetail = body && typeof body === 'object' && 'detail' in body
+      ? (body as { detail: unknown }).detail
+      : undefined;
+    if (
+      res.status === 401 &&
+      rawDetail && typeof rawDetail === 'object' &&
+      (rawDetail as { code?: string }).code === 'admin_unlock_required'
+    ) {
+      clearStoredAdminToken();
+      const err = new Error('admin_unlock_required') as Error & {
+        status?: number;
+        code?: string;
+      };
+      err.status = 401;
+      err.code = 'admin_unlock_required';
+      throw err;
+    }
+    const detail = typeof rawDetail === 'string'
+      ? rawDetail
+      : rawDetail
+        ? JSON.stringify(rawDetail)
         : text || `HTTP ${res.status}`;
-    throw new Error(detail);
+    const err = new Error(detail) as Error & { status?: number };
+    err.status = res.status;
+    throw err;
   }
   return body as T;
 }
