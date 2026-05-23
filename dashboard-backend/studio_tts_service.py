@@ -187,16 +187,39 @@ async def synthesize_speak(chute_slug: str, text: str, instruction: str, *, base
 
     URL precedence:
       1. explicit ``base_url`` argument (test/override path)
-      2. ``VOICE_DESIGN_BASE_URL`` env (local qwen3-voice-design server)
-      3. ``https://{chute_slug}.chutes.ai/speak`` (legacy Chutes path)
+      2. ops dispatcher: least-loaded online ``voice_design`` pod from gpu_pool
+      3. ``VOICE_DESIGN_BASE_URL`` env (single local server)
+      4. ``https://{chute_slug}.chutes.ai/speak`` (legacy Chutes path)
 
-    Auth: ``VOICE_DESIGN_API_KEY`` when the local server is used; falls
-    back to ``CHUTES_AUTH_KEY`` for the Chutes path. The local server's
-    wire format is byte-identical to Chutes' so the call site doesn't
-    need to care which one answered.
+    Auth: ops-pod's own api_key for the dispatcher path, else
+    VOICE_DESIGN_API_KEY for local server, else CHUTES_AUTH_KEY.
 
     Returns (wav_bytes, error_message). On success: (bytes, ""). On failure: (None, "reason")."""
-    if base_url:
+    # Try the dispatcher first when ops pods are registered for this service.
+    pod_cm = None
+    pod_url: str | None = None
+    pod_key: str | None = None
+    if base_url is None:
+        try:
+            from ops import pool as gpu_pool  # optional dep
+            if gpu_pool.online_pod_count("voice_design") > 0:
+                pod_cm = gpu_pool.pick_pod("voice_design")
+                pod = await pod_cm.__aenter__()
+                pod_url = pod.url + "/speak"
+                pod_key = pod.api_key or None
+        except Exception as e:
+            try:
+                from ops.pool import NoCapacity
+                if isinstance(e, NoCapacity):
+                    return None, "voice_design fleet busy (all pods at capacity)"
+            except ImportError:
+                pass
+            pod_cm = None
+
+    if pod_url is not None:
+        url = pod_url
+        auth_key = pod_key or VOICE_DESIGN_API_KEY or CHUTES_AUTH_KEY
+    elif base_url:
         url = base_url.strip()
         auth_key = VOICE_DESIGN_API_KEY or CHUTES_AUTH_KEY
     elif VOICE_DESIGN_BASE_URL:
@@ -229,6 +252,13 @@ async def synthesize_speak(chute_slug: str, text: str, instruction: str, *, base
         return None, "miner request timed out"
     except Exception as e:
         return None, str(e)
+    finally:
+        # Release the dispatcher slot. Safe to call when pod_cm is None.
+        if pod_cm is not None:
+            try:
+                await pod_cm.__aexit__(None, None, None)
+            except Exception:
+                pass
 
 
 async def transcribe_audio(

@@ -871,16 +871,21 @@ class _RefNotCachedRetry(Exception):
     the full ref bytes."""
 
 
-def _clone_ws_url_and_headers() -> tuple[str, dict]:
-    """Return (ws_url, headers) for the cloned-voice TTS service. Shared
-    by the streamer and by the router's TtsWsWarmer."""
+def _clone_ws_url_and_headers(pod_url: str | None = None, pod_api_key: str | None = None) -> tuple[str, dict]:
+    """Return (ws_url, headers) for the cloned-voice TTS service.
+
+    When ``pod_url``/``pod_api_key`` are provided (dispatcher path), build
+    from those. Otherwise fall back to QWEN3_CLONE_BASE_URL + QWEN3_CLONE_API_KEY
+    (legacy single-server path)."""
+    base = (pod_url or QWEN3_CLONE_BASE_URL).rstrip("/")
     ws_url = (
-        QWEN3_CLONE_BASE_URL.replace("http://", "ws://").replace("https://", "wss://")
+        base.replace("http://", "ws://").replace("https://", "wss://")
         + "/v1/voice-clone/stream"
     )
+    key = pod_api_key if pod_api_key is not None else QWEN3_CLONE_API_KEY
     headers: dict = {}
-    if QWEN3_CLONE_API_KEY:
-        headers["Authorization"] = f"Bearer {QWEN3_CLONE_API_KEY}"
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
     return ws_url, headers
 
 
@@ -914,40 +919,80 @@ async def _stream_clone_via_service(
     """
     hash_hex = hashlib.sha256(ref_audio_bytes).hexdigest()
 
-    # Build a hash-only `start` payload first if we believe the server has
-    # the voice cached. The warmer pre-opens a WS that we want to use, so
-    # the hash-only path applies whether or not we have a warmer.
-    if hash_hex in _REF_HASH_SEEN:
+    # Dispatcher: pick a pod from the ops gpu_pool if any are registered.
+    # Falls back to the static QWEN3_CLONE_BASE_URL env when no pods exist
+    # (single-server legacy setups still work). When pods exist but the
+    # 2*N global cap is reached, NoCapacity propagates as a 503 to the user.
+    pod_cm = None
+    pod_url: str | None = None
+    pod_api_key: str | None = None
+    try:
+        from ops import pool as gpu_pool  # local import: ops module is optional
+        if gpu_pool.online_pod_count("tts_streaming") > 0:
+            pod_cm = gpu_pool.pick_pod("tts_streaming")
+            pod = await pod_cm.__aenter__()
+            pod_url = pod.url
+            pod_api_key = pod.api_key or None
+    except Exception as e:
+        # ops module not loaded OR pool truly busy. If pool busy (NoCapacity)
+        # AND we had online pods, that's a real 503 — re-raise. Else fall back.
         try:
-            async for chunk in _clone_attempt(
-                text=text,
-                ref_audio_bytes=None,   # send hash-only
-                ref_hash=hash_hex,
-                ref_text=ref_text,
-                language=language,
-                warmer=warmer,
-            ):
-                yield chunk
-            return
-        except _RefNotCachedRetry:
-            # Server doesn't have the cache entry we thought it did
-            # (LRU evicted, server restarted, etc.). Drop our belief and
-            # fall through to a fresh attempt with the full bytes. The
-            # warmer's pre-opened WS was consumed by the failed attempt;
-            # the retry opens a new one.
-            _REF_HASH_SEEN.discard(hash_hex)
-            _log.info("clone service: ref_not_cached for %s — retrying with full bytes", hash_hex[:12])
-            warmer = None
+            from ops.pool import NoCapacity
+            if isinstance(e, NoCapacity):
+                # Re-raise so the caller surfaces server_busy to the user.
+                raise
+        except ImportError:
+            pass
+        # ops package import failed or non-NoCapacity error: fall through to legacy URL.
+        pod_cm = None
 
-    async for chunk in _clone_attempt(
-        text=text,
-        ref_audio_bytes=ref_audio_bytes,  # send full bytes + hash
-        ref_hash=hash_hex,
-        ref_text=ref_text,
-        language=language,
-        warmer=warmer,
-    ):
-        yield chunk
+    try:
+        # Build a hash-only `start` payload first if we believe the server has
+        # the voice cached. The warmer pre-opens a WS that we want to use, so
+        # the hash-only path applies whether or not we have a warmer.
+        if hash_hex in _REF_HASH_SEEN:
+            try:
+                async for chunk in _clone_attempt(
+                    text=text,
+                    ref_audio_bytes=None,   # send hash-only
+                    ref_hash=hash_hex,
+                    ref_text=ref_text,
+                    language=language,
+                    warmer=warmer,
+                    pod_url=pod_url,
+                    pod_api_key=pod_api_key,
+                ):
+                    yield chunk
+                return
+            except _RefNotCachedRetry:
+                # Server doesn't have the cache entry we thought it did
+                # (LRU evicted, server restarted, etc.). Drop our belief and
+                # fall through to a fresh attempt with the full bytes. The
+                # warmer's pre-opened WS was consumed by the failed attempt;
+                # the retry opens a new one.
+                _REF_HASH_SEEN.discard(hash_hex)
+                _log.info("clone service: ref_not_cached for %s — retrying with full bytes", hash_hex[:12])
+                warmer = None
+
+        async for chunk in _clone_attempt(
+            text=text,
+            ref_audio_bytes=ref_audio_bytes,  # send full bytes + hash
+            ref_hash=hash_hex,
+            ref_text=ref_text,
+            language=language,
+            warmer=warmer,
+            pod_url=pod_url,
+            pod_api_key=pod_api_key,
+        ):
+            yield chunk
+    finally:
+        # Release the dispatcher slot regardless of how the generator exited
+        # (normal end, error chunk, client barge-in, or exception).
+        if pod_cm is not None:
+            try:
+                await pod_cm.__aexit__(None, None, None)
+            except Exception:
+                pass
     # If we got here without raising or yielding an error chunk, the
     # server now has this voice cached. (We add eagerly — even if the WS
     # ended early via cancel, the server cache was populated by the
@@ -963,11 +1008,16 @@ async def _clone_attempt(
     ref_text: str,
     language: str | None,
     warmer: TtsWsWarmer | None,
+    pod_url: str | None = None,
+    pod_api_key: str | None = None,
 ) -> AsyncIterator[TtsChunk]:
     """Single WS round-trip to the clone server. Raises _RefNotCachedRetry
     when the server reports ref_not_cached AND ref_audio_bytes was None
-    (hash-only mode) — the outer caller catches and retries with full bytes."""
-    ws_url, headers = _clone_ws_url_and_headers()
+    (hash-only mode) — the outer caller catches and retries with full bytes.
+
+    ``pod_url``/``pod_api_key`` override the static QWEN3_CLONE_BASE_URL
+    when provided (dispatcher path). When None, falls back to env config."""
+    ws_url, headers = _clone_ws_url_and_headers(pod_url=pod_url, pod_api_key=pod_api_key)
 
     start: dict = {
         "type": "start",
