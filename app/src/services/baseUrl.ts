@@ -17,8 +17,18 @@ export const CONFIGURED_API_TARGET =
 
 export function withNetworkHint(error: unknown): Error {
   if (error instanceof TypeError) {
+    // fetch() throws TypeError for three distinct cases:
+    //   1. backend truly unreachable (DNS / connection refused / hang up)
+    //   2. CORS preflight rejected (e.g. backend missing the right
+    //      Access-Control-Allow-Headers entry, or 5xx response with no
+    //      CORS headers — both make the browser discard the response body)
+    //   3. request aborted client-side (timeout, AbortController)
+    // The previous message assumed #1 only and falsely blamed VITE_API_URL
+    // when the real cause was usually #2 (e.g. a backend 500 that lost its
+    // CORS headers along the way). The clearer message asks the user to
+    // check DevTools Network tab where the actual status code is visible.
     return new Error(
-      `Network request failed. Check that VITE_API_URL points to a reachable backend. Current value: ${CONFIGURED_API_TARGET}`
+      `Request failed before a response was received. Check DevTools → Network for the actual status (500 with missing CORS headers, blocked CORS preflight, and a genuinely unreachable backend all look the same here). Backend target: ${CONFIGURED_API_TARGET}`
     );
   }
   return error instanceof Error ? error : new Error('Unknown API error');

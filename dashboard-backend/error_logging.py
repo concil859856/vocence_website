@@ -113,4 +113,20 @@ def register_exception_handlers(app: FastAPI) -> None:
             request.url.path,
             exc.__class__.__name__,
         )
-        return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+        # Echo the request's Origin into Access-Control-Allow-Origin so the
+        # browser can actually READ this error response. Without this, the
+        # CORS middleware's normal path is bypassed on uncaught exceptions —
+        # the browser sees the 500 as a CORS failure and the JS layer gets
+        # only a generic TypeError ("Network request failed"), hiding the
+        # actual detail from the developer + admin.
+        origin = request.headers.get("origin", "")
+        headers = {}
+        if origin:
+            headers["Access-Control-Allow-Origin"] = origin
+            headers["Access-Control-Allow-Credentials"] = "true"
+            headers["Vary"] = "Origin"
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Internal server error"},
+            headers=headers,
+        )
