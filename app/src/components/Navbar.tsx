@@ -28,17 +28,18 @@ export function Navbar() {
     { path: '/studio/home', label: 'Studio' },
     { path: '/docs/getting-started', label: 'Docs' },
     { path: '/blog', label: 'Blog' },
+    // Admin link only. The 'Web usage' button used to live here too but
+    // was redundant: once you're on /admin the AdminGate top bar has
+    // its own Website usage link, and exposing it on the public site
+    // navbar leaks the URL to every admin's screen-share / browser
+    // history. Reach it via /admin → top bar.
     ...(isAdmin
-      ? [
-          { path: '/admin', label: 'Admin' },
-          { path: '/admin/website_usage', label: 'Web usage' },
-        ]
+      ? [{ path: '/admin', label: 'Admin' }]
       : []),
   ];
 
   const isActive = (path: string) => {
     if (path === '/admin') return location.pathname === '/admin';
-    if (path === '/admin/website_usage') return location.pathname.startsWith('/admin/website_usage');
     return location.pathname === path;
   };
 
