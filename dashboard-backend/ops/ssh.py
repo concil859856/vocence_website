@@ -78,6 +78,71 @@ def _server_lock(server_id: int) -> asyncio.Lock:
     return lk
 
 
+def normalize_private_key(raw: str) -> str:
+    """Best-effort normalisation of user-pasted SSH private keys.
+
+    The UI textarea sometimes loses the ``-----BEGIN/END...-----`` wrapper
+    lines (e.g. user copy-pasted only the base64 body, or the form
+    stripped them). asyncssh refuses to load such input with the unhelpful
+    'Invalid private key' error. We:
+      1. trim whitespace
+      2. if it already has BEGIN/END markers, leave it alone
+      3. otherwise sniff the body for known magic numbers and wrap it
+         with the matching headers
+      4. ensure the file ends with a newline (some loaders require it)
+    """
+    s = (raw or "").strip()
+    if not s:
+        return s
+    if "-----BEGIN" in s and "-----END" in s:
+        return s if s.endswith("\n") else s + "\n"
+
+    # Strip any incidental whitespace from the body lines.
+    body = "".join(line.strip() for line in s.splitlines())
+
+    # Detect the key type from the base64 payload magic.
+    header_footer = None
+    try:
+        import base64 as _b64
+        decoded = _b64.b64decode(body, validate=False)
+        if decoded.startswith(b"openssh-key-v1\0"):
+            header_footer = ("-----BEGIN OPENSSH PRIVATE KEY-----",
+                             "-----END OPENSSH PRIVATE KEY-----")
+        # PKCS1 (legacy RSA) and PKCS8 are normally pasted with the
+        # wrappers; if someone gives us the body only we don't know which
+        # — bail out and let asyncssh's error message surface.
+    except Exception:
+        pass
+
+    if header_footer is None:
+        return s + ("\n" if not s.endswith("\n") else "")
+
+    # Rewrap body in 70-char lines per PEM convention.
+    wrapped_body = "\n".join(body[i:i + 70] for i in range(0, len(body), 70))
+    return f"{header_footer[0]}\n{wrapped_body}\n{header_footer[1]}\n"
+
+
+def validate_private_key(raw: str) -> None:
+    """Raise SshError with a user-friendly message if ``raw`` (after
+    ``normalize_private_key``) is not parseable as a private key. Used at
+    +Add Server time so the row is never created with an unusable key."""
+    pem = normalize_private_key(raw)
+    if not pem:
+        raise SshError("SSH private key is empty")
+    try:
+        # asyncssh's loader is the source of truth.
+        asyncssh.import_private_key(pem)
+    except asyncssh.KeyImportError as e:
+        raise SshError(
+            f"SSH private key could not be parsed: {e}. Common cause: "
+            f"the '-----BEGIN/END OPENSSH PRIVATE KEY-----' wrapper lines "
+            f"are missing from the paste. Copy the FULL contents of the "
+            f"file, headers included."
+        ) from e
+    except Exception as e:  # noqa: BLE001 — any parse failure is a 400
+        raise SshError(f"SSH private key could not be parsed: {type(e).__name__}: {e}") from e
+
+
 def _resolve_client_keys(server: dict) -> list[str] | None:
     """Return a list of asyncssh client_keys (file paths OR raw key strings).
     Per-server key wins; platform key is the fallback."""
@@ -87,6 +152,8 @@ def _resolve_client_keys(server: dict) -> list[str] | None:
             pem = crypto.decrypt(enc)
         except Exception as e:
             raise SshError(f"server {server['id']}: SSH key decrypt failed: {e}") from e
+        # Auto-wrap header-less paste before handing to asyncssh.
+        pem = normalize_private_key(pem)
         # asyncssh accepts the PEM contents directly as a string in client_keys.
         # Write to a tempfile because asyncssh's loader is more forgiving on
         # files than on strings for some key formats.

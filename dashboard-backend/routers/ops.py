@@ -136,13 +136,64 @@ async def list_servers_endpoint(_: str = Depends(require_admin_unlocked)) -> dic
     return {"servers": out}
 
 
+async def _probe_server_background(server_id: int, name: str) -> None:
+    """Background task: run probe_server, update status to ready/unreachable.
+    Wrapped in catch-all so the task never silently dies — anything goes
+    wrong, status becomes 'unreachable' with the error in ops_pod_events."""
+    server = await ops_db.get_server(server_id)
+    if server is None:
+        return
+    try:
+        probe = await ops_ssh.probe_server(server)
+        await ops_db.update_server_status(
+            server_id,
+            status="ready",
+            last_seen_at=__import__("datetime").datetime.utcnow().isoformat() + "Z",
+            docker_version=probe.get("docker_version"),
+            gpu_info_json=json.dumps(probe.get("gpu_info", [])),
+        )
+        await ops_db.log_pod_event(None, "server_added", f"server {name} probed ok", probe)
+    except ops_ssh.SshError as e:
+        await ops_db.update_server_status(server_id, status="unreachable")
+        await ops_db.log_pod_event(None, "server_probe_failed", f"server {name}: {e}")
+    except Exception as e:  # noqa: BLE001 — last-resort guard so the row never sticks at 'pending'
+        _log.exception("probe_server background task crashed for server %s", server_id)
+        await ops_db.update_server_status(server_id, status="unreachable")
+        await ops_db.log_pod_event(
+            None,
+            "server_probe_failed",
+            f"server {name}: unexpected {type(e).__name__}: {e}",
+        )
+
+
 @router.post("/servers")
 async def add_server(body: ServerIn, _: str = Depends(require_admin_unlocked)) -> dict:
+    """Insert the server row + kick off the SSH probe in the background.
+
+    Returns immediately (status='pending') so the browser doesn't wait
+    20-30s for the SSH connect + nvidia-smi round trip — under SSH-tunnel
+    or flaky-proxy conditions that wait often gets cut off, leaving the
+    UI thinking the request failed even though the backend processed it.
+
+    The frontend's 15s server-list refresh picks up the status flip to
+    'ready' / 'unreachable' once the probe completes."""
     _validate_name(body.name)
     if not ops_crypto.is_configured() and body.ssh_private_key:
         raise HTTPException(status_code=503, detail="OPS_FERNET_KEY not set on backend — cannot store per-server SSH key")
 
-    enc_key = ops_crypto.encrypt(body.ssh_private_key) if body.ssh_private_key else None
+    # Validate + normalize the SSH key BEFORE inserting the server row.
+    # Saves the user from registering a server whose key is unusable —
+    # they get a clean 400 with a fix-up hint instead of seeing the row
+    # bounce to 'unreachable' minutes later.
+    normalized_key: str | None = None
+    if body.ssh_private_key:
+        try:
+            ops_ssh.validate_private_key(body.ssh_private_key)
+            normalized_key = ops_ssh.normalize_private_key(body.ssh_private_key)
+        except ops_ssh.SshError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    enc_key = ops_crypto.encrypt(normalized_key) if normalized_key else None
 
     try:
         server_id = await ops_db.insert_server(
@@ -158,34 +209,13 @@ async def add_server(body: ServerIn, _: str = Depends(require_admin_unlocked)) -
         # Most likely UNIQUE constraint on name.
         raise HTTPException(status_code=400, detail=f"could not insert server: {e}")
 
-    # Synchronously probe so the admin sees ready/unreachable immediately
-    # instead of a forever-pending row.
-    server = await ops_db.get_server(server_id)
-    assert server is not None
-    try:
-        probe = await ops_ssh.probe_server(server)
-        await ops_db.update_server_status(
-            server_id,
-            status="ready",
-            last_seen_at=__import__("datetime").datetime.utcnow().isoformat() + "Z",
-            docker_version=probe.get("docker_version"),
-            gpu_info_json=json.dumps(probe.get("gpu_info", [])),
-        )
-        await ops_db.log_pod_event(None, "server_added", f"server {body.name} probed ok", probe)
-    except ops_ssh.SshError as e:
-        await ops_db.update_server_status(server_id, status="unreachable")
-        await ops_db.log_pod_event(None, "server_probe_failed", f"server {body.name}: {e}")
-        # Don't 5xx — admin still wants to see the server row, and the
-        # error message comes back in the response.
-        server = await ops_db.get_server(server_id)
-        srv = dict(server or {})
-        srv.pop("ssh_private_key_enc", None)
-        return {"server": srv, "probe_error": str(e)}
+    # Fire the probe in the background. Don't await — the response can ship now.
+    asyncio.create_task(_probe_server_background(server_id, body.name))
 
     server = await ops_db.get_server(server_id)
     srv = dict(server or {})
     srv.pop("ssh_private_key_enc", None)
-    return {"server": srv}
+    return {"server": srv, "probe": "scheduled"}
 
 
 @router.delete("/servers/{server_id}")
@@ -203,22 +233,15 @@ async def remove_server(server_id: int, _: str = Depends(require_admin_unlocked)
 
 @router.post("/servers/{server_id}/probe")
 async def reprobe_server(server_id: int, _: str = Depends(require_admin_unlocked)) -> dict:
+    """Re-probe in the background (same shape as POST /servers — never blocks
+    the response on the SSH round trip)."""
     server = await ops_db.get_server(server_id)
     if server is None:
         raise HTTPException(status_code=404, detail="server not found")
-    try:
-        probe = await ops_ssh.probe_server(server)
-        await ops_db.update_server_status(
-            server_id,
-            status="ready",
-            last_seen_at=__import__("datetime").datetime.utcnow().isoformat() + "Z",
-            docker_version=probe.get("docker_version"),
-            gpu_info_json=json.dumps(probe.get("gpu_info", [])),
-        )
-        return {"server": await ops_db.get_server(server_id), "probe": probe}
-    except ops_ssh.SshError as e:
-        await ops_db.update_server_status(server_id, status="unreachable")
-        raise HTTPException(status_code=502, detail=str(e))
+    # Reset status so the UI shows it's in-flight; background task updates it.
+    await ops_db.update_server_status(server_id, status="pending")
+    asyncio.create_task(_probe_server_background(server_id, server.get("name") or str(server_id)))
+    return {"server": await ops_db.get_server(server_id), "probe": "scheduled"}
 
 
 # ---------------------------------------------------------------------------
