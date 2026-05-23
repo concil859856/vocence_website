@@ -196,6 +196,10 @@ app.include_router(agents_router, prefix="/api/dashboard")
 # can call mid-conversation. Lives under /api/dashboard/agents/tools/
 # alongside the built-in /agents/tools/builtin endpoint.
 app.include_router(agent_custom_tools_router, prefix="/api/dashboard")
+# Ops fleet manager — admin-only. Surfaces /studio/ops UI endpoints
+# (servers + pods CRUD, deploy/stop/restart, analytics queries).
+from routers.ops import router as ops_router  # noqa: E402 — keep ops import lazy so a missing dep doesn't crash boot
+app.include_router(ops_router, prefix="/api/dashboard")
 # Public share/embed pages mount at the ROOT (no /api prefix) so the
 # URLs the user actually pastes into tweets/Discord are short and the
 # meta-bot crawlers (which generally only fetch the literal URL) hit
