@@ -43,7 +43,7 @@ async function jsonFetch<T>(url: string, init: RequestInit): Promise<T> {
   }
   if (!res.ok) {
     // Surface the admin_unlock_required signal as a typed error so the
-    // caller (StudioOps) can pop the AdminUnlockModal instead of just
+    // caller (AdminOps) can pop the AdminUnlockModal instead of just
     // showing "unauthorized".
     const rawDetail = body && typeof body === 'object' && 'detail' in body
       ? (body as { detail: unknown }).detail

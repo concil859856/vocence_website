@@ -1,10 +1,14 @@
 /**
- * Vocence Studio — Ops fleet manager (admin-only, sudo-gated).
+ * Vocence — Ops fleet manager (admin-only, sudo-gated).
  *
- * URL: /studio/ops
+ * URL: /admin/ops      (under /admin namespace, NOT /studio — same
+ *                       treatment as the existing /admin platform page)
+ *
+ * Visibility: non-admins are silently redirected to / — no splash, no
+ * hint the page exists. Same pattern Admin.tsx uses.
  *
  * Two-layer admin gate:
- *   1. ADMIN_EMAIL check (component-side; redirects others).
+ *   1. ADMIN_EMAIL check (component-side; redirects others silently).
  *   2. Admin password unlock (modal; mints a session-scoped admin_token
  *      stored in sessionStorage; auto-prompted when missing/expired).
  *
@@ -16,7 +20,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Navigate } from 'react-router-dom';
-import { Activity, Cpu, Lock, Server, Sparkles, Unlock } from 'lucide-react';
+import { Activity, Cpu, Lock, Server, Unlock } from 'lucide-react';
 import { ADMIN_EMAIL } from '../config';
 import { useAuth } from '../contexts/AuthContext';
 import { getStoredToken } from '../lib/agents/api';
@@ -39,7 +43,7 @@ const TABS: { id: OpsTab; label: string; icon: typeof Server }[] = [
   { id: 'pods', label: 'Pods', icon: Cpu },
 ];
 
-export function StudioOps() {
+export function AdminOps() {
   const { user, isAuthenticated, isLoading } = useAuth();
   const [tab, setTab] = useState<OpsTab>('analytics');
   const [token, setToken] = useState<string | null>(null);
@@ -139,27 +143,16 @@ export function StudioOps() {
       </div>
     );
   }
-  if (!isAuthenticated || !user) return <Navigate to="/" replace />;
-  if (user.email !== ADMIN_EMAIL) {
-    return (
-      <div className="min-h-screen bg-[#07080A] flex items-center justify-center">
-        <div className="max-w-md text-center text-[#A7B0B7]">
-          <Sparkles className="w-8 h-8 text-[#DFFF00] mx-auto mb-4" />
-          <h2 className="text-2xl text-white mb-2">Admin only</h2>
-          <p>
-            /studio/ops is the internal fleet manager. Signed-in admins only —
-            you're signed in as <span className="text-white">{user.email}</span>.
-          </p>
-        </div>
-      </div>
-    );
+  // Non-admins (anonymous OR signed in as non-ADMIN_EMAIL) get silently
+  // bounced to the homepage. No splash, no "Admin only" message — they
+  // shouldn't even discover this page exists. Same pattern as Admin.tsx.
+  if (!isAuthenticated || !user || user.email !== ADMIN_EMAIL) {
+    return <Navigate to="/" replace />;
   }
   if (!token) {
-    return (
-      <div className="min-h-screen bg-[#07080A] flex items-center justify-center text-[#A7B0B7]">
-        No auth token — please sign out and back in.
-      </div>
-    );
+    // Auth state says signed in but token missing — likely a stale session.
+    // Bounce home and let them re-login normally.
+    return <Navigate to="/" replace />;
   }
 
   // Show a brief "checking unlock status" placeholder before deciding

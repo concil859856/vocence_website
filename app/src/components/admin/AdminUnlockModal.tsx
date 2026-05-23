@@ -1,5 +1,5 @@
 /**
- * Admin sudo-mode modal — pops on first /studio/ops visit (or whenever the
+ * Admin sudo-mode modal — pops on first /admin/ops visit (or whenever the
  * admin_token has expired) and prompts for the separate admin password.
  *
  * Wire-compatible with routers/admin_auth.py:
