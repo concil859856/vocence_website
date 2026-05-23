@@ -57,7 +57,10 @@ async function jsonFetch<T>(url: string, init: RequestInit): Promise<T> {
   return body as T;
 }
 
-const base = `${API_BASE_URL}/api/dashboard/auth/admin`;
+// API_BASE_URL already ends in '/api' (see services/baseUrl.ts), so the
+// path starts with '/dashboard/...' — NOT '/api/dashboard/...' (which
+// would produce a 404 from the duplicated /api/ prefix).
+const base = `${API_BASE_URL}/dashboard/auth/admin`;
 
 export const adminAuthApi = {
   /** POST the admin password to mint an admin_token. Server rate-limits

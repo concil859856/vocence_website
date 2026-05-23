@@ -74,7 +74,10 @@ async function jsonFetch<T>(url: string, init: RequestInit): Promise<T> {
   return body as T;
 }
 
-const base = `${API_BASE_URL}/api/dashboard/ops`;
+// API_BASE_URL already ends in '/api' (see services/baseUrl.ts), so the
+// path starts with '/dashboard/...' — NOT '/api/dashboard/...' (which
+// would produce a 404 from the duplicated /api/ prefix).
+const base = `${API_BASE_URL}/dashboard/ops`;
 
 export const opsApi = {
   // ---- Servers ----------------------------------------------------------
