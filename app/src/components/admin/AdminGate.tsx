@@ -51,14 +51,24 @@ export function AdminGate({ children }: Props) {
   const { user, isAuthenticated, isLoading } = useAuth();
   const location = useLocation();
 
-  const [token, setToken] = useState<string | null>(null);
-  const [adminToken, setAdminToken] = useState<string | null>(null);
+  // BOTH tokens must be read synchronously from storage at first render —
+  // otherwise the guards below (`!token`) fire on render 1 and redirect to
+  // '/' before the useEffect that would have loaded them runs. The
+  // resulting "page flashes then disappears" bug made every admin page
+  // unreachable on direct navigation.
+  const [token, setToken] = useState<string | null>(() => getStoredToken());
+  const [adminToken, setAdminToken] = useState<string | null>(() => getStoredAdminToken());
   const [unlockChecked, setUnlockChecked] = useState(false);
   const [showUnlock, setShowUnlock] = useState(false);
-  const [expiresAt, setExpiresAt] = useState<Date | null>(null);
+  const [expiresAt, setExpiresAt] = useState<Date | null>(() => getStoredAdminTokenExpiry());
   const [renderKey, setRenderKey] = useState(0);
 
-  useEffect(() => { setToken(getStoredToken()); }, []);
+  // Re-read JWT after mount as a safety net (e.g. when the user just logged
+  // in and the auth context updated localStorage in another render).
+  useEffect(() => {
+    const t = getStoredToken();
+    if (t !== token) setToken(t);
+  }, [token]);
 
   const verifyUnlock = useCallback(async (t: string) => {
     const stored = getStoredAdminToken();
