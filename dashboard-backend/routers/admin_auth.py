@@ -50,7 +50,13 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel
 
-from routers.auth import require_admin_session
+# NOTE: `from routers.auth import require_admin_session` is deferred to
+# inside the functions/deps that actually need it. routers.auth validates
+# JWT_SECRET at import time and raises if it's missing or weak — that's
+# correct for the running server, but it makes the standalone CLI helper
+# (`python -m routers.admin_auth --hash`) fail before it can even prompt
+# for a password. Lazy-importing keeps the CLI usable when .env isn't
+# loaded yet.
 
 _log = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth/admin", tags=["admin-auth"])
@@ -212,11 +218,26 @@ class UnlockRequest(BaseModel):
     password: str
 
 
+def _require_admin_session_dep(
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+) -> str:
+    """Lazy-import shim around routers.auth.require_admin_session.
+
+    The deferred import keeps the CLI helper (``python -m routers.admin_auth
+    --hash``) usable on a fresh checkout where .env hasn't been loaded yet —
+    routers.auth raises at import time if JWT_SECRET is missing/weak, which
+    is correct for the running server but blocks the CLI from prompting for
+    a password. Importing inside the request-time body sidesteps that.
+    """
+    from routers.auth import require_admin_session
+    return require_admin_session(authorization=authorization)
+
+
 @router.post("/unlock")
 async def unlock(
     body: UnlockRequest,
     request: Request,
-    email: str = Depends(require_admin_session),
+    email: str = Depends(_require_admin_session_dep),
 ):
     if not ADMIN_PASSWORD_HASH:
         raise HTTPException(
@@ -249,7 +270,7 @@ async def unlock(
 
 
 @router.post("/lock")
-async def lock(_: str = Depends(require_admin_session)):
+async def lock(_: str = Depends(_require_admin_session_dep)):
     # Tokens are stateless (HMAC-signed); no server-side revocation list.
     # The 'lock' button on the UI just clears sessionStorage. Returning
     # 200 lets the frontend treat it as a successful sign-out signal.
@@ -259,7 +280,7 @@ async def lock(_: str = Depends(require_admin_session)):
 @router.get("/status")
 async def status(
     request: Request,
-    email: str = Depends(require_admin_session),
+    email: str = Depends(_require_admin_session_dep),
     x_admin_token: Optional[str] = Header(None, alias="X-Admin-Token"),
 ):
     payload = verify_admin_token(x_admin_token, email)
@@ -284,7 +305,7 @@ async def status(
 # ---------------------------------------------------------------------------
 
 def require_admin_unlocked(
-    email: str = Depends(require_admin_session),
+    email: str = Depends(_require_admin_session_dep),
     x_admin_token: Optional[str] = Header(None, alias="X-Admin-Token"),
 ) -> str:
     """Adds the sudo-mode gate on top of require_admin_session. Raise 401
