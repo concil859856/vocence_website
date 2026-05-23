@@ -19,7 +19,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, Navigate, useLocation } from 'react-router-dom';
-import { Activity, Lock, ShieldCheck, Unlock, Users } from 'lucide-react';
+import { Activity, Lock, ShieldCheck, Unlock } from 'lucide-react';
 import { ADMIN_EMAIL } from '../../config';
 import { useAuth } from '../../contexts/AuthContext';
 import { getStoredToken } from '../../lib/agents/api';
@@ -47,9 +47,10 @@ interface AdminNavItem {
   icon: typeof ShieldCheck;
 }
 
+// Website-usage is reached from inside the Admin page itself, so it's
+// intentionally NOT in this top-bar list (would be redundant).
 const ADMIN_NAV: AdminNavItem[] = [
   { to: '/admin', label: 'Admin', icon: ShieldCheck },
-  { to: '/admin/website_usage', label: 'Website usage', icon: Users },
   { to: '/admin/ops', label: 'Ops', icon: Activity },
 ];
 
