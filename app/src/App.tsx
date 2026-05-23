@@ -32,6 +32,7 @@ const Account = lazy(() => import('./pages/Account').then((m) => ({ default: m.A
 const History = lazy(() => import('./pages/History').then((m) => ({ default: m.History })));
 const CliAuthorize = lazy(() => import('./pages/CliAuthorize').then((m) => ({ default: m.CliAuthorize })));
 const Admin = lazy(() => import('./pages/Admin').then((m) => ({ default: m.Admin })));
+const StudioOps = lazy(() => import('./pages/StudioOps').then((m) => ({ default: m.StudioOps })));
 const DashboardEvaluations = lazy(() => import('./pages/DashboardEvaluations').then((m) => ({ default: m.DashboardEvaluations })));
 const Pricing = lazy(() => import('./pages/Pricing').then((m) => ({ default: m.Pricing })));
 const Privacy = lazy(() => import('./pages/Privacy').then((m) => ({ default: m.Privacy })));
@@ -82,6 +83,8 @@ function App() {
               <Route path="/studio" element={<Navigate to="/studio/home" replace />} />
               <Route path="/studio/my-voices/:voiceId" element={<StudioDesignedVoiceWorkspace />} />
               <Route path="/studio/playbooks/:playbookId" element={<Studio />} />
+              {/* Admin-only fleet manager (admin gate enforced inside the component). */}
+              <Route path="/studio/ops" element={<StudioOps />} />
               <Route path="/studio/agents" element={<AgentRouteGate><AgentsList /></AgentRouteGate>} />
               <Route path="/studio/agents/new" element={<AgentRouteGate><AgentBuilder /></AgentRouteGate>} />
               <Route path="/studio/agents/:id/runs/:runId" element={<AgentRouteGate><AgentRunViewer /></AgentRouteGate>} />
