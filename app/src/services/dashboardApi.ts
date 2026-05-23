@@ -106,6 +106,19 @@ async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     if (typeof console !== 'undefined') console.warn('[fetchJson]', url, res.status, text);
+    // Admin sudo-mode: detect the backend's "admin password required" rejection
+    // and dispatch a global event so AdminGate re-pops the unlock modal.
+    // Also wipe the locally-stored admin_token so the next call doesn't keep
+    // sending a known-bad one.
+    if (res.status === 401 && text.includes('admin_unlock_required')) {
+      if (typeof window !== 'undefined') {
+        try {
+          window.sessionStorage.removeItem('vocence.admin_token');
+          window.sessionStorage.removeItem('vocence.admin_token_expires_at');
+        } catch { /* ignore */ }
+        window.dispatchEvent(new Event('admin-unlock-required'));
+      }
+    }
     const { userMessage, detail } = _extractUserMessage(res.status, text);
     throw new ApiError({ status: res.status, userMessage, detail });
   }

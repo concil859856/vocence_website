@@ -31,6 +31,12 @@ import {
 } from '../../lib/admin/api';
 import { AdminUnlockModal } from './AdminUnlockModal';
 
+// Custom event dispatched from lib/ops/api.ts (or any admin API client) when
+// the backend rejects a call with 401 code=admin_unlock_required. Listening
+// for it lets AdminGate re-pop the unlock modal mid-session WITHOUT having
+// to poll /status itself.
+const ADMIN_UNLOCK_EVENT = 'admin-unlock-required';
+
 interface Props {
   children: React.ReactNode;
 }
@@ -51,60 +57,55 @@ export function AdminGate({ children }: Props) {
   const { user, isAuthenticated, isLoading } = useAuth();
   const location = useLocation();
 
-  // BOTH tokens must be read synchronously from storage at first render —
-  // otherwise the guards below (`!token`) fire on render 1 and redirect to
-  // '/' before the useEffect that would have loaded them runs. The
-  // resulting "page flashes then disappears" bug made every admin page
-  // unreachable on direct navigation.
+  // Read everything synchronously from storage on first render. The admin
+  // token + expiry are signed by the backend (HMAC-sha256) so we can trust
+  // the client-side state — no need to call /status on every mount, which
+  // was the source of the "ask me again after one good unlock" instability
+  // (any network blip on /status would clear the local token).
+  //
+  // Re-pop the modal only when:
+  //   (a) client-side expiry passes (60s interval check below), OR
+  //   (b) any admin API call returns 401 admin_unlock_required (which fires
+  //       the ADMIN_UNLOCK_EVENT — listener below).
   const [token, setToken] = useState<string | null>(() => getStoredToken());
-  const [adminToken, setAdminToken] = useState<string | null>(() => getStoredAdminToken());
-  const [unlockChecked, setUnlockChecked] = useState(false);
-  const [showUnlock, setShowUnlock] = useState(false);
+  const [adminToken, setAdminToken] = useState<string | null>(() => {
+    const t = getStoredAdminToken();
+    const exp = getStoredAdminTokenExpiry();
+    // Trust the stored token only if its expiry hasn't already passed.
+    if (t && exp && exp.getTime() <= Date.now()) {
+      clearStoredAdminToken();
+      return null;
+    }
+    return t;
+  });
   const [expiresAt, setExpiresAt] = useState<Date | null>(() => getStoredAdminTokenExpiry());
   const [renderKey, setRenderKey] = useState(0);
 
-  // Re-read JWT after mount as a safety net (e.g. when the user just logged
-  // in and the auth context updated localStorage in another render).
+  const showUnlock = !adminToken;
+
+  // Re-read JWT after mount as a safety net (e.g. just-logged-in user
+  // whose AuthContext updated localStorage in a later render).
   useEffect(() => {
     const t = getStoredToken();
     if (t !== token) setToken(t);
   }, [token]);
 
-  const verifyUnlock = useCallback(async (t: string) => {
-    const stored = getStoredAdminToken();
-    if (!stored) {
+  // Listen for the global "admin-unlock-required" event dispatched by
+  // lib/ops/api.ts (and any other admin API client) when the backend
+  // rejects a request with 401 code=admin_unlock_required. This is how a
+  // truly-expired-server-side token forces a re-prompt mid-session.
+  useEffect(() => {
+    const handler = () => {
+      clearStoredAdminToken();
       setAdminToken(null);
       setExpiresAt(null);
-      setShowUnlock(true);
-      setUnlockChecked(true);
-      return;
-    }
-    try {
-      const status = await adminAuthApi.status(t, stored);
-      if (status.unlocked) {
-        setAdminToken(stored);
-        setExpiresAt(status.expires_at ? new Date(status.expires_at) : null);
-        setShowUnlock(false);
-      } else {
-        clearStoredAdminToken();
-        setAdminToken(null);
-        setExpiresAt(null);
-        setShowUnlock(true);
-      }
-    } catch {
-      setAdminToken(null);
-      setExpiresAt(null);
-      setShowUnlock(true);
-    } finally {
-      setUnlockChecked(true);
-    }
+    };
+    window.addEventListener(ADMIN_UNLOCK_EVENT, handler);
+    return () => window.removeEventListener(ADMIN_UNLOCK_EVENT, handler);
   }, []);
 
-  useEffect(() => {
-    if (token) verifyUnlock(token);
-  }, [token, verifyUnlock]);
-
-  // Periodically re-check expiry; pops the modal when TTL lapses mid-session.
+  // Client-side expiry watcher — pops the modal when the 4-hour TTL lapses
+  // without a server-side check. Cheap and works offline.
   useEffect(() => {
     if (!adminToken || !expiresAt) return;
     const id = window.setInterval(() => {
@@ -112,7 +113,6 @@ export function AdminGate({ children }: Props) {
         clearStoredAdminToken();
         setAdminToken(null);
         setExpiresAt(null);
-        setShowUnlock(true);
       }
     }, 60_000);
     return () => window.clearInterval(id);
@@ -123,7 +123,6 @@ export function AdminGate({ children }: Props) {
     const exp = getStoredAdminTokenExpiry();
     setAdminToken(t);
     setExpiresAt(exp);
-    setShowUnlock(false);
     setRenderKey((k) => k + 1);
   }, []);
 
@@ -134,7 +133,6 @@ export function AdminGate({ children }: Props) {
     clearStoredAdminToken();
     setAdminToken(null);
     setExpiresAt(null);
-    setShowUnlock(true);
   }, [token]);
 
   const expiryLabel = useMemo(() => {
@@ -155,14 +153,6 @@ export function AdminGate({ children }: Props) {
   if (!isAuthenticated || !user || user.email !== ADMIN_EMAIL || !token) {
     return <Navigate to="/" replace />;
   }
-  if (!unlockChecked) {
-    return (
-      <div className="min-h-screen bg-[#07080A] flex items-center justify-center text-[#A7B0B7]">
-        Verifying admin session…
-      </div>
-    );
-  }
-
   return (
     <>
       {/* Admin top bar — cross-links + unlock badge + Lock button. Only

@@ -54,6 +54,12 @@ async function jsonFetch<T>(url: string, init: RequestInit): Promise<T> {
       (rawDetail as { code?: string }).code === 'admin_unlock_required'
     ) {
       clearStoredAdminToken();
+      // Dispatch a global event so AdminGate can pop the unlock modal
+      // immediately, instead of waiting for the next user interaction
+      // (or its 60s expiry watcher) to notice the token's gone.
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new Event('admin-unlock-required'));
+      }
       const err = new Error('admin_unlock_required') as Error & {
         status?: number;
         code?: string;
