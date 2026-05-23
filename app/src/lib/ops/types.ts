@@ -138,13 +138,17 @@ export const SERVICE_LABELS: Record<ServiceName, string> = {
   stt: 'Speech-to-Text',
 };
 
-/** Default Docker Hub images per service. Admin can override at deploy time. */
+/** Default Docker Hub images per service. Admin can override at deploy time.
+ * Namespace is `vocence` (the Docker Hub org), NOT `concil859856` (which is
+ * the GitHub handle). Image names match each repo's release-workflow
+ * IMAGE_NAME, so e.g. `voice_clone` (underscore) and `text-to-music`/
+ * `asr-streaming` are the actual published names. */
 export const DEFAULT_IMAGES: Record<ServiceName, string> = {
-  tts_streaming: 'concil859856/fast-tts-streaming:latest',
-  voice_design: 'concil859856/voice-design-non-streaming:latest',
-  voice_clone: 'concil859856/voice-clone:latest',
-  stt: 'concil859856/stt:latest',
-  music: 'concil859856/music:latest',
+  tts_streaming: 'vocence/fast-tts-streaming:latest',
+  voice_design: 'vocence/voice-design-non-streaming:latest',
+  voice_clone: 'vocence/voice_clone:latest',
+  stt: 'vocence/asr-streaming:latest',
+  music: 'vocence/text-to-music:latest',
 };
 
 /** Default host port per service (matches container EXPOSE in each repo's Dockerfile). */

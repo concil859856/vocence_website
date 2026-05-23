@@ -358,12 +358,12 @@ function DeployPodModal({
             </Field>
           </div>
 
-          <Field label="Image" hint="Docker Hub tag, e.g. concil859856/fast-tts-streaming:latest">
+          <Field label="Image" hint="Docker Hub tag, e.g. vocence/fast-tts-streaming:latest">
             <input
               value={form.image}
               onChange={(e) => setForm({ ...form, image: e.target.value })}
               required
-              placeholder="concil859856/fast-tts-streaming:latest"
+              placeholder="vocence/fast-tts-streaming:latest"
               className="input font-mono text-[12px]"
             />
           </Field>
