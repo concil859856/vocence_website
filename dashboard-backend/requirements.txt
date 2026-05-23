@@ -9,3 +9,7 @@ aiohttp>=3.9.0
 minio>=7.2.0
 Pillow>=10.0.0
 numpy>=1.26.0
+# ops module: SSH wrapper for remote Docker control on rented GPU boxes
+asyncssh>=2.14.0
+# ops module: Fernet at-rest encryption of SSH keys + per-pod API keys
+cryptography>=42.0.0

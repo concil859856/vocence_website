@@ -110,7 +110,27 @@ async def lifespan(app: FastAPI):
         import logging
         logging.getLogger(__name__).exception("assistant knowledge indexing failed; continuing")
     await start_workers()
+
+    # Ops fleet manager: register the schema, then start the background
+    # pollers (health/metrics/update-detector/cleanup). Boot continues even
+    # if ops initialization fails — the rest of the dashboard should still
+    # serve, and the admin will see the failure in the /studio/ops tab.
+    import logging as _logging
+    try:
+        from ops.db import ensure_ops_tables
+        await ensure_ops_tables()
+        from ops.pollers import start_pollers
+        await start_pollers()
+    except Exception:
+        _logging.getLogger(__name__).exception("ops module failed to start; continuing without fleet management")
+
     yield
+
+    try:
+        from ops.pollers import stop_pollers
+        await stop_pollers()
+    except Exception:
+        _logging.getLogger(__name__).exception("ops.stop_pollers failed (non-fatal)")
     await stop_workers()
     # Clean up the agent-tools shared HTTP session so the keep-alive
     # connector tears down gracefully (otherwise aiohttp logs an
