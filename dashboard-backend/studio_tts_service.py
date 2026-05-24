@@ -274,9 +274,30 @@ async def transcribe_audio(
     keys so the same code works against either provider. `language` is optional.
     Returns ({text, ...}, "") on success, else (None, "reason").
     """
-    url = (base_url or STUDIO_STT_URL or "").strip()
+    # Try the ops dispatcher first when ops pods are registered.
+    pod_cm = None
+    ops_url: str | None = None
+    ops_key: str | None = None
+    if base_url is None:
+        try:
+            from ops import pool as gpu_pool
+            if gpu_pool.online_pod_count("stt") > 0:
+                pod_cm = gpu_pool.pick_pod("stt")
+                pod = await pod_cm.__aenter__()
+                ops_url = pod.url + "/transcribe"
+                ops_key = pod.api_key or None
+        except Exception as e:
+            try:
+                from ops.pool import NoCapacity
+                if isinstance(e, NoCapacity):
+                    return None, "stt fleet busy (all pods at capacity)"
+            except ImportError:
+                pass
+            pod_cm = None
+
+    url = ops_url or (base_url or STUDIO_STT_URL or "").strip()
     if not url:
-        return None, "STT not configured"
+        return None, "STT not configured (no ops pods online, STUDIO_STT_URL not set)"
     b64 = base64.b64encode(audio_bytes).decode("utf-8")
     payload: dict[str, str] = {
         "audio_b64": b64,
@@ -285,8 +306,9 @@ async def transcribe_audio(
     if language:
         payload["language"] = language
     headers = {"Content-Type": "application/json"}
-    if CHUTES_AUTH_KEY:
-        headers["Authorization"] = f"Bearer {CHUTES_AUTH_KEY}"
+    auth_key = ops_key or CHUTES_AUTH_KEY
+    if auth_key:
+        headers["Authorization"] = f"Bearer {auth_key}"
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(
@@ -315,6 +337,12 @@ async def transcribe_audio(
         return None, "transcription request timed out"
     except Exception as e:
         return None, str(e)
+    finally:
+        if pod_cm is not None:
+            try:
+                await pod_cm.__aexit__(None, None, None)
+            except Exception:
+                pass
 
 
 def voice_clone_chute_configured() -> bool:
@@ -409,10 +437,32 @@ async def voice_clone_synthesize(
         STUDIO_VOICE_CLONE_KEY_TARGET: target_text or "",
     }
     headers: dict[str, str] = {}
-    effective_url = (base_url or STUDIO_VOICE_CLONE_URL or "").strip()
+
+    # Try the ops dispatcher first when ops pods are registered.
+    pod_cm = None
+    ops_url: str | None = None
+    if base_url is None:
+        try:
+            from ops import pool as gpu_pool
+            if gpu_pool.online_pod_count("voice_clone") > 0:
+                pod_cm = gpu_pool.pick_pod("voice_clone")
+                pod = await pod_cm.__aenter__()
+                ops_url = pod.url + STUDIO_VOICE_CLONE_PATH
+                if pod.api_key:
+                    headers["Authorization"] = f"Bearer {pod.api_key}"
+        except Exception as e:
+            try:
+                from ops.pool import NoCapacity
+                if isinstance(e, NoCapacity):
+                    return None, "voice_clone fleet busy (all pods at capacity)"
+            except ImportError:
+                pass
+            pod_cm = None
+
+    effective_url = ops_url or (base_url or STUDIO_VOICE_CLONE_URL or "").strip()
     if effective_url:
         url = effective_url
-        if STUDIO_VOICE_CLONE_API_KEY:
+        if not headers.get("Authorization") and STUDIO_VOICE_CLONE_API_KEY:
             headers["Authorization"] = f"Bearer {STUDIO_VOICE_CLONE_API_KEY}"
         req_mode = STUDIO_VOICE_CLONE_REQUEST_MODE
     else:
@@ -500,6 +550,12 @@ async def voice_clone_synthesize(
         return None, "clone service request timed out"
     except Exception as e:
         return None, str(e)
+    finally:
+        if pod_cm is not None:
+            try:
+                await pod_cm.__aexit__(None, None, None)
+            except Exception:
+                pass
 
 
 def voice_design_llm_model_ids_for_catalog() -> list[str]:
