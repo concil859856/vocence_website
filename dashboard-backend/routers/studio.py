@@ -43,6 +43,7 @@ from schemas import (
     StudioVoiceDesignSaveRequest,
     StudioVoiceDesignSaveResponse,
 )
+from contextlib import asynccontextmanager as _acm
 from jobs.registry import MUSIC_POOL
 from studio_music_service import (
     generate_audio2audio as music_audio2audio,
@@ -1873,13 +1874,54 @@ async def music_upload_source(
     return {"src_audio_bucket": bucket, "src_audio_key": key, "src_audio_filename": filename}
 
 
+def _music_available() -> bool:
+    """True if at least one music pod is available — either via the ops
+    dispatcher or the static MUSIC_GEN_API_URL env var."""
+    try:
+        from ops import pool as gpu_pool
+        if gpu_pool.online_pod_count("music") > 0:
+            return True
+    except Exception:
+        pass
+    return music_gen_configured()
+
+
+@_acm
+async def _pick_music_pod():
+    """Yield the base URL of the best available music pod.
+
+    Priority:
+      1. ops dispatcher — least-loaded online ``music`` pod
+      2. static MUSIC_POOL (from MUSIC_GEN_API_URL env)
+
+    Raises HTTPException(503) if neither path has capacity."""
+    try:
+        from ops import pool as gpu_pool
+        if gpu_pool.online_pod_count("music") > 0:
+            async with gpu_pool.pick_pod("music") as pod:
+                yield pod.url
+                return
+    except Exception as e:
+        try:
+            from ops.pool import NoCapacity
+            if isinstance(e, NoCapacity):
+                raise HTTPException(status_code=503, detail="Music fleet busy (all pods at capacity)")
+        except ImportError:
+            pass
+
+    if not music_gen_configured():
+        raise HTTPException(status_code=503, detail="No music pods online and MUSIC_GEN_API_URL not configured.")
+    async with _pick_music_pod() as pod_url:
+        yield pod_url
+
+
 @router.post("/music/text2music", response_model=StudioMusicGenerateResponse)
 async def music_generate_text2music(body: StudioMusicText2MusicRequest, user_id: str = Depends(require_auth)):
     """Generate music from text prompt + lyrics via ACE-Step API."""
     if body.user_id != user_id:
         raise HTTPException(status_code=403, detail="user_id does not match authenticated user")
-    if not music_gen_configured():
-        raise HTTPException(status_code=503, detail="Music generation is not configured (MUSIC_GEN_API_URL).")
+    if not _music_available():
+        raise HTTPException(status_code=503, detail="Music generation is not available (no ops pods online, MUSIC_GEN_API_URL not set).")
 
     prompt = (body.prompt or "").strip()
     if not prompt:
@@ -1914,7 +1956,7 @@ async def music_generate_text2music(body: StudioMusicText2MusicRequest, user_id:
         await conn.close()
 
     started = time.perf_counter()
-    async with MUSIC_POOL.acquire() as pod_url:
+    async with _pick_music_pod() as pod_url:
         wav_bytes, audio_path, err_msg = await music_text2music(
             base_url=pod_url,
             prompt=prompt,
@@ -2027,8 +2069,8 @@ async def music_generate_audio2audio(
     """Audio-to-Audio style transfer via ACE-Step."""
     if user_id_form != user_id:
         raise HTTPException(status_code=403, detail="user_id does not match authenticated user")
-    if not music_gen_configured():
-        raise HTTPException(status_code=503, detail="Music generation is not configured.")
+    if not _music_available():
+        raise HTTPException(status_code=503, detail="Music generation is not available (no ops pods online, MUSIC_GEN_API_URL not set).")
     if audio_duration != -1:
         cap = _max_music_duration_for_steps(int(infer_step or 60))
         if audio_duration > cap:
@@ -2059,7 +2101,7 @@ async def music_generate_audio2audio(
         await conn.close()
 
     started = time.perf_counter()
-    async with MUSIC_POOL.acquire() as pod_url:
+    async with _pick_music_pod() as pod_url:
         wav_bytes, audio_path, err_msg = await music_audio2audio(
             base_url=pod_url,
             ref_audio_bytes=raw,
@@ -2141,8 +2183,8 @@ async def music_generate_retake(
     """Generate variation of existing audio via ACE-Step retake."""
     if user_id_form != user_id:
         raise HTTPException(status_code=403, detail="user_id mismatch")
-    if not music_gen_configured():
-        raise HTTPException(status_code=503, detail="Music generation is not configured.")
+    if not _music_available():
+        raise HTTPException(status_code=503, detail="Music generation is not available (no ops pods online, MUSIC_GEN_API_URL not set).")
 
     raw = await src_audio.read()
     if not raw or len(raw) > MUSIC_MAX_UPLOAD_BYTES:
@@ -2161,7 +2203,7 @@ async def music_generate_retake(
         await conn.close()
 
     started = time.perf_counter()
-    async with MUSIC_POOL.acquire() as pod_url:
+    async with _pick_music_pod() as pod_url:
         wav_bytes, _, err_msg = await music_retake(
             base_url=pod_url,
             src_audio_bytes=raw, src_audio_filename=src_audio.filename or "source.wav",
@@ -2238,8 +2280,8 @@ async def music_generate_repaint(
     """Regenerate a region of audio via ACE-Step repaint."""
     if user_id_form != user_id:
         raise HTTPException(status_code=403, detail="user_id mismatch")
-    if not music_gen_configured():
-        raise HTTPException(status_code=503, detail="Music generation is not configured.")
+    if not _music_available():
+        raise HTTPException(status_code=503, detail="Music generation is not available (no ops pods online, MUSIC_GEN_API_URL not set).")
 
     raw = await src_audio.read()
     if not raw or len(raw) > MUSIC_MAX_UPLOAD_BYTES:
@@ -2258,7 +2300,7 @@ async def music_generate_repaint(
         await conn.close()
 
     started = time.perf_counter()
-    async with MUSIC_POOL.acquire() as pod_url:
+    async with _pick_music_pod() as pod_url:
         wav_bytes, _, err_msg = await music_repaint(
             base_url=pod_url,
             src_audio_bytes=raw, src_audio_filename=src_audio.filename or "source.wav",
@@ -2334,8 +2376,8 @@ async def music_generate_edit(
     """Edit lyrics/tags of existing audio via ACE-Step."""
     if user_id_form != user_id:
         raise HTTPException(status_code=403, detail="user_id mismatch")
-    if not music_gen_configured():
-        raise HTTPException(status_code=503, detail="Music generation is not configured.")
+    if not _music_available():
+        raise HTTPException(status_code=503, detail="Music generation is not available (no ops pods online, MUSIC_GEN_API_URL not set).")
 
     raw = await src_audio.read()
     if not raw or len(raw) > MUSIC_MAX_UPLOAD_BYTES:
@@ -2354,7 +2396,7 @@ async def music_generate_edit(
         await conn.close()
 
     started = time.perf_counter()
-    async with MUSIC_POOL.acquire() as pod_url:
+    async with _pick_music_pod() as pod_url:
         wav_bytes, _, err_msg = await music_edit(
             base_url=pod_url,
             src_audio_bytes=raw, src_audio_filename=src_audio.filename or "source.wav",
@@ -2431,8 +2473,8 @@ async def music_generate_extend(
     """Extend/lengthen audio via ACE-Step."""
     if user_id_form != user_id:
         raise HTTPException(status_code=403, detail="user_id mismatch")
-    if not music_gen_configured():
-        raise HTTPException(status_code=503, detail="Music generation is not configured.")
+    if not _music_available():
+        raise HTTPException(status_code=503, detail="Music generation is not available (no ops pods online, MUSIC_GEN_API_URL not set).")
 
     raw = await src_audio.read()
     if not raw or len(raw) > MUSIC_MAX_UPLOAD_BYTES:
@@ -2451,7 +2493,7 @@ async def music_generate_extend(
         await conn.close()
 
     started = time.perf_counter()
-    async with MUSIC_POOL.acquire() as pod_url:
+    async with _pick_music_pod() as pod_url:
         wav_bytes, _, err_msg = await music_extend(
             base_url=pod_url,
             src_audio_bytes=raw, src_audio_filename=src_audio.filename or "source.wav",
