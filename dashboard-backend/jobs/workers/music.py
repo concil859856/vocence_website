@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from contextlib import asynccontextmanager
 import binascii
 import json as _json
 import logging
@@ -267,19 +268,43 @@ def _history_metadata(task: str, payload: dict) -> dict:
     return {}
 
 
+@asynccontextmanager
+async def _pick_music_pod():
+    """Async context manager yielding a pod_url string.
+
+    Tries the ops dispatcher first (least-loaded online music pod),
+    falls back to the static MUSIC_POOL (from MUSIC_GEN_API_URL env).
+    """
+    try:
+        from ops import pool as gpu_pool
+        if gpu_pool.online_pod_count("music") > 0:
+            async with gpu_pool.pick_pod("music") as pod:
+                yield pod.url
+                return
+    except Exception as e:
+        try:
+            from ops.pool import NoCapacity
+            if isinstance(e, NoCapacity):
+                raise RuntimeError("Music fleet busy (all pods at capacity)")
+        except ImportError:
+            pass
+    if not MUSIC_POOL.configured():
+        raise RuntimeError("Music pool is not configured (no ops pods online, MUSIC_GEN_API_URL not set)")
+    async with MUSIC_POOL.acquire() as pod_url:
+        yield pod_url
+
+
 async def process_music(job: state.Job) -> dict:
     payload = job.payload
     task = (payload.get("task") or "text2music").lower()
     if task not in _VALID_TASKS:
         raise RuntimeError(f"Unknown music task: {task!r}")
-    if not MUSIC_POOL.configured():
-        raise RuntimeError("Music pool is not configured")
 
     await state.update_status(job.id, phase=f"generating music ({task})")
     started = time.perf_counter()
 
     err: str | None = None
-    async with MUSIC_POOL.acquire() as pod_url:
+    async with _pick_music_pod() as pod_url:
         await state.update_status(job.id, pod_url=pod_url)
         try:
             wav_bytes, audio_path, err = await asyncio.wait_for(
@@ -287,12 +312,9 @@ async def process_music(job: state.Job) -> dict:
                 timeout=PHASE_TIMEOUT_MUSIC,
             )
         except asyncio.TimeoutError:
-            MUSIC_POOL.quarantine(pod_url)
             raise
 
     if not wav_bytes:
-        if err and ("returned 5" in err or "timed out" in err or "connect" in err.lower()):
-            MUSIC_POOL.quarantine(pod_url)
         raise RuntimeError(err or "Music generation failed")
 
     await state.update_status(job.id, phase="storing audio")
