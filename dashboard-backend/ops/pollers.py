@@ -51,6 +51,7 @@ METRICS_REQUEST_TIMEOUT_S = float(os.environ.get("OPS_METRICS_TIMEOUT_S") or "10
 
 FAILURES_BEFORE_RESTART = int(os.environ.get("OPS_HEALTHCHECK_FAILURES_BEFORE_RESTART") or "3")
 RESTART_GRACE_S = float(os.environ.get("OPS_RESTART_GRACE_S") or "60")
+DEPLOY_GRACE_S = float(os.environ.get("OPS_DEPLOY_GRACE_S") or "300")
 
 METRIC_RETENTION_DAYS = int(os.environ.get("OPS_METRIC_RETENTION_DAYS") or "30")
 
@@ -249,6 +250,29 @@ async def _health_poll_once(cycle: int) -> None:
         # Failure path — increment counter, decide on action.
         fails = int(p.get("consecutive_failures") or 0) + 1
         _LAST_OK_TS.pop(pod_id, None)
+
+        # Deploy grace: pods in "deploying" status get up to DEPLOY_GRACE_S
+        # (default 300s) before failures count toward auto-restart. This
+        # covers the first-boot model download (can be 7+ GB / 60-300s).
+        # Still poll (so they flip to "online" on first success), but don't
+        # escalate failures. Docker's HEALTHCHECK --start-period does the
+        # same thing for the container-level health — this is the ops-layer
+        # equivalent.
+        if p.get("status") == "deploying":
+            updated = p.get("updated_at") or ""
+            try:
+                deploy_ts = datetime.fromisoformat(updated.replace("Z", "+00:00")).timestamp()
+            except (ValueError, AttributeError):
+                deploy_ts = 0
+            if _now() - deploy_ts < DEPLOY_GRACE_S:
+                await db.update_pod(pod_id, consecutive_failures=fails)
+                if fails == 1 or fails % 10 == 0:
+                    _log.info(
+                        "pod %s health-check failed (%d) during deploy grace (%.0fs left): %s",
+                        p["name"], fails, DEPLOY_GRACE_S - (_now() - deploy_ts),
+                        err or f"http {status_code}",
+                    )
+                continue
 
         if fails < FAILURES_BEFORE_RESTART:
             await db.update_pod(pod_id, consecutive_failures=fails)
