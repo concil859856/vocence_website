@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 import logging
 import time
 
@@ -15,6 +16,32 @@ from ..timeouts import PHASE_TIMEOUT_TTS
 
 
 _log = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def _pick_tts_pod():
+    """Async context manager yielding a pod_url string.
+
+    Tries the ops dispatcher first (least-loaded online tts_streaming pod),
+    falls back to the static TTS_POOL (from env config).
+    """
+    try:
+        from ops import pool as gpu_pool
+        if gpu_pool.online_pod_count("tts_streaming") > 0:
+            async with gpu_pool.pick_pod("tts_streaming") as pod:
+                yield pod.url
+                return
+    except Exception as e:
+        try:
+            from ops.pool import NoCapacity
+            if isinstance(e, NoCapacity):
+                raise RuntimeError("TTS fleet busy (all pods at capacity)")
+        except ImportError:
+            pass
+    if not TTS_POOL.configured():
+        raise RuntimeError("TTS pool is not configured (no ops pods online, TTS env not set)")
+    async with TTS_POOL.acquire() as pod_url:
+        yield pod_url
 
 
 def _humanize_miner_error(err: str) -> str:
@@ -32,8 +59,6 @@ def _humanize_miner_error(err: str) -> str:
 
 
 async def process_tts(job: state.Job) -> dict:
-    if not TTS_POOL.configured():
-        raise RuntimeError("TTS pool is not configured")
     payload = job.payload
     text = (payload.get("text") or "").strip()
     if not text:
@@ -46,7 +71,7 @@ async def process_tts(job: state.Job) -> dict:
     await state.update_status(job.id, phase="generating speech")
     started = time.perf_counter()
 
-    async with TTS_POOL.acquire() as pod:
+    async with _pick_tts_pod() as pod:
         await state.update_status(job.id, pod_url=pod)
         try:
             wav_bytes, err = await asyncio.wait_for(
