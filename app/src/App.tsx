@@ -49,6 +49,7 @@ const SalesEmail = lazy(() => import('./pages/SalesEmail').then((m) => ({ defaul
 const AdminWebsiteUsage = lazy(() =>
   import('./pages/AdminWebsiteUsage').then((m) => ({ default: m.AdminWebsiteUsage }))
 );
+const NotFound = lazy(() => import('./pages/NotFound').then((m) => ({ default: m.NotFound })));
 
 function PageFallback() {
   return (
@@ -114,6 +115,7 @@ function AppContent() {
               <Route path="/privacy" element={<Privacy />} />
               <Route path="/terms" element={<Terms />} />
               <Route path="/whitepaper" element={<Whitepaper />} />
+              <Route path="*" element={<NotFound />} />
             </Routes>
           </Suspense>
         </main>

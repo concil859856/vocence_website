@@ -1,0 +1,11 @@
+User-agent: *
+Allow: /
+Disallow: /admin
+Disallow: /admin/
+Disallow: /cli/
+Disallow: /account
+Disallow: /account/
+Disallow: /studio/result/
+Disallow: /studio/agents/
+
+Sitemap: https://www.vocence.ai/sitemap.xml

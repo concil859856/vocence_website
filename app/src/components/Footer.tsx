@@ -46,7 +46,7 @@ export function Footer() {
       { label: 'Integrations', href: '#' },
       { label: 'Changelog', href: 'https://github.com/vocence-78/vocence/blob/master/CHANGELOG.md' },
       { label: 'Documentation', href: '/docs/getting-started' },
-      { label: 'Status', href: '#' },
+      { label: 'Status', href: 'https://status.vocence.ai' },
     ],
     resources: [
       { label: 'Blog', href: '/blog' },

@@ -12,6 +12,7 @@ interface AuthModalProps {
 
 export function AuthModal({ isOpen, onClose, initialMode = 'login' }: AuthModalProps) {
   const [mode, setMode] = useState<'login' | 'signup'>(initialMode);
+  const [tosAccepted, setTosAccepted] = useState(false);
   const { login } = useAuth();
 
   if (!isOpen) return null;
@@ -87,15 +88,20 @@ export function AuthModal({ isOpen, onClose, initialMode = 'login' }: AuthModalP
           <div className="space-y-4">
             {import.meta.env.VITE_GOOGLE_CLIENT_ID ? (
               <div className="flex flex-col items-center">
-                <GoogleLogin
-                  onSuccess={handleGoogleSuccess}
-                  onError={handleGoogleError}
-                  useOneTap={false}
-                  theme="filled_black"
-                  size="large"
-                  text={mode === 'login' ? 'signin_with' : 'signup_with'}
-                  shape="pill"
-                />
+                <div className={tosAccepted ? '' : 'opacity-50 pointer-events-none'}>
+                  <GoogleLogin
+                    onSuccess={handleGoogleSuccess}
+                    onError={handleGoogleError}
+                    useOneTap={false}
+                    theme="filled_black"
+                    size="large"
+                    text={mode === 'login' ? 'signin_with' : 'signup_with'}
+                    shape="pill"
+                  />
+                </div>
+                {!tosAccepted && (
+                  <p className="text-xs text-[#A7B0B7] mt-2">Accept the terms below to continue</p>
+                )}
               </div>
             ) : (
               <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-xl p-4 text-center">
@@ -151,11 +157,22 @@ export function AuthModal({ isOpen, onClose, initialMode = 'login' }: AuthModalP
               </p>
             </div>
 
-            {/* Info */}
+            {/* ToS acceptance */}
             <div className="pt-4 border-t border-white/10">
-              <p className="text-xs text-[#666] text-center">
-                By continuing, you agree to Vocence's Terms of Service and Privacy Policy.
-              </p>
+              <label className="flex items-start gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={tosAccepted}
+                  onChange={(e) => setTosAccepted(e.target.checked)}
+                  className="mt-0.5 w-4 h-4 rounded border-white/20 accent-[#DFFF00]"
+                />
+                <span className="text-xs text-[#A7B0B7]">
+                  I agree to Vocence's{' '}
+                  <a href="/terms" target="_blank" className="text-[#DFFF00] hover:underline">Terms of Service</a>
+                  {' '}and{' '}
+                  <a href="/privacy" target="_blank" className="text-[#DFFF00] hover:underline">Privacy Policy</a>.
+                </span>
+              </label>
             </div>
           </div>
         </div>
