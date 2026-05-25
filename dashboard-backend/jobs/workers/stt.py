@@ -26,8 +26,16 @@ _log = logging.getLogger(__name__)
 
 async def process_stt(job: state.Job) -> dict:
     payload = job.payload
-    if not STT_POOL.configured():
-        raise RuntimeError("STT pool is not configured")
+    # Check ops pods first, then static pool
+    _stt_ok = False
+    try:
+        from ops import pool as gpu_pool
+        if gpu_pool.online_pod_count("stt") > 0:
+            _stt_ok = True
+    except Exception:
+        pass
+    if not _stt_ok and not STT_POOL.configured():
+        raise RuntimeError("STT pool is not configured (no ops pods online, STUDIO_STT_URL not set)")
 
     # Preferred path: ``audio_bucket`` + ``audio_key`` (browser uploads
     # via the presigned PUT URL to R2 directly; the job payload only
@@ -55,20 +63,14 @@ async def process_stt(job: state.Job) -> dict:
     await state.update_status(job.id, phase="transcribing")
     started = time.perf_counter()
 
-    async with STT_POOL.acquire() as pod_url:
-        await state.update_status(job.id, pod_url=pod_url)
-        try:
-            data, err = await asyncio.wait_for(
-                transcribe_audio(audio_bytes=audio, language=language, base_url=pod_url),
-                timeout=PHASE_TIMEOUT_STT,
-            )
-        except asyncio.TimeoutError:
-            STT_POOL.quarantine(pod_url)
-            raise
+    # Let transcribe_audio handle pod selection — its internal dispatcher
+    # picks stt pods with the correct per-pod API key.
+    data, err = await asyncio.wait_for(
+        transcribe_audio(audio_bytes=audio, language=language),
+        timeout=PHASE_TIMEOUT_STT,
+    )
 
     if not data:
-        if err and ("returned 5" in err or "timed out" in err or "connect" in err.lower()):
-            STT_POOL.quarantine(pod_url)
         raise RuntimeError(err or "Transcription failed")
 
     text = (data.get("text") or "").strip()
