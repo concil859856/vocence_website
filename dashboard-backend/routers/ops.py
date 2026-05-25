@@ -365,6 +365,19 @@ async def stop_pod(pod_id: int, _: str = Depends(require_admin_unlocked)) -> dic
             await ops_ssh.docker_stop(server, cid)
         except ops_ssh.SshError as e:
             _log.warning("pod %s stop failed: %s", pod_id, e)
+        try:
+            await ops_ssh.run_command(
+                server,
+                "for pid in $(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null); do "
+                "  cid=$(cat /proc/$pid/cgroup 2>/dev/null | grep -oP 'docker/\\K[a-f0-9]+' | head -1); "
+                "  if [ -z \"$cid\" ] || ! docker inspect \"$cid\" >/dev/null 2>&1; then "
+                "    kill -9 $pid 2>/dev/null && echo \"killed orphan GPU pid $pid\"; "
+                "  fi; "
+                "done",
+                timeout=15, check=False,
+            )
+        except Exception:
+            pass
     await ops_db.update_pod(pod_id, status="stopped")
     await ops_db.log_pod_event(pod_id, "stopped_manual")
     await ops_pool.reload_pool()
@@ -466,6 +479,23 @@ async def remove_pod(pod_id: int, _: str = Depends(require_admin_unlocked)) -> d
             await ops_ssh.docker_remove(server, cid, force=True)
         except ops_ssh.SshError as e:
             _log.warning("pod %s remove: docker stop/rm failed: %s", pod_id, e)
+        # Kill any orphaned GPU processes left by the container (vLLM's
+        # multiprocessing spawn can leave CUDA processes that survive
+        # docker stop, holding GPU memory hostage). Only kills processes
+        # that no longer belong to a running container.
+        try:
+            await ops_ssh.run_command(
+                server,
+                "for pid in $(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null); do "
+                "  cid=$(cat /proc/$pid/cgroup 2>/dev/null | grep -oP 'docker/\\K[a-f0-9]+' | head -1); "
+                "  if [ -z \"$cid\" ] || ! docker inspect \"$cid\" >/dev/null 2>&1; then "
+                "    kill -9 $pid 2>/dev/null && echo \"killed orphan GPU pid $pid\"; "
+                "  fi; "
+                "done",
+                timeout=15, check=False,
+            )
+        except Exception:
+            pass
     await ops_db.update_pod(pod_id, status="removed")
     await ops_db.log_pod_event(pod_id, "removed_manual")
     await ops_pool.reload_pool()
