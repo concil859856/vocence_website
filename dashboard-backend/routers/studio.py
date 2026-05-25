@@ -495,6 +495,12 @@ async def transcribe_stt(
     finally:
         await conn.close()
 
+    try:
+        from referral_service import try_activate_referral
+        await try_activate_referral(user_id)
+    except Exception:
+        pass
+
     return StudioTranscribeResponse(
         id=history_id,
         text=text,

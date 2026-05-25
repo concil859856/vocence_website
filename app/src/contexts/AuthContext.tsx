@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { api, localStorageFallback } from '../services/api';
 import type { User } from '../services/api';
 import { dashboardApi } from '../services/dashboardApi';
+import { getStoredReferralCode, clearStoredReferralCode, getDeviceFingerprint } from '../lib/referral';
 
 interface AuthContextType {
   user: User | null;
@@ -104,7 +105,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         name: userData.name,
         picture: userData.picture,
         googleId: userData.id,
+        referral_code: getStoredReferralCode(),
+        device_fingerprint: getDeviceFingerprint(),
       });
+      clearStoredReferralCode();
 
       // Save user and token
       setUser(response.user);

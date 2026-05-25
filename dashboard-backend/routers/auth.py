@@ -86,6 +86,8 @@ class LoginRequest(BaseModel):
     name: str | None = None
     picture: str | None = None
     googleId: str | None = None
+    referral_code: str | None = None
+    device_fingerprint: str | None = None
 
 
 class UserOut(BaseModel):
@@ -97,6 +99,7 @@ class UserOut(BaseModel):
     planCode: str
     planStatus: str
     createdAt: str
+    referralCode: str | None = None
 
 
 class LoginResponse(BaseModel):
@@ -286,6 +289,7 @@ def _user_row_to_out(row) -> UserOut:
         planCode=row["plan_code"] or "normal",
         planStatus=row["plan_status"] or "active",
         createdAt=row["created_at"],
+        referralCode=row["referral_code"] if "referral_code" in row.keys() else None,
     )
 
 
@@ -310,7 +314,7 @@ async def _get_user_by_id(user_id: str) -> UserOut | None:
     try:
         cursor = await conn.execute(
             """
-            SELECT id, email, name, picture, credits, plan_code, plan_status, created_at
+            SELECT id, email, name, picture, credits, plan_code, plan_status, created_at, referral_code
             FROM auth_users WHERE id = ?
             """,
             (user_id,),
@@ -1014,6 +1018,19 @@ async def _apply_credits_once(
         "UPDATE payments SET credits_applied_at = ?, updated_at = ? WHERE id = ?",
         (_now_iso(), _now_iso(), payment_row["id"]),
     )
+
+    # Referral commission: 10% of purchased credits to the referrer.
+    try:
+        from referral_service import grant_purchase_commission
+        await grant_purchase_commission(
+            conn,
+            buyer_id=user_id,
+            credits_purchased=int(credits),
+            payment_id=str(payment_row["id"]),
+        )
+    except Exception as e:
+        _log.warning("referral commission failed for user %s: %s", user_id, e)
+
     return True
 
 
@@ -1281,11 +1298,16 @@ async def auth_login(body: LoginRequest):
                 """,
                 (body.email, body.name, body.picture or None, row["created_at"], now),
             )
+            from referral_service import ensure_referral_code
+            await ensure_referral_code(conn, row["id"])
+
             await conn.commit()
             user_out = await _get_user_by_id(row["id"])
             if user_out is None:
                 raise HTTPException(status_code=500, detail="Failed to load user")
             return LoginResponse(user=user_out, token=_make_token(user_out.id, user_out.email))
+
+        from referral_service import ensure_referral_code, validate_referral, apply_referral_on_signup
 
         await conn.execute(
             """
@@ -1316,6 +1338,28 @@ async def auth_login(body: LoginRequest):
             reference_type="signup",
             reference_id=body.googleId,
         )
+
+        # Generate a referral code for the new user.
+        await ensure_referral_code(conn, body.googleId)
+
+        # Process referral if one was provided.
+        ref_code = (body.referral_code or "").strip()
+        if ref_code:
+            ref_err = await validate_referral(
+                conn,
+                referral_code=ref_code,
+                new_user_id=body.googleId,
+                new_user_email=body.email,
+                device_fingerprint=(body.device_fingerprint or "").strip() or None,
+            )
+            if not ref_err:
+                await apply_referral_on_signup(
+                    conn,
+                    referral_code=ref_code,
+                    new_user_id=body.googleId,
+                    device_fingerprint=(body.device_fingerprint or "").strip() or None,
+                )
+
         await conn.commit()
         user_out = await _get_user_by_id(body.googleId)
         if user_out is None:
@@ -1334,6 +1378,18 @@ async def auth_verify(body: VerifyRequest):
     if user is None:
         raise HTTPException(status_code=401, detail="User not found")
     return VerifyResponse(user=user)
+
+
+@router.get("/auth/referral")
+async def get_referral_info(user_id: str = Depends(require_auth)):
+    from referral_service import get_referral_stats, ensure_referral_code
+    conn = await get_connection()
+    try:
+        await ensure_referral_code(conn, user_id)
+    finally:
+        await conn.close()
+    stats = await get_referral_stats(user_id)
+    return stats
 
 
 @router.get("/users/{user_id}", response_model=UserOut)

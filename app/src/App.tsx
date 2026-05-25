@@ -1,6 +1,7 @@
-import { Suspense, lazy } from 'react';
+import { Suspense, lazy, useEffect } from 'react';
 import { Navigate, Routes, Route } from 'react-router-dom';
 import { GoogleOAuthProvider } from '@react-oauth/google';
+import { captureReferralFromUrl } from './lib/referral';
 import { AuthProvider } from './contexts/AuthContext';
 import { StudioPlayerProvider } from './contexts/StudioPlayerContext';
 import { GenerationsProvider } from './contexts/GenerationsContext';
@@ -68,6 +69,10 @@ function AgentRouteGate({ children }: { children: React.ReactNode }) {
 
 function App() {
   const googleClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
+
+  useEffect(() => {
+    captureReferralFromUrl();
+  }, []);
 
   // Wrap app content - if no clientId, still render but Google OAuth won't work
   const AppContent = () => (

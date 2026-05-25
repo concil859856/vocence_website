@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, useNavigate, useSearchParams, useParams } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { api, type AccountSummary, type CreditTransactionsPage, type DeveloperApiKey, type DailyCreditsUsage } from '../services/api';
+import { API_BASE_URL } from '../services/baseUrl';
 import {
   User,
   CreditCard,
@@ -11,6 +12,9 @@ import {
   KeyRound,
   Copy,
   BarChart3,
+  Gift,
+  Users,
+  Check,
 } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { Avatar, AvatarFallback, AvatarImage } from '../components/ui/avatar';
@@ -31,19 +35,15 @@ export function Account() {
   const checkoutStatus = searchParams.get('checkout');
   const params = useParams<{ tab?: string }>();
 
-  type AccountTab = 'profile' | 'credits' | 'settings' | 'developer';
+  type AccountTab = 'profile' | 'credits' | 'referral' | 'settings' | 'developer';
   const pathTab = (params.tab || '').toLowerCase();
   const queryTab = (searchParams.get('tab') || '').toLowerCase();
-  // The standalone Usage tab was folded into Credits — the daily-credits
-  // graph now lives there alongside the balance, with detailed
-  // transactions behind a "View detailed usage" toggle. Legacy
-  // /account/usage URLs map to /account/credits via this same table.
   const tabMap: Record<string, AccountTab> = {
     profile: 'profile',
     credits: 'credits',
+    referral: 'referral',
     settings: 'settings',
     developer: 'developer',
-    // Back-compat aliases
     usage: 'credits',
     api: 'developer',
   };
@@ -246,7 +246,7 @@ export function Account() {
           onValueChange={(v) => navigate(`/account/${v}`)}
           className="w-full"
         >
-          <TabsList className="grid w-full grid-cols-2 sm:grid-cols-4 bg-[#0D1117] border border-white/10">
+          <TabsList className="grid w-full grid-cols-3 sm:grid-cols-5 bg-[#0D1117] border border-white/10">
             <TabsTrigger value="profile" className="data-[state=active]:bg-white/10">
               <User size={16} className="mr-2" />
               Profile
@@ -258,6 +258,10 @@ export function Account() {
             <TabsTrigger value="settings" className="data-[state=active]:bg-white/10">
               <Settings size={16} className="mr-2" />
               Settings
+            </TabsTrigger>
+            <TabsTrigger value="referral" className="data-[state=active]:bg-white/10">
+              <Gift size={16} className="mr-1.5" />
+              Referral
             </TabsTrigger>
             <TabsTrigger value="developer" className="data-[state=active]:bg-white/10">
               <KeyRound size={16} className="mr-2" />
@@ -344,6 +348,11 @@ export function Account() {
                 </div>
               </div>
             </div>
+          </TabsContent>
+
+          {/* Referral Tab */}
+          <TabsContent value="referral" className="mt-6">
+            <ReferralTab />
           </TabsContent>
 
           <TabsContent value="developer" className="mt-6">
@@ -649,6 +658,147 @@ function CreditsTabContent({ credits, dailyCredits, dailyCreditsLoading }: Credi
             )}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+
+function ReferralTab() {
+  const [stats, setStats] = useState<{
+    referral_code: string;
+    total_invites: number;
+    activated_invites: number;
+    credits_earned: number;
+    milestone_target: number;
+  } | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const token = localStorage.getItem('vocence_token');
+    if (!token) return;
+    fetch(`${API_BASE_URL}/auth/referral`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((r) => r.json())
+      .then(setStats)
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, []);
+
+  if (loading) {
+    return (
+      <div className="card-vocence p-6 text-center text-[#A7B0B7]">Loading...</div>
+    );
+  }
+
+  if (!stats?.referral_code) {
+    return (
+      <div className="card-vocence p-6 text-center text-[#A7B0B7]">
+        Referral code not available. Try logging in again.
+      </div>
+    );
+  }
+
+  const referralLink = `${window.location.origin}/?ref=${stats.referral_code}`;
+  const milestoneProgress = Math.min(stats.activated_invites, stats.milestone_target);
+
+  const copyLink = () => {
+    navigator.clipboard.writeText(referralLink);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Referral Link */}
+      <div className="card-vocence p-6">
+        <h3 className="text-xl font-semibold mb-2 flex items-center gap-2">
+          <Gift size={20} className="text-[#DFFF00]" />
+          Invite Friends, Earn Credits
+        </h3>
+        <p className="text-sm text-[#A7B0B7] mb-4">
+          Share your referral link. When they sign up and use any feature, you get <strong className="text-white">500 credits</strong>.
+          Plus <strong className="text-white">10%</strong> of every purchase they make.
+        </p>
+        <div className="flex items-center gap-2">
+          <input
+            readOnly
+            value={referralLink}
+            className="flex-1 input font-mono text-xs bg-[#0a0a0a] border border-white/10 rounded-lg px-3 py-2.5 text-[#A7B0B7]"
+            onClick={(e) => (e.target as HTMLInputElement).select()}
+          />
+          <button
+            onClick={copyLink}
+            className="btn-primary h-10 px-4 flex items-center gap-1.5 text-sm"
+          >
+            {copied ? <Check size={14} /> : <Copy size={14} />}
+            {copied ? 'Copied' : 'Copy'}
+          </button>
+        </div>
+      </div>
+
+      {/* Stats */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div className="card-vocence p-5 text-center">
+          <Users size={20} className="mx-auto mb-2 text-[#A7B0B7]" />
+          <div className="text-2xl font-bold text-white">{stats.total_invites}</div>
+          <div className="text-xs text-[#A7B0B7] mt-1">Total Invites</div>
+        </div>
+        <div className="card-vocence p-5 text-center">
+          <Check size={20} className="mx-auto mb-2 text-[#DFFF00]" />
+          <div className="text-2xl font-bold text-white">{stats.activated_invites}</div>
+          <div className="text-xs text-[#A7B0B7] mt-1">Activated</div>
+        </div>
+        <div className="card-vocence p-5 text-center">
+          <CreditCard size={20} className="mx-auto mb-2 text-[#A7B0B7]" />
+          <div className="text-2xl font-bold text-[#DFFF00]">{stats.credits_earned.toLocaleString()}</div>
+          <div className="text-xs text-[#A7B0B7] mt-1">Credits Earned</div>
+        </div>
+      </div>
+
+      {/* Milestone Progress */}
+      <div className="card-vocence p-6">
+        <h4 className="text-sm font-semibold mb-3 text-[#A7B0B7] uppercase tracking-wider">
+          Milestone: Premium Plan
+        </h4>
+        <p className="text-sm text-[#A7B0B7] mb-3">
+          Get <strong className="text-white">{stats.milestone_target} activated invites</strong> to unlock{' '}
+          <strong className="text-[#DFFF00]">Premium</strong> + <strong className="text-white">1,000 bonus credits</strong>.
+        </p>
+        <div className="w-full bg-white/5 rounded-full h-3 mb-2">
+          <div
+            className="bg-[#DFFF00] h-3 rounded-full transition-all"
+            style={{ width: `${(milestoneProgress / stats.milestone_target) * 100}%` }}
+          />
+        </div>
+        <div className="text-xs text-[#A7B0B7] text-right">
+          {milestoneProgress} / {stats.milestone_target}
+        </div>
+      </div>
+
+      {/* How it works */}
+      <div className="card-vocence p-6">
+        <h4 className="text-sm font-semibold mb-3 text-[#A7B0B7] uppercase tracking-wider">How it works</h4>
+        <ol className="space-y-2 text-sm text-[#A7B0B7]">
+          <li className="flex items-start gap-2">
+            <span className="text-[#DFFF00] font-bold shrink-0">1.</span>
+            Share your referral link with friends
+          </li>
+          <li className="flex items-start gap-2">
+            <span className="text-[#DFFF00] font-bold shrink-0">2.</span>
+            They sign up and try any feature (TTS, clone, music, STT)
+          </li>
+          <li className="flex items-start gap-2">
+            <span className="text-[#DFFF00] font-bold shrink-0">3.</span>
+            You get <strong className="text-white">500 credits</strong> instantly
+          </li>
+          <li className="flex items-start gap-2">
+            <span className="text-[#DFFF00] font-bold shrink-0">4.</span>
+            Earn <strong className="text-white">10%</strong> of every purchase they make — forever
+          </li>
+        </ol>
       </div>
     </div>
   );

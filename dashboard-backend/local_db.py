@@ -751,6 +751,21 @@ async def ensure_tables() -> None:
             "source_language TEXT",
         )
 
+        # Referral system columns on auth_users.
+        await _ensure_column(conn, "auth_users", "referral_code", "referral_code TEXT UNIQUE")
+        await _ensure_column(conn, "auth_users", "referred_by", "referred_by TEXT")
+        await _ensure_column(conn, "auth_users", "referral_activated", "referral_activated INTEGER NOT NULL DEFAULT 0")
+
+        # Referral device tracking (anti-abuse: one referral per device).
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS referral_devices (
+                device_fingerprint TEXT PRIMARY KEY,
+                referral_code TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+
         for statement in INDEX_SQL:
             await conn.execute(statement)
 

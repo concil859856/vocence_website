@@ -12,6 +12,7 @@ export interface User {
   planCode?: string;
   planStatus?: string;
   createdAt: string;
+  referralCode?: string;
 }
 
 export interface PricingPlan {
@@ -140,6 +141,8 @@ export interface LoginRequest {
   name?: string;
   picture?: string;
   googleId?: string;
+  referral_code?: string;
+  device_fingerprint?: string;
 }
 
 export interface LoginResponse {
