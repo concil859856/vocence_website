@@ -72,21 +72,44 @@ async def enqueue(
 
     # 1. Verify every required pool is configured and would not exceed cap.
     #    Reserve atomically: if any one fails, roll back earlier reservations.
+    #    A pool counts as "configured" if EITHER the static env-based pool has
+    #    URLs OR the ops dispatcher has online pods for that service.
+    _POOL_TO_OPS_SERVICE = {"tts": "tts_streaming", "stt": "stt", "clone": "voice_clone", "music": "music"}
+
+    def _pool_available(pool_name: str, cnt) -> bool:
+        if cnt is not None and cnt.configured:
+            return True
+        ops_service = _POOL_TO_OPS_SERVICE.get(pool_name)
+        if ops_service:
+            try:
+                from ops import pool as gpu_pool
+                return gpu_pool.online_pod_count(ops_service) > 0
+            except Exception:
+                pass
+        return False
+
     reserved: list[tuple[str, int]] = []
     try:
         for pool_name, slots in demand.items():
             cnt = counters.get(pool_name)
-            if cnt is None or not cnt.configured:
+            if not _pool_available(pool_name, cnt):
                 raise JobAdmissionRejected(
                     f"{_human_pool(pool_name)} is not configured. Please contact support.",
                     retry_after_seconds=300,
                 )
-            if not cnt.try_admit(slots):
-                raise JobAdmissionRejected(
-                    _capacity_message(type, cnt.cap),
-                    retry_after_seconds=60,
-                )
-            reserved.append((pool_name, slots))
+            # When the static pool has capacity counters, use them.
+            # When only ops pods are available (cnt.cap == 0), skip the
+            # static admission — the ops dispatcher enforces its own
+            # 2×N cap inside pick_pod() at execution time.
+            if cnt is not None and cnt.cap > 0:
+                if not cnt.try_admit(slots):
+                    raise JobAdmissionRejected(
+                        _capacity_message(type, cnt.cap),
+                        retry_after_seconds=60,
+                    )
+                reserved.append((pool_name, slots))
+            else:
+                reserved.append((pool_name, 0))
 
         # 2. Charge credits up front (refund on failure).
         if credits_to_charge > 0:
