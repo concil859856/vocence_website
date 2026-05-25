@@ -11,11 +11,11 @@ import { ScrollToTop } from './components/ScrollToTop';
 import { StudioPlayerBar } from './components/StudioPlayerBar';
 import { VocenceBot } from './components/bot/VocenceBot';
 import { Toaster } from './components/ui/sonner';
-import { Overview } from './pages/Overview';
 import { AgentsComingSoon } from './components/AgentsComingSoon';
 import { useHasVoiceChatAccess } from './lib/voicechatAccess';
 
 // Route-level code splitting: heavy pages load only when visited (named exports → default for lazy)
+const Overview = lazy(() => import('./pages/Overview').then((m) => ({ default: m.Overview })));
 const Dashboard = lazy(() => import('./pages/Dashboard').then((m) => ({ default: m.Dashboard })));
 const Studio = lazy(() => import('./pages/Studio').then((m) => ({ default: m.Studio })));
 const StudioDesignedVoiceWorkspace = lazy(() =>
@@ -67,15 +67,8 @@ function AgentRouteGate({ children }: { children: React.ReactNode }) {
   return hasAccess ? <>{children}</> : <AgentsComingSoon />;
 }
 
-function App() {
-  const googleClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
-
-  useEffect(() => {
-    captureReferralFromUrl();
-  }, []);
-
-  // Wrap app content - if no clientId, still render but Google OAuth won't work
-  const AppContent = () => (
+function AppContent() {
+  return (
     <AuthProvider>
       <StudioPlayerProvider>
       <GenerationsProvider>
@@ -132,8 +125,16 @@ function App() {
       </StudioPlayerProvider>
     </AuthProvider>
   );
+}
 
-  // Only wrap with GoogleOAuthProvider if clientId is provided
+
+function App() {
+  const googleClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
+
+  useEffect(() => {
+    captureReferralFromUrl();
+  }, []);
+
   if (googleClientId) {
     return (
       <GoogleOAuthProvider clientId={googleClientId}>
@@ -142,7 +143,6 @@ function App() {
     );
   }
 
-  // Fallback if no clientId (for development)
   return <AppContent />;
 }
 

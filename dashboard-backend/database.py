@@ -36,8 +36,8 @@ async def get_pool() -> asyncpg.Pool:
         params = _build_connection_params()
         _pool = await asyncpg.create_pool(
             **params,
-            min_size=1,
-            max_size=10,
+            min_size=2,
+            max_size=int(os.environ.get("POSTGRES_POOL_MAX_SIZE", "25")),
             command_timeout=10,
         )
     return _pool

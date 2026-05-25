@@ -72,7 +72,7 @@ export default defineConfig(({ mode }) => {
           if (id.includes('node_modules')) {
             if (id.includes('react-dom') || id.includes('react/')) return 'react';
             if (id.includes('react-router')) return 'router';
-            if (id.includes('gsap') || id.includes('lucide-react') || id.includes('react-icons')) return 'vendor';
+            if (id.includes('gsap') || id.includes('lucide-react')) return 'vendor';
           }
         },
       },

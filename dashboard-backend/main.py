@@ -175,6 +175,9 @@ async def _strip_internal_headers(request, call_next):
     return await call_next(request)
 
 
+from starlette.middleware.gzip import GzipMiddleware
+app.add_middleware(GzipMiddleware, minimum_size=1000)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_allow_origins(),

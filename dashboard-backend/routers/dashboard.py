@@ -544,7 +544,7 @@ async def get_validation_status(
 
 @router.get("/evaluations/recent", response_model=RecentEvaluationsResponse)
 async def get_recent_evaluations(
-    limit: int = Query(50, ge=1, le=50000),
+    limit: int = Query(50, ge=1, le=500),
     validator_hotkey: str | None = Query(None, description="Filter by validator hotkey"),
     miner_hotkey: str | None = Query(None, description="Filter by miner hotkey"),
 ):
@@ -591,7 +591,7 @@ async def get_recent_evaluations(
 
 @router.get("/evaluations", response_model=RecentEvaluationsResponse)
 async def get_all_evaluations(
-    limit: int = Query(100, ge=1, le=50000),
+    limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
     validator_hotkey: str | None = Query(None),
     miner_hotkey: str | None = Query(None),
