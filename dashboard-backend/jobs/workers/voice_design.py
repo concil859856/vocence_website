@@ -114,38 +114,24 @@ async def _run_preview(job: state.Job) -> dict:
     sample_script = plan["sample_script"]
     revised_instruction = plan["revised_instruction"]
 
-    # Phase 2: TTS variant A (sequential — release slot, then re-acquire for B)
+    # Phase 2: TTS variant A
+    # Let synthesize_speak handle pod selection — its internal dispatcher
+    # picks voice_design pods with the correct per-pod API key.
     await state.update_status(job.id, phase="synthesizing variant A")
-    async with _pick_tts_pod() as pod:
-        await state.update_status(job.id, pod_url=pod)
-        try:
-            wav_a, err_a = await asyncio.wait_for(
-                synthesize_speak(chute_slug, sample_script, voice_desc, base_url=pod),
-                timeout=PHASE_TIMEOUT_TTS,
-            )
-        except asyncio.TimeoutError:
-            TTS_POOL.quarantine(pod)
-            raise
+    wav_a, err_a = await asyncio.wait_for(
+        synthesize_speak(chute_slug, sample_script, voice_desc),
+        timeout=PHASE_TIMEOUT_TTS,
+    )
     if not wav_a:
-        if err_a and ("returned 5" in err_a or "timed out" in err_a.lower()):
-            TTS_POOL.quarantine(pod)
         raise RuntimeError(f"Variant A failed: {err_a or 'unknown'}")
 
-    # Phase 3: TTS variant B (re-acquire — may go to a different pod or wait if pool is busy)
+    # Phase 3: TTS variant B
     await state.update_status(job.id, phase="synthesizing variant B")
-    async with _pick_tts_pod() as pod:
-        await state.update_status(job.id, pod_url=pod)
-        try:
-            wav_b, err_b = await asyncio.wait_for(
-                synthesize_speak(chute_slug, sample_script, revised_instruction, base_url=pod),
-                timeout=PHASE_TIMEOUT_TTS,
-            )
-        except asyncio.TimeoutError:
-            TTS_POOL.quarantine(pod)
-            raise
+    wav_b, err_b = await asyncio.wait_for(
+        synthesize_speak(chute_slug, sample_script, revised_instruction),
+        timeout=PHASE_TIMEOUT_TTS,
+    )
     if not wav_b:
-        if err_b and ("returned 5" in err_b or "timed out" in err_b.lower()):
-            TTS_POOL.quarantine(pod)
         raise RuntimeError(f"Variant B failed: {err_b or 'unknown'}")
 
     # Storage + DB row
@@ -232,24 +218,20 @@ async def _run_speak(job: state.Job) -> dict:
 
     await state.update_status(job.id, phase="cloning voice")
     started = time.perf_counter()
-    async with _pick_clone_pod() as clone_pod:
-        await state.update_status(job.id, pod_url=clone_pod)
-        try:
-            wav_bytes, clone_err = await asyncio.wait_for(
-                voice_clone_synthesize(
-                    reference_audio_bytes=raw_ref,
-                    reference_text=ref_script,
-                    target_text=target,
-                    base_url=clone_pod,
-                ),
-                timeout=PHASE_TIMEOUT_CLONE,
-            )
-        except asyncio.TimeoutError:
-            CLONE_POOL.quarantine(clone_pod)
-            raise
+    # Let voice_clone_synthesize handle pod selection — its internal
+    # dispatcher picks voice_clone pods with the correct per-pod API key.
+    try:
+        wav_bytes, clone_err = await asyncio.wait_for(
+            voice_clone_synthesize(
+                reference_audio_bytes=raw_ref,
+                reference_text=ref_script,
+                target_text=target,
+            ),
+            timeout=PHASE_TIMEOUT_CLONE,
+        )
+    except asyncio.TimeoutError:
+        raise
     if not wav_bytes:
-        if clone_err and ("returned 5" in clone_err or "timed out" in clone_err.lower()):
-            CLONE_POOL.quarantine(clone_pod)
         raise RuntimeError(clone_err or "Voice clone synthesis failed")
     latency_ms = int((time.perf_counter() - started) * 1000)
 
