@@ -13,11 +13,13 @@ import { Overview } from './pages/Overview';
 
 // Route-level code splitting: heavy pages load only when visited (named exports → default for lazy)
 const Dashboard = lazy(() => import('./pages/Dashboard').then((m) => ({ default: m.Dashboard })));
+/* Studio maintenance – original lazy imports disabled:
 const Studio = lazy(() => import('./pages/Studio').then((m) => ({ default: m.Studio })));
 const StudioDesignedVoiceWorkspace = lazy(() =>
   import('./pages/StudioDesignedVoiceWorkspace').then((m) => ({ default: m.StudioDesignedVoiceWorkspace }))
 );
 const StudioResult = lazy(() => import('./pages/StudioResult').then((m) => ({ default: m.StudioResult })));
+*/
 const StudioMaintenance = lazy(() =>
   import('./pages/StudioMaintenance').then((m) => ({ default: m.StudioMaintenance }))
 );
