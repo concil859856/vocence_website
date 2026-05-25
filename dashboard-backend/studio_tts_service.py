@@ -447,7 +447,7 @@ async def voice_clone_synthesize(
             if gpu_pool.online_pod_count("voice_clone") > 0:
                 pod_cm = gpu_pool.pick_pod("voice_clone")
                 pod = await pod_cm.__aenter__()
-                ops_url = pod.url + STUDIO_VOICE_CLONE_PATH
+                ops_url = pod.url + "/voice-clone"
                 if pod.api_key:
                     headers["Authorization"] = f"Bearer {pod.api_key}"
         except Exception as e:

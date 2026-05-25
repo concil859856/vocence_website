@@ -517,10 +517,10 @@ async def clone_voice(
     """Transcribe reference audio (STT), call voice-clone Chute, upload result to Hippius."""
     if user_id_form != user_id:
         raise HTTPException(status_code=403, detail="user_id does not match authenticated user")
-    if not voice_clone_chute_configured():
+    if not _clone_available():
         raise HTTPException(
             status_code=503,
-            detail="Voice cloning is not configured (set STUDIO_VOICE_CLONE_URL or STUDIO_VOICE_CLONE_CHUTE_SLUG).",
+            detail="Voice cloning is not available (no ops pods online, STUDIO_VOICE_CLONE_URL not set).",
         )
 
     mode = (ref_source or "").strip().lower()
@@ -716,8 +716,8 @@ async def tts_voice_clone_sample(
     """General TTS using a pre-stored sample voice as the cloning reference.
     Charged at TTS_CREDITS_COST (not the higher clone price) — backend cost
     of the clone call is absorbed."""
-    if not voice_clone_chute_configured():
-        raise HTTPException(status_code=503, detail="Voice cloning is not configured.")
+    if not _clone_available():
+        raise HTTPException(status_code=503, detail="Voice cloning is not available (no ops pods online, STUDIO_VOICE_CLONE_URL not set).")
     if not is_known_sample(body.sample_voice_id):
         raise HTTPException(status_code=404, detail=f"unknown sample voice: {body.sample_voice_id}")
     target = (body.target_text or "").strip()
@@ -1317,10 +1317,10 @@ async def designed_voice_speak(body: StudioDesignedVoiceSpeakRequest, user_id: s
     """Clone target text using saved designed-voice reference (no STT on reference)."""
     if body.user_id != user_id:
         raise HTTPException(status_code=403, detail="user_id does not match authenticated user")
-    if not voice_clone_chute_configured():
+    if not _clone_available():
         raise HTTPException(
             status_code=503,
-            detail="Voice cloning is not configured (set STUDIO_VOICE_CLONE_URL or STUDIO_VOICE_CLONE_CHUTE_SLUG).",
+            detail="Voice cloning is not available (no ops pods online, STUDIO_VOICE_CLONE_URL not set).",
         )
 
     target = (body.target_text or "").strip()
@@ -1872,6 +1872,17 @@ async def music_upload_source(
         content_type=src_audio.content_type or "application/octet-stream",
     )
     return {"src_audio_bucket": bucket, "src_audio_key": key, "src_audio_filename": filename}
+
+
+def _clone_available() -> bool:
+    """True if voice clone is available — ops pods or static env."""
+    try:
+        from ops import pool as gpu_pool
+        if gpu_pool.online_pod_count("voice_clone") > 0:
+            return True
+    except Exception:
+        pass
+    return voice_clone_chute_configured()
 
 
 def _music_available() -> bool:
