@@ -475,7 +475,7 @@ async def voice_clone_synthesize(
         req_mode = "json"
     try:
         async with aiohttp.ClientSession() as session:
-            if STUDIO_VOICE_CLONE_URL and req_mode in ("form", "multipart", "form-data"):
+            if req_mode in ("form", "multipart", "form-data"):
                 form = aiohttp.FormData()
                 form.add_field(STUDIO_VOICE_CLONE_KEY_REF_AUDIO, b64_audio)
                 form.add_field(STUDIO_VOICE_CLONE_KEY_REF_TEXT, reference_text or "")
@@ -486,7 +486,7 @@ async def voice_clone_synthesize(
                     data=form,
                     timeout=aiohttp.ClientTimeout(total=STUDIO_VOICE_CLONE_TIMEOUT_SEC),
                 )
-            elif STUDIO_VOICE_CLONE_URL and req_mode in ("form_file", "multipart_file", "file"):
+            elif req_mode in ("form_file", "multipart_file", "file"):
                 form = aiohttp.FormData()
                 form.add_field(
                     STUDIO_VOICE_CLONE_KEY_REF_AUDIO,
