@@ -8,7 +8,6 @@ studio_clone_history respectively).
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
 import logging
 import secrets
 import time
@@ -26,63 +25,10 @@ from studio_tts_service import (
 )
 
 from .. import state
-from ..registry import CLONE_POOL, TTS_POOL
 from ..timeouts import PHASE_TIMEOUT_CLONE, PHASE_TIMEOUT_LLM, PHASE_TIMEOUT_TTS
 
 
 _log = logging.getLogger(__name__)
-
-
-@asynccontextmanager
-async def _pick_tts_pod():
-    """Async context manager yielding a pod_url string.
-
-    Tries the ops dispatcher first (least-loaded online tts_streaming pod),
-    falls back to the static TTS_POOL (from env config).
-    """
-    try:
-        from ops import pool as gpu_pool
-        if gpu_pool.online_pod_count("tts_streaming") > 0:
-            async with gpu_pool.pick_pod("tts_streaming") as pod:
-                yield pod.url
-                return
-    except Exception as e:
-        try:
-            from ops.pool import NoCapacity
-            if isinstance(e, NoCapacity):
-                raise RuntimeError("TTS fleet busy (all pods at capacity)")
-        except ImportError:
-            pass
-    if not TTS_POOL.configured():
-        raise RuntimeError("TTS pool is not configured (no ops pods online, TTS env not set)")
-    async with TTS_POOL.acquire() as pod_url:
-        yield pod_url
-
-
-@asynccontextmanager
-async def _pick_clone_pod():
-    """Async context manager yielding a pod_url string.
-
-    Tries the ops dispatcher first (least-loaded online voice_clone pod),
-    falls back to the static CLONE_POOL (from env config).
-    """
-    try:
-        from ops import pool as gpu_pool
-        if gpu_pool.online_pod_count("voice_clone") > 0:
-            async with gpu_pool.pick_pod("voice_clone") as pod:
-                yield pod.url
-                return
-    except Exception as e:
-        try:
-            from ops.pool import NoCapacity
-            if isinstance(e, NoCapacity):
-                raise RuntimeError("Voice clone fleet busy (all pods at capacity)")
-        except ImportError:
-            pass
-    if not CLONE_POOL.configured():
-        raise RuntimeError("Voice clone pool is not configured (no ops pods online, clone env not set)")
-    async with CLONE_POOL.acquire() as pod_url:
-        yield pod_url
 
 
 async def process_voice_design(job: state.Job) -> dict:
