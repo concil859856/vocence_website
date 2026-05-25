@@ -158,7 +158,7 @@ export function AdminGate({ children }: Props) {
       {/* Admin top bar — cross-links + unlock badge + Lock button. Only
           rendered when the admin is unlocked; the modal handles the locked state. */}
       {adminToken && (
-        <div className="sticky top-16 z-30 bg-[#07080A]/95 backdrop-blur border-b border-white/10">
+        <div className="sticky top-20 z-30 bg-[#07080A]/95 backdrop-blur border-b border-white/10">
           <div className="max-w-7xl mx-auto px-6 py-2 flex items-center justify-between gap-3 flex-wrap">
             <nav className="flex items-center gap-1">
               {ADMIN_NAV.map((item) => {
