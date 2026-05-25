@@ -236,7 +236,7 @@ export function AdminWebsiteUsage() {
   ];
 
   return (
-    <div className="min-h-screen bg-[#07080A] pt-24 pb-20 px-4 lg:px-8">
+    <div className="min-h-screen bg-[#07080A] pt-4 pb-20 px-4 lg:px-8">
       <div className="max-w-[1400px] mx-auto">
         <div className="flex flex-wrap items-center gap-3 mb-8">
           {filterUserId ? (

@@ -357,7 +357,7 @@ export function Admin() {
   if (!isAdmin) return null;
 
   return (
-    <div className="min-h-screen bg-[#07080A] pt-24 pb-16 px-6 lg:px-8">
+    <div className="min-h-screen bg-[#07080A] pt-4 pb-16 px-6 lg:px-8">
       <div className="max-w-4xl mx-auto">
         <h1 className="text-2xl font-semibold text-white mb-8">Admin</h1>
 

@@ -154,7 +154,7 @@ export function AdminGate({ children }: Props) {
     return <Navigate to="/" replace />;
   }
   return (
-    <>
+    <div className="pt-20">
       {/* Admin top bar — cross-links + unlock badge + Lock button. Only
           rendered when the admin is unlocked; the modal handles the locked state. */}
       {adminToken && (
@@ -213,6 +213,6 @@ export function AdminGate({ children }: Props) {
       {showUnlock && (
         <AdminUnlockModal token={token} onUnlocked={handleUnlocked} />
       )}
-    </>
+    </div>
   );
 }
