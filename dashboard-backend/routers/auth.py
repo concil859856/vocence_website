@@ -1029,7 +1029,7 @@ async def _apply_credits_once(
             payment_id=str(payment_row["id"]),
         )
     except Exception as e:
-        _log.warning("referral commission failed for user %s: %s", user_id, e)
+        _np_log.warning("referral commission failed for user %s: %s", user_id, e)
 
     return True
 

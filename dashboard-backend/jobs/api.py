@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-from local_db import get_connection, record_credit_transaction
+from local_db import atomic_deduct_credits, get_connection, record_credit_transaction
 
 from . import state
 from .queues import queue_for
@@ -229,22 +229,16 @@ async def _charge_credits(user_id: str, task_type: str, amount: int) -> None:
         return
     conn = await get_connection()
     try:
-        row = await (await conn.execute(
-            "SELECT credits FROM auth_users WHERE id = ?", (user_id,)
-        )).fetchone()
-        if row is None:
-            raise JobError("User not found")
-        current = int(row["credits"] or 0)
-        if current < amount:
+        new_balance = await atomic_deduct_credits(conn, user_id=user_id, cost=amount)
+        if new_balance is None:
+            row = await (await conn.execute(
+                "SELECT credits FROM auth_users WHERE id = ?", (user_id,)
+            )).fetchone()
+            current = int(row["credits"] or 0) if row else 0
             raise JobAdmissionRejected(
                 f"Insufficient credits. This job costs {amount} credits — you have {current}.",
                 retry_after_seconds=0,
             )
-        new_balance = current - amount
-        await conn.execute(
-            "UPDATE auth_users SET credits = ?, updated_at = datetime('now') WHERE id = ?",
-            (new_balance, user_id),
-        )
         await record_credit_transaction(
             conn,
             user_id=user_id,
@@ -266,17 +260,14 @@ async def _refund_credits(job: state.Job) -> None:
         return
     conn = await get_connection()
     try:
+        await conn.execute(
+            "UPDATE auth_users SET credits = credits + ?, updated_at = datetime('now') WHERE id = ?",
+            (job.credits_charged, job.user_id),
+        )
         row = await (await conn.execute(
             "SELECT credits FROM auth_users WHERE id = ?", (job.user_id,)
         )).fetchone()
-        if row is None:
-            return
-        current = int(row["credits"] or 0)
-        new_balance = current + job.credits_charged
-        await conn.execute(
-            "UPDATE auth_users SET credits = ?, updated_at = datetime('now') WHERE id = ?",
-            (new_balance, job.user_id),
-        )
+        new_balance = int(row["credits"]) if row else 0
         await record_credit_transaction(
             conn,
             user_id=job.user_id,
