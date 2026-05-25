@@ -18,6 +18,9 @@ const StudioDesignedVoiceWorkspace = lazy(() =>
   import('./pages/StudioDesignedVoiceWorkspace').then((m) => ({ default: m.StudioDesignedVoiceWorkspace }))
 );
 const StudioResult = lazy(() => import('./pages/StudioResult').then((m) => ({ default: m.StudioResult })));
+const StudioMaintenance = lazy(() =>
+  import('./pages/StudioMaintenance').then((m) => ({ default: m.StudioMaintenance }))
+);
 const Docs = lazy(() => import('./pages/Docs').then((m) => ({ default: m.Docs })));
 const Blog = lazy(() => import('./pages/Blog').then((m) => ({ default: m.Blog })));
 const Article = lazy(() => import('./pages/Article').then((m) => ({ default: m.Article })));
@@ -61,11 +64,19 @@ function App() {
               <Route path="/" element={<Overview />} />
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/dashboard/evaluations" element={<DashboardEvaluations />} />
+              {/* Studio maintenance mode – original routes preserved below */}
+              <Route path="/studio/result/:id" element={<StudioMaintenance />} />
+              <Route path="/studio" element={<StudioMaintenance />} />
+              <Route path="/studio/my-voices/:voiceId" element={<StudioMaintenance />} />
+              <Route path="/studio/playbooks/:playbookId" element={<StudioMaintenance />} />
+              <Route path="/studio/:view" element={<StudioMaintenance />} />
+              {/* Original studio routes (disabled during maintenance):
               <Route path="/studio/result/:id" element={<StudioResult />} />
               <Route path="/studio" element={<Navigate to="/studio/home" replace />} />
               <Route path="/studio/my-voices/:voiceId" element={<StudioDesignedVoiceWorkspace />} />
               <Route path="/studio/playbooks/:playbookId" element={<Studio />} />
               <Route path="/studio/:view" element={<Studio />} />
+              */}
               <Route path="/docs" element={<Navigate to="/docs/getting-started" replace />} />
               <Route path="/docs/:section" element={<Docs />} />
               <Route path="/blog" element={<Blog />} />
