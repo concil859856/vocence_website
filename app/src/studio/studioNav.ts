@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-react';
-import { Mic, MessageSquare, Users, History, Sparkles, LayoutGrid, Music, ListMusic, Bot } from 'lucide-react';
+import { Mic, MessageSquare, Users, History, Sparkles, LayoutGrid, Music, ListMusic, Bot, AudioLines } from 'lucide-react';
 
 // 'chat' is intentionally NOT in the sidebar — the assistant lives as a
 // floating widget mounted at the Studio shell. It's kept in the union so
@@ -13,6 +13,7 @@ export type StudioView =
   | 'voice-design'
   | 'my-voices'
   | 'music'
+  | 'dubbing'
   | 'playbooks'
   | 'history'
   | 'agents';
@@ -24,6 +25,7 @@ export const studioSidebarItems: { id: StudioView; label: string; icon: LucideIc
   { id: 'stt', label: 'Speech-to-Text', icon: MessageSquare },
   { id: 'cloning', label: 'Voice Cloning', icon: Users },
   { id: 'music', label: 'Text-to-Music', icon: Music },
+  { id: 'dubbing', label: 'Voice Dubbing', icon: AudioLines },
   { id: 'my-voices', label: 'My Voices', icon: LayoutGrid },
   { id: 'playbooks', label: 'Playbooks', icon: ListMusic },
   { id: 'history', label: 'History', icon: History },

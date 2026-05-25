@@ -8,7 +8,8 @@ export type ServiceName =
   | 'voice_design'
   | 'music'
   | 'voice_clone'
-  | 'stt';
+  | 'stt'
+  | 'dubbing';
 
 export type ServerStatus = 'pending' | 'ready' | 'unreachable' | 'removed';
 
@@ -136,6 +137,7 @@ export const SERVICE_LABELS: Record<ServiceName, string> = {
   music: 'Music',
   voice_clone: 'Voice Clone',
   stt: 'Speech-to-Text',
+  dubbing: 'Voice Dubbing',
 };
 
 /** Default Docker Hub images per service. Admin can override at deploy time.
@@ -149,6 +151,7 @@ export const DEFAULT_IMAGES: Record<ServiceName, string> = {
   voice_clone: 'vocence/voice_clone:latest',
   stt: 'vocence/asr-streaming:latest',
   music: 'vocence/text-to-music:latest',
+  dubbing: 'vocence/voice-dubbing:latest',
 };
 
 /** Default host port per service (matches container EXPOSE in each repo's Dockerfile). */
@@ -158,4 +161,5 @@ export const DEFAULT_PORTS: Record<ServiceName, number> = {
   voice_clone: 8113,
   stt: 8114,
   music: 8115,
+  dubbing: 8116,
 };

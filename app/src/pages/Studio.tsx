@@ -51,6 +51,7 @@ import {
   type StudioVoiceDesignPreviewResponse,
 } from '../services/dashboardApi';
 import { StudioMusic } from './StudioMusic';
+import { StudioDubbing } from './StudioDubbing';
 import { StudioHome } from './StudioHome';
 import { StudioPlaybooks } from './StudioPlaybooks';
 import { StudioTtsGeneral } from '../components/studio/StudioTtsGeneral';
@@ -3185,6 +3186,7 @@ export function Studio() {
             {activeView === 'voice-design' && renderVoiceDesignView()}
             {activeView === 'my-voices' && renderMyVoicesView()}
             {activeView === 'music' && <StudioMusic />}
+            {activeView === 'dubbing' && <StudioDubbing />}
             {activeView === 'playbooks' && <StudioPlaybooks />}
             {activeView === 'history' && (
               <div className="space-y-6">

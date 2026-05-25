@@ -2643,7 +2643,106 @@ async def get_music_history_audio_url(
     expires_at = datetime.fromisoformat(str(row["expires_at"]).replace("Z", "+00:00")) if row["expires_at"] else None
     if not is_premium and expires_at and expires_at <= datetime.now(timezone.utc):
         raise HTTPException(status_code=410, detail="Audio has expired.")
-    url = get_presigned_url(row["audio_s3_bucket"], row["audio_s3_key"], expires_at, public=is_premium)
-    if not url:
+    music_url = get_presigned_url(row["audio_s3_bucket"], row["audio_s3_key"], expires_at, public=is_premium)
+    if not music_url:
         raise HTTPException(status_code=410, detail="Audio expired.")
-    return {"audio_url": url}
+    return {"audio_url": music_url}
+
+
+# ---------------------------------------------------------------------------
+# Dubbing (noise reduction / speech enhancement)
+# ---------------------------------------------------------------------------
+
+DUBBING_CREDITS_COST = int(os.environ.get("STUDIO_DUBBING_CREDITS_COST", "5"))
+DUBBING_MAX_UPLOAD_BYTES = int(os.environ.get("STUDIO_DUBBING_MAX_UPLOAD_BYTES", str(100 * 1024 * 1024)))
+
+
+def _dubbing_available() -> bool:
+    try:
+        from ops import pool as gpu_pool
+        if gpu_pool.online_pod_count("dubbing") > 0:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+@router.post("/dubbing/enhance")
+async def dubbing_enhance(
+    user_id_form: str = Form(..., alias="user_id"),
+    audio_file: UploadFile = File(...),
+    user_id: str = Depends(require_auth),
+):
+    """Upload noisy audio, get back enhanced/denoised audio."""
+    if user_id_form != user_id:
+        raise HTTPException(status_code=403, detail="user_id does not match authenticated user")
+    if not _dubbing_available():
+        raise HTTPException(status_code=503, detail="Voice dubbing is not available (no ops pods online).")
+
+    raw = await audio_file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Empty audio file")
+    if len(raw) > DUBBING_MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"Audio exceeds max size ({DUBBING_MAX_UPLOAD_BYTES} bytes)")
+
+    conn = await get_connection()
+    try:
+        cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
+        urow = await cursor.fetchone()
+        if urow is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        credits = int(urow["credits"])
+        if credits < DUBBING_CREDITS_COST:
+            raise HTTPException(
+                status_code=402,
+                detail=f"Insufficient credits. Need {DUBBING_CREDITS_COST} for voice dubbing. You have {credits}.",
+            )
+    finally:
+        await conn.close()
+
+    from studio_dubbing_service import enhance_audio
+    started = time.perf_counter()
+    wav_bytes, err = await enhance_audio(
+        audio_bytes=raw,
+        filename=audio_file.filename or "input.wav",
+    )
+    if not wav_bytes:
+        raise HTTPException(status_code=502, detail=f"Enhancement failed: {err}")
+
+    latency_ms = int((time.perf_counter() - started) * 1000)
+
+    conn = await get_connection()
+    try:
+        bucket, key, expires_at = upload_wav_to_hippius(user_id, wav_bytes, subdir="dubbing")
+        new_credits = credits - DUBBING_CREDITS_COST
+        await conn.execute(
+            "UPDATE auth_users SET credits = ?, updated_at = datetime('now') WHERE id = ?",
+            (new_credits, user_id),
+        )
+        await record_credit_transaction(
+            conn,
+            user_id=user_id,
+            transaction_type="dubbing",
+            amount=-DUBBING_CREDITS_COST,
+            balance_after=new_credits,
+            description="Voice dubbing (noise reduction)",
+            reference_type="dubbing",
+            reference_id=key,
+        )
+        await conn.commit()
+    finally:
+        await conn.close()
+
+    try:
+        from referral_service import try_activate_referral
+        await try_activate_referral(user_id)
+    except Exception:
+        pass
+
+    dub_url = get_presigned_url(bucket, key, expires_at, public=False) or ""
+    return {
+        "audio_url": dub_url,
+        "credits_used": DUBBING_CREDITS_COST,
+        "credits_remaining": new_credits,
+        "latency_ms": latency_ms,
+    }

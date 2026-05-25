@@ -312,6 +312,7 @@ async def deploy_pod(body: PodDeployIn, _: str = Depends(require_admin_unlocked)
             "voice_clone": "QWEN3_CLONE_API_KEY",
             "stt": "STT_API_KEY",
             "music": "MUSIC_API_KEY",
+            "dubbing": "DUBBING_API_KEY",
         }.get(body.service)
         if env_key_for_service:
             env.setdefault(env_key_for_service, api_key)
@@ -325,6 +326,7 @@ async def deploy_pod(body: PodDeployIn, _: str = Depends(require_admin_unlocked)
             "voice_clone": 8113,
             "stt": 8114,
             "music": 8115,
+            "dubbing": 8116,
         }.get(body.service, body.port)
 
         container_name = f"vocence-{body.service}-{pod_id}"

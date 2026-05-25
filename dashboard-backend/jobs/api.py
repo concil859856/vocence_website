@@ -74,7 +74,7 @@ async def enqueue(
     #    Reserve atomically: if any one fails, roll back earlier reservations.
     #    A pool counts as "configured" if EITHER the static env-based pool has
     #    URLs OR the ops dispatcher has online pods for that service.
-    _POOL_TO_OPS_SERVICE = {"tts": "tts_streaming", "stt": "stt", "clone": "voice_clone", "music": "music"}
+    _POOL_TO_OPS_SERVICE = {"tts": "tts_streaming", "stt": "stt", "clone": "voice_clone", "music": "music", "dubbing": "dubbing"}
 
     def _pool_available(pool_name: str, cnt) -> bool:
         if cnt is not None and cnt.configured:
