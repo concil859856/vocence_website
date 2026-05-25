@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 
 from database import acquire
-from local_db import get_connection, record_credit_transaction, refresh_daily_usage_for_day
+from local_db import atomic_deduct_credits, get_connection, record_credit_transaction, refresh_daily_usage_for_day
 from ranking import (
     RANKING_WINDOW_EVALS,
     get_ranked_miner_stats_for_validator,
@@ -357,13 +357,9 @@ async def generate_tts(body: StudioGenerateRequest, user_id: str = Depends(requi
         )
         history_id = int(cursor.lastrowid)
         expires_at_val = expires_at
-        await conn.execute(
-            "UPDATE auth_users SET credits = credits - ?, updated_at = datetime('now') WHERE id = ?",
-            (TTS_CREDITS_COST, user_id),
-        )
-        credit_cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
-        new_row = await credit_cursor.fetchone()
-        new_credits = int(new_row["credits"]) if new_row else credits - TTS_CREDITS_COST
+        new_credits = await atomic_deduct_credits(conn, user_id=user_id, cost=TTS_CREDITS_COST)
+        if new_credits is None:
+            raise HTTPException(status_code=402, detail="Insufficient credits.")
         await record_credit_transaction(
             conn,
             user_id=user_id,
@@ -468,13 +464,9 @@ async def transcribe_stt(
             ),
         )
         history_id = int(cursor.lastrowid)
-        await conn.execute(
-            "UPDATE auth_users SET credits = credits - ?, updated_at = datetime('now') WHERE id = ?",
-            (STT_CREDITS_COST, user_id),
-        )
-        credit_cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
-        new_row = await credit_cursor.fetchone()
-        new_credits = int(new_row["credits"]) if new_row else credits - STT_CREDITS_COST
+        new_credits = await atomic_deduct_credits(conn, user_id=user_id, cost=STT_CREDITS_COST)
+        if new_credits is None:
+            raise HTTPException(status_code=402, detail="Insufficient credits.")
         await record_credit_transaction(
             conn,
             user_id=user_id,
@@ -630,13 +622,9 @@ async def clone_voice(
             ),
         )
         history_id = int(cursor.lastrowid)
-        await conn.execute(
-            "UPDATE auth_users SET credits = credits - ?, updated_at = datetime('now') WHERE id = ?",
-            (CLONE_CREDITS_COST, user_id),
-        )
-        credit_cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
-        new_row = await credit_cursor.fetchone()
-        new_credits = int(new_row["credits"]) if new_row else credits - CLONE_CREDITS_COST
+        new_credits = await atomic_deduct_credits(conn, user_id=user_id, cost=CLONE_CREDITS_COST)
+        if new_credits is None:
+            raise HTTPException(status_code=402, detail="Insufficient credits.")
         await record_credit_transaction(
             conn,
             user_id=user_id,
@@ -792,13 +780,9 @@ async def tts_voice_clone_sample(
             ),
         )
         history_id = int(cursor.lastrowid)
-        await conn.execute(
-            "UPDATE auth_users SET credits = credits - ?, updated_at = datetime('now') WHERE id = ?",
-            (TTS_CREDITS_COST, user_id),
-        )
-        credit_cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
-        new_row = await credit_cursor.fetchone()
-        new_credits = int(new_row["credits"]) if new_row else credits - TTS_CREDITS_COST
+        new_credits = await atomic_deduct_credits(conn, user_id=user_id, cost=TTS_CREDITS_COST)
+        if new_credits is None:
+            raise HTTPException(status_code=402, detail="Insufficient credits.")
         await record_credit_transaction(
             conn,
             user_id=user_id,
@@ -944,13 +928,9 @@ async def voice_design_preview(body: StudioVoiceDesignPreviewRequest, user_id: s
                 expires_at.isoformat(),
             ),
         )
-        await conn.execute(
-            "UPDATE auth_users SET credits = credits - ?, updated_at = datetime('now') WHERE id = ?",
-            (VOICE_DESIGN_PREVIEW_CREDITS, user_id),
-        )
-        credit_cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
-        new_row = await credit_cursor.fetchone()
-        new_credits = int(new_row["credits"]) if new_row else credits - VOICE_DESIGN_PREVIEW_CREDITS
+        new_credits = await atomic_deduct_credits(conn, user_id=user_id, cost=VOICE_DESIGN_PREVIEW_CREDITS)
+        if new_credits is None:
+            raise HTTPException(status_code=402, detail="Insufficient credits.")
         await record_credit_transaction(
             conn,
             user_id=user_id,
@@ -1413,13 +1393,9 @@ async def designed_voice_speak(body: StudioDesignedVoiceSpeakRequest, user_id: s
             ),
         )
         history_id = int(cursor.lastrowid)
-        await conn.execute(
-            "UPDATE auth_users SET credits = credits - ?, updated_at = datetime('now') WHERE id = ?",
-            (VOICE_DESIGN_SPEAK_CREDITS, user_id),
-        )
-        credit_cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
-        new_row = await credit_cursor.fetchone()
-        new_credits = int(new_row["credits"]) if new_row else credits - VOICE_DESIGN_SPEAK_CREDITS
+        new_credits = await atomic_deduct_credits(conn, user_id=user_id, cost=VOICE_DESIGN_SPEAK_CREDITS)
+        if new_credits is None:
+            raise HTTPException(status_code=402, detail="Insufficient credits.")
         await record_credit_transaction(
             conn,
             user_id=user_id,
@@ -2036,13 +2012,9 @@ async def music_generate_text2music(body: StudioMusicText2MusicRequest, user_id:
             ),
         )
         history_id = int(cursor.lastrowid)
-        await conn.execute(
-            "UPDATE auth_users SET credits = credits - ?, updated_at = datetime('now') WHERE id = ?",
-            (MUSIC_CREDITS_COST, user_id),
-        )
-        credit_cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
-        new_row = await credit_cursor.fetchone()
-        new_credits = int(new_row["credits"]) if new_row else credits - MUSIC_CREDITS_COST
+        new_credits = await atomic_deduct_credits(conn, user_id=user_id, cost=MUSIC_CREDITS_COST)
+        if new_credits is None:
+            raise HTTPException(status_code=402, detail="Insufficient credits.")
         await record_credit_transaction(
             conn,
             user_id=user_id,
@@ -2156,13 +2128,9 @@ async def music_generate_audio2audio(
              _json.dumps({"ref_audio_strength": ref_audio_strength})),
         )
         history_id = int(cursor.lastrowid)
-        await conn.execute(
-            "UPDATE auth_users SET credits = credits - ?, updated_at = datetime('now') WHERE id = ?",
-            (MUSIC_CREDITS_COST, user_id),
-        )
-        credit_cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
-        new_row = await credit_cursor.fetchone()
-        new_credits = int(new_row["credits"]) if new_row else credits - MUSIC_CREDITS_COST
+        new_credits = await atomic_deduct_credits(conn, user_id=user_id, cost=MUSIC_CREDITS_COST)
+        if new_credits is None:
+            raise HTTPException(status_code=402, detail="Insufficient credits.")
         await record_credit_transaction(
             conn, user_id=user_id, transaction_type="music_generation",
             amount=-MUSIC_CREDITS_COST, balance_after=new_credits,
@@ -2257,11 +2225,9 @@ async def music_generate_retake(
             (user_id, prompt, lyrics, format, bucket, key, expires_at.isoformat(), MUSIC_CREDITS_COST, latency_ms, _json.dumps(meta)),
         )
         history_id = int(cursor.lastrowid)
-        await conn.execute("UPDATE auth_users SET credits = credits - ?, updated_at = datetime('now') WHERE id = ?",
-                           (MUSIC_CREDITS_COST, user_id))
-        credit_cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
-        new_row = await credit_cursor.fetchone()
-        new_credits = int(new_row["credits"]) if new_row else credits - MUSIC_CREDITS_COST
+        new_credits = await atomic_deduct_credits(conn, user_id=user_id, cost=MUSIC_CREDITS_COST)
+        if new_credits is None:
+            raise HTTPException(status_code=402, detail="Insufficient credits.")
         await record_credit_transaction(conn, user_id=user_id, transaction_type="music_generation",
                                         amount=-MUSIC_CREDITS_COST, balance_after=new_credits,
                                         description="Music generation (retake)",
@@ -2351,11 +2317,9 @@ async def music_generate_repaint(
             (user_id, prompt, lyrics, format, bucket, key, expires_at.isoformat(), MUSIC_CREDITS_COST, latency_ms, _json.dumps(meta)),
         )
         history_id = int(cursor.lastrowid)
-        await conn.execute("UPDATE auth_users SET credits = credits - ?, updated_at = datetime('now') WHERE id = ?",
-                           (MUSIC_CREDITS_COST, user_id))
-        credit_cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
-        new_row = await credit_cursor.fetchone()
-        new_credits = int(new_row["credits"]) if new_row else credits - MUSIC_CREDITS_COST
+        new_credits = await atomic_deduct_credits(conn, user_id=user_id, cost=MUSIC_CREDITS_COST)
+        if new_credits is None:
+            raise HTTPException(status_code=402, detail="Insufficient credits.")
         await record_credit_transaction(conn, user_id=user_id, transaction_type="music_generation",
                                         amount=-MUSIC_CREDITS_COST, balance_after=new_credits,
                                         description="Music generation (repaint)",
@@ -2450,11 +2414,9 @@ async def music_generate_edit(
             (user_id, prompt, lyrics, format, bucket, key, expires_at.isoformat(), MUSIC_CREDITS_COST, latency_ms, _json.dumps(meta)),
         )
         history_id = int(cursor.lastrowid)
-        await conn.execute("UPDATE auth_users SET credits = credits - ?, updated_at = datetime('now') WHERE id = ?",
-                           (MUSIC_CREDITS_COST, user_id))
-        credit_cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
-        new_row = await credit_cursor.fetchone()
-        new_credits = int(new_row["credits"]) if new_row else credits - MUSIC_CREDITS_COST
+        new_credits = await atomic_deduct_credits(conn, user_id=user_id, cost=MUSIC_CREDITS_COST)
+        if new_credits is None:
+            raise HTTPException(status_code=402, detail="Insufficient credits.")
         await record_credit_transaction(conn, user_id=user_id, transaction_type="music_generation",
                                         amount=-MUSIC_CREDITS_COST, balance_after=new_credits,
                                         description="Music generation (edit)",
@@ -2545,11 +2507,9 @@ async def music_generate_extend(
             (user_id, prompt, lyrics, format, bucket, key, expires_at.isoformat(), MUSIC_CREDITS_COST, latency_ms, _json.dumps(meta)),
         )
         history_id = int(cursor.lastrowid)
-        await conn.execute("UPDATE auth_users SET credits = credits - ?, updated_at = datetime('now') WHERE id = ?",
-                           (MUSIC_CREDITS_COST, user_id))
-        credit_cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
-        new_row = await credit_cursor.fetchone()
-        new_credits = int(new_row["credits"]) if new_row else credits - MUSIC_CREDITS_COST
+        new_credits = await atomic_deduct_credits(conn, user_id=user_id, cost=MUSIC_CREDITS_COST)
+        if new_credits is None:
+            raise HTTPException(status_code=402, detail="Insufficient credits.")
         await record_credit_transaction(conn, user_id=user_id, transaction_type="music_generation",
                                         amount=-MUSIC_CREDITS_COST, balance_after=new_credits,
                                         description="Music generation (extend)",
@@ -2714,11 +2674,9 @@ async def dubbing_enhance(
     conn = await get_connection()
     try:
         bucket, key, expires_at = upload_wav_to_hippius(user_id, wav_bytes, subdir="dubbing")
-        new_credits = credits - DUBBING_CREDITS_COST
-        await conn.execute(
-            "UPDATE auth_users SET credits = ?, updated_at = datetime('now') WHERE id = ?",
-            (new_credits, user_id),
-        )
+        new_credits = await atomic_deduct_credits(conn, user_id=user_id, cost=DUBBING_CREDITS_COST)
+        if new_credits is None:
+            raise HTTPException(status_code=402, detail="Insufficient credits.")
         await record_credit_transaction(
             conn,
             user_id=user_id,
