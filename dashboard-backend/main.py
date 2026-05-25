@@ -62,14 +62,11 @@ def _cors_allow_origins() -> list[str]:
     """
     raw = (os.environ.get("CORS_ORIGIN") or "").strip()
     if not raw:
-        return [
-            "https://vocence.ai",
-            "https://www.vocence.ai",
-            "http://localhost:5173",
-            "http://127.0.0.1:5173",
-            "http://localhost:3000",
-            "http://127.0.0.1:3000",
-        ]
+        origins = ["https://vocence.ai", "https://www.vocence.ai"]
+        if os.environ.get("ENV", "").lower() in ("dev", "development", "local"):
+            origins += ["http://localhost:5173", "http://127.0.0.1:5173",
+                        "http://localhost:3000", "http://127.0.0.1:3000"]
+        return origins
     origins = [o.strip() for o in raw.split(",") if o.strip()]
     # Avoid "Failed to fetch" when the app is opened as localhost vs 127.0.0.1
     expanded: list[str] = []
@@ -158,6 +155,25 @@ app = FastAPI(
     openapi_url=None,
 )
 register_exception_handlers(app)
+
+
+@app.middleware("http")
+async def _strip_internal_headers(request, call_next):
+    """Strip X-Internal-Service-Token and X-Internal-User-Id from external
+    requests. These headers are a service-to-service trust path — if the
+    reverse proxy doesn't strip them, an attacker who knows the shared
+    secret can impersonate any user. Only allow from loopback."""
+    client_ip = request.client.host if request.client else ""
+    if client_ip not in ("127.0.0.1", "::1", "localhost"):
+        # MutableHeaders so we can delete in-place before the request
+        # reaches any route handler.
+        scope_headers = request.scope.get("headers", [])
+        request.scope["headers"] = [
+            (k, v) for k, v in scope_headers
+            if k.lower() not in (b"x-internal-service-token", b"x-internal-user-id")
+        ]
+    return await call_next(request)
+
 
 app.add_middleware(
     CORSMiddleware,

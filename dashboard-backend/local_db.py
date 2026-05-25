@@ -789,6 +789,29 @@ def generate_api_key() -> tuple[str, str]:
     return plain, plain[:16]
 
 
+async def atomic_deduct_credits(
+    conn: aiosqlite.Connection,
+    *,
+    user_id: str,
+    cost: int,
+) -> int | None:
+    """Atomically deduct credits. Returns new balance, or None if insufficient.
+
+    Uses UPDATE ... WHERE credits >= cost to prevent races where concurrent
+    requests all pass a separate credit check then all deduct."""
+    cursor = await conn.execute(
+        "UPDATE auth_users SET credits = credits - ?, updated_at = datetime('now') "
+        "WHERE id = ? AND credits >= ?",
+        (cost, user_id, cost),
+    )
+    if cursor.rowcount == 0:
+        return None
+    row = await (await conn.execute(
+        "SELECT credits FROM auth_users WHERE id = ?", (user_id,)
+    )).fetchone()
+    return int(row["credits"]) if row else 0
+
+
 async def record_credit_transaction(
     conn: aiosqlite.Connection,
     *,

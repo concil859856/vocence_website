@@ -79,13 +79,15 @@ async def validate_referral(
     if referrer["id"] == new_user_id or referrer["email"] == new_user_email:
         return "cannot refer yourself"
 
-    if device_fingerprint:
-        existing = await (await conn.execute(
-            "SELECT referral_code FROM referral_devices WHERE device_fingerprint = ?",
-            (device_fingerprint,),
-        )).fetchone()
-        if existing:
-            return "device already used a referral"
+    if not device_fingerprint:
+        return "device fingerprint required for referral signup"
+
+    existing = await (await conn.execute(
+        "SELECT referral_code FROM referral_devices WHERE device_fingerprint = ?",
+        (device_fingerprint,),
+    )).fetchone()
+    if existing:
+        return "device already used a referral"
 
     return None
 
@@ -115,18 +117,21 @@ async def try_activate_referral(user_id: str) -> None:
     already activated."""
     conn = await get_connection()
     try:
-        row = await (await conn.execute(
-            "SELECT referred_by, referral_activated FROM auth_users WHERE id = ?",
-            (user_id,),
-        )).fetchone()
-        if not row or not row["referred_by"] or row["referral_activated"]:
-            return
-
-        referral_code = row["referred_by"]
-        await conn.execute(
-            "UPDATE auth_users SET referral_activated = 1, updated_at = datetime('now') WHERE id = ?",
+        # Atomic CAS: only flip 0→1, returns rowcount=0 if already activated.
+        cursor = await conn.execute(
+            "UPDATE auth_users SET referral_activated = 1, updated_at = datetime('now') "
+            "WHERE id = ? AND referral_activated = 0 AND referred_by IS NOT NULL AND referred_by != ''",
             (user_id,),
         )
+        if cursor.rowcount == 0:
+            return
+
+        row = await (await conn.execute(
+            "SELECT referred_by FROM auth_users WHERE id = ?", (user_id,),
+        )).fetchone()
+        if not row or not row["referred_by"]:
+            return
+        referral_code = row["referred_by"]
 
         referrer = await (await conn.execute(
             "SELECT id, credits, plan_code FROM auth_users WHERE referral_code = ?",
@@ -174,6 +179,14 @@ async def grant_purchase_commission(
         "SELECT referred_by FROM auth_users WHERE id = ?", (buyer_id,),
     )).fetchone()
     if not row or not row["referred_by"]:
+        return
+
+    # Dedup: check if we already granted commission for this payment.
+    existing = await (await conn.execute(
+        "SELECT 1 FROM credit_transactions WHERE reference_id = ? AND transaction_type = 'referral_commission'",
+        (payment_id,),
+    )).fetchone()
+    if existing:
         return
 
     referrer = await (await conn.execute(

@@ -312,10 +312,10 @@ def require_admin_unlocked(
     with code='admin_unlock_required' so the frontend knows to prompt for
     the password (vs. a regular auth failure which means re-login)."""
     if not ADMIN_PASSWORD_HASH:
-        # Soft-fail open when admin password isn't configured yet. Logs a
-        # loud warning every request so operators notice.
-        _log.warning("admin route accessed without ADMIN_PASSWORD_HASH configured (open mode)")
-        return email
+        raise HTTPException(
+            status_code=503,
+            detail="Admin password not configured. Set ADMIN_PASSWORD_HASH in .env.",
+        )
     payload = verify_admin_token(x_admin_token, email)
     if payload is None:
         raise HTTPException(
