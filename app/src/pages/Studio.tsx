@@ -463,6 +463,12 @@ export function Studio() {
   const [uploadVoiceLanguage, setUploadVoiceLanguage] = useState('');
   const [uploadVoiceBusy, setUploadVoiceBusy] = useState(false);
   const [uploadVoiceError, setUploadVoiceError] = useState<string | null>(null);
+  const [uploadVoiceMode, setUploadVoiceMode] = useState<'upload' | 'record'>('upload');
+  const [uploadVoiceRecording, setUploadVoiceRecording] = useState(false);
+  const [uploadVoiceRecordSec, setUploadVoiceRecordSec] = useState(0);
+  const uploadVoiceMrRef = useRef<MediaRecorder | null>(null);
+  const uploadVoiceStreamRef = useRef<MediaStream | null>(null);
+  const uploadVoiceTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [vdSaveNameInvalid, setVdSaveNameInvalid] = useState(false);
   const [abstractImagePool, setAbstractImagePool] = useState<string[]>(DEFAULT_ABSTRACT_CARD_IMAGES);
   const highlightedVoiceRef = useRef<HTMLDivElement | null>(null);
@@ -1466,12 +1472,69 @@ export function Studio() {
     setUploadVoiceLanguage('');
     setUploadVoiceError(null);
     setUploadVoiceBusy(false);
+    setUploadVoiceMode('upload');
+    setUploadVoiceRecording(false);
+    setUploadVoiceRecordSec(0);
     setUploadVoiceOpen(true);
   };
   const closeUploadVoice = () => {
-    if (uploadVoiceBusy) return; // don't let user cancel mid-upload
+    if (uploadVoiceBusy) return;
+    stopUploadVoiceRecording();
     setUploadVoiceOpen(false);
     setUploadVoiceError(null);
+  };
+
+  const startUploadVoiceRecording = async () => {
+    setUploadVoiceError(null);
+    setUploadVoiceFile(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      uploadVoiceStreamRef.current = stream;
+      const chunks: BlobPart[] = [];
+      const mr = new MediaRecorder(stream);
+      uploadVoiceMrRef.current = mr;
+      mr.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+      mr.onstop = () => {
+        stream.getTracks().forEach((t) => t.stop());
+        uploadVoiceStreamRef.current = null;
+        const blob = new Blob(chunks, { type: mr.mimeType || 'audio/webm' });
+        void (async () => {
+          try {
+            const wavFile = await blobToCloneReferenceWav(blob, 'recording.wav');
+            setUploadVoiceFile(wavFile);
+          } catch {
+            setUploadVoiceError('Could not convert recording to WAV. Try again or upload a file.');
+          } finally {
+            setUploadVoiceRecording(false);
+            uploadVoiceMrRef.current = null;
+            if (uploadVoiceTimerRef.current) { clearInterval(uploadVoiceTimerRef.current); uploadVoiceTimerRef.current = null; }
+          }
+        })();
+      };
+      mr.start();
+      setUploadVoiceRecording(true);
+      setUploadVoiceRecordSec(0);
+      uploadVoiceTimerRef.current = setInterval(() => {
+        setUploadVoiceRecordSec((s) => s + 1);
+      }, 1000);
+    } catch {
+      setUploadVoiceError('Microphone access denied or unavailable.');
+    }
+  };
+
+  const stopUploadVoiceRecording = () => {
+    if (uploadVoiceMrRef.current && uploadVoiceMrRef.current.state === 'recording') {
+      uploadVoiceMrRef.current.stop();
+    }
+    if (uploadVoiceStreamRef.current) {
+      uploadVoiceStreamRef.current.getTracks().forEach((t) => t.stop());
+      uploadVoiceStreamRef.current = null;
+    }
+    if (uploadVoiceTimerRef.current) {
+      clearInterval(uploadVoiceTimerRef.current);
+      uploadVoiceTimerRef.current = null;
+    }
+    setUploadVoiceRecording(false);
   };
 
   const submitUploadVoice = async () => {
@@ -2045,7 +2108,7 @@ export function Studio() {
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60">
             <div className="bg-[#0B0D10] border border-white/15 rounded-2xl w-full max-w-lg max-h-[90vh] flex flex-col overflow-hidden shadow-2xl shadow-black/60">
               <div className="flex items-center justify-between px-5 py-4 border-b border-white/10">
-                <h3 className="text-base font-semibold text-white">Upload my voice</h3>
+                <h3 className="text-base font-semibold text-white">Add my voice</h3>
                 <button
                   type="button"
                   onClick={closeUploadVoice}
@@ -2059,7 +2122,7 @@ export function Studio() {
 
               <div className="flex-1 overflow-y-auto p-5 space-y-4">
                 <p className="text-sm text-[#A7B0B7] leading-relaxed">
-                  Upload a clear voice clip (5–30 seconds works best) and we'll save it as a reusable voice.
+                  Upload or record a clear voice clip (5–30 seconds works best) and we'll save it as a reusable voice.
                   You can pick it on any agent or Studio call without re-uploading. We transcribe the clip
                   once on save so the reference text is ready when the voice is used.
                 </p>
@@ -2078,19 +2141,88 @@ export function Studio() {
                 </div>
 
                 <div>
-                  <label className="block text-xs uppercase tracking-wider text-[#A7B0B7] mb-1.5">Audio file</label>
-                  <input
-                    type="file"
-                    accept="audio/*"
-                    onChange={(e) => setUploadVoiceFile(e.target.files?.[0] || null)}
-                    disabled={uploadVoiceBusy}
-                    className="block w-full text-sm text-[#A7B0B7] file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-white/[0.06] file:text-white hover:file:bg-white/[0.12]"
-                  />
-                  {uploadVoiceFile ? (
-                    <p className="text-[11px] text-[#666] mt-1.5">
-                      {uploadVoiceFile.name} · {(uploadVoiceFile.size / 1024 / 1024).toFixed(2)} MB
-                    </p>
-                  ) : null}
+                  <label className="block text-xs uppercase tracking-wider text-[#A7B0B7] mb-1.5">Audio</label>
+                  <div className="flex gap-2 mb-2">
+                    <button
+                      type="button"
+                      onClick={() => { setUploadVoiceMode('upload'); stopUploadVoiceRecording(); }}
+                      disabled={uploadVoiceBusy}
+                      className={`flex-1 py-1.5 text-xs font-medium rounded-lg border transition-colors ${
+                        uploadVoiceMode === 'upload'
+                          ? 'border-[#DFFF00]/40 bg-[#DFFF00]/10 text-[#DFFF00]'
+                          : 'border-white/10 text-[#A7B0B7] hover:text-white hover:border-white/20'
+                      }`}
+                    >
+                      Upload file
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setUploadVoiceMode('record'); setUploadVoiceFile(null); }}
+                      disabled={uploadVoiceBusy}
+                      className={`flex-1 py-1.5 text-xs font-medium rounded-lg border transition-colors ${
+                        uploadVoiceMode === 'record'
+                          ? 'border-[#DFFF00]/40 bg-[#DFFF00]/10 text-[#DFFF00]'
+                          : 'border-white/10 text-[#A7B0B7] hover:text-white hover:border-white/20'
+                      }`}
+                    >
+                      Record
+                    </button>
+                  </div>
+
+                  {uploadVoiceMode === 'upload' ? (
+                    <>
+                      <input
+                        type="file"
+                        accept="audio/*"
+                        onChange={(e) => setUploadVoiceFile(e.target.files?.[0] || null)}
+                        disabled={uploadVoiceBusy}
+                        className="block w-full text-sm text-[#A7B0B7] file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-white/[0.06] file:text-white hover:file:bg-white/[0.12]"
+                      />
+                      {uploadVoiceFile ? (
+                        <p className="text-[11px] text-[#666] mt-1.5">
+                          {uploadVoiceFile.name} · {(uploadVoiceFile.size / 1024 / 1024).toFixed(2)} MB
+                        </p>
+                      ) : null}
+                    </>
+                  ) : (
+                    <div className="flex flex-col items-center gap-3 py-4 rounded-lg border border-white/10 bg-white/[0.02]">
+                      {uploadVoiceRecording ? (
+                        <>
+                          <div className="flex items-center gap-2">
+                            <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse" />
+                            <span className="text-sm font-mono text-white">
+                              {String(Math.floor(uploadVoiceRecordSec / 60)).padStart(2, '0')}:{String(uploadVoiceRecordSec % 60).padStart(2, '0')}
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={stopUploadVoiceRecording}
+                            className="px-4 py-2 rounded-lg bg-red-500/20 border border-red-500/30 text-red-300 text-sm font-medium hover:bg-red-500/30"
+                          >
+                            Stop recording
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          {uploadVoiceFile ? (
+                            <p className="text-xs text-[#A7B0B7]">
+                              Recorded · {(uploadVoiceFile.size / 1024).toFixed(0)} KB
+                            </p>
+                          ) : (
+                            <p className="text-xs text-[#A7B0B7]">5–30 seconds works best</p>
+                          )}
+                          <button
+                            type="button"
+                            onClick={startUploadVoiceRecording}
+                            disabled={uploadVoiceBusy}
+                            className="px-4 py-2 rounded-lg bg-[#DFFF00]/10 border border-[#DFFF00]/30 text-[#DFFF00] text-sm font-medium hover:bg-[#DFFF00]/20 disabled:opacity-40"
+                          >
+                            {uploadVoiceFile ? 'Re-record' : 'Start recording'}
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 <div>
