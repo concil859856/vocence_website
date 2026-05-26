@@ -142,11 +142,12 @@ async def try_activate_referral(user_id: str) -> None:
             return
 
         referrer_id = referrer["id"]
-        new_balance = referrer["credits"] + REFERRAL_SIGNUP_BONUS
         await conn.execute(
-            "UPDATE auth_users SET credits = ?, updated_at = datetime('now') WHERE id = ?",
-            (new_balance, referrer_id),
+            "UPDATE auth_users SET credits = credits + ?, updated_at = datetime('now') WHERE id = ?",
+            (REFERRAL_SIGNUP_BONUS, referrer_id),
         )
+        row = await (await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (referrer_id,))).fetchone()
+        new_balance = int(row["credits"]) if row else 0
         await record_credit_transaction(
             conn,
             user_id=referrer_id,
@@ -198,11 +199,12 @@ async def grant_purchase_commission(
 
     commission = max(1, int(credits_purchased * REFERRAL_COMMISSION_PCT))
     referrer_id = referrer["id"]
-    new_balance = referrer["credits"] + commission
     await conn.execute(
-        "UPDATE auth_users SET credits = ?, updated_at = datetime('now') WHERE id = ?",
-        (new_balance, referrer_id),
+        "UPDATE auth_users SET credits = credits + ?, updated_at = datetime('now') WHERE id = ?",
+        (commission, referrer_id),
     )
+    row2 = await (await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (referrer_id,))).fetchone()
+    new_balance = int(row2["credits"]) if row2 else 0
     await record_credit_transaction(
         conn,
         user_id=referrer_id,
@@ -230,11 +232,12 @@ async def _check_milestone(conn, referrer_id: str, referrer_row) -> None:
     if not count or count["cnt"] < MILESTONE_COUNT:
         return
 
-    new_balance = referrer_row["credits"] + MILESTONE_BONUS_CREDITS
     await conn.execute(
-        "UPDATE auth_users SET plan_code = ?, credits = ?, updated_at = datetime('now') WHERE id = ?",
-        (MILESTONE_PLAN, new_balance, referrer_id),
+        "UPDATE auth_users SET plan_code = ?, credits = credits + ?, updated_at = datetime('now') WHERE id = ? AND plan_code != ?",
+        (MILESTONE_PLAN, MILESTONE_BONUS_CREDITS, referrer_id, MILESTONE_PLAN),
     )
+    row = await (await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (referrer_id,))).fetchone()
+    new_balance = int(row["credits"]) if row else 0
     await record_credit_transaction(
         conn,
         user_id=referrer_id,
