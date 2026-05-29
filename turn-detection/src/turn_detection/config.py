@@ -7,7 +7,7 @@ Required:
   TD_API_KEY               Shared secret for X-API-Key auth.
 
 Optional (with sensible defaults):
-  TD_PORT                  HTTP bind port (default 8117).
+  TD_PORT                  HTTP bind port (default 8119).
   TD_MAX_CONCURRENT        Total concurrent WS sessions across both
                            endpoints (default 64).
   TD_SMART_TURN_MODEL      HF id of the Smart Turn ONNX model.
@@ -98,7 +98,7 @@ class Config:
 def load() -> Config:
     return Config(
         api_key=_env("TD_API_KEY", required=True),
-        port=_env_int("TD_PORT", 8117),
+        port=_env_int("TD_PORT", 8119),
         max_concurrent=_env_int("TD_MAX_CONCURRENT", 64),
 
         smart_turn_repo=_env("TD_SMART_TURN_MODEL", "pipecat-ai/smart-turn-v3"),

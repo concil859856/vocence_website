@@ -342,11 +342,12 @@ async def deploy_pod(body: PodDeployIn, _: str = Depends(require_admin_unlocked)
             "music": 8115,
             "noise_remover": 8116,
             "dubbing": 8116,
-            # Streaming STT shares the conceptual STT port (8114) but
-            # the image tag is different, so it never co-locates with
-            # the batch STT image on one host.
-            "asr_streaming_rt": 8114,
-            "turn_detection": 8117,
+            # The new asr-streaming-rt pod hosts BOTH /v1/transcribe (batch)
+            # and /v1/stream (streaming WS) — see streaming_stt_spec.md. It
+            # uses port 8117 to keep ``stt`` (8114) free as a fallback while
+            # we migrate Studio + voicechat to the new pod.
+            "asr_streaming_rt": 8117,
+            "turn_detection": 8119,
             "knowledge_ingestion": 8118,
         }.get(body.service, body.port)
 

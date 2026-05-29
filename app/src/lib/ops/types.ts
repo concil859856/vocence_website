@@ -172,11 +172,12 @@ export const DEFAULT_PORTS: Record<ServiceName, number> = {
   stt: 8114,
   music: 8115,
   noise_remover: 8116,
-  // asr_streaming_rt reuses 8114 — same logical "STT service" port.
-  // It and ``stt`` never co-locate on one host (different image tags),
-  // so the port number can be shared at the pod level.
-  asr_streaming_rt: 8114,
-  turn_detection: 8117,
+  // The new STT pod (asr-streaming-rt) ships BOTH a batch /v1/transcribe
+  // endpoint and a streaming WS at /v1/stream — so it supersedes the old
+  // batch ``stt`` pod for new deployments. They run on different ports
+  // so existing hosts can keep both during the migration window.
+  asr_streaming_rt: 8117,
+  turn_detection: 8119,
   knowledge_ingestion: 8118,
 };
 

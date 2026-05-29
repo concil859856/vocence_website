@@ -64,16 +64,16 @@ RUN pip install --no-cache-dir --quiet . && \
 # Bring in the pre-downloaded model weights.
 COPY --from=models /models /models
 
-EXPOSE 8117
+EXPOSE 8119
 
 # The dispatcher polls ``/healthz`` itself; the docker HEALTHCHECK is
 # a belt-and-suspenders check so ``docker ps`` reports accurately to
 # operators looking at the host directly.
 HEALTHCHECK --interval=10s --timeout=5s --retries=3 \
-    CMD curl -fsS http://localhost:${TD_PORT:-8117}/healthz | grep -q '"status":"ok"' || exit 1
+    CMD curl -fsS http://localhost:${TD_PORT:-8119}/healthz | grep -q '"status":"ok"' || exit 1
 
 # Single worker on purpose — the FastAPI process holds the model
 # sessions in memory; running multiple workers per container would
 # duplicate them and balloon RAM. Scale horizontally with more pods,
 # not more workers per pod.
-CMD ["uvicorn", "turn_detection.server:app", "--host", "0.0.0.0", "--port", "8117", "--workers", "1"]
+CMD ["uvicorn", "turn_detection.server:app", "--host", "0.0.0.0", "--port", "8119", "--workers", "1"]

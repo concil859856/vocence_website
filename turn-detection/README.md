@@ -21,22 +21,22 @@ VAD to decide actual turn-ends.
 docker build -t vocence/turn-detection:dev .
 
 # Run
-docker run --rm -p 8117:8117 \
+docker run --rm -p 8119:8119 \
   -e TD_API_KEY=test_key_local \
   vocence/turn-detection:dev
 
 # Health
-curl http://localhost:8117/healthz
+curl http://localhost:8119/healthz
 
 # REST batch — text EOU
-curl -s -X POST http://localhost:8117/v1/turn-detector/batch \
+curl -s -X POST http://localhost:8119/v1/turn-detector/batch \
   -H "X-API-Key: test_key_local" \
   -H "Content-Type: application/json" \
   -d '{"history":[],"in_progress":"what time does the store open"}'
 # → {"p_end_of_turn":0.07,"tokens_seen":7,"inference_ms":12}
 
 # REST batch — audio EOU
-curl -s -X POST http://localhost:8117/v1/smart-turn/batch \
+curl -s -X POST http://localhost:8119/v1/smart-turn/batch \
   -H "X-API-Key: test_key_local" \
   -F "audio=@tests/fixtures/complete_sentence.wav"
 # → {"p_end_of_turn":0.93,"audio_ms":3240,"inference_ms":18}
@@ -82,7 +82,7 @@ Optional:
 
 | Env | Default | Purpose |
 |---|---|---|
-| `TD_PORT` | `8117` | HTTP bind port |
+| `TD_PORT` | `8119` | HTTP bind port |
 | `TD_MAX_CONCURRENT` | `64` | Total WS sessions across both endpoints |
 | `TD_SMART_TURN_MODEL` | `pipecat-ai/smart-turn-v3` | HF repo id |
 | `TD_SMART_TURN_FILE` | `smart-turn-v3.2-cpu.onnx` | filename inside repo |
@@ -210,7 +210,7 @@ mypy src
 pytest
 
 # Run server locally
-TD_API_KEY=dev uvicorn turn_detection.server:app --port 8117 --reload
+TD_API_KEY=dev uvicorn turn_detection.server:app --port 8119 --reload
 ```
 
 ---

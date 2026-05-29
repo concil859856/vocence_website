@@ -48,7 +48,7 @@ def request(url: str, *, method: str = "GET",
 
 def main() -> int:
     p = argparse.ArgumentParser()
-    p.add_argument("--url", default="http://localhost:8117",
+    p.add_argument("--url", default="http://localhost:8119",
                    help="Base URL of the running pod")
     p.add_argument("--api-key", required=True)
     p.add_argument("--wait", type=int, default=30,

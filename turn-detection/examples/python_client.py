@@ -2,8 +2,8 @@
 
 Run against a live pod:
 
-    python python_client.py text  --url ws://localhost:8117 --api-key <key>
-    python python_client.py audio --url ws://localhost:8117 --api-key <key> \
+    python python_client.py text  --url ws://localhost:8119 --api-key <key>
+    python python_client.py audio --url ws://localhost:8119 --api-key <key> \
         --audio ../tests/fixtures/complete_sentence.wav
 
 Demonstrates the exact protocol shapes the Vocence dashboard backend
@@ -138,7 +138,7 @@ def _load_wav_mono_16k(path: Path) -> np.ndarray:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Vocence turn-detection demo client")
     parser.add_argument("mode", choices=("text", "audio"))
-    parser.add_argument("--url", default="ws://localhost:8117")
+    parser.add_argument("--url", default="ws://localhost:8119")
     parser.add_argument("--api-key", required=True)
     parser.add_argument("--audio", help="WAV file for the audio demo", type=Path)
     args = parser.parse_args()
