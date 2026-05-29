@@ -74,16 +74,27 @@ async def enqueue(
     #    Reserve atomically: if any one fails, roll back earlier reservations.
     #    A pool counts as "configured" if EITHER the static env-based pool has
     #    URLs OR the ops dispatcher has online pods for that service.
-    _POOL_TO_OPS_SERVICE = {"tts": "tts_streaming", "stt": "stt", "clone": "voice_clone", "music": "music", "noise_remover": "noise_remover"}
+    # Each pool can be served by one or more ops service names. STT is
+    # the multi-service case: the legacy ``stt`` batch image and the new
+    # ``asr_streaming_rt`` image both satisfy STT jobs (the latter hosts
+    # both batch /v1/transcribe AND streaming WS /v1/stream, so either
+    # generation works for a batch STT job).
+    _POOL_TO_OPS_SERVICES: dict[str, tuple[str, ...]] = {
+        "tts": ("tts_streaming",),
+        "stt": ("asr_streaming_rt", "stt"),
+        "clone": ("voice_clone",),
+        "music": ("music",),
+        "noise_remover": ("noise_remover",),
+    }
 
     def _pool_available(pool_name: str, cnt) -> bool:
         if cnt is not None and cnt.configured:
             return True
-        ops_service = _POOL_TO_OPS_SERVICE.get(pool_name)
-        if ops_service:
+        services = _POOL_TO_OPS_SERVICES.get(pool_name, ())
+        if services:
             try:
                 from ops import pool as gpu_pool
-                return gpu_pool.online_pod_count(ops_service) > 0
+                return any(gpu_pool.online_pod_count(s) > 0 for s in services)
             except Exception:
                 pass
         return False

@@ -26,11 +26,15 @@ _log = logging.getLogger(__name__)
 
 async def process_stt(job: state.Job) -> dict:
     payload = job.payload
-    # Check ops pods first, then static pool
+    # Check ops pods first, then static pool. Either the modern
+    # asr_streaming_rt image or the legacy stt image can serve STT jobs.
     _stt_ok = False
     try:
         from ops import pool as gpu_pool
-        if gpu_pool.online_pod_count("stt") > 0:
+        if (
+            gpu_pool.online_pod_count("asr_streaming_rt") > 0
+            or gpu_pool.online_pod_count("stt") > 0
+        ):
             _stt_ok = True
     except Exception:
         pass
