@@ -226,9 +226,35 @@ async def search_agent_knowledge(
     *,
     top_k: int = 5,
 ) -> list[str]:
-    """Return up to ``top_k`` knowledge chunks ranked by BM25 relevance to
-    the user's message. Returns an empty list when nothing useful matches
-    (no extractable keywords, or no agent chunks indexed)."""
+    """Return up to ``top_k`` knowledge chunks relevant to the user's
+    message, merging two retrieval sources:
+
+      1. **FTS5 BM25 search** over the agent's free-text knowledge
+         (stored locally in ``agent_knowledge_chunks``). Fast, keyword-
+         based — what every existing agent uses today.
+
+      2. **Vector RAG** via the ``vocence/knowledge-ingestion`` pod,
+         when configured. Reaches PDF / URL / sitemap sources the agent
+         owner has uploaded. Returns semantically-matched chunks
+         (BGE-small embeddings → LanceDB top-K).
+
+    Each backend returns at most ``top_k`` chunks; we interleave and
+    de-duplicate, then truncate at ``top_k`` overall so the system
+    prompt growth is bounded regardless of how many sources match.
+
+    Both backends silently degrade — a failure in either one falls
+    back to the other rather than dropping the turn entirely.
+    """
+    fts_chunks = await _search_fts(agent_id, user_text, top_k=top_k)
+    vector_chunks = await _search_vector(agent_id, user_text, top_k=top_k)
+    return _merge_chunks(fts_chunks, vector_chunks, cap=top_k)
+
+
+async def _search_fts(
+    agent_id: str, user_text: str, *, top_k: int,
+) -> list[str]:
+    """Original FTS5 BM25 path — keyword search over the agent's
+    free-text knowledge. Cheap, fast, no external dependency."""
     query = _to_fts5_match_query(user_text)
     if not query:
         return []
@@ -247,10 +273,75 @@ async def search_agent_knowledge(
         rows = await cursor.fetchall()
         return [row["content"] for row in rows if row["content"]]
     except Exception as exc:  # noqa: BLE001
-        _log.warning("knowledge search failed for agent %s: %s", agent_id, exc)
+        _log.warning("knowledge FTS search failed for agent %s: %s", agent_id, exc)
         return []
     finally:
         await conn.close()
+
+
+async def _search_vector(
+    agent_id: str, user_text: str, *, top_k: int,
+) -> list[str]:
+    """Vector RAG via the knowledge-ingestion pod. Returns ``[]`` if
+    the pod isn't configured, isn't reachable, or returns nothing —
+    NEVER raises.
+
+    Chunks come back with metadata; we prepend the source title (and
+    page number for PDF chunks) to each chunk so the LLM can cite the
+    source naturally in its reply ("According to the Customer Handbook
+    page 42, …")."""
+    try:
+        import knowledge_client
+    except ImportError:
+        return []
+    if not knowledge_client.is_configured():
+        return []
+    chunks = await knowledge_client.query(
+        agent_id, text=user_text, top_k=top_k, min_score=0.55,
+    )
+    out: list[str] = []
+    for ch in chunks:
+        text = (ch.get("text") or "").strip()
+        if not text:
+            continue
+        title = (ch.get("source_title") or "").strip()
+        page = (ch.get("metadata") or {}).get("page")
+        prefix_parts = [p for p in (title, f"p.{page}" if page else "") if p]
+        if prefix_parts:
+            out.append(f"[{', '.join(prefix_parts)}] {text}")
+        else:
+            out.append(text)
+    return out
+
+
+def _merge_chunks(
+    a: list[str], b: list[str], *, cap: int,
+) -> list[str]:
+    """Interleave + de-dup two chunk lists. Keeps the relative ranking
+    intact: FTS top-1, vector top-1, FTS top-2, vector top-2, etc. We
+    de-dup on the first 80 characters because PDF + free-text often
+    have near-identical content if the operator uploaded both."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for pair in zip(a, b):
+        for chunk in pair:
+            key = chunk[:80]
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(chunk)
+            if len(out) >= cap:
+                return out
+    # Add the tail of the longer list.
+    for chunk in (a[len(b):] if len(a) > len(b) else b[len(a):]):
+        key = chunk[:80]
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(chunk)
+        if len(out) >= cap:
+            return out
+    return out
 
 
 def format_chunks_for_prompt(chunks: Iterable[str]) -> str:

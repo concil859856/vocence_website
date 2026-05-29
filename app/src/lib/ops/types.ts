@@ -9,7 +9,11 @@ export type ServiceName =
   | 'music'
   | 'voice_clone'
   | 'stt'
-  | 'noise_remover';
+  | 'noise_remover'
+  // New voice-agent-pipeline pods (see VOICE_AGENT_PLATFORM_SPEC.md):
+  | 'asr_streaming_rt'      // Parakeet TDT streaming STT (built by 4090 agent)
+  | 'turn_detection'        // Smart Turn v3 + LiveKit Turn Detector v2 ensemble
+  | 'knowledge_ingestion';  // Per-agent RAG: PDF/URL/text → BGE embeddings → LanceDB
 
 export type ServerStatus = 'pending' | 'ready' | 'unreachable' | 'removed';
 
@@ -138,6 +142,9 @@ export const SERVICE_LABELS: Record<ServiceName, string> = {
   voice_clone: 'Voice Clone',
   stt: 'Speech-to-Text',
   noise_remover: 'Noise Remover',
+  asr_streaming_rt: 'Streaming STT',
+  turn_detection: 'Turn Detection',
+  knowledge_ingestion: 'Knowledge',
 };
 
 /** Default Docker Hub images per service. Admin can override at deploy time.
@@ -152,6 +159,9 @@ export const DEFAULT_IMAGES: Record<ServiceName, string> = {
   stt: 'vocence/asr-streaming:latest',
   music: 'vocence/text-to-music:latest',
   noise_remover: 'vocence/voice-dubbing:latest',
+  asr_streaming_rt: 'vocence/asr-streaming-rt:latest',
+  turn_detection: 'vocence/turn-detection:latest',
+  knowledge_ingestion: 'vocence/knowledge-ingestion:latest',
 };
 
 /** Default host port per service (matches container EXPOSE in each repo's Dockerfile). */
@@ -162,6 +172,12 @@ export const DEFAULT_PORTS: Record<ServiceName, number> = {
   stt: 8114,
   music: 8115,
   noise_remover: 8116,
+  // asr_streaming_rt reuses 8114 — same logical "STT service" port.
+  // It and ``stt`` never co-locate on one host (different image tags),
+  // so the port number can be shared at the pod level.
+  asr_streaming_rt: 8114,
+  turn_detection: 8117,
+  knowledge_ingestion: 8118,
 };
 
 

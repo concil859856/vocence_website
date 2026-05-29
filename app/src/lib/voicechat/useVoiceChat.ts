@@ -305,6 +305,27 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
           });
           setState('thinking');
           break;
+        case 'partial_transcript': {
+          // Live caption from the streaming-STT pod (when wired up).
+          // We paint these into the user's current pending bubble so
+          // the UI updates in step with what they're saying instead
+          // of waiting for the full turn to commit.
+          //
+          // ``payload.text`` is the cumulative running transcript
+          // (NOT a delta) — replace, don't append. ``audio_ms_consumed``
+          // is optional metadata for debugging.
+          setMessages((prev) => {
+            const next = prev.slice();
+            const last = next[next.length - 1];
+            if (last && last.role === 'user' && last.pending) {
+              next[next.length - 1] = { ...last, text: payload.text };
+            } else {
+              next.push({ id: makeId(), role: 'user', text: payload.text, pending: true });
+            }
+            return next;
+          });
+          break;
+        }
         case 'tool_call_started': {
           // The agent decided to invoke a tool. Render a chip on the
           // current assistant bubble so the user knows why the LLM

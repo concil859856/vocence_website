@@ -231,6 +231,22 @@ app.include_router(agents_router, prefix="/api/dashboard")
 # can call mid-conversation. Lives under /api/dashboard/agents/tools/
 # alongside the built-in /agents/tools/builtin endpoint.
 app.include_router(agent_custom_tools_router, prefix="/api/dashboard")
+# External-knowledge ingestion proxy — Studio UI uploads PDF/URL/sitemap
+# sources for an agent; we forward to the vocence/knowledge-ingestion
+# pod and the dashboard handles auth (owner-only) + per-agent IDOR.
+from routers.agent_knowledge import router as agent_knowledge_router  # noqa: E402
+app.include_router(agent_knowledge_router, prefix="/api/dashboard")
+# Embed-token issuance — agent owners mint long-lived tokens from
+# Studio to allow anonymous visitors on their own websites to use the
+# embeddable voice-agent widget.
+from routers.embed_tokens import router as embed_tokens_router  # noqa: E402
+app.include_router(embed_tokens_router, prefix="/api/dashboard")
+# Public agent metadata — the widget reads agent name + status on
+# mount without an authenticated user. Gated by "at least one
+# non-revoked embed token exists for this agent" so agent ids can't
+# be discovered by guessing.
+from routers.public_agents import router as public_agents_router  # noqa: E402
+app.include_router(public_agents_router, prefix="/api/dashboard")
 # Admin sudo-mode auth (separate password on top of Google OAuth for
 # /studio/ops + other admin surfaces). Routes live at /api/dashboard/auth/admin/*.
 from routers.admin_auth import router as admin_auth_router  # noqa: E402

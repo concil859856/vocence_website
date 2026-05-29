@@ -43,6 +43,10 @@ SERVICE_NAMES = (
     # admins can re-deploy under the new name when convenient.
     "noise_remover",
     "dubbing",
+    # New voice-agent-pipeline pods (see VOICE_AGENT_PLATFORM_SPEC.md):
+    "asr_streaming_rt",      # Parakeet TDT streaming STT
+    "turn_detection",        # Smart Turn + LiveKit Turn Detector ensemble
+    "knowledge_ingestion",   # Per-agent RAG / vector store
 )
 
 POD_STATUSES = (

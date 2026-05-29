@@ -321,6 +321,12 @@ async def deploy_pod(body: PodDeployIn, _: str = Depends(require_admin_unlocked)
             "music": "MUSIC_API_KEY",
             "noise_remover": "NOISE_REMOVER_API_KEY",
             "dubbing": "NOISE_REMOVER_API_KEY",
+            # Voice-agent-pipeline pods — each defines its own X-API-Key
+            # env var name; the dispatcher proxies traffic to them with
+            # the matching value as the header.
+            "asr_streaming_rt": "ASR_API_KEY",
+            "turn_detection": "TD_API_KEY",
+            "knowledge_ingestion": "KN_API_KEY",
         }.get(body.service)
         if env_key_for_service:
             env.setdefault(env_key_for_service, api_key)
@@ -336,6 +342,12 @@ async def deploy_pod(body: PodDeployIn, _: str = Depends(require_admin_unlocked)
             "music": 8115,
             "noise_remover": 8116,
             "dubbing": 8116,
+            # Streaming STT shares the conceptual STT port (8114) but
+            # the image tag is different, so it never co-locates with
+            # the batch STT image on one host.
+            "asr_streaming_rt": 8114,
+            "turn_detection": 8117,
+            "knowledge_ingestion": 8118,
         }.get(body.service, body.port)
 
         container_name = f"vocence-{body.service}-{pod_id}"
@@ -690,6 +702,10 @@ _P95_TARGET_MS_BY_SERVICE = {
     "noise_remover": 60000,   # scales with input audio length
     "dubbing":      60000,    # historical name for noise_remover
     "music":       180000,    # music is minutes per track; this is generous
+    # New voice-agent-pipeline pods:
+    "asr_streaming_rt": 1500, # streaming STT: per-session, includes full-utterance commit time
+    "turn_detection":    300, # CPU model inference per call; ~100ms typical
+    "knowledge_ingestion": 150,  # per-turn /v1/query: embedding + LanceDB search
 }
 
 
