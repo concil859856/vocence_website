@@ -92,8 +92,23 @@ def _iso_now() -> str:
 
 
 async def _http_get(url: str, *, bearer: str | None, timeout: float) -> tuple[int, dict | None, str | None]:
-    """Return (status, json_body, error_msg). Never raises."""
-    headers = {"Authorization": f"Bearer {bearer}"} if bearer else {}
+    """Return (status, json_body, error_msg). Never raises.
+
+    We send the pod's API key under BOTH ``Authorization: Bearer`` and
+    ``X-API-Key`` because the fleet has two auth conventions live:
+
+    * Legacy pods (TTS, batch STT, music, ...) expect ``Bearer``.
+    * The new asr_streaming_rt / turn_detection / knowledge_ingestion
+      pods follow the per-spec ``X-API-Key`` convention.
+
+    Each pod ignores the header it doesn't recognise, so dual-sending
+    keeps a single poller working across both generations of images
+    without per-service branching.
+    """
+    headers: dict[str, str] = {}
+    if bearer:
+        headers["Authorization"] = f"Bearer {bearer}"
+        headers["X-API-Key"] = bearer
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as session:
             async with session.get(url, headers=headers) as resp:
