@@ -1,0 +1,30 @@
+# Python build / install artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+build/
+dist/
+.eggs/
+
+# Editable install metadata (pip install -e). The Vocence build pipeline
+# runs ``pip install`` against pyproject.toml directly; the egg-info dir
+# isn't part of the source contract.
+src/*.egg-info/
+
+# Local model caches (large, ephemeral). The container build downloads
+# them into the image at build time; nothing useful lives in a dev cache.
+.cache/
+*.onnx
+*.safetensors
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
