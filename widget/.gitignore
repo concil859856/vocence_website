@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.cache/
+*.log
+.DS_Store
+.vscode/
+.idea/
+
+# Playwright
+test-results/
+playwright-report/
+playwright/.cache/
+
+# Build sentinel files
+.vite/
