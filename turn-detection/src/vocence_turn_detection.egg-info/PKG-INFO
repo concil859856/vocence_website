@@ -1,0 +1,24 @@
+Metadata-Version: 2.4
+Name: vocence-turn-detection
+Version: 0.1.0
+Summary: End-of-utterance detection pod for Vocence — Smart Turn v3 (audio) + LiveKit Turn Detector v2 (text)
+Author: Vocence
+License-Expression: Apache-2.0
+Requires-Python: >=3.10
+Requires-Dist: fastapi<0.120,>=0.115
+Requires-Dist: uvicorn[standard]<0.40,>=0.32
+Requires-Dist: websockets<15,>=13
+Requires-Dist: pydantic<3.0,>=2.8
+Requires-Dist: numpy<3.0,>=1.26
+Requires-Dist: onnxruntime<2.0,>=1.18
+Requires-Dist: transformers<5.0,>=4.45
+Requires-Dist: torch<3.0,>=2.3
+Requires-Dist: huggingface-hub<1.0,>=0.25
+Requires-Dist: prometheus-client<1.0,>=0.21
+Requires-Dist: python-multipart<1.0,>=0.0.12
+Provides-Extra: dev
+Requires-Dist: pytest<9.0,>=8.0; extra == "dev"
+Requires-Dist: pytest-asyncio<1.0,>=0.24; extra == "dev"
+Requires-Dist: httpx<1.0,>=0.27; extra == "dev"
+Requires-Dist: ruff<1.0,>=0.6; extra == "dev"
+Requires-Dist: mypy<2.0,>=1.10; extra == "dev"
