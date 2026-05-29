@@ -48,7 +48,7 @@ import agent_templates
 from assistant_knowledge_indexer import ASSISTANT_AGENT_ID
 from local_db import get_connection
 from routers.auth import _decode_token, _get_user_by_id  # type: ignore
-from studio_tts_service import transcribe_audio
+from studio_tts_service import transcribe_audio, transcribe_audio_streaming
 from voicechat_knowledge import VOICE_CHAT_FORMAT_RULES, get_system_prompt
 from voicechat_service import (
     QWEN3_TTS_BASE_URL,
@@ -1010,15 +1010,57 @@ async def _run_turn(
             try:
                 audio_bytes = base64.b64decode(audio_b64)
                 base_url: Optional[str] = None
-                if STT_POOL is not None and STT_POOL.configured():
-                    # Pick a pod URL via the existing pool. acquire() is async ctx mgr —
-                    # we need to hold it for the duration of the call.
-                    async with STT_POOL.acquire() as pod_url:
-                        data, err = await transcribe_audio(
-                            audio_bytes=audio_bytes, language=language, base_url=pod_url
+                data: Optional[dict] = None
+                err: str = ""
+
+                # Streaming path first — when a modern asr_streaming_rt
+                # pod is online and we're NOT routing through the legacy
+                # STT_POOL override, replay the audio into /v1/stream so
+                # the client gets partial_transcript events while STT is
+                # still in flight. Falls back to batch on any failure.
+                streaming_attempted = False
+                try:
+                    from ops import pool as gpu_pool
+                    if (
+                        STT_POOL is None or not STT_POOL.configured()
+                    ) and gpu_pool.online_pod_count("asr_streaming_rt") > 0:
+                        streaming_attempted = True
+
+                        async def _forward_partial(text: str):
+                            try:
+                                await ws.send_json({
+                                    "type": "partial_transcript",
+                                    "text": text,
+                                })
+                            except Exception:
+                                # Client gone or socket dead — let the
+                                # streaming task error out naturally.
+                                pass
+
+                        data, err = await transcribe_audio_streaming(
+                            audio_bytes=audio_bytes,
+                            language=language,
+                            on_partial=_forward_partial,
                         )
-                else:
-                    data, err = await transcribe_audio(audio_bytes=audio_bytes, language=language)
+                except Exception as e:
+                    # Any unexpected explosion in the streaming path
+                    # falls through to batch — never block STT on it.
+                    err = err or f"streaming path failed: {e}"
+                    data = None
+
+                if not data:
+                    if streaming_attempted:
+                        # Surface a hint in logs so an operator can spot
+                        # repeated streaming failures (capacity, broken
+                        # pod, etc.) without losing the user's turn.
+                        _log.info("voicechat stt streaming fell back to batch: %s", err)
+                    if STT_POOL is not None and STT_POOL.configured():
+                        async with STT_POOL.acquire() as pod_url:
+                            data, err = await transcribe_audio(
+                                audio_bytes=audio_bytes, language=language, base_url=pod_url
+                            )
+                    else:
+                        data, err = await transcribe_audio(audio_bytes=audio_bytes, language=language)
             finally:
                 if admitted and STT_CAP is not None:
                     STT_CAP.release(1)

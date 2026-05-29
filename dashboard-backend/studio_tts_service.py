@@ -365,6 +365,203 @@ async def transcribe_audio(
                 pass
 
 
+async def transcribe_audio_streaming(
+    *,
+    audio_bytes: bytes,
+    language: str | None = None,
+    on_partial=None,
+):
+    """Stream a WAV blob to ``asr_streaming_rt``'s WS /v1/stream endpoint
+    and surface partial transcripts as they arrive.
+
+    Designed for the voicechat flow: the client uploads a single VAD-
+    segmented WAV (same protocol as batch), and we replay it into the
+    streaming pod so partials can flow back to the user's UI while the
+    pod is still processing. Returns ``(data, "")`` on success — same
+    shape as ``transcribe_audio`` (``{text, language?, ...}``) — or
+    ``(None, "reason")`` on failure (caller can then fall back to batch).
+
+    ``on_partial`` is awaited once per ``partial`` event with the running
+    text. Returning falsy from it does not cancel the stream.
+    """
+    # Lazy import — wave is stdlib, audioop is stdlib (deprecation noise
+    # in 3.13 is fine; we'll switch to a pure-python resampler if needed).
+    import io
+    import wave
+    try:
+        import audioop  # type: ignore
+    except Exception:
+        audioop = None  # we'll only need it when sample rate ≠ 16000
+
+    # Pick a streaming pod. If none online we tell the caller to fall
+    # back rather than guessing a URL.
+    try:
+        from ops import pool as gpu_pool
+        if gpu_pool.online_pod_count("asr_streaming_rt") <= 0:
+            return None, "no streaming pod online"
+        pod_cm = gpu_pool.pick_pod("asr_streaming_rt")
+    except Exception as e:
+        try:
+            from ops.pool import NoCapacity
+            if isinstance(e, NoCapacity):
+                return None, "asr fleet busy"
+        except ImportError:
+            pass
+        return None, f"streaming pod unavailable: {e}"
+
+    pod = await pod_cm.__aenter__()
+    try:
+        # Parse WAV → mono pcm_s16le @ 16 kHz.
+        try:
+            with wave.open(io.BytesIO(audio_bytes), "rb") as wf:
+                src_rate = wf.getframerate()
+                src_channels = wf.getnchannels()
+                src_sampwidth = wf.getsampwidth()
+                src_pcm = wf.readframes(wf.getnframes())
+        except wave.Error as e:
+            return None, f"non-WAV input not supported for streaming: {e}"
+
+        if src_sampwidth != 2:
+            return None, f"unsupported sample width: {src_sampwidth} bytes"
+        pcm = src_pcm
+        if src_channels == 2 and audioop is not None:
+            pcm = audioop.tomono(pcm, 2, 0.5, 0.5)
+        elif src_channels != 1:
+            return None, f"unsupported channel count: {src_channels}"
+        if src_rate != 16000:
+            if audioop is None:
+                return None, f"need 16 kHz audio, got {src_rate} (no resampler)"
+            pcm, _ = audioop.ratecv(pcm, 2, 1, src_rate, 16000, None)
+
+        # Build WS URL. pod.url is something like http://host:8117 → ws.
+        base = pod.url.rstrip("/")
+        if base.startswith("https://"):
+            ws_url = "wss://" + base[len("https://"):] + "/v1/stream"
+        else:
+            ws_url = "ws://" + base[len("http://"):] + "/v1/stream"
+
+        headers = {}
+        if pod.api_key:
+            headers["X-API-Key"] = pod.api_key
+
+        final_text: str = ""
+        final_lang: str | None = None
+
+        async with aiohttp.ClientSession(headers=headers) as session:
+            try:
+                ws = await session.ws_connect(
+                    ws_url,
+                    timeout=aiohttp.ClientWSTimeout(ws_close=15),
+                    max_msg_size=2 * 1024 * 1024,
+                )
+            except Exception as e:
+                return None, f"ws connect failed: {e}"
+
+            try:
+                # 1. start
+                await ws.send_json({
+                    "type": "start",
+                    "language": (language or "auto"),
+                    "sample_rate": 16000,
+                    "encoding": "pcm_s16le",
+                    "enable_partials": True,
+                })
+
+                # 2. wait for ready (one text frame)
+                ready_msg = await asyncio.wait_for(ws.receive(), timeout=10.0)
+                if ready_msg.type != aiohttp.WSMsgType.TEXT:
+                    return None, f"expected ready, got {ready_msg.type.name}"
+                ready_data = json.loads(ready_msg.data)
+                if ready_data.get("type") != "ready":
+                    return None, f"unexpected first message: {ready_data}"
+
+                # 3. send audio in 20 ms (640-byte) frames + commit + close
+                async def send_audio():
+                    CHUNK = 640  # 20 ms @ 16 kHz mono s16le
+                    REAL_TIME_MS = 20
+                    for i in range(0, len(pcm), CHUNK):
+                        await ws.send_bytes(pcm[i:i + CHUNK])
+                        # Pace gently so the server doesn't drop us with
+                        # "client too fast" — also lets partials interleave.
+                        await asyncio.sleep(REAL_TIME_MS / 1000.0 * 0.5)
+                    await ws.send_json({"type": "commit"})
+                    await ws.send_json({"type": "close"})
+
+                async def recv_loop():
+                    nonlocal final_text, final_lang
+                    while True:
+                        try:
+                            msg = await asyncio.wait_for(ws.receive(), timeout=30.0)
+                        except asyncio.TimeoutError:
+                            return "recv timeout"
+                        if msg.type == aiohttp.WSMsgType.CLOSED:
+                            return ""
+                        if msg.type == aiohttp.WSMsgType.CLOSE:
+                            return ""
+                        if msg.type == aiohttp.WSMsgType.ERROR:
+                            return f"ws error: {ws.exception()}"
+                        if msg.type != aiohttp.WSMsgType.TEXT:
+                            continue
+                        try:
+                            data = json.loads(msg.data)
+                        except Exception:
+                            continue
+                        mtype = data.get("type")
+                        if mtype == "partial":
+                            text = (data.get("text") or "").strip()
+                            if text and on_partial is not None:
+                                try:
+                                    await on_partial(text)
+                                except Exception:
+                                    # Caller-side errors must not poison
+                                    # the upstream stream.
+                                    pass
+                        elif mtype == "final":
+                            # New utterance final replaces previous.
+                            final_text = (data.get("text") or "").strip()
+                            final_lang = data.get("language_detected") or final_lang
+                        elif mtype == "error":
+                            return f"pod error: {data.get('message') or data.get('code')}"
+
+                send_task = asyncio.create_task(send_audio())
+                recv_task = asyncio.create_task(recv_loop())
+                done, pending = await asyncio.wait(
+                    {send_task, recv_task},
+                    return_when=asyncio.FIRST_EXCEPTION,
+                )
+                # Make sure both finish — if send died, recv will see
+                # the close; if recv died, send may still be mid-loop.
+                for t in pending:
+                    try:
+                        await asyncio.wait_for(t, timeout=10.0)
+                    except Exception:
+                        t.cancel()
+
+                err = ""
+                for t in done:
+                    res = t.result() if not t.cancelled() else None
+                    if isinstance(res, str) and res:
+                        err = err or res
+
+                if not final_text:
+                    return None, err or "no final transcript"
+
+                return {
+                    "text": final_text,
+                    "language": final_lang or language,
+                }, ""
+            finally:
+                try:
+                    await ws.close()
+                except Exception:
+                    pass
+    finally:
+        try:
+            await pod_cm.__aexit__(None, None, None)
+        except Exception:
+            pass
+
+
 def voice_clone_chute_configured() -> bool:
     """True if clone is usable: STUDIO_VOICE_CLONE_URL and/or legacy Chutes slug."""
     return bool(STUDIO_VOICE_CLONE_URL or STUDIO_VOICE_CLONE_CHUTE_SLUG)
