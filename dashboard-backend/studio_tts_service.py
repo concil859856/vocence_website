@@ -275,17 +275,34 @@ async def transcribe_audio(
     Returns ({text, ...}, "") on success, else (None, "reason").
     """
     # Try the ops dispatcher first when ops pods are registered.
+    # Preference order:
+    #   1. asr_streaming_rt — the new Parakeet pod, which hosts BOTH
+    #      WS /v1/stream and a batch POST /v1/transcribe. This is the
+    #      primary target once a pod is online.
+    #   2. stt — the legacy batch-only image, kept as fallback so
+    #      operators mid-migration don't lose batch capacity.
     pod_cm = None
     ops_url: str | None = None
     ops_key: str | None = None
+    # Variant flag controls auth header + endpoint path. The new pod
+    # uses X-API-Key and the versioned /v1/transcribe path; the legacy
+    # one uses Bearer and /transcribe.
+    pod_variant: str = "legacy"
     if base_url is None:
         try:
             from ops import pool as gpu_pool
-            if gpu_pool.online_pod_count("stt") > 0:
-                pod_cm = gpu_pool.pick_pod("stt")
+            target = None
+            if gpu_pool.online_pod_count("asr_streaming_rt") > 0:
+                target = ("asr_streaming_rt", "/v1/transcribe", "modern")
+            elif gpu_pool.online_pod_count("stt") > 0:
+                target = ("stt", "/transcribe", "legacy")
+            if target is not None:
+                svc_name, path, variant = target
+                pod_cm = gpu_pool.pick_pod(svc_name)
                 pod = await pod_cm.__aenter__()
-                ops_url = pod.url + "/transcribe"
+                ops_url = pod.url + path
                 ops_key = pod.api_key or None
+                pod_variant = variant
         except Exception as e:
             try:
                 from ops.pool import NoCapacity
@@ -308,7 +325,10 @@ async def transcribe_audio(
     headers = {"Content-Type": "application/json"}
     auth_key = ops_key or CHUTES_AUTH_KEY
     if auth_key:
-        headers["Authorization"] = f"Bearer {auth_key}"
+        if pod_variant == "modern":
+            headers["X-API-Key"] = auth_key
+        else:
+            headers["Authorization"] = f"Bearer {auth_key}"
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(

@@ -293,9 +293,23 @@ async def _resolve_studio_tts_chute(
 
 
 def _configured_stt_provider() -> str:
-    """Returns provider display name for logs/history."""
-    name = (os.environ.get("STUDIO_STT_PROVIDER_NAME") or "").strip()
-    return name or "Whisper Large v3"
+    """Returns provider display name for logs/history.
+
+    Auto-derives from the ops fleet: when an asr_streaming_rt pod is
+    online we are using Parakeet TDT, otherwise the legacy batch pod
+    (Whisper). The env var ``STUDIO_STT_PROVIDER_NAME`` still wins so
+    operators can override.
+    """
+    override = (os.environ.get("STUDIO_STT_PROVIDER_NAME") or "").strip()
+    if override:
+        return override
+    try:
+        from ops import pool as gpu_pool
+        if gpu_pool.online_pod_count("asr_streaming_rt") > 0:
+            return "Parakeet TDT 0.6B v3"
+    except Exception:
+        pass
+    return "Whisper Large v3"
 
 
 @router.post("/generate", response_model=StudioGenerateResponse)

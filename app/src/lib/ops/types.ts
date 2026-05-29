@@ -159,7 +159,7 @@ export const DEFAULT_IMAGES: Record<ServiceName, string> = {
   stt: 'vocence/asr-streaming:latest',
   music: 'vocence/text-to-music:latest',
   noise_remover: 'vocence/voice-dubbing:latest',
-  asr_streaming_rt: 'vocence/asr-streaming-rt:latest',
+  asr_streaming_rt: 'vocence/stt-streaming:latest',
   turn_detection: 'vocence/turn-detection:latest',
   knowledge_ingestion: 'vocence/knowledge-ingestion:latest',
 };
