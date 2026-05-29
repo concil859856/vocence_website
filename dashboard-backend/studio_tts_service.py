@@ -315,26 +315,52 @@ async def transcribe_audio(
     url = ops_url or (base_url or STUDIO_STT_URL or "").strip()
     if not url:
         return None, "STT not configured (no ops pods online, STUDIO_STT_URL not set)"
-    b64 = base64.b64encode(audio_bytes).decode("utf-8")
-    payload: dict[str, str] = {
-        "audio_b64": b64,
-        "audio_base64": b64,
-    }
-    if language:
-        payload["language"] = language
-    headers = {"Content-Type": "application/json"}
+
+    headers: dict[str, str] = {}
     auth_key = ops_key or CHUTES_AUTH_KEY
     if auth_key:
         if pod_variant == "modern":
             headers["X-API-Key"] = auth_key
         else:
             headers["Authorization"] = f"Bearer {auth_key}"
+
+    # Two on-the-wire shapes:
+    #
+    # * Modern pod (asr_streaming_rt /v1/transcribe) — multipart form with
+    #   ``audio`` file part. This matches the conventional batch-STT API
+    #   shape (Whisper / OpenAI / etc.) and is what the new pod's
+    #   FastAPI route declares.
+    # * Legacy pod (stt /transcribe) + Chutes URL — JSON with both
+    #   ``audio_b64`` and ``audio_base64`` for cross-provider compat.
+    json_payload: dict | None = None
+    form_data: aiohttp.FormData | None = None
+    if pod_variant == "modern":
+        form_data = aiohttp.FormData()
+        form_data.add_field(
+            "audio",
+            audio_bytes,
+            filename="audio.wav",
+            content_type="audio/wav",
+        )
+        if language:
+            form_data.add_field("language", language)
+    else:
+        b64 = base64.b64encode(audio_bytes).decode("utf-8")
+        json_payload = {
+            "audio_b64": b64,
+            "audio_base64": b64,
+        }
+        if language:
+            json_payload["language"] = language
+        headers["Content-Type"] = "application/json"
+
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 url,
                 headers=headers,
-                json=payload,
+                json=json_payload,
+                data=form_data,
                 timeout=aiohttp.ClientTimeout(total=180),
             ) as resp:
                 body = await resp.read()
