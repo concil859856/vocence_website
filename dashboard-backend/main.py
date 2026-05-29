@@ -231,6 +231,11 @@ app.include_router(agents_router, prefix="/api/dashboard")
 # can call mid-conversation. Lives under /api/dashboard/agents/tools/
 # alongside the built-in /agents/tools/builtin endpoint.
 app.include_router(agent_custom_tools_router, prefix="/api/dashboard")
+# External-knowledge ingestion proxy — Studio UI uploads PDF/URL/sitemap
+# sources for an agent; we forward to the vocence/knowledge-ingestion
+# pod and the dashboard handles auth (owner-only) + per-agent IDOR.
+from routers.agent_knowledge import router as agent_knowledge_router  # noqa: E402
+app.include_router(agent_knowledge_router, prefix="/api/dashboard")
 # Admin sudo-mode auth (separate password on top of Google OAuth for
 # /studio/ops + other admin surfaces). Routes live at /api/dashboard/auth/admin/*.
 from routers.admin_auth import router as admin_auth_router  # noqa: E402
