@@ -49,7 +49,7 @@ both WebSocket endpoints end-to-end.
 
 ## What this is for
 
-The Vocence dashboard backend opens two WebSockets per active voice
+A voice-agent control plane typically opens two WebSockets per active
 conversation:
 
 ```
@@ -57,7 +57,7 @@ PCM audio stream  ──►  WS /v1/smart-turn      ──►  p_end_of_turn fro
 STT partial text  ──►  WS /v1/turn-detector   ──►  p_end_of_turn from content
 ```
 
-It fuses those two signals with the client-side Silero VAD silence
+The consumer fuses those two signals with the client-side VAD silence
 event to decide "the user is done speaking; commit the turn." Combining
 audio and text signals catches both *"My address is twenty-two—"* (text:
 clearly mid-utterance, audio: rising intonation) and *"uhhh… mm"*
@@ -118,9 +118,9 @@ Optional:
 }
 ```
 
-`status` is `warming | ok | degraded | error`. The Vocence dispatcher
-reads this field (not the HTTP status code) to decide whether to send
-new sessions.
+`status` is `warming | ok | degraded | error`. Health pollers should
+read this field, not the HTTP status code, when deciding whether to
+route new sessions.
 
 ### `GET /metrics` — Prometheus text
 
