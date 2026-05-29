@@ -626,6 +626,52 @@ SCHEMA_SQL = [
         FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE SET NULL
     )
     """,
+    # Embed tokens — agent owners generate these from Studio to let
+    # anonymous visitors on their own websites use the agent via the
+    # embeddable widget. Each token:
+    #   • binds to one specific agent_id
+    #   • is owned by the user who created it (they get billed)
+    #   • optionally restricts which Origin headers can present it
+    #   • carries per-IP rate limits
+    #   • is revocable (set ``revoked_at``); revoked tokens are kept
+    #     for audit purposes, NOT deleted, so the Studio UI can still
+    #     show last_used_at history after revocation
+    #
+    # ``token_hash`` is SHA-256 of the plaintext token. The plaintext
+    # itself is shown ONCE on creation and never stored — same pattern
+    # as the api_keys table. ``token_prefix`` (first 6 chars of the
+    # plaintext) is stored separately so the Studio UI can show
+    # "vet_abc123…" in the issuance list without revealing the secret.
+    """
+    CREATE TABLE IF NOT EXISTS agent_embed_tokens (
+        id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL,
+        owner_user_id TEXT NOT NULL,
+        token_hash TEXT NOT NULL UNIQUE,
+        token_prefix TEXT NOT NULL,                  -- 'vet_abc123' style preview
+        label TEXT NOT NULL DEFAULT '',              -- human-friendly name
+        allowed_origins_json TEXT NOT NULL DEFAULT '[]',  -- JSON array of host patterns; empty = any origin
+        rate_limit_per_ip_per_hour INTEGER NOT NULL DEFAULT 30,
+        max_session_minutes INTEGER NOT NULL DEFAULT 5,
+        last_used_at TEXT,
+        revoked_at TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE,
+        FOREIGN KEY (owner_user_id) REFERENCES auth_users(id) ON DELETE CASCADE
+    )
+    """,
+    # Per-token rate-limit ledger. One row per session start so we can
+    # enforce "≤ N per IP per rolling hour" without an external store.
+    # Rows are pruned by a scheduled job (or naturally evicted by a
+    # trailing window query — both work).
+    """
+    CREATE TABLE IF NOT EXISTS agent_embed_token_uses (
+        token_id TEXT NOT NULL,
+        ip TEXT NOT NULL,
+        at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (token_id) REFERENCES agent_embed_tokens(id) ON DELETE CASCADE
+    )
+    """,
 ]
 
 
@@ -697,6 +743,14 @@ INDEX_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_auth_login_events_time ON auth_login_events (created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_auth_login_events_user_time ON auth_login_events (user_id, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_auth_login_events_kind_time ON auth_login_events (kind, created_at DESC)",
+    # Embed tokens: look up by hash on every embed-WS handshake (hot path)
+    # and by agent_id when the Studio UI lists tokens for an agent.
+    "CREATE INDEX IF NOT EXISTS idx_agent_embed_tokens_hash ON agent_embed_tokens (token_hash)",
+    "CREATE INDEX IF NOT EXISTS idx_agent_embed_tokens_agent ON agent_embed_tokens (agent_id, revoked_at)",
+    "CREATE INDEX IF NOT EXISTS idx_agent_embed_tokens_owner ON agent_embed_tokens (owner_user_id, created_at DESC)",
+    # Token-uses: count rows per (token_id, ip) in a rolling hour window.
+    "CREATE INDEX IF NOT EXISTS idx_agent_embed_token_uses_token_at ON agent_embed_token_uses (token_id, at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_agent_embed_token_uses_ip_at ON agent_embed_token_uses (token_id, ip, at DESC)",
 ]
 
 

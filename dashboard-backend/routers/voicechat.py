@@ -34,6 +34,8 @@ import os
 import random
 import time
 import uuid
+
+import embed_tokens
 from contextlib import suppress
 from typing import Any, Optional
 
@@ -326,11 +328,49 @@ async def voicechat_session(
             if auth_header and auth_header.lower().startswith("bearer "):
                 auth_user_id = _decode_user_from_token(auth_header.split(" ", 1)[1])
 
-    await ws.accept()
-    if not auth_user_id:
+    # Embed-token path: anonymous visitors on customer sites present
+    # ``?token=vet_...`` instead of a JWT. The widget reads the agent
+    # owner's stored token; if it validates we treat the session as
+    # owned-by + billed-to the agent owner. The agent_id from the
+    # token wins over any caller-supplied agent_id query param.
+    embed_ctx = None
+    if not auth_user_id and embed_tokens.looks_like_embed_token(token):
+        from local_db import get_connection
+        conn = await get_connection()
+        try:
+            try:
+                embed_ctx = await embed_tokens.validate_embed_token(
+                    conn,
+                    plaintext=token or "",
+                    origin=ws.headers.get("origin"),
+                    ip=client_host,
+                )
+                auth_user_id = embed_ctx.owner_user_id
+                # The widget never sees agent_id query — the token IS
+                # the binding. Override any caller-supplied value so
+                # malicious request crafting can't redirect to a
+                # different agent.
+                agent_id = embed_ctx.agent_id
+            except embed_tokens.EmbedTokenError as exc:
+                await ws.accept()
+                await ws.send_json({
+                    "type": "error",
+                    "code": exc.code,
+                    "message": exc.message,
+                })
+                await ws.close(code=4401)
+                return
+        finally:
+            await conn.close()
+
+    if not auth_user_id and embed_ctx is None:
+        await ws.accept()
         await ws.send_json({"type": "error", "code": "auth_required", "message": "missing or invalid token"})
         await ws.close(code=4401)
         return
+
+    if embed_ctx is None:
+        await ws.accept()
 
     user = await _get_user_by_id(auth_user_id)
     if not user:
