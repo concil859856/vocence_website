@@ -52,7 +52,7 @@ curl -s -X POST http://localhost:8118/v1/query \
 ```
 ┌──────────────────────────┐       ┌──────────────────────────┐
 │  Agent owner uploads     │       │  Voice agent runtime     │
-│  PDF / URL / text        │       │  (dashboard-backend)     │
+│  PDF / URL / text        │       │  (your control plane)    │
 └──────────────┬───────────┘       └──────────────┬───────────┘
                │                                  │
                │ POST /v1/ingest                  │ POST /v1/query

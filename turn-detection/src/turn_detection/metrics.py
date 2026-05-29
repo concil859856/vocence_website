@@ -1,9 +1,9 @@
-"""Prometheus metrics — required by the Vocence ops dispatcher.
+"""Prometheus metrics.
 
-The names + label keys here MUST match the platform spec §4.4 and §17.3
-exactly. The dispatcher's metrics poller in dashboard-backend reads
-specific names; if we rename them or drop labels the per-pod time series
-in /admin/ops will silently render empty.
+The names + label keys exposed here form the public contract for any
+metrics scraper that polls ``/metrics``. Renaming a counter (or removing
+a label) is a breaking change — the per-pod time series in a downstream
+dashboard will silently render empty if it was watching the old name.
 
 Counter monotonicity: prometheus-client handles this — counters can only
 go up. ``inflight`` is a gauge so it can decrease.

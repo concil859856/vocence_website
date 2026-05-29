@@ -1,7 +1,8 @@
-"""Prometheus metrics — names match the Vocence pod spec §18.3 exactly.
+"""Prometheus metrics.
 
-The dispatcher's metric poller in dashboard-backend reads these specific
-names. Renaming silently breaks the rollup.
+The names + label keys exposed here form the public contract for any
+scraper polling ``/metrics``. Renaming a counter silently breaks
+downstream rollups, so treat changes here as a breaking version bump.
 """
 
 from __future__ import annotations

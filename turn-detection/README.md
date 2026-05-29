@@ -9,8 +9,8 @@ Bundles two open-weights models behind one CPU-only Docker container:
 | [LiveKit Turn Detector v2](https://huggingface.co/livekit/turn-detector) | streaming transcript | semantic completeness | Apache-2.0 | ~7–15 ms |
 
 Both fire continuous probability streams over WebSocket so a downstream
-ensembler (Vocence's `dashboard-backend`) can fuse them with client-side
-VAD to decide actual turn-ends.
+ensembler can fuse them (and optionally client-side VAD) to decide
+actual turn-ends.
 
 ---
 
@@ -124,8 +124,8 @@ new sessions.
 
 ### `GET /metrics` — Prometheus text
 
-Required counters (the names + label keys match what `dashboard-backend`'s
-metrics poller expects — don't rename):
+Required counters (the names + label keys form the public contract for
+any metrics scraper — don't rename without bumping the major version):
 
 ```
 asr_requests_total{status="ok",model="smart_turn"}      <int>
