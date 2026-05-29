@@ -1,0 +1,26 @@
+# Python build / install artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+build/
+dist/
+.eggs/
+src/*.egg-info/
+
+# Local LanceDB / model caches
+.cache/
+data/
+*.onnx
+*.safetensors
+
+# Tests
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
