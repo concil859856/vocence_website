@@ -1364,7 +1364,170 @@ export const dashboardApi = {
     const qs = new URLSearchParams({ entry_type, entry_id });
     return fetchJson(`/api/dashboard/feedback?${qs}`, { headers });
   },
+
+  // ----- Agent knowledge (external sources via the knowledge-ingestion pod) -----
+
+  listAgentKnowledgeSources(
+    agentId: string, token: string | null,
+  ): Promise<{ sources: KnowledgeSource[] }> {
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson(`/api/dashboard/agents/${agentId}/knowledge/sources`, { headers });
+  },
+
+  deleteAgentKnowledgeSource(
+    agentId: string, sourceId: string, token: string | null,
+  ): Promise<{ deleted: boolean; chunks_removed: number }> {
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson(`/api/dashboard/agents/${agentId}/knowledge/sources/${sourceId}`, {
+      method: 'DELETE', headers,
+    });
+  },
+
+  ingestAgentKnowledgeText(
+    agentId: string, body: { content: string; title?: string }, token: string | null,
+  ): Promise<KnowledgeIngestResponse> {
+    return _postJson(`/api/dashboard/agents/${agentId}/knowledge/ingest/text`, body, token);
+  },
+
+  ingestAgentKnowledgeMarkdown(
+    agentId: string, body: { content: string; title?: string }, token: string | null,
+  ): Promise<KnowledgeIngestResponse> {
+    return _postJson(`/api/dashboard/agents/${agentId}/knowledge/ingest/markdown`, body, token);
+  },
+
+  ingestAgentKnowledgeUrl(
+    agentId: string,
+    body: { url: string; title?: string; max_depth?: 0 | 1 },
+    token: string | null,
+  ): Promise<KnowledgeIngestResponse> {
+    return _postJson(`/api/dashboard/agents/${agentId}/knowledge/ingest/url`, body, token);
+  },
+
+  ingestAgentKnowledgeSitemap(
+    agentId: string,
+    body: { url: string; title?: string; include?: string[]; exclude?: string[]; max_pages?: number },
+    token: string | null,
+  ): Promise<KnowledgeIngestResponse> {
+    return _postJson(`/api/dashboard/agents/${agentId}/knowledge/ingest/sitemap`, body, token);
+  },
+
+  /** PDF ingest uses multipart/form-data because the file body is binary. */
+  ingestAgentKnowledgePdf(
+    agentId: string, args: { file: File; title?: string }, token: string | null,
+  ): Promise<KnowledgeIngestResponse> {
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    const form = new FormData();
+    form.append('file', args.file);
+    if (args.title) form.append('title', args.title);
+    return fetchJson(`/api/dashboard/agents/${agentId}/knowledge/ingest/pdf`, {
+      method: 'POST', headers, body: form,
+    });
+  },
+
+  getAgentKnowledgeJob(
+    agentId: string, jobId: string, token: string | null,
+  ): Promise<KnowledgeJob> {
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson(`/api/dashboard/agents/${agentId}/knowledge/jobs/${jobId}`, { headers });
+  },
+
+  // ----- Embed tokens (anonymous-visitor widget access to an agent) -----
+
+  createAgentEmbedToken(
+    agentId: string,
+    body: {
+      label?: string;
+      allowed_origins?: string[];
+      rate_limit_per_ip_per_hour?: number;
+      max_session_minutes?: number;
+    },
+    token: string | null,
+  ): Promise<{
+    token: EmbedTokenRow;
+    plaintext: string;
+    embed_snippet: string;
+  }> {
+    return _postJson(`/api/dashboard/agents/${agentId}/embed-tokens`, body, token);
+  },
+
+  listAgentEmbedTokens(
+    agentId: string, token: string | null,
+  ): Promise<{ tokens: EmbedTokenRow[] }> {
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson(`/api/dashboard/agents/${agentId}/embed-tokens`, { headers });
+  },
+
+  revokeAgentEmbedToken(
+    agentId: string, tokenId: string, token: string | null,
+  ): Promise<{ ok: true }> {
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson(`/api/dashboard/agents/${agentId}/embed-tokens/${tokenId}`, {
+      method: 'DELETE', headers,
+    });
+  },
 };
+
+// ---------------------------------------------------------------------------
+// Helpers + types for the additions above
+// ---------------------------------------------------------------------------
+
+/** Internal: JSON POST with bearer auth. Inlined here rather than in the
+ *  ``dashboardApi`` object because TypeScript would otherwise need an
+ *  explicit ``this`` type — simpler to use a free function. */
+function _postJson<T>(path: string, body: unknown, token: string | null): Promise<T> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  return fetchJson(path, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+  });
+}
+
+export interface KnowledgeSource {
+  source_id: string;
+  source_title: string;
+  chunks: number;
+  ingested_at: string;
+}
+
+export interface KnowledgeIngestResponse {
+  status: 'completed' | 'pending';
+  source_id: string;
+  job_id?: string;           // pending only
+  chunk_count?: number;      // completed only
+  tokens_indexed?: number;   // completed only
+}
+
+export interface KnowledgeJob {
+  job_id: string;
+  source_id: string;
+  agent_id: string;
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  phase: string | null;
+  chunks_so_far: number;
+  started_at: string | null;
+  finished_at: string | null;
+  error: string | null;
+}
+
+export interface EmbedTokenRow {
+  id: string;
+  token_prefix: string;       // 'vet_ab' style preview, never the plaintext
+  label: string;
+  allowed_origins: string[];
+  rate_limit_per_ip_per_hour: number;
+  max_session_minutes: number;
+  last_used_at: string | null;
+  revoked_at: string | null;
+  created_at: string;
+}
 
 export interface StudioTopModel {
   miner_hotkey: string;

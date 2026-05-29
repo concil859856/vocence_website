@@ -22,6 +22,8 @@ import { AgentChat } from '../../components/agents/AgentChat';
 import { useAgentSession } from '../../lib/voicechat/useAgentSession';
 import { AgentConfigForm } from '../../components/agents/AgentConfigForm';
 import { ArchitectDrawer } from '../../components/agents/ArchitectDrawer';
+import { AgentKnowledgePanel } from '../../components/agents/AgentKnowledgePanel';
+import { AgentEmbedTokensPanel } from '../../components/agents/AgentEmbedTokensPanel';
 import { useAuth } from '../../contexts/AuthContext';
 import { agentsApi, getStoredToken } from '../../lib/agents/api';
 import { avatarGradientPairFor } from '../../data/sampleVoices';
@@ -635,6 +637,16 @@ function SettingsTab({
           if (patch.config) setConfig((prev) => ({ ...prev, ...patch.config }));
         }}
       />
+
+      {/* External knowledge sources — PDF/URL/sitemap/text uploads
+          flowing through the vocence/knowledge-ingestion pod. Hidden
+          when the pod isn't deployed (panel renders its own notice). */}
+      <AgentKnowledgePanel agentId={agent.id} token={getStoredToken()} />
+
+      {/* Embed tokens — agent owner generates these to drop the agent
+          into a customer-facing website via the @vocence/widget script. */}
+      <AgentEmbedTokensPanel agentId={agent.id} token={getStoredToken()} />
+
       {/* Stats — folded in from the old Activity tab */}
       <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-5">
         <div className="text-[11px] uppercase tracking-wider text-[#A7B0B7] mb-3">Stats</div>
