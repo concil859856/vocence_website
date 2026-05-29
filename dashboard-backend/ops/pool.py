@@ -253,6 +253,11 @@ def snapshot() -> dict:
                     "drain_requested": p.drain_requested,
                     "in_flight": p.in_flight,
                     "pod_cap": p.pod_cap,
+                    # Per-pod decrypted API key — callers that talk to the pod
+                    # directly (HTTP, WS) need it for the X-API-Key / Bearer
+                    # header. Already-decrypted at refresh time, kept in
+                    # process memory only.
+                    "api_key": p.api_key,
                 }
                 for p in pods
             ],

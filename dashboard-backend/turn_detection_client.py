@@ -12,11 +12,14 @@ Wraps both WebSocket endpoints behind a tidy Python API:
     partial transcripts.
 
 Activation:
-  This module is dormant until the streaming-STT path lands in
-  voicechat_service.py. Until then, ``is_configured()`` returns False
-  unless ``TD_API_KEY`` is explicitly set in the dashboard's env. The
-  voicechat code checks ``is_configured()`` before opening these
-  streams so we never block a turn on a pod that isn't deployed.
+  ``is_configured()`` returns True iff at least one ``turn_detection``
+  pod is currently online in the ops registry. The per-pod API key
+  (the value set on the Ops admin form at deploy time, or the
+  auto-generated one if the field was left blank) is read from the
+  encrypted registry at call time — no dashboard-side env var is
+  required to enable this integration. The voicechat code checks
+  ``is_configured()`` before opening these streams so we never block
+  a turn on a pod that isn't deployed.
 
 Failure semantics:
   Both streams are **best-effort** signals. If a stream errors or
@@ -39,10 +42,6 @@ import aiohttp
 _log = logging.getLogger(__name__)
 
 
-# The shared X-API-Key the turn-detection pod requires. Set on the pod
-# via ``TD_API_KEY`` env var at deploy time. Unset = integration off.
-TD_API_KEY = (os.environ.get("TD_API_KEY") or "").strip()
-
 # Connection timeouts — turn detection is on the hot voice-turn path,
 # so we cap both connect and inactivity tightly. Anything over 1s
 # means the pod is too slow to be useful; better to skip the signal
@@ -52,15 +51,29 @@ _SOCK_READ_TIMEOUT_SEC = float(os.environ.get("TD_CLIENT_SOCK_READ_TIMEOUT_SEC")
 
 
 def is_configured() -> bool:
-    """True when an API key is set + at least one turn-detection pod
-    can be picked up by the ops dispatcher."""
-    return bool(TD_API_KEY)
+    """True when at least one turn-detection pod is registered + online.
+
+    The per-pod API key is read from the encrypted ops registry at
+    call time (see :func:`_pick_pod`) — no dashboard-side env var
+    is required to enable the integration."""
+    try:
+        from ops import pool as ops_pool
+        snap = ops_pool.snapshot()
+    except Exception:  # noqa: BLE001
+        return False
+    svc = snap.get("turn_detection") or {}
+    return any(p.get("status") == "online" for p in svc.get("pods", []))
 
 
-async def _pick_base_ws_url() -> str | None:
+async def _pick_pod() -> tuple[str, str] | None:
     """Pick a healthy turn-detection pod for a streaming session.
-    Returns a ``ws://host:port`` base URL or ``None`` if no pod is
-    available — caller must handle ``None`` gracefully."""
+
+    Returns ``(ws_base_url, api_key)`` or ``None`` if no online pod is
+    available — caller must handle ``None`` gracefully.
+
+    The API key is the per-pod value the operator set on the Ops admin
+    page at deploy time (or the auto-generated one if the field was
+    blank), decrypted from the ops registry."""
     from ops import pool as ops_pool
     try:
         snap = ops_pool.snapshot()
@@ -71,7 +84,8 @@ async def _pick_base_ws_url() -> str | None:
         return None
     for p in svc.get("pods", []):
         if p.get("status") == "online":
-            return f"ws://{p['host']}:{p['port']}"
+            key = p.get("api_key") or ""
+            return f"ws://{p['host']}:{p['port']}", key
     return None
 
 
@@ -120,11 +134,10 @@ class SmartTurnStream:
         Returns ``True`` on success. Returns ``False`` when the pod is
         unavailable or the handshake fails — caller should treat the
         signal as unavailable and proceed without it."""
-        if not is_configured():
+        picked = await _pick_pod()
+        if picked is None:
             return False
-        base = await _pick_base_ws_url()
-        if not base:
-            return False
+        base, api_key = picked
         timeout = aiohttp.ClientTimeout(
             total=None,
             sock_connect=_CONNECT_TIMEOUT_SEC,
@@ -134,7 +147,7 @@ class SmartTurnStream:
             self._session = aiohttp.ClientSession(timeout=timeout)
             self._ws = await self._session.ws_connect(
                 f"{base}/v1/smart-turn",
-                headers={"X-API-Key": TD_API_KEY},
+                headers={"X-API-Key": api_key},
             )
             await self._ws.send_json({
                 "type": "start",
@@ -262,11 +275,10 @@ class TurnDetectorStream:
         await self.close()
 
     async def start(self) -> bool:
-        if not is_configured():
+        picked = await _pick_pod()
+        if picked is None:
             return False
-        base = await _pick_base_ws_url()
-        if not base:
-            return False
+        base, api_key = picked
         timeout = aiohttp.ClientTimeout(
             total=None,
             sock_connect=_CONNECT_TIMEOUT_SEC,
@@ -276,7 +288,7 @@ class TurnDetectorStream:
             self._session = aiohttp.ClientSession(timeout=timeout)
             self._ws = await self._session.ws_connect(
                 f"{base}/v1/turn-detector",
-                headers={"X-API-Key": TD_API_KEY},
+                headers={"X-API-Key": api_key},
             )
             await self._ws.send_json({
                 "type": "start",
