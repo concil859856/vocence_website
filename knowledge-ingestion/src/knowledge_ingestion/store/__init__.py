@@ -77,6 +77,35 @@ def connect() -> lancedb.DBConnection:
         return _db
 
 
+def _list_table_names(db: lancedb.DBConnection) -> list[str]:
+    """Return a list of plain string table names.
+
+    LanceDB's API changed between releases: older versions returned a
+    list of strings from ``table_names()``; newer ones return a Pydantic
+    ``ListTablesResponse`` from ``list_tables()`` whose actual list
+    lives at ``.tables``. We try the newer API first and fall back so
+    the pod works against either release.
+    """
+    if hasattr(db, "list_tables"):
+        try:
+            # NOTE: explicitly call the underlying ``list_tables``
+            # attribute on the connection — don't refactor this to use
+            # the helper name (the sed-replacement of all ``db.list_tables()``
+            # callsites would self-recurse here).
+            resp = db.list_tables()
+            tables = getattr(resp, "tables", None)
+            if tables is not None:
+                return list(tables)
+            # Older list_tables() returned a list directly.
+            if isinstance(resp, (list, tuple)):
+                return list(resp)
+        except Exception:  # noqa: BLE001
+            pass
+    # Fallback to the deprecated API name — still works on every released
+    # version we support.
+    return list(db.table_names())
+
+
 def _schema(embedding_dim: int) -> pa.Schema:
     """Schema for an agent's vector table. ``metadata_json`` is the
     flexible per-chunk metadata serialised as a JSON string — gives us
@@ -96,7 +125,7 @@ def get_or_create_table(agent_id: str, embedding_dim: int) -> lancedb.table.Tabl
     """Open the agent's table, creating it on first use."""
     db = connect()
     name = _table_name(agent_id)
-    if name in db.table_names():
+    if name in _list_table_names(db):
         return db.open_table(name)
     return db.create_table(name, schema=_schema(embedding_dim))
 
@@ -150,7 +179,7 @@ def delete_source(agent_id: str, source_id: str) -> int:
     removed. If the agent's table doesn't exist, returns 0."""
     db = connect()
     name = _table_name(agent_id)
-    if name not in db.table_names():
+    if name not in _list_table_names(db):
         return 0
     table = db.open_table(name)
     # Count before delete — LanceDB doesn't return a count from .delete().
@@ -177,7 +206,7 @@ def query(
     """
     db = connect()
     name = _table_name(agent_id)
-    if name not in db.table_names():
+    if name not in _list_table_names(db):
         return []
     table = db.open_table(name)
     rows = table.search(query_vec.tolist()).limit(top_k).to_list()
@@ -216,7 +245,7 @@ def list_sources(agent_id: str) -> list[dict[str, Any]]:
     """
     db = connect()
     name = _table_name(agent_id)
-    if name not in db.table_names():
+    if name not in _list_table_names(db):
         return []
     table = db.open_table(name)
     # Pull only the columns we need. Materialise as a pyarrow Table
@@ -251,7 +280,7 @@ def total_chunks() -> int:
     surface store size."""
     db = connect()
     total = 0
-    for name in db.table_names():
+    for name in _list_table_names(db):
         if not name.startswith(_TABLE_PREFIX):
             continue
         try:
@@ -263,7 +292,7 @@ def total_chunks() -> int:
 
 def total_agents() -> int:
     db = connect()
-    return sum(1 for n in db.table_names() if n.startswith(_TABLE_PREFIX))
+    return sum(1 for n in _list_table_names(db) if n.startswith(_TABLE_PREFIX))
 
 
 def store_size_mib() -> int:

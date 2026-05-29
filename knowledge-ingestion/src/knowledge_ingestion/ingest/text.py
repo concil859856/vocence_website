@@ -57,23 +57,40 @@ def _split_by_headings(md_text: str) -> list[tuple[list[str], str]]:
 
     The first item's path is empty (content before any heading);
     subsequent items have the heading stack at their depth.
+
+    Stack semantics: ``stack[i]`` is the heading at level ``i+1``. So
+    an H2 lives at index 1 even if no H1 came before it — we pad with
+    empty slots and skip them when joining the display path. This way
+    two sibling H2s correctly truncate each other's stack instead of
+    accumulating.
     """
     pieces: list[tuple[list[str], str]] = []
     last_idx = 0
-    stack: list[str] = []
+    stack: list[str] = []   # stack[depth-1] = heading at that depth
     last_path: list[str] = []
     for m in _HEADING_RE.finditer(md_text):
         body_before = md_text[last_idx : m.start()]
         if body_before.strip():
-            pieces.append((list(last_path), body_before))
+            pieces.append((_visible_path(last_path), body_before))
         depth = len(m.group(1))
         heading = m.group(2)
-        # Pop stack down to the right depth, then push the new heading.
-        stack = stack[: depth - 1] + [heading]
+        # Truncate to ancestors only (everything above this depth),
+        # then pad to depth-1 in case higher levels were skipped, then
+        # push the new heading at index depth-1.
+        stack = stack[: depth - 1]
+        while len(stack) < depth - 1:
+            stack.append("")
+        stack.append(heading)
         last_path = list(stack)
         last_idx = m.end()
     # Trailing content after the last heading.
     tail = md_text[last_idx:]
     if tail.strip():
-        pieces.append((list(last_path), tail))
+        pieces.append((_visible_path(last_path), tail))
     return pieces
+
+
+def _visible_path(stack: list[str]) -> list[str]:
+    """Drop empty stack slots so the rendered ``"A > B"`` display
+    string doesn't carry blank levels from skipped headings."""
+    return [s for s in stack if s]
