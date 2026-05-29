@@ -16,7 +16,7 @@ from ranking import (
     get_ranked_miner_stats_for_validator,
     sort_miners_for_display,
 )
-from routers.auth import require_auth
+from routers.auth import require_auth, is_internal_proxy
 from schemas import (
     StudioClonedVoiceSaveResponse,
     StudioCloneResponse,
@@ -217,14 +217,22 @@ async def get_top_models(limit: int = Query(3, ge=1, le=10)):
     return StudioTopModelsResponse(models=models)
 
 
-TTS_CREDITS_COST = int(os.environ.get("STUDIO_TTS_CREDITS_COST", "25"))
-STT_CREDITS_COST = int(os.environ.get("STUDIO_STT_CREDITS_COST", "20"))
+# ── Studio per-generation credit costs (Nov 2026 redesign) ─────────────
+# All values mirror app/src/studio/creditCosts.ts. STUDIO_* env vars
+# override at runtime so the operator can change pricing without code.
+TTS_CREDITS_COST = int(os.environ.get("STUDIO_TTS_CREDITS_COST", "30"))
+STT_CREDITS_COST = int(os.environ.get("STUDIO_STT_CREDITS_COST", "15"))
 STT_MAX_UPLOAD_BYTES = int(os.environ.get("STUDIO_STT_MAX_UPLOAD_BYTES", str(50 * 1024 * 1024)))
-CLONE_CREDITS_COST = int(os.environ.get("STUDIO_CLONE_CREDITS_COST", "50"))
+# Hard cap on STT audio duration. Probed via ffprobe before the
+# expensive transcribe call so we reject 1-hour uploads cheaply.
+STT_MAX_DURATION_SEC = int(os.environ.get("STUDIO_STT_MAX_DURATION_SEC", str(5 * 60)))
+CLONE_CREDITS_COST = int(os.environ.get("STUDIO_CLONE_CREDITS_COST", "40"))
 CLONE_MAX_REF_AUDIO_BYTES = int(os.environ.get("STUDIO_CLONE_MAX_REF_AUDIO_BYTES", str(50 * 1024 * 1024)))
-VOICE_DESIGN_PREVIEW_CREDITS = int(os.environ.get("STUDIO_VOICE_DESIGN_PREVIEW_CREDITS", "120"))
-VOICE_DESIGN_SPEAK_CREDITS = int(os.environ.get("STUDIO_VOICE_DESIGN_SPEAK_CREDITS", "25"))
-MUSIC_CREDITS_COST = int(os.environ.get("STUDIO_MUSIC_CREDITS_COST", "50"))
+VOICE_DESIGN_PREVIEW_CREDITS = int(os.environ.get("STUDIO_VOICE_DESIGN_PREVIEW_CREDITS", "70"))
+# TTS using a saved designed/cloned voice (My Voices page). Same rate as
+# regular TTS — the voice was paid for once at create time.
+VOICE_DESIGN_SPEAK_CREDITS = int(os.environ.get("STUDIO_VOICE_DESIGN_SPEAK_CREDITS", "30"))
+MUSIC_CREDITS_COST = int(os.environ.get("STUDIO_MUSIC_CREDITS_COST", "30"))
 MUSIC_MAX_UPLOAD_BYTES = int(os.environ.get("STUDIO_MUSIC_MAX_UPLOAD_BYTES", str(100 * 1024 * 1024)))
 # Tiered duration caps by inference quality.
 #
@@ -405,7 +413,21 @@ async def transcribe_stt(
     if not raw:
         raise HTTPException(status_code=400, detail="Empty audio file")
     if len(raw) > STT_MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail=f"Audio exceeds max size ({STT_MAX_UPLOAD_BYTES} bytes)")
+        max_mb = STT_MAX_UPLOAD_BYTES / (1024 * 1024)
+        raise HTTPException(status_code=413, detail=f"Audio exceeds {max_mb:.0f} MB limit.")
+
+    # Hard cap on duration. ffprobe runs offline in <50ms and lets us
+    # reject 1-hour uploads before spending a subnet inference call.
+    # When ffprobe is unavailable we fall through and rely on the
+    # provider's post-call duration_seconds (which we re-check below).
+    import asyncio
+    from audio_probe import probe_audio_duration_seconds
+    probed_dur = await asyncio.to_thread(probe_audio_duration_seconds, raw, audio_file.filename)
+    if probed_dur is not None and probed_dur > STT_MAX_DURATION_SEC:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Audio is {probed_dur:.1f}s — STT is limited to {STT_MAX_DURATION_SEC}s ({STT_MAX_DURATION_SEC // 60} min).",
+        )
 
     provider_name = _configured_stt_provider()
     started = time.perf_counter()
@@ -441,6 +463,15 @@ async def transcribe_stt(
 
     detected_language = result.get("language")
     duration_seconds = result.get("duration_seconds")
+    # Post-call duration check. Catches the case where ffprobe wasn't
+    # installed (probed_dur was None) but the provider's response
+    # tells us the audio was longer than the cap — we refuse to bill
+    # and refuse to return the transcript.
+    if duration_seconds is not None and float(duration_seconds) > STT_MAX_DURATION_SEC:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Audio is {float(duration_seconds):.1f}s — STT is limited to {STT_MAX_DURATION_SEC}s ({STT_MAX_DURATION_SEC // 60} min).",
+        )
     latency_ms = int((time.perf_counter() - started) * 1000)
 
     conn = await get_connection()
@@ -706,10 +737,16 @@ async def _load_sample_voice(voice_id: str) -> tuple[bytes, str]:
 async def tts_voice_clone_sample(
     body: StudioTtsSampleVoiceRequest,
     user_id: str = Depends(require_auth),
+    internal_proxy: bool = Depends(is_internal_proxy),
 ):
     """General TTS using a pre-stored sample voice as the cloning reference.
     Charged at TTS_CREDITS_COST (not the higher clone price) — backend cost
-    of the clone call is absorbed."""
+    of the clone call is absorbed.
+
+    Billing: studio web UI bills flat per-call. Developer-API proxy
+    calls (``internal_proxy=True``) are billed per-character on the
+    API side; we skip billing here in that path to avoid double-billing.
+    """
     if not _clone_available():
         raise HTTPException(status_code=503, detail="Voice cloning is not available (no ops pods online, STUDIO_VOICE_CLONE_URL not set).")
     if not is_known_sample(body.sample_voice_id):
@@ -718,21 +755,23 @@ async def tts_voice_clone_sample(
     if not target:
         raise HTTPException(status_code=400, detail="target_text is required")
 
-    # Credit check (TTS price, not clone price)
-    conn = await get_connection()
-    try:
-        cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
-        row = await cursor.fetchone()
-        if row is None:
-            raise HTTPException(status_code=404, detail="User not found")
-        credits = int(row["credits"])
-        if credits < TTS_CREDITS_COST:
-            raise HTTPException(
-                status_code=402,
-                detail=f"Insufficient credits. Need {TTS_CREDITS_COST} credits. You have {credits}.",
-            )
-    finally:
-        await conn.close()
+    # Credit check (TTS price, not clone price). Proxied calls skip the
+    # whole billing dance — the dev-api handles it.
+    if not internal_proxy:
+        conn = await get_connection()
+        try:
+            cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
+            row = await cursor.fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail="User not found")
+            credits = int(row["credits"])
+            if credits < TTS_CREDITS_COST:
+                raise HTTPException(
+                    status_code=402,
+                    detail=f"Insufficient credits. Need {TTS_CREDITS_COST} credits. You have {credits}.",
+                )
+        finally:
+            await conn.close()
 
     # Load sample reference (cached per process)
     raw_ref, reference_text = await _load_sample_voice(body.sample_voice_id)
@@ -780,20 +819,26 @@ async def tts_voice_clone_sample(
             ),
         )
         history_id = int(cursor.lastrowid)
-        new_credits = await atomic_deduct_credits(conn, user_id=user_id, cost=TTS_CREDITS_COST)
-        if new_credits is None:
-            raise HTTPException(status_code=402, detail="Insufficient credits.")
-        await record_credit_transaction(
-            conn,
-            user_id=user_id,
-            transaction_type="tts_sample_voice",
-            amount=-TTS_CREDITS_COST,
-            balance_after=new_credits,
-            description=f"General TTS · voice {body.sample_voice_id}",
-            reference_type="studio_clone_history",
-            reference_id=str(history_id),
-            metadata={"sample_voice_id": body.sample_voice_id, "clone_endpoint": clone_endpoint_label},
-        )
+        if internal_proxy:
+            # Dev-API path: billing already done upstream. Read current
+            # balance for the response, skip deduction + transaction.
+            cur_row = await (await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))).fetchone()
+            new_credits = int(cur_row["credits"]) if cur_row else 0
+        else:
+            new_credits = await atomic_deduct_credits(conn, user_id=user_id, cost=TTS_CREDITS_COST)
+            if new_credits is None:
+                raise HTTPException(status_code=402, detail="Insufficient credits.")
+            await record_credit_transaction(
+                conn,
+                user_id=user_id,
+                transaction_type="tts_sample_voice",
+                amount=-TTS_CREDITS_COST,
+                balance_after=new_credits,
+                description=f"General TTS · voice {body.sample_voice_id}",
+                reference_type="studio_clone_history",
+                reference_id=str(history_id),
+                metadata={"sample_voice_id": body.sample_voice_id, "clone_endpoint": clone_endpoint_label},
+            )
         await refresh_daily_usage_for_day(conn, datetime.now(timezone.utc).date().isoformat())
         await conn.commit()
     finally:
@@ -822,8 +867,16 @@ async def voice_design_config():
 
 
 @router.post("/voice-design/preview", response_model=StudioVoiceDesignPreviewResponse)
-async def voice_design_preview(body: StudioVoiceDesignPreviewRequest, user_id: str = Depends(require_auth)):
-    """LLM proposes a 6–7 word sample line + revised instruction; two TTS previews; charge credits only on success."""
+async def voice_design_preview(
+    body: StudioVoiceDesignPreviewRequest,
+    user_id: str = Depends(require_auth),
+    internal_proxy: bool = Depends(is_internal_proxy),
+):
+    """LLM proposes an 18–22 word sample line + revised instruction; two TTS previews; charge credits only on success.
+
+    Billing: studio web UI bills 70 cr per preview. Developer-API
+    proxy calls bill 70 cr on the API side and skip billing here.
+    """
     if body.user_id != user_id:
         raise HTTPException(status_code=403, detail="user_id does not match authenticated user")
     if not voice_design_llm_configured():
@@ -853,20 +906,21 @@ async def voice_design_preview(body: StudioVoiceDesignPreviewRequest, user_id: s
     sample_script = plan["sample_script"]
     revised_instruction = plan["revised_instruction"]
 
-    conn = await get_connection()
-    try:
-        cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
-        row = await cursor.fetchone()
-        if row is None:
-            raise HTTPException(status_code=404, detail="User not found")
-        credits = int(row["credits"])
-        if credits < VOICE_DESIGN_PREVIEW_CREDITS:
-            raise HTTPException(
-                status_code=402,
-                detail=f"Insufficient credits. Voice design preview (voice creation) needs {VOICE_DESIGN_PREVIEW_CREDITS} credits. You have {credits}.",
-            )
-    finally:
-        await conn.close()
+    if not internal_proxy:
+        conn = await get_connection()
+        try:
+            cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
+            row = await cursor.fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail="User not found")
+            credits = int(row["credits"])
+            if credits < VOICE_DESIGN_PREVIEW_CREDITS:
+                raise HTTPException(
+                    status_code=402,
+                    detail=f"Insufficient credits. Voice design preview (voice creation) needs {VOICE_DESIGN_PREVIEW_CREDITS} credits. You have {credits}.",
+                )
+        finally:
+            await conn.close()
 
     chute_slug, effective_model_name, effective_miner_hotkey = await _resolve_studio_tts_chute(
         body.chute_slug,
@@ -928,20 +982,24 @@ async def voice_design_preview(body: StudioVoiceDesignPreviewRequest, user_id: s
                 expires_at.isoformat(),
             ),
         )
-        new_credits = await atomic_deduct_credits(conn, user_id=user_id, cost=VOICE_DESIGN_PREVIEW_CREDITS)
-        if new_credits is None:
-            raise HTTPException(status_code=402, detail="Insufficient credits.")
-        await record_credit_transaction(
-            conn,
-            user_id=user_id,
-            transaction_type="voice_design_preview",
-            amount=-VOICE_DESIGN_PREVIEW_CREDITS,
-            balance_after=new_credits,
-            description="Voice design A/B preview (2× short TTS)",
-            reference_type="studio_voice_design_preview",
-            reference_id=preview_token,
-            metadata={"chute_slug": chute_slug, "model": effective_model_name or ""},
-        )
+        if internal_proxy:
+            cur_row = await (await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))).fetchone()
+            new_credits = int(cur_row["credits"]) if cur_row else 0
+        else:
+            new_credits = await atomic_deduct_credits(conn, user_id=user_id, cost=VOICE_DESIGN_PREVIEW_CREDITS)
+            if new_credits is None:
+                raise HTTPException(status_code=402, detail="Insufficient credits.")
+            await record_credit_transaction(
+                conn,
+                user_id=user_id,
+                transaction_type="voice_design_preview",
+                amount=-VOICE_DESIGN_PREVIEW_CREDITS,
+                balance_after=new_credits,
+                description="Voice design A/B preview (2× short TTS)",
+                reference_type="studio_voice_design_preview",
+                reference_id=preview_token,
+                metadata={"chute_slug": chute_slug, "model": effective_model_name or ""},
+            )
         await refresh_daily_usage_for_day(conn, datetime.now(timezone.utc).date().isoformat())
         await conn.commit()
     finally:
@@ -1299,8 +1357,17 @@ async def save_cloned_voice(
 
 
 @router.post("/voice-design/speak", response_model=StudioCloneResponse)
-async def designed_voice_speak(body: StudioDesignedVoiceSpeakRequest, user_id: str = Depends(require_auth)):
-    """Clone target text using saved designed-voice reference (no STT on reference)."""
+async def designed_voice_speak(
+    body: StudioDesignedVoiceSpeakRequest,
+    user_id: str = Depends(require_auth),
+    internal_proxy: bool = Depends(is_internal_proxy),
+):
+    """Clone target text using saved designed-voice reference (no STT on reference).
+
+    Billing: studio web UI bills flat per-call. Developer-API proxy
+    calls (``internal_proxy=True``) are billed per-character on the
+    API side; we skip billing here in that path to avoid double-billing.
+    """
     if body.user_id != user_id:
         raise HTTPException(status_code=403, detail="user_id does not match authenticated user")
     if not _clone_available():
@@ -1315,16 +1382,17 @@ async def designed_voice_speak(body: StudioDesignedVoiceSpeakRequest, user_id: s
 
     conn = await get_connection()
     try:
-        cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
-        row_c = await cursor.fetchone()
-        if row_c is None:
-            raise HTTPException(status_code=404, detail="User not found")
-        credits = int(row_c["credits"])
-        if credits < VOICE_DESIGN_SPEAK_CREDITS:
-            raise HTTPException(
-                status_code=402,
-                detail=f"Insufficient credits. Need {VOICE_DESIGN_SPEAK_CREDITS} credits to generate with this voice. You have {credits}.",
-            )
+        if not internal_proxy:
+            cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
+            row_c = await cursor.fetchone()
+            if row_c is None:
+                raise HTTPException(status_code=404, detail="User not found")
+            credits = int(row_c["credits"])
+            if credits < VOICE_DESIGN_SPEAK_CREDITS:
+                raise HTTPException(
+                    status_code=402,
+                    detail=f"Insufficient credits. Need {VOICE_DESIGN_SPEAK_CREDITS} credits to generate with this voice. You have {credits}.",
+                )
         row = await (
             await conn.execute(
                 """
@@ -1393,24 +1461,28 @@ async def designed_voice_speak(body: StudioDesignedVoiceSpeakRequest, user_id: s
             ),
         )
         history_id = int(cursor.lastrowid)
-        new_credits = await atomic_deduct_credits(conn, user_id=user_id, cost=VOICE_DESIGN_SPEAK_CREDITS)
-        if new_credits is None:
-            raise HTTPException(status_code=402, detail="Insufficient credits.")
-        await record_credit_transaction(
-            conn,
-            user_id=user_id,
-            transaction_type="voice_clone",
-            amount=-VOICE_DESIGN_SPEAK_CREDITS,
-            balance_after=new_credits,
-            description=f"My voice (designed): {row['display_name']}",
-            reference_type="studio_clone_history",
-            reference_id=str(history_id),
-            metadata={
-                "clone_endpoint": clone_endpoint_label,
-                "ref_source": "designed_voice",
-                "voice_id": body.voice_id,
-            },
-        )
+        if internal_proxy:
+            cur_row = await (await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))).fetchone()
+            new_credits = int(cur_row["credits"]) if cur_row else 0
+        else:
+            new_credits = await atomic_deduct_credits(conn, user_id=user_id, cost=VOICE_DESIGN_SPEAK_CREDITS)
+            if new_credits is None:
+                raise HTTPException(status_code=402, detail="Insufficient credits.")
+            await record_credit_transaction(
+                conn,
+                user_id=user_id,
+                transaction_type="voice_clone",
+                amount=-VOICE_DESIGN_SPEAK_CREDITS,
+                balance_after=new_credits,
+                description=f"My voice (designed): {row['display_name']}",
+                reference_type="studio_clone_history",
+                reference_id=str(history_id),
+                metadata={
+                    "clone_endpoint": clone_endpoint_label,
+                    "ref_source": "designed_voice",
+                    "voice_id": body.voice_id,
+                },
+            )
         await refresh_daily_usage_for_day(conn, datetime.now(timezone.utc).date().isoformat())
         await conn.commit()
     finally:
@@ -1473,6 +1545,13 @@ async def get_history(
             SELECT id, task, prompt_text, lyrics, audio_duration, metadata_json,
                    audio_s3_bucket, audio_s3_key, expires_at, created_at
             FROM studio_music_history
+            WHERE user_id = ?
+            ORDER BY datetime(created_at) DESC
+            LIMIT 100
+        """, (user_id,))).fetchall()
+        noise_remover_rows = await (await conn.execute("""
+            SELECT id, source_audio_filename, audio_s3_bucket, audio_s3_key, expires_at, created_at
+            FROM studio_noise_remover_history
             WHERE user_id = ?
             ORDER BY datetime(created_at) DESC
             LIMIT 100
@@ -1605,6 +1684,28 @@ async def get_history(
                 music_metadata_json=(r["metadata_json"] if "metadata_json" in r.keys() else None) or "{}",
             )
         )
+    for r in noise_remover_rows:
+        expires_at = datetime.fromisoformat(str(r["expires_at"]).replace("Z", "+00:00")) if r["expires_at"] else None
+        expired = expires_at is not None and expires_at <= now if not is_premium else False
+        audio_url = None
+        if not expired and r["audio_s3_bucket"] and r["audio_s3_key"]:
+            audio_url = get_presigned_url(r["audio_s3_bucket"], r["audio_s3_key"], expires_at, public=is_premium)
+        items.append(
+            StudioHistoryItemResponse(
+                id=int(r["id"]),
+                entry_type="noise_remover",
+                miner_hotkey="",
+                model_name="Noise Remover",
+                display_name="Noise Remover",
+                prompt_text=None,
+                style_instruction="Noise reduction",
+                audio_url=audio_url,
+                expires_at=expires_at.isoformat() if expires_at else "",
+                created_at=str(r["created_at"] or ""),
+                expired=expired,
+                source_audio_filename=r["source_audio_filename"] or "",
+            )
+        )
     items.sort(key=lambda x: x.created_at, reverse=True)
     items = items[:100]
     return StudioHistoryResponse(items=items)
@@ -1627,8 +1728,12 @@ async def delete_history_items(
         "tts": "studio_tts_history",
         "stt": "studio_stt_history",
         "clone": "studio_clone_history",
-        "voice_design": "studio_clone_history",  # voice_design rows live here too
+        "voice_design": "studio_clone_history",
         "music": "studio_music_history",
+        # Accept both the new name and the legacy "dubbing" alias so
+        # bookmarked URLs / stale frontends keep working after the rename.
+        "noise_remover": "studio_noise_remover_history",
+        "dubbing": "studio_noise_remover_history",
     }
     conn = await get_connection()
     deleted = 0
@@ -1674,6 +1779,8 @@ async def get_history_audio_url(
         table = "studio_clone_history"
     elif kind == "music":
         table = "studio_music_history"
+    elif kind in ("noise_remover", "dubbing"):
+        table = "studio_noise_remover_history"
     else:
         table = "studio_tts_history"
     conn = await get_connection()
@@ -2613,13 +2720,40 @@ async def get_music_history_audio_url(
 # Dubbing (noise reduction / speech enhancement)
 # ---------------------------------------------------------------------------
 
-DUBBING_CREDITS_COST = int(os.environ.get("STUDIO_DUBBING_CREDITS_COST", "5"))
-DUBBING_MAX_UPLOAD_BYTES = int(os.environ.get("STUDIO_DUBBING_MAX_UPLOAD_BYTES", str(100 * 1024 * 1024)))
+# Noise Remover (was "Dubbing" — DeepFilterNet enhancement).
+# 5 cr/gen, up to 5 minutes of audio, up to 50 MB upload. Old
+# STUDIO_DUBBING_* env vars still honored for backwards compat.
+NOISE_REMOVER_CREDITS_COST = int(
+    os.environ.get("STUDIO_NOISE_REMOVER_CREDITS_COST")
+    or os.environ.get("STUDIO_DUBBING_CREDITS_COST", "5")
+)
+NOISE_REMOVER_MAX_UPLOAD_BYTES = int(
+    os.environ.get("STUDIO_NOISE_REMOVER_MAX_UPLOAD_BYTES")
+    or os.environ.get("STUDIO_DUBBING_MAX_UPLOAD_BYTES", str(50 * 1024 * 1024))
+)
+NOISE_REMOVER_MAX_DURATION_SEC = int(
+    os.environ.get("STUDIO_NOISE_REMOVER_MAX_DURATION_SEC")
+    or os.environ.get("STUDIO_DUBBING_MAX_DURATION_SEC", str(5 * 60))
+)
+NOISE_REMOVER_ALLOWED_MIMES = frozenset({
+    "audio/wav", "audio/x-wav", "audio/wave",
+    "audio/mpeg", "audio/mp3",
+    "audio/mp4", "audio/x-m4a", "audio/m4a",
+    "audio/ogg", "audio/vorbis",
+    "audio/flac", "audio/x-flac",
+    "audio/webm",
+    "audio/aac",
+})
 
 
-def _dubbing_available() -> bool:
+def _noise_remover_available() -> bool:
+    """The pod's ops-service name was kept as ``noise_remover`` after the
+    rename; old deployments may still report ``dubbing``. Check both so
+    in-flight pod migrations don't 503 the endpoint mid-rollout."""
     try:
         from ops import pool as gpu_pool
+        if gpu_pool.online_pod_count("noise_remover") > 0:
+            return True
         if gpu_pool.online_pod_count("dubbing") > 0:
             return True
     except Exception:
@@ -2627,40 +2761,68 @@ def _dubbing_available() -> bool:
     return False
 
 
-@router.post("/dubbing/enhance")
-async def dubbing_enhance(
+@router.post("/noise-remover/enhance")
+async def noise_remover_enhance(
     user_id_form: str = Form(..., alias="user_id"),
     audio_file: UploadFile = File(...),
     user_id: str = Depends(require_auth),
+    internal_proxy: bool = Depends(is_internal_proxy),
 ):
-    """Upload noisy audio, get back enhanced/denoised audio."""
+    """Upload noisy audio, get back enhanced/denoised audio.
+
+    Billing: studio web UI is billed here (flat per-call). Developer-API
+    proxy calls (``internal_proxy=True``) are billed on the API side
+    per-minute at a different rate — we skip ALL credit logic here
+    when called via the trust path, to avoid double-billing.
+    """
     if user_id_form != user_id:
         raise HTTPException(status_code=403, detail="user_id does not match authenticated user")
-    if not _dubbing_available():
-        raise HTTPException(status_code=503, detail="Voice dubbing is not available (no ops pods online).")
+    if not _noise_remover_available():
+        raise HTTPException(status_code=503, detail="Noise Remover is not available (no ops pods online).")
+
+    content_type = (audio_file.content_type or "").lower().split(";")[0].strip()
+    if content_type and content_type not in NOISE_REMOVER_ALLOWED_MIMES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported audio format: {content_type}. Accepted: WAV, MP3, M4A, OGG, FLAC, WebM, AAC.",
+        )
 
     raw = await audio_file.read()
     if not raw:
         raise HTTPException(status_code=400, detail="Empty audio file")
-    if len(raw) > DUBBING_MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail=f"Audio exceeds max size ({DUBBING_MAX_UPLOAD_BYTES} bytes)")
+    if len(raw) > NOISE_REMOVER_MAX_UPLOAD_BYTES:
+        max_mb = NOISE_REMOVER_MAX_UPLOAD_BYTES / (1024 * 1024)
+        raise HTTPException(status_code=413, detail=f"Audio exceeds {max_mb:.0f} MB limit.")
 
-    conn = await get_connection()
-    try:
-        cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
-        urow = await cursor.fetchone()
-        if urow is None:
-            raise HTTPException(status_code=404, detail="User not found")
-        credits = int(urow["credits"])
-        if credits < DUBBING_CREDITS_COST:
-            raise HTTPException(
-                status_code=402,
-                detail=f"Insufficient credits. Need {DUBBING_CREDITS_COST} for voice dubbing. You have {credits}.",
-            )
-    finally:
-        await conn.close()
+    # Reject over-cap audio before the expensive DeepFilterNet pass.
+    import asyncio
+    from audio_probe import probe_audio_duration_seconds
+    probed_dur = await asyncio.to_thread(probe_audio_duration_seconds, raw, audio_file.filename)
+    if probed_dur is not None and probed_dur > NOISE_REMOVER_MAX_DURATION_SEC:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Audio is {probed_dur:.1f}s — Noise Remover is limited to {NOISE_REMOVER_MAX_DURATION_SEC}s ({NOISE_REMOVER_MAX_DURATION_SEC // 60} min).",
+        )
 
-    from studio_dubbing_service import enhance_audio
+    # Pre-flight balance check (website path only — proxied calls own
+    # their own billing on the dev-api side).
+    if not internal_proxy:
+        conn = await get_connection()
+        try:
+            cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
+            urow = await cursor.fetchone()
+            if urow is None:
+                raise HTTPException(status_code=404, detail="User not found")
+            credits = int(urow["credits"])
+            if credits < NOISE_REMOVER_CREDITS_COST:
+                raise HTTPException(
+                    status_code=402,
+                    detail=f"Insufficient credits. Need {NOISE_REMOVER_CREDITS_COST} for Noise Remover. You have {credits}.",
+                )
+        finally:
+            await conn.close()
+
+    from studio_noise_remover_service import enhance_audio
     started = time.perf_counter()
     wav_bytes, err = await enhance_audio(
         audio_bytes=raw,
@@ -2673,20 +2835,46 @@ async def dubbing_enhance(
 
     conn = await get_connection()
     try:
-        bucket, key, expires_at = upload_wav_to_hippius(user_id, wav_bytes, subdir="dubbing")
-        new_credits = await atomic_deduct_credits(conn, user_id=user_id, cost=DUBBING_CREDITS_COST)
-        if new_credits is None:
-            raise HTTPException(status_code=402, detail="Insufficient credits.")
-        await record_credit_transaction(
-            conn,
-            user_id=user_id,
-            transaction_type="dubbing",
-            amount=-DUBBING_CREDITS_COST,
-            balance_after=new_credits,
-            description="Voice dubbing (noise reduction)",
-            reference_type="dubbing",
-            reference_id=key,
+        bucket, key, expires_at = upload_wav_to_hippius(user_id, wav_bytes, subdir="noise-remover")
+        if internal_proxy:
+            # Proxied call: the dev-api already deducted. We still log the
+            # history row (so the user sees the artifact in their history),
+            # but we skip the atomic_deduct_credits + transaction row to
+            # avoid double-billing. Use the current balance for response.
+            cur = await (await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))).fetchone()
+            new_credits = int(cur["credits"]) if cur else 0
+        else:
+            new_credits = await atomic_deduct_credits(conn, user_id=user_id, cost=NOISE_REMOVER_CREDITS_COST)
+            if new_credits is None:
+                raise HTTPException(status_code=402, detail="Insufficient credits.")
+        await conn.execute(
+            """
+            INSERT INTO studio_noise_remover_history
+            (user_id, source_audio_filename, audio_s3_bucket, audio_s3_key, expires_at,
+             credits_used, latency_ms, status, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'completed', datetime('now'))
+            """,
+            (
+                user_id,
+                audio_file.filename or "input.wav",
+                bucket,
+                key,
+                expires_at.isoformat() if expires_at else "",
+                0 if internal_proxy else NOISE_REMOVER_CREDITS_COST,
+                latency_ms,
+            ),
         )
+        if not internal_proxy:
+            await record_credit_transaction(
+                conn,
+                user_id=user_id,
+                transaction_type="noise_remover",
+                amount=-NOISE_REMOVER_CREDITS_COST,
+                balance_after=new_credits,
+                description="Noise Remover (DeepFilterNet enhancement)",
+                reference_type="studio_noise_remover_history",
+                reference_id=key,
+            )
         await conn.commit()
     finally:
         await conn.close()
@@ -2700,7 +2888,7 @@ async def dubbing_enhance(
     dub_url = get_presigned_url(bucket, key, expires_at, public=False) or ""
     return {
         "audio_url": dub_url,
-        "credits_used": DUBBING_CREDITS_COST,
+        "credits_used": 0 if internal_proxy else NOISE_REMOVER_CREDITS_COST,
         "credits_remaining": new_credits,
         "latency_ms": latency_ms,
     }

@@ -325,6 +325,28 @@ async def _get_user_by_id(user_id: str) -> UserOut | None:
         await conn.close()
 
 
+def is_internal_proxy(
+    x_internal_service_token: str | None = Header(None, alias="X-Internal-Service-Token"),
+) -> bool:
+    """True if this call came in via the developer-api INTERNAL trust path.
+
+    Use case: dashboard endpoints that bill credits should SKIP their
+    own deduction when ``is_internal_proxy`` is True — the developer-api
+    layer owns billing (often at a different rate, e.g. per-char vs
+    per-call), and double-deducting on every proxied call would charge
+    the user twice. The website's JWT auth path doesn't set this header,
+    so studio web traffic still bills normally.
+
+    The shared secret is validated the same way as ``require_auth``;
+    if the env var isn't configured or the token doesn't match, this
+    returns False and normal billing applies.
+    """
+    expected = (os.environ.get("INTERNAL_SERVICE_TOKEN") or "").strip()
+    if not x_internal_service_token or not expected:
+        return False
+    return hmac.compare_digest(x_internal_service_token, expected)
+
+
 def require_auth(
     authorization: str | None = Header(None, alias="Authorization"),
     x_internal_service_token: str | None = Header(None, alias="X-Internal-Service-Token"),

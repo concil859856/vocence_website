@@ -9,58 +9,40 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { Loader2, Mic, Send, Square } from 'lucide-react';
+import { Loader2, Mic, MicOff, PhoneOff, Play, Send } from 'lucide-react';
 import type { Agent } from '../../lib/agents/types';
-import { useVoiceChat } from '../../lib/voicechat/useVoiceChat';
+import type { AgentSession } from '../../lib/voicechat/useAgentSession';
 import { renderMessage } from '../../lib/voicechat/renderInline';
 import { ToolCallChip } from '../../lib/voicechat/ToolCallChip';
 import { AgentAvatar } from './AgentAvatar';
+import { ThumbsFeedback } from '../feedback/ThumbsFeedback';
 
 interface Props {
   agent: Agent;
-  authToken: string | null;
+  session: AgentSession;
 }
 
-export function AgentChat({ agent, authToken }: Props) {
+export function AgentChat({ agent, session }: Props) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [input, setInput] = useState('');
 
-  // Always-on voice: one tap on the mic starts a hands-free conversation
-  // (VAD segments each turn, plays the reply, then reopens the mic).
-  // The user only clicks again when they want to end the session.
   const {
+    started,
+    muted,
+    start,
+    end,
+    toggleMute,
     state,
     messages,
     micLevel,
     error,
-    listening,
-    startListening,
-    stopListening,
     sendText,
-    cancel,
-  } = useVoiceChat({ enabled: !!authToken, authToken, agentId: agent.id, alwaysOn: true });
+    micError,
+  } = session;
 
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [messages, state]);
-
-  // Tear down on unmount: stop the mic + cancel any in-flight turn so the
-  // VAD/media stream is released and the WS frees the session promptly.
-  useEffect(() => {
-    return () => {
-      stopListening();
-      cancel();
-    };
-  }, [cancel, stopListening]);
-
-  const onMicClick = async () => {
-    if (listening) {
-      cancel();
-      stopListening();
-    } else {
-      await startListening();
-    }
-  };
 
   const onSubmitText = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -71,7 +53,7 @@ export function AgentChat({ agent, authToken }: Props) {
   };
 
   const stateLabel: Record<typeof state, string> = {
-    idle: authToken ? 'Tap mic to start' : 'Sign in to chat',
+    idle: started ? 'Connected' : 'Click Start to begin',
     connecting: 'Connecting…',
     listening: 'Listening…',
     recording: 'Listening…',
@@ -95,102 +77,177 @@ export function AgentChat({ agent, authToken }: Props) {
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-3">
         {messages.length === 0 && (
           <div className="text-center text-sm text-[#A7B0B7] py-8">
-            Say something to {agent.name}.
+            {started ? `Say something to ${agent.name}.` : `Click Start to begin a conversation with ${agent.name}.`}
           </div>
         )}
-        {messages.map((m) => (
-          <div key={m.id} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-            <div
-              className={`max-w-[85%] rounded-2xl px-3.5 py-2 text-sm leading-snug whitespace-pre-wrap break-words ${
-                m.role === 'user'
-                  ? 'bg-[#DFFF00] text-[#07080A]'
-                  : 'bg-white/[0.06] text-white border border-white/10'
-              }`}
-            >
-              {/* Tool-call chips — rendered above the message text so
-                  the user sees "Searching the web…" while the LLM is
-                  fetching the data it needs to answer. */}
-              {m.role === 'assistant' && m.tool_calls && m.tool_calls.length > 0 && (
-                <div className="flex flex-wrap gap-1.5 mb-1.5">
-                  {m.tool_calls.map((tc) => (
-                    <ToolCallChip key={tc.id} call={tc} />
-                  ))}
+        {messages.map((m) => {
+          // System bubbles (session ended notifications) get their own
+          // centered banner so they don't blend in with user/assistant
+          // chat traffic. Colour reflects severity:
+          //   • idle_timeout / max_duration — amber (informational close)
+          //   • billing_exhausted — red (action required: top up)
+          //   • info — neutral grey
+          if (m.role === 'system') {
+            const tone =
+              m.systemKind === 'billing_exhausted'
+                ? 'border-red-400/30 bg-red-500/[0.08] text-red-100'
+                : m.systemKind === 'idle_timeout' || m.systemKind === 'max_duration'
+                  ? 'border-amber-300/30 bg-amber-400/[0.08] text-amber-100'
+                  : 'border-white/10 bg-white/[0.04] text-[#C6CDD4]';
+            return (
+              <div key={m.id} className="flex justify-center">
+                <div className={`max-w-[90%] rounded-xl border px-3.5 py-2 text-xs leading-snug text-center ${tone}`}>
+                  {m.text}
                 </div>
-              )}
-              {m.pending && !m.text ? (
-                <span className="inline-flex gap-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-current opacity-60 animate-pulse" />
-                  <span className="w-1.5 h-1.5 rounded-full bg-current opacity-60 animate-pulse [animation-delay:120ms]" />
-                  <span className="w-1.5 h-1.5 rounded-full bg-current opacity-60 animate-pulse [animation-delay:240ms]" />
-                </span>
-              ) : m.role === 'assistant' ? (
-                renderMessage(m.text)
-              ) : (
-                m.text
-              )}
+              </div>
+            );
+          }
+          // Assistant messages get a small thumbs-up/down on hover after
+          // they've finished pending — feeds generation_feedback for the
+          // Quality dashboard. Disabled while the LLM is still streaming
+          // so the user doesn't rate a half-formed answer.
+          const showThumbs = m.role === 'assistant' && !m.pending && !!m.text;
+          return (
+            <div key={m.id} className={`group flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+              <div className={`max-w-[85%] flex flex-col ${m.role === 'user' ? 'items-end' : 'items-start'}`}>
+                <div
+                  className={`rounded-2xl px-3.5 py-2 text-sm leading-snug whitespace-pre-wrap break-words ${
+                    m.role === 'user'
+                      ? 'bg-[#DFFF00] text-[#07080A]'
+                      : 'bg-white/[0.06] text-white border border-white/10'
+                  }`}
+                >
+                  {/* Tool-call chips — rendered above the message text so
+                      the user sees "Searching the web…" while the LLM is
+                      fetching the data it needs to answer. */}
+                  {m.role === 'assistant' && m.tool_calls && m.tool_calls.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5 mb-1.5">
+                      {m.tool_calls.map((tc) => (
+                        <ToolCallChip key={tc.id} call={tc} />
+                      ))}
+                    </div>
+                  )}
+                  {m.pending && !m.text ? (
+                    <span className="inline-flex gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-current opacity-60 animate-pulse" />
+                      <span className="w-1.5 h-1.5 rounded-full bg-current opacity-60 animate-pulse [animation-delay:120ms]" />
+                      <span className="w-1.5 h-1.5 rounded-full bg-current opacity-60 animate-pulse [animation-delay:240ms]" />
+                    </span>
+                  ) : m.role === 'assistant' ? (
+                    renderMessage(m.text)
+                  ) : (
+                    m.text
+                  )}
+                </div>
+                {showThumbs && (
+                  <div className="mt-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <ThumbsFeedback entryType="agent_message" entryId={m.id} />
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       <div className="border-t border-white/10 bg-white/[0.02] p-3">
-        <div className="flex items-end gap-2">
+        {/* Mic-permission error from useAgentSession.start(). Shown
+            here AND on the Call tab so the user sees it wherever they
+            tried to start. */}
+        {!started && micError && (
+          <div className="mb-3 rounded-xl border border-red-400/30 bg-red-500/[0.08] px-3 py-2 text-xs text-red-100">
+            <span className="font-semibold">Mic blocked.</span> {micError}
+          </div>
+        )}
+        {!started ? (
+          // Pre-session — single big Start button. No WS is open yet,
+          // no billing has started; the user must explicitly opt in.
           <button
             type="button"
-            onClick={onMicClick}
+            onClick={start}
             disabled={state === 'connecting'}
-            className={`relative shrink-0 w-12 h-12 rounded-full flex items-center justify-center transition-colors ${
-              listening
-                ? 'bg-red-500 text-white'
-                : 'bg-[#DFFF00] text-[#07080A] hover:brightness-110 disabled:opacity-50'
-            }`}
-            aria-label={listening ? 'End voice chat' : 'Start voice chat'}
+            className="w-full inline-flex items-center justify-center gap-2 rounded-2xl bg-[#DFFF00] text-[#07080A] px-4 py-3 text-sm font-semibold hover:brightness-110 disabled:opacity-50"
           >
-            {listening ? <Square size={18} fill="currentColor" /> : <Mic size={20} />}
-            {listening && (
-              <span
-                className="absolute -inset-1 rounded-full border-2 border-red-400/60 pointer-events-none"
-                style={{ transform: `scale(${1 + micLevel * 0.4})` }}
-              />
+            {state === 'connecting' ? (
+              <>
+                <Loader2 size={16} className="animate-spin" /> Connecting…
+              </>
+            ) : (
+              <>
+                <Play size={16} fill="currentColor" /> Start conversation
+              </>
             )}
           </button>
-          <form onSubmit={onSubmitText} className="flex-1 flex items-end gap-2">
-            <textarea
-              rows={1}
-              value={input}
-              onChange={(e) => {
-                setInput(e.target.value);
-                e.target.style.height = 'auto';
-                e.target.style.height = `${Math.min(e.target.scrollHeight, 140)}px`;
-              }}
-              onKeyDown={(e) => {
-                // Enter submits; Shift+Enter inserts a newline.
-                // Skip while an IME (CJK) is composing a character.
-                if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-                  e.preventDefault();
-                  if (input.trim()) {
-                    const t = input;
-                    setInput('');
-                    e.currentTarget.style.height = 'auto';
-                    void sendText(t);
-                  }
-                }
-              }}
-              placeholder="Type a message…"
-              title="Shift+Enter for new line"
-              disabled={state === 'connecting' || !authToken}
-              className="flex-1 bg-white/[0.04] border border-white/10 rounded-2xl px-4 py-2 text-sm text-white placeholder:text-[#666] focus:outline-none focus:border-[#DFFF00]/40 disabled:opacity-50 resize-none leading-snug"
-            />
+        ) : (
+          // Active session — End button (left), mic toggle (centre),
+          // text input (right). End cleanly closes the WS so the
+          // backend writes the final transaction row.
+          <div className="flex items-end gap-2">
             <button
-              type="submit"
-              disabled={!input.trim() || state === 'connecting'}
-              className="shrink-0 w-10 h-10 rounded-full bg-white/[0.06] hover:bg-white/[0.10] text-white disabled:opacity-30 flex items-center justify-center"
-              aria-label="Send"
+              type="button"
+              onClick={end}
+              className="shrink-0 inline-flex items-center gap-1.5 rounded-2xl bg-red-500/15 border border-red-400/30 px-3 py-2 text-xs font-semibold text-red-200 hover:bg-red-500/25"
+              aria-label="End session"
+              title="End session"
             >
-              {state === 'connecting' ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
+              <PhoneOff size={14} /> End
             </button>
-          </form>
-        </div>
+            <button
+              type="button"
+              onClick={toggleMute}
+              disabled={state === 'connecting'}
+              className={`relative shrink-0 w-11 h-11 rounded-full flex items-center justify-center transition-colors ${
+                !muted
+                  ? 'bg-white/[0.08] text-white'
+                  : 'bg-white/[0.04] text-[#A7B0B7] hover:bg-white/[0.08]'
+              }`}
+              aria-label={muted ? 'Unmute mic' : 'Mute mic'}
+              title={muted ? 'Unmute mic' : 'Mute mic'}
+            >
+              {muted ? <MicOff size={18} /> : <Mic size={18} />}
+              {!muted && (
+                <span
+                  className="absolute -inset-0.5 rounded-full border-2 border-[#DFFF00]/60 pointer-events-none"
+                  style={{ transform: `scale(${1 + micLevel * 0.3})` }}
+                />
+              )}
+            </button>
+            <form onSubmit={onSubmitText} className="flex-1 flex items-end gap-2">
+              <textarea
+                rows={1}
+                value={input}
+                onChange={(e) => {
+                  setInput(e.target.value);
+                  e.target.style.height = 'auto';
+                  e.target.style.height = `${Math.min(e.target.scrollHeight, 140)}px`;
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                    e.preventDefault();
+                    if (input.trim()) {
+                      const t = input;
+                      setInput('');
+                      e.currentTarget.style.height = 'auto';
+                      void sendText(t);
+                    }
+                  }
+                }}
+                placeholder="Type a message…"
+                title="Shift+Enter for new line"
+                disabled={state === 'connecting'}
+                className="flex-1 bg-white/[0.04] border border-white/10 rounded-2xl px-4 py-2 text-sm text-white placeholder:text-[#666] focus:outline-none focus:border-[#DFFF00]/40 disabled:opacity-50 resize-none leading-snug"
+              />
+              <button
+                type="submit"
+                disabled={!input.trim() || state === 'connecting'}
+                className="shrink-0 w-10 h-10 rounded-full bg-white/[0.06] hover:bg-white/[0.10] text-white disabled:opacity-30 flex items-center justify-center"
+                aria-label="Send"
+              >
+                {state === 'connecting' ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
+              </button>
+            </form>
+          </div>
+        )}
       </div>
     </div>
   );

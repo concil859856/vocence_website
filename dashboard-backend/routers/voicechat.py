@@ -33,6 +33,8 @@ import logging
 import os
 import random
 import time
+import uuid
+from contextlib import suppress
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
@@ -55,6 +57,7 @@ from voicechat_service import (
     check_rate_limit,
     llm_configured,
     maybe_summarize_conversation,
+    JsonLeakFilter,
     sanitize_for_tts,
     stream_llm,
     stream_tts_for_voice,
@@ -66,7 +69,7 @@ from llm_client import stream_chat_with_tools
 # Tool calling: cap how many LLM↔tool round-trips a single turn can do.
 # Most legit queries finish in 1 tool call ("what's the weather in Tokyo");
 # pathological loops (LLM keeps re-calling the same tool) are stopped here.
-MAX_TOOL_DEPTH = int(os.environ.get("VOICECHAT_MAX_TOOL_DEPTH") or "5")
+MAX_TOOL_DEPTH = int(os.environ.get("VOICECHAT_MAX_TOOL_DEPTH") or "2")
 
 
 # Cumulative chars emitted to TTS via the per-sentence path before we flip
@@ -371,16 +374,115 @@ async def voicechat_session(
             await ws.close(code=4423)
             return
 
-    session_id = f"vc-{int(time.time() * 1000)}-{auth_user_id[:6]}"
+    # UUID4 hex — collision-safe across users + time. Used as the
+    # ``reference_id`` on the billing transaction row so the prior
+    # ``vc-<millis>-<user_prefix>`` pattern's same-millisecond collision
+    # risk is gone.
+    session_id = f"vc-{uuid.uuid4().hex[:16]}"
+
+    # ── Session watchdog + (paid agents only) per-minute billing ──────
+    # A ``VoiceAgentBilling`` instance always exists for every session —
+    # paid voice agents get the real billing loop; the free Vocence
+    # Assistant gets ``free_mode=True`` so the max-duration + idle
+    # watchdogs still close runaway sessions, but no credits are
+    # deducted and no transaction row is written.
+    from voice_agent_billing import (
+        VoiceAgentBilling,
+        precheck_balance,
+        credits_for_seconds,
+        VOICE_AGENT_CREDITS_PER_MIN,
+        MIN_CHARGE_SEC,
+        MAX_SESSION_SEC,
+        IDLE_TIMEOUT_SEC,
+        INCREMENT_SEC,
+    )
+
+    paid_agent = bool(agent_id)
+    if paid_agent:
+        ok, balance = await precheck_balance(auth_user_id)
+        if not ok:
+            min_charge = credits_for_seconds(MIN_CHARGE_SEC)
+            await ws.send_json({
+                "type": "error",
+                "code": "insufficient_credits",
+                "message": (
+                    f"Voice agents cost {VOICE_AGENT_CREDITS_PER_MIN} credits/min. "
+                    f"You need at least {min_charge} credits to start a session — you have {balance}."
+                ),
+            })
+            await ws.close(code=4402)
+            return
+
+    async def _on_session_end(reason: str) -> None:
+        """Routes the billing-loop's auto-end reason to the right WS
+        close code + message. Centralized here so all auto-end paths
+        (balance exhausted, max duration, idle) share one handler.
+        REASON_EXHAUSTED can't fire in free mode (no deductions)."""
+        if reason == VoiceAgentBilling.REASON_EXHAUSTED:
+            payload = {
+                "type": "billing_exhausted",
+                "message": "Voice agent session ended — credit balance reached zero.",
+            }
+            close_code = 4402
+        elif reason == VoiceAgentBilling.REASON_MAX_DURATION:
+            payload = {
+                "type": "session_timeout",
+                "code": "max_duration",
+                "message": f"Session ended — reached the {MAX_SESSION_SEC // 60} min maximum length.",
+            }
+            close_code = 4408
+        elif reason == VoiceAgentBilling.REASON_IDLE_TIMEOUT:
+            payload = {
+                "type": "session_timeout",
+                "code": "idle_timeout",
+                "message": f"Session ended — no activity for {IDLE_TIMEOUT_SEC}s.",
+            }
+            close_code = 4410
+        else:
+            payload = {"type": "error", "code": "session_ended", "message": reason}
+            close_code = 4500
+        with suppress(Exception):
+            await ws.send_json(payload)
+        with suppress(Exception):
+            await ws.close(code=close_code)
+
+    billing = VoiceAgentBilling(
+        user_id=auth_user_id,
+        session_id=session_id,
+        agent_id=agent_id or "_assistant",
+        on_session_end=_on_session_end,
+        free_mode=not paid_agent,
+    )
+
     # Send ready — client may have already disconnected (e.g., React.StrictMode
     # dev double-mount). Don't crash on that, the next mount will reconnect.
     try:
-        await ws.send_json({"type": "ready", "session_id": session_id, "agent": agent_ctx and {"id": agent_id, "name": agent_ctx["name"]}})
+        ready_payload: dict[str, object] = {
+            "type": "ready",
+            "session_id": session_id,
+            "agent": agent_ctx and {"id": agent_id, "name": agent_ctx["name"]},
+            "session": {
+                "max_duration_sec": MAX_SESSION_SEC,
+                "idle_timeout_sec": IDLE_TIMEOUT_SEC,
+            },
+        }
+        if paid_agent:
+            ready_payload["billing"] = {
+                "credits_per_min": VOICE_AGENT_CREDITS_PER_MIN,
+                "increment_sec": INCREMENT_SEC,
+                "min_charge_sec": MIN_CHARGE_SEC,
+            }
+        await ws.send_json(ready_payload)
     except WebSocketDisconnect:
         return
     except Exception:
         _log.debug("voicechat: client disconnected before ready ack", exc_info=False)
         return
+
+    # Start the watchdog/billing loop AFTER the ready ack so setup
+    # time doesn't get billed (and on the free path, doesn't get
+    # included in the idle countdown).
+    billing.start()
 
     # Resolve which tools this agent can call this session — we need
     # this BOTH for the per-turn tool_specs (further down) AND for the
@@ -440,6 +542,9 @@ async def voicechat_session(
     #   • The standalone Vocence Assistant uses its own get_system_prompt().
     #
     # Knowledge is still injected per-turn via RAG below (no change).
+    agent_language: str | None = None
+    if agent_ctx and (agent_ctx["config"].get("language") or "").strip().lower() not in ("", "auto"):
+        agent_language = (agent_ctx["config"]["language"]).strip()
     knowledge_uses_rag = False
     if agent_ctx:
         cfg = agent_ctx["config"]
@@ -577,15 +682,7 @@ async def voicechat_session(
             agent_voice = v
 
     # Agent's configured TTS / LLM language. Forwarded to the clone-streaming
-    # server (so Qwen3-TTS picks the right phonetic model) and prepended as
-    # a system-prompt hint so the LLM replies in the same language regardless
-    # of what the user types in. When the agent didn't set one, falls back to
-    # "Auto" — TTS auto-detects from the text, LLM mirrors the user.
-    agent_language: str | None = None
-    if agent_ctx:
-        lang = (agent_ctx["config"].get("language") or "").strip()
-        if lang and lang.lower() != "auto":
-            agent_language = lang
+    # agent_language is resolved above (before system prompt assembly).
 
     # Track current turn task so we can cancel on barge-in
     current_turn: asyncio.Task | None = None
@@ -609,6 +706,92 @@ async def voicechat_session(
             except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
                 pass
         current_turn = None
+
+    # First-message greeting — agent speaks this immediately on
+    # connect, before the user has said anything. Industry standard
+    # pattern (Vapi ``firstMessage``, Retell ``begin_message``, Eleven
+    # ``first_message``). We push it into ``conversation`` as a
+    # synthetic assistant turn so the LLM sees its own greeting on
+    # the user's first reply and doesn't re-introduce itself.
+    #
+    # Three-way semantic:
+    #   • key MISSING (legacy agent saved before this feature shipped)
+    #       → use a sensible default greeting so the agent isn't mute
+    #   • key present but empty string
+    #       → user EXPLICITLY chose silent start; honor it
+    #   • non-empty string
+    #       → speak it verbatim
+    DEFAULT_FIRST_MESSAGE = "Hello, how may I assist you today?"
+    agent_first_message = ""
+    if agent_ctx:
+        cfg = agent_ctx.get("config") or {}
+        if "first_message" not in cfg:
+            agent_first_message = DEFAULT_FIRST_MESSAGE
+        else:
+            fm = cfg.get("first_message")
+            if isinstance(fm, str):
+                agent_first_message = fm.strip()
+
+    async def _speak_pretext(text: str) -> None:
+        """Run a pre-written assistant utterance through the chat
+        token stream + TTS path WITHOUT calling the LLM. Used for
+        the first_message greeting. Cancellable like any normal turn
+        so user barge-in tears it down cleanly via ``_cancel_current``."""
+        from voicechat_service import stream_tts_for_voice
+        # 1. Emit the chat token so the UI shows the greeting.
+        with suppress(Exception):
+            await ws.send_json({"type": "token", "text": text})
+        if not VOICECHAT_TTS_ENABLED:
+            return
+        # 2. Send the audio_meta envelope, then stream TTS bytes.
+        sid = 0  # only one chunk for the greeting; sid is monotonic per turn
+        spoken = sanitize_for_tts(text)
+        if not spoken:
+            return
+        with suppress(Exception):
+            await ws.send_json({
+                "type": "audio_meta",
+                "sentence_id": sid,
+                "sample_rate": 24000,
+                "frame_ms": 40,
+                "encoding": "pcm16le",
+                "channels": 1,
+            })
+        try:
+            async for chunk in stream_tts_for_voice(
+                spoken,
+                agent_voice,
+                user_id=auth_user_id,
+                language=agent_language,
+            ):
+                if chunk.kind == "audio" and isinstance(chunk.payload, (bytes, bytearray)):
+                    payload = chunk.payload if isinstance(chunk.payload, bytes) else bytes(chunk.payload)
+                    with suppress(Exception):
+                        await ws.send_bytes(payload)
+                elif chunk.kind == "error":
+                    err = chunk.payload if isinstance(chunk.payload, dict) else {}
+                    _log.warning("first_message tts error: %s", err)
+                    break
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            _log.warning("first_message stream failed: %s", exc, exc_info=False)
+
+    if agent_first_message:
+        # Append BEFORE kicking off TTS so a fast user barge-in
+        # (cancelling the speak task) doesn't lose the conversation
+        # marker — the LLM still sees the greeting on the next turn.
+        conversation.append(
+            ChatMessage(role="assistant", content=agent_first_message)
+        )
+        current_turn = asyncio.create_task(
+            _speak_pretext(agent_first_message), name="first_message"
+        )
+        # First-message playback counts as session activity so the
+        # idle watchdog doesn't fire during a long greeting.
+        current_turn.add_done_callback(
+            lambda _t, b=billing: b.mark_activity()
+        )
 
     try:
         while True:
@@ -644,7 +827,9 @@ async def voicechat_session(
             # Cancel any in-flight turn before starting a new one
             await _cancel_current()
 
-            # Per-user rate limit (no credits, but bound abuse)
+            # Per-user rate limit (no credits, but bound abuse).
+            # Checked BEFORE marking activity so a flood of rejected
+            # spam doesn't keep an idle session alive.
             allowed, retry_after = await check_rate_limit(auth_user_id)
             if not allowed:
                 await ws.send_json({
@@ -654,6 +839,12 @@ async def voicechat_session(
                     "retry_after": retry_after,
                 })
                 continue
+
+            # Reset the idle watchdog. ``voice`` and ``text`` are the
+            # only message types that count as user activity — a
+            # ``cancel`` is the client interrupting the agent, not the
+            # user actually engaging, so it doesn't extend the timeout.
+            billing.mark_activity()
 
             # RAG agent id selection:
             #   • real agent with large knowledge → that agent's id
@@ -694,7 +885,7 @@ async def voicechat_session(
                     else:
                         from llm_client import cerebras_llm_configured
                         if cerebras_llm_configured():
-                            agent_llm_model = f"cerebras:{os.environ.get('CEREBRAS_VOICECHAT_MODEL') or 'qwen-3-235b-a22b-instruct-2507'}"
+                            agent_llm_model = f"cerebras:{os.environ.get('CEREBRAS_VOICECHAT_MODEL') or 'gpt-oss-120b'}"
 
             # ``enabled_tools_set`` was resolved once at session start
             # (used by both the system prompt and the tool-spec list) —
@@ -713,8 +904,24 @@ async def voicechat_session(
                     enabled_tools=enabled_tools_set,
                 )
             )
+            # Reset the idle watchdog when the agent's response
+            # FINISHES — otherwise a long monologue (>60s) would trip
+            # the timeout while the user is quietly listening. Done
+            # callbacks fire on any termination (success, cancel,
+            # exception) which is exactly what we want here: any of
+            # those means activity is occurring in the session.
+            current_turn.add_done_callback(
+                lambda _t, b=billing: b.mark_activity()
+            )
     finally:
         await _cancel_current()
+        # Stop the watchdog/billing loop. Runs even on
+        # WebSocketDisconnect / cancellation so the user gets
+        # correctly charged for the time they actually used (paid
+        # agents) or no-op'd cleanly (free Assistant). The
+        # MIN_CHARGE_SEC floor is enforced inside stop().
+        with suppress(Exception):
+            await billing.stop()
 
 
 async def _run_turn(
@@ -977,11 +1184,26 @@ async def _run_turn(
                 {"role": m.role, "content": m.content} for m in llm_messages
             ]
 
+            # Filter that strips leaked tool-call / tool-result JSON
+            # from the LLM's content stream. Some open-weight models
+            # (gpt-oss-120b on Cerebras) emit tool calls inline as text
+            # instead of via OpenAI's ``delta.tool_calls`` field; the
+            # filter catches that and drops the noise so it never
+            # reaches the chat bubble or the TTS engine.
+            json_leak_filter = JsonLeakFilter()
+
             async def _feed_content_to_tts(delta: str) -> bool:
                 """Reuse of the existing chunker/TTS flow for a single
                 content delta. Returns False if the client has hung up
                 (so the caller breaks out of the loop)."""
                 nonlocal ttft_ms, ttfs_ms, chunking_active, emitted_chars, tail_buffer
+                # Pre-filter: strip any inline tool-call JSON leakage.
+                # Returns "" while a JSON blob is mid-stream; the next
+                # delta(s) will accumulate it. ``flush()`` after stream
+                # end drains any unterminated buffer.
+                delta = json_leak_filter.feed(delta)
+                if not delta:
+                    return True
                 if ttft_ms is None:
                     ttft_ms = int((time.perf_counter() - started) * 1000)
                 bot_text_full.append(delta)
@@ -1227,6 +1449,24 @@ async def _run_turn(
                         })
                     except Exception:
                         pass
+
+                # Drain any in-flight JSON the filter was buffering.
+                # If the stream ended mid-JSON (rare) and the partial
+                # blob looks non-leaky, treat it as real content. The
+                # filter handles the leak-detection internally so we
+                # don't have to second-guess here.
+                leftover = json_leak_filter.flush()
+                if leftover:
+                    bot_text_full.append(leftover)
+                    with suppress(Exception):
+                        await ws.send_json({"type": "token", "text": leftover})
+                    if VOICECHAT_TTS_ENABLED and chunking_active:
+                        for sentence in chunker.feed(leftover):
+                            spoken = sanitize_for_tts(sentence)
+                            if spoken:
+                                await sentence_q.put((spoken, False))
+                    else:
+                        tail_buffer += leftover
 
                 # LLM stream ended. Emit whatever's left as one final chunk:
                 #   • sentence mode: chunker buffer with no terminator yet

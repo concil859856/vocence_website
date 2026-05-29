@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import { useConfirm } from '../hooks/useConfirm';
 import {
   AlertCircle, CheckCircle2, ChevronDown, ChevronUp, Loader2, Music,
   Upload, X, Download, Clock, Disc3, Wand2, Repeat, Paintbrush, Scissors, ArrowRightFromLine,
@@ -10,6 +11,20 @@ import { dashboardApi, humanizeApiError } from '../services/dashboardApi';
 import { useGenerations } from '../contexts/GenerationsContext';
 import { CREDIT_MUSIC } from '../studio/creditCosts';
 import { asset } from '../data/assets';
+// Inline the 8 genre tile images as base64 in the JS bundle. They're
+// each ~3-5KB (~30KB total) and the page is unusable until they show,
+// so trading a one-time bundle bump for instant render with no
+// post-mount HTTP fetches is the right call. Plain `?url` imports
+// (Vite default) would still cost separate HTTP requests fired after
+// React mounts — exactly the staggered fade-in we're trying to kill.
+import genre1Img from '../assets/genre/genre_1.webp?inline';
+import genre2Img from '../assets/genre/genre_2.webp?inline';
+import genre3Img from '../assets/genre/genre_3.webp?inline';
+import genre4Img from '../assets/genre/genre_4.webp?inline';
+import genre5Img from '../assets/genre/genre_5.webp?inline';
+import genre6Img from '../assets/genre/genre_6.webp?inline';
+import genre7Img from '../assets/genre/genre_7.webp?inline';
+import genre8Img from '../assets/genre/genre_8.webp?inline';
 
 type MusicTask = 'text2music' | 'audio2audio' | 'retake' | 'repaint' | 'edit' | 'extend';
 
@@ -32,7 +47,7 @@ const GENRE_PRESETS: GenrePreset[] = [
     // Curated: Disco — danceable, glamorous, female vocals.
     value: 'disco, four-on-the-floor drums, slap bass, strings, hi-hats, 120 bpm, danceable, glamorous, female vocals',
     emoji: '🎤',
-    image: '/samples/images/genre_1.webp',
+    image: genre1Img,
     lyrics: `[verse]
 Streetlights paint the city wide
 Got my heart out for the ride
@@ -71,7 +86,7 @@ Light it up tonight`,
     label: 'Hard Rock',
     value: 'rock, electric guitar, drums, bass, 130 bpm, energetic, rebellious, gritty, male vocals, raw vocals',
     emoji: '🎸',
-    image: '/samples/images/genre_2.webp',
+    image: genre2Img,
     lyrics: `[verse]
 Burned the bridges I walked across
 Counted every gain and loss
@@ -111,7 +126,7 @@ Tear it down tonight`,
     // Curated: Drill — aggressive, sliding 808s, sparse hats, rapid flow.
     value: 'drill, dark trap, sliding 808s, sparse hi-hats, 140 bpm, aggressive, menacing, male vocals, rapid flow',
     emoji: '🎧',
-    image: '/samples/images/genre_3.webp',
+    image: genre3Img,
     lyrics: `[verse]
 Came from the ground with the dirt on my shoes
 Wrote my own page from the cracks in the news
@@ -149,7 +164,7 @@ Living in color in a black-and-white maze`,
     // cleanly when you ask for vocals over them).
     value: 'electronic, house, electro house, synthesizer, drums, bass, percussion, 128 bpm, energetic, uplifting, exciting, female vocals, catchy hook',
     emoji: '⚡',
-    image: '/samples/images/genre_4.webp',
+    image: genre4Img,
     lyrics: `[verse]
 Counting down the seconds till the lights go red
 Every move you make is playing in my head
@@ -190,7 +205,7 @@ We don't stop tonight`,
     // vocals over piano-trio backing.
     value: 'lounge jazz, soft piano, brushed drums, double bass, vibraphone, 90 bpm, smooth, relaxing, sophisticated, smoky female vocals',
     emoji: '🎷',
-    image: '/samples/images/genre_5.webp',
+    image: genre5Img,
     lyrics: `[verse]
 Velvet hush of a quarter past nine
 Candle on the table, glass of wine
@@ -232,7 +247,7 @@ Let it be, let it be`,
     // does long-vowel choral parts well when you say "choir vocals".
     value: 'cinematic, orchestral, full strings, brass swells, choir, percussion, 80 bpm, epic, dramatic, choir vocals, soaring vocals',
     emoji: '🎻',
-    image: '/samples/images/genre_6.webp',
+    image: genre6Img,
     lyrics: `[verse]
 Dawn breaks open on the longest road
 Carry every name we ever owed
@@ -273,7 +288,7 @@ Till the dawn, till the dawn`,
     // above the canonical "lofi beats to study/relax to" backing.
     value: 'lofi hip hop, mellow piano, jazz drums, vinyl crackle, soft bass, 80 bpm, chill, nostalgic, soft female vocals, intimate',
     emoji: '☕',
-    image: '/samples/images/genre_7.webp',
+    image: genre7Img,
     lyrics: `[verse]
 Rain is talking on the windowpane
 Coffee cooling in my hand again
@@ -313,7 +328,7 @@ Just stay around`,
     // Curated: Neo-Soul — electric piano, jazz chords, soulful vocals.
     value: 'neo-soul, electric piano, bass, drums, jazz chords, 85 bpm, smooth, warm, female vocals, soulful vocals',
     emoji: '💜',
-    image: '/samples/images/genre_8.webp',
+    image: genre8Img,
     lyrics: `[verse]
 Slow down, baby, take your time
 Got the city humming on a dime
@@ -477,6 +492,7 @@ export function StudioMusic() {
   const [activeTask, setActiveTask] = useState<MusicTask>('text2music');
   const [loading, setLoading] = useState(false);
   const [elapsed, setElapsed] = useState(0);
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [status, setStatus] = useState<StatusMsg | null>(null);
   const [resultAudioUrl, setResultAudioUrl] = useState<string | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -721,14 +737,10 @@ export function StudioMusic() {
     // Soft block on the cross-field warnings — not catastrophic but
     // results will likely be wrong, so confirm before burning credits.
     if (promptHasStructureTag || lyricsLooksLikePrompt || unknownBracketInLyrics) {
-      const ok = window.confirm(
-        "Heads up: your prompt and lyrics may be mixed up. Generate anyway?"
-      );
-      if (!ok) return;
+      if (!await confirm({ title: 'Mixed Up Fields?', message: 'Your prompt and lyrics may be mixed up. Generate anyway?', confirmLabel: 'Generate', confirmVariant: 'primary' })) return;
     }
     if (generations.hasPending('music')) {
-      const ok = window.confirm('You already have a music generation in progress. Start another anyway?');
-      if (!ok) return;
+      if (!await confirm({ title: 'Already Generating', message: 'You already have a music generation in progress. Start another anyway?', confirmLabel: 'Start Another', confirmVariant: 'primary' })) return;
     }
 
     setStatus(null); setResultAudioUrl(null); setLoading(true); startTimer();
@@ -1042,7 +1054,7 @@ export function StudioMusic() {
                         : 'border-transparent hover:border-[#444]'
                     }`}
                   >
-                    <img loading="lazy" src={g.image} alt="" className="absolute inset-0 w-full h-full object-cover opacity-50" />
+                    <img src={g.image} alt="" className="absolute inset-0 w-full h-full object-cover opacity-50" />
                     <div className="absolute inset-0 bg-black/30" />
                     <div className="relative z-10">
                       <span className="text-xl">{g.emoji}</span>
@@ -1516,6 +1528,7 @@ export function StudioMusic() {
           </div>
         </div>
       )}
+      {confirmDialog}
     </div>
   );
 }

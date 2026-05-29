@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
+import { useConfirm } from '../hooks/useConfirm';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { dashboardApi, type BlogPost, type RegisteredUser, type DashboardValidator } from '../services/dashboardApi';
@@ -9,6 +10,7 @@ import {
 } from 'lucide-react';
 import { ADMIN_EMAIL } from '../config';
 import { BlogContent } from '../components/BlogContent';
+import { LlmPricingSection } from '../components/admin/LlmPricingSection';
 const ACCENT = '#D1F840';
 const USERS_PAGE_SIZE = 15;
 
@@ -17,6 +19,7 @@ export function Admin() {
   const { user, isAuthenticated } = useAuth();
   const isAdmin = isAuthenticated && user?.email === ADMIN_EMAIL;
 
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [blocklist, setBlocklist] = useState<string[]>([]);
   const [newHotkey, setNewHotkey] = useState('');
   const [blocklistLoading, setBlocklistLoading] = useState(false);
@@ -161,7 +164,7 @@ export function Admin() {
 
   const handleRemoveHotkey = async (hotkey: string) => {
     if (!user?.email) return;
-    if (!window.confirm(`Remove this hotkey from the blocklist?\n\n${hotkey}`)) return;
+    if (!await confirm({ title: 'Remove from Blocklist', message: `Remove hotkey ${hotkey.slice(0, 16)}... from the blocklist?`, confirmLabel: 'Remove', confirmVariant: 'danger' })) return;
     setBlocklistError(null);
     try {
       await dashboardApi.removeBlocklist(hotkey, user.email);
@@ -299,7 +302,8 @@ export function Admin() {
   const charCount = postForm.content.length;
 
   const handleDeletePost = async (id: string) => {
-    if (!user?.email || !confirm('Delete this post?')) return;
+    if (!user?.email) return;
+    if (!await confirm({ title: 'Delete Post', message: 'Delete this blog post? This cannot be undone.', confirmLabel: 'Delete', confirmVariant: 'danger' })) return;
     try {
       await dashboardApi.deleteBlogPost(id, user.email);
       loadPosts();
@@ -344,7 +348,7 @@ export function Admin() {
 
   const handleRemoveValidator = async (uid: number, hotkey: string) => {
     if (!user?.email) return;
-    if (!window.confirm(`Remove this validator from the registry?\n\nUID: ${uid}\nHotkey: ${hotkey}`)) return;
+    if (!await confirm({ title: 'Remove Validator', message: `Remove validator UID ${uid} (${hotkey.slice(0, 16)}...) from the registry?`, confirmLabel: 'Remove', confirmVariant: 'danger' })) return;
     setValidatorError(null);
     try {
       await dashboardApi.removeValidator(uid, user.email);
@@ -596,6 +600,11 @@ export function Admin() {
           )}
         </section>
 
+        {/* LLM provider pricing (rates used to compute cost_usd on every
+            llm_calls row). Mounted before Blog so the editing surface
+            sits near the rest of the data-management sections. */}
+        <LlmPricingSection />
+
         {/* Blog posts */}
         <section className="glass-panel rounded-xl p-6">
           <h2 className="text-lg font-semibold text-white flex items-center gap-2 mb-4">
@@ -812,6 +821,7 @@ export function Admin() {
           )}
         </section>
       </div>
+      {confirmDialog}
     </div>
   );
 }

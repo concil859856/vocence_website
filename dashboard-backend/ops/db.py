@@ -37,6 +37,12 @@ SERVICE_NAMES = (
     "music",
     "voice_clone",
     "stt",
+    # "noise_remover" is the canonical name as of the Nov 2026 rename.
+    # "dubbing" stays in the tuple as an alias so existing pod rows
+    # (service='dubbing') still validate during the migration window;
+    # admins can re-deploy under the new name when convenient.
+    "noise_remover",
+    "dubbing",
 )
 
 POD_STATUSES = (

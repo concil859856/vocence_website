@@ -3,14 +3,7 @@ import { Check, ArrowRight, Coins, Shield, Building2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import type { PricingPlan } from '../services/api';
 import { formatCreditsCompact } from '../utils/formatCredits';
-import {
-  CREDIT_MY_VOICE_GENERATE,
-  CREDIT_STT,
-  CREDIT_TTS,
-  CREDIT_VOICE_CLONE,
-  CREDIT_VOICE_DESIGN_PREVIEW,
-  CREDIT_SIGNUP_BONUS,
-} from '../studio/creditCosts';
+import { CREDIT_SIGNUP_BONUS } from '../studio/creditCosts';
 
 type PricingPlanCard = {
   code?: string;
@@ -18,8 +11,11 @@ type PricingPlanCard = {
   badge: string;
   icon: typeof Coins;
   price: string;
+  /** Credit count shown beside the Stripe price (e.g. "4K credits"). */
   subtitle: string;
-  credits: string;
+  /** Optional short tagline under plan name. Kept for Enterprise; empty
+   * on Normal/Premium since the features list + pricing boxes cover it. */
+  tagline?: string;
   /** Shown under card price when crypto packs differ from card. */
   cryptoLine?: string;
   highlight?: boolean;
@@ -36,8 +32,7 @@ const PLANS: PricingPlanCard[] = [
     icon: Coins,
     price: '$12',
     subtitle: '4K credits',
-    cryptoLine: '$20 · 7K credits',
-    credits: `Studio: ${CREDIT_TTS} cr TTS · ${CREDIT_STT} cr STT · ${CREDIT_VOICE_CLONE} cr clone · Voice design ${CREDIT_VOICE_DESIGN_PREVIEW} cr + ${CREDIT_MY_VOICE_GENERATE} cr / My voice`,
+    cryptoLine: '$20 · 8K credits',
     points: [
       `${CREDIT_SIGNUP_BONUS} free credits when you register`,
       'Can experiment with custom voices you describe',
@@ -53,9 +48,8 @@ const PLANS: PricingPlanCard[] = [
     badge: 'Most popular',
     icon: Shield,
     price: '$24',
-    subtitle: '10K credits',
+    subtitle: '8K credits',
     cryptoLine: '$40 · 16K credits',
-    credits: `Studio: ${CREDIT_TTS} cr TTS · ${CREDIT_STT} cr STT · ${CREDIT_VOICE_CLONE} cr clone · Voice design ${CREDIT_VOICE_DESIGN_PREVIEW} cr + ${CREDIT_MY_VOICE_GENERATE} cr / My voice`,
     highlight: true,
     points: [
       'Best value for heavy Text-to-Speech usage',
@@ -73,7 +67,7 @@ const PLANS: PricingPlanCard[] = [
     icon: Building2,
     price: 'Custom',
     subtitle: 'volume pricing',
-    credits: 'Private quotas and tailored billing',
+    tagline: 'Private quotas and tailored billing',
     points: [
       'Full API support for product and platform integration',
       'Dedicated onboarding and commercial support',
@@ -88,9 +82,16 @@ const PLANS: PricingPlanCard[] = [
 function toCardPlan(plan: PricingPlan): PricingPlanCard {
   const icon = plan.code === 'premium' ? Shield : plan.code === 'enterprise' ? Building2 : Coins;
   const badge = plan.code === 'premium' ? 'Most popular' : plan.code === 'enterprise' ? 'Custom' : 'Starter credits';
+  // The Stripe row needs the credit count for the card pack, NOT the
+  // generic "one-time pack" priceSubtitle from the DB seed (which leaks
+  // into the visible price box). Subscription plans still use "per month";
+  // enterprise (no price) falls back to the seeded subtitle.
   const subtitle =
-    plan.priceSubtitle ||
-    (plan.billingType === 'subscription' ? 'per month' : `${formatCreditsCompact(plan.creditsIncluded)} credits`);
+    plan.billingType === 'subscription'
+      ? 'per month'
+      : plan.creditsIncluded > 0
+        ? `${formatCreditsCompact(plan.creditsIncluded)} credits`
+        : plan.priceSubtitle || '';
   const price =
     plan.priceUsd == null ? 'Custom' : `$${Number.isInteger(plan.priceUsd) ? plan.priceUsd.toFixed(0) : plan.priceUsd.toFixed(2)}`;
   let cryptoLine: string | undefined;
@@ -111,14 +112,10 @@ function toCardPlan(plan: PricingPlan): PricingPlanCard {
     price,
     subtitle,
     cryptoLine,
-    credits:
-      plan.code === 'premium'
-        ? plan.cryptoCreditsIncluded != null
-          ? `Studio: ${CREDIT_TTS} cr TTS, ${CREDIT_STT} cr STT, … · Premium unlocks Developer API`
-          : `${formatCreditsCompact(plan.creditsIncluded)} credits per purchase (API enabled)`
-        : plan.code === 'enterprise'
-          ? 'Private quotas and tailored billing'
-          : `Studio: ${CREDIT_TTS} cr TTS · ${CREDIT_STT} cr STT · ${CREDIT_VOICE_CLONE} cr clone · Voice design ${CREDIT_VOICE_DESIGN_PREVIEW} cr + ${CREDIT_MY_VOICE_GENERATE} cr / My voice`,
+    // No per-feature credit tagline under the plan name. The features
+    // list + per-endpoint pricing tables on /docs/pricing cover that
+    // detail; the cards stay scannable.
+    tagline: plan.code === 'enterprise' ? 'Private quotas and tailored billing' : undefined,
     highlight: plan.highlighted,
     points: plan.features,
     cta: plan.ctaLabel,
@@ -195,9 +192,11 @@ export function PricingPlans({
                       <h3 className={`font-semibold leading-tight text-white ${overviewCompact ? 'text-xl' : 'text-lg'}`}>
                         {plan.name}
                       </h3>
-                      <p className={`leading-snug text-[#A7B0B7] ${overviewCompact ? 'text-sm' : 'text-xs'}`}>
-                        {plan.credits}
-                      </p>
+                      {plan.tagline ? (
+                        <p className={`leading-snug text-[#A7B0B7] ${overviewCompact ? 'text-sm' : 'text-xs'}`}>
+                          {plan.tagline}
+                        </p>
+                      ) : null}
                     </div>
                   </div>
                 </div>

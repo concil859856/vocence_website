@@ -48,13 +48,16 @@ export interface ToolCallStatus {
 
 export interface BotMessage {
   id: string;
-  role: 'user' | 'assistant';
+  role: 'user' | 'assistant' | 'system';
   text: string;
   pending?: boolean;
   /** Tool calls the agent made during *this* assistant turn. Rendered
    *  as inline chips above the message text — "🔍 Searching the web…"
    *  while running, then the result preview when complete. */
   tool_calls?: ToolCallStatus[];
+  /** Hint used by the chat UI to render system messages distinctly.
+   *  e.g. ``'idle_timeout'`` → "Session ended — no activity" banner. */
+  systemKind?: 'idle_timeout' | 'max_duration' | 'billing_exhausted' | 'info';
 }
 
 export interface UseVoiceChatOptions {
@@ -122,6 +125,20 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
   // first syllable (leaking through speakers) for a user barge-in.
   const POST_SPEAK_LOCK_MS = 600;
 
+  // Backchannel filter — short speech bursts during agent playback
+  // (e.g. "uh-huh", "yeah", "mhm", "right") shouldn't cut the agent
+  // off. When VAD detects speech-start *while the agent is speaking*,
+  // we defer the barge-in by BACKCHANNEL_GRACE_MS. If speech ends
+  // within that window with a total duration ≤ BACKCHANNEL_MAX_MS,
+  // the burst is treated as a backchannel: no barge-in, no submission,
+  // agent keeps talking. Longer bursts go through the normal barge-in
+  // path. Outside agent playback, barge-in fires immediately as before.
+  const BACKCHANNEL_GRACE_MS = 250;   // how long to wait before committing to a barge-in
+  const BACKCHANNEL_MAX_MS = 400;     // total speech duration that counts as a backchannel
+  const pendingBargeInRef = useRef<number | null>(null);   // setTimeout id
+  const bargeInDeferredRef = useRef<boolean>(false);       // true while grace window is open
+  const isAgentSpeakingRef = useRef<boolean>(false);       // mirrors ``state === 'speaking'``
+
   // Paced text reveal — text appears in the chat bubble at a natural
   // reading pace (~22 chars/sec) starting when audio begins playing,
   // rather than dumping the whole reply the moment the LLM finishes.
@@ -143,6 +160,25 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
       revealTimerRef.current = null;
     }
   }, []);
+
+  // Helper for the backchannel filter: cancel any in-flight grace timer.
+  const clearBackchannelGrace = useCallback(() => {
+    if (pendingBargeInRef.current !== null) {
+      window.clearTimeout(pendingBargeInRef.current);
+      pendingBargeInRef.current = null;
+    }
+    bargeInDeferredRef.current = false;
+  }, []);
+
+  // Mirror state into a ref so the VAD callbacks (which capture closures
+  // at vad.start() time) can read "is the agent currently speaking?"
+  // without going stale.
+  useEffect(() => {
+    isAgentSpeakingRef.current = state === 'speaking';
+    // When the agent finishes a turn, clear any pending grace window —
+    // there's nothing left to defer barge-in on.
+    if (state !== 'speaking') clearBackchannelGrace();
+  }, [state, clearBackchannelGrace]);
 
   const startRevealTimer = useCallback(() => {
     if (revealTimerRef.current !== null) return;
@@ -439,6 +475,45 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
             return 'idle';
           });
           break;
+        case 'session_timeout': {
+          // Backend auto-closed the session — either the 30-min hard
+          // cap (code: max_duration) or the 60-sec idle watchdog
+          // (code: idle_timeout). Surface a system bubble so the
+          // user knows WHY the session ended; without this they
+          // see the WS just go dead.
+          const subCode = String(payload.code || '');
+          const messageText = String(payload.message || (
+            subCode === 'idle_timeout'
+              ? 'Session ended — no activity for 60 seconds. Start a new conversation to continue.'
+              : subCode === 'max_duration'
+                ? 'Session ended — reached the 30-minute maximum. Start a new conversation to continue.'
+                : 'Session ended.'
+          ));
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: makeId(),
+              role: 'system',
+              text: messageText,
+              systemKind: subCode === 'idle_timeout'
+                ? 'idle_timeout'
+                : subCode === 'max_duration' ? 'max_duration' : 'info',
+            },
+          ]);
+          setState('idle');
+          break;
+        }
+        case 'billing_exhausted': {
+          // User ran out of credits mid-session. Same UX pattern:
+          // visible system message + state back to idle.
+          const messageText = String(payload.message || 'Session ended — credit balance reached zero. Top up to continue.');
+          setMessages((prev) => [
+            ...prev,
+            { id: makeId(), role: 'system', text: messageText, systemKind: 'billing_exhausted' },
+          ]);
+          setState('idle');
+          break;
+        }
         case 'error':
           setError(payload.message || payload.code || 'error');
           setState('error');
@@ -530,14 +605,54 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
       const vad = new VadController(
         {
           onSpeechStart: () => {
-            // User started talking. If the agent was speaking or
-            // thinking, cancel that turn first; then transition to
-            // recording — the segment audio is captured by Silero and
-            // delivered on speech-end.
-            bargeIn();
-            setState('recording');
+            // User started talking. Two cases:
+            //
+            // 1) Agent is NOT currently speaking → immediate barge-in
+            //    (matches the old behaviour, no perceptible delay).
+            //
+            // 2) Agent IS currently speaking → defer the barge-in for
+            //    BACKCHANNEL_GRACE_MS. If the speech turns out to be a
+            //    short backchannel ("uh-huh", "yeah") that ends inside
+            //    that window with total duration ≤ BACKCHANNEL_MAX_MS,
+            //    onSpeechEnd will skip both the barge-in and the
+            //    submission — the agent keeps talking. Otherwise the
+            //    deferred timer fires the normal barge-in path.
+            if (!isAgentSpeakingRef.current) {
+              bargeIn();
+              setState('recording');
+              return;
+            }
+            bargeInDeferredRef.current = true;
+            pendingBargeInRef.current = window.setTimeout(() => {
+              pendingBargeInRef.current = null;
+              bargeInDeferredRef.current = false;
+              // After the grace window: if the user is still talking
+              // (no onSpeechEnd yet) commit to the barge-in.
+              bargeIn();
+              setState('recording');
+            }, BACKCHANNEL_GRACE_MS);
           },
           onSpeechEnd: ({ wavBytes, durationMs }) => {
+            // If we deferred barge-in (agent was speaking when this
+            // burst started) and the burst was short enough to be a
+            // backchannel, swallow it: cancel the pending barge-in,
+            // don't submit, agent keeps speaking.
+            if (
+              bargeInDeferredRef.current &&
+              durationMs <= BACKCHANNEL_MAX_MS
+            ) {
+              clearBackchannelGrace();
+              return;
+            }
+            // Otherwise: cancel the pending grace timer (we'll do
+            // bargeIn now if it hasn't already fired) and submit the
+            // captured audio.
+            const wasDeferred = bargeInDeferredRef.current;
+            clearBackchannelGrace();
+            if (wasDeferred) {
+              bargeIn();
+              setState('recording');
+            }
             const b64 = arrayBufferToBase64(wavBytes);
             submitVoiceB64(b64, 'audio/wav', durationMs);
           },
@@ -568,10 +683,11 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
       void vadRef.current.destroy();
       vadRef.current = null;
     }
+    clearBackchannelGrace();
     setListening(false);
     setMicLevel(0);
     setState((prev) => (prev === 'listening' || prev === 'recording' ? 'idle' : prev));
-  }, []);
+  }, [clearBackchannelGrace]);
 
   const startRecording = useCallback(async () => {
     if (!wsRef.current || wsRef.current.readyState !== 1) {

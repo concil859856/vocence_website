@@ -118,7 +118,7 @@ Design a brand-new voice by describing it in plain English (e.g., *"warm female 
 
 ### 2. Text-to-Speech (TTS)
 
-Convert any text up to **500 characters** into spoken audio.
+Convert any text up to **2,000 characters** into spoken audio.
 
 **How it works:**
 
@@ -129,7 +129,7 @@ Convert any text up to **500 characters** into spoken audio.
 
 **Cost:** 25 credits per generation.
 
-**Limits:** Maximum 500 characters of input text per request.
+**Limits:** Maximum 2,000 characters of input text per request.
 
 ### 3. Speech-to-Text (STT)
 
@@ -305,9 +305,8 @@ After payment confirms, credits are added to your account automatically and a tr
 The Developer API gives you programmatic access to the same generation backends used by Studio.
 
 - **Eligibility:** Requires a successful **Premium** purchase. The API tab on [Account](https://vocence.ai/account) is locked until then.
-- **Endpoints:** Text-to-Speech, Speech-to-Text, Voice Cloning, Music Generation.
-- **Billing:** Pay-as-you-go from your existing credit balance.
-  - **Rate:** **2,000 credits per 1,000,000 characters** (for text-based endpoints; characters = text + style/instruction prompt). If no instruction is provided, the default `"neutral voice"` is used.
+- **Endpoints:** Text-to-Speech, Speech-to-Text, Voice Cloning, Voice Dubbing.
+- **Billing:** Pay-as-you-go from your existing credit balance. Same flat per-request costs as Studio (TTS: 25 cr, STT: 20 cr, Clone: 50 cr, Dubbing: 5 cr).
 - **Default rate limit:** 4 requests / minute / API key. Higher limits available on request for established usage patterns.
 - **Key management:** Create, name, and revoke API keys from your [Account](https://vocence.ai/account) page. Each key shows a prefix and the last-used timestamp.
 

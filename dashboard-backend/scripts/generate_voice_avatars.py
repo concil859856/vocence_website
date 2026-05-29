@@ -95,6 +95,51 @@ VOICE_PROMPTS: dict[str, tuple[str, str, str]] = {
         "a South-Asian man around 29 with neatly styled short black hair, warm brown eyes, fresh confident expression, wearing a clean light-blue oxford button-up shirt",
         "pure white studio backdrop, super-clean even bright lighting, polished corporate-headshot style with a modern tech vibe",
     ),
+    "voc-nora": (
+        "Nora",
+        "a Latina woman around 28 with shoulder-length wavy chestnut-brown hair tucked behind one ear, warm brown eyes, soft natural closed-mouth smile, light freckles across the nose, wearing a cream-colored fine-knit sweater",
+        "warm cafe interior softly blurred behind, soft window daylight from the side, cozy lifestyle editorial photography style",
+    ),
+    "voc-sienna": (
+        "Sienna",
+        "a confident Italian woman around 30 with long loose auburn waves, hazel-green eyes, expressive bright open-mouth smile, wearing a vivid burgundy silk blouse",
+        "deep burgundy gradient studio backdrop, bright key light with subtle dramatic falloff, glossy magazine-cover portrait style",
+    ),
+    "voc-penny": (
+        "Penny",
+        "a freckled British woman around 27 with chin-length strawberry-blonde hair, sparkling pale-green eyes, joyful natural laughing expression showing slight teeth, wearing a sky-blue cotton sweater",
+        "vibrant pale-blue seamless studio backdrop, very bright clean diffused lighting, optimistic friendly brand-shoot style",
+    ),
+    "voc-quinn": (
+        "Quinn",
+        "an Irish-American woman around 26 with short choppy dark-brown hair tucked behind one ear, light tan skin, soft natural makeup with a touch of lavender on the lids, big open-mouth laugh, wearing a marigold-yellow t-shirt",
+        "bright coral-pink seamless studio backdrop, punchy soft even lighting, upbeat youthful brand-portrait style",
+    ),
+    "voc-eliza": (
+        "Eliza",
+        "a poised Eastern-European woman around 35 with sleek shoulder-length jet-black bob hair, sharp dark-blue eyes, elegant subtle makeup with a deep red lip, calm composed expression, wearing a tailored navy blazer over a white shell",
+        "clean slate-grey seamless studio backdrop, balanced bright soft lighting, broadcast-quality polished anchor-portrait style",
+    ),
+    "voc-magnus": (
+        "Magnus",
+        "a Northern-European man around 38 with a completely shaved head, very short dark stubble across the jaw, calm sharp cool-grey eyes, serious composed expression, wearing a charcoal-grey crewneck t-shirt",
+        "neutral light-grey seamless backdrop, very even bright soft studio lighting, premium clean editorial portrait style",
+    ),
+    "voc-felix": (
+        "Felix",
+        "a French-Canadian man around 30 with short loose light-brown curls, warm brown eyes, gentle friendly closed-mouth smile with faint dimples, light stubble, wearing a soft moss-green hoodie",
+        "cozy bookshelf softly blurred in the background, warm natural daylight from the side, indie-podcast lifestyle photography style",
+    ),
+    "voc-bennett": (
+        "Bennett",
+        "an athletic African-American man around 34 with a sharp high-fade haircut and short crisp beard, intense dark-brown eyes, focused passionate expression, wearing a graphite-grey blazer over a black crew t-shirt",
+        "brushed steel-grey studio backdrop with a subtle cool blue rim light from one side, bright clean key light on the face, conference-keynote portrait style",
+    ),
+    "voc-milo": (
+        "Milo",
+        "a Brazilian man around 27 with messy dark curly hair, warm dark-brown eyes, big toothy laughing expression, smooth tan skin, wearing a vibrant teal short-sleeve button-up shirt",
+        "bright tropical-teal seamless studio backdrop, sunny clean even lighting, joyful youthful brand-portrait style",
+    ),
 }
 
 
@@ -105,23 +150,21 @@ STYLE_SUFFIX = (
 
 
 def load_api_key() -> str:
-    # Prefer OPENAI_AUTH_KEY from the vocence project's .env (per user instruction)
-    env_path = Path("/workspace/vocence/.env")
-    if env_path.exists():
+    # Try .env files in order, then fall back to the process environment.
+    for env_path in (Path("/workspace/vocence/.env"), BACKEND_ROOT / ".env"):
+        if not env_path.exists():
+            continue
         for line in env_path.read_text().splitlines():
             line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            if "=" not in line:
+            if not line or line.startswith("#") or "=" not in line:
                 continue
             k, _, v = line.partition("=")
             if k.strip() in ("OPENAI_AUTH_KEY", "OPENAI_API_KEY"):
                 return v.strip().strip('"').strip("'")
-    # Fallback: standard env var
     for k in ("OPENAI_AUTH_KEY", "OPENAI_API_KEY"):
         if os.environ.get(k):
             return os.environ[k]
-    raise SystemExit("OpenAI API key not found (looked for OPENAI_AUTH_KEY in /workspace/vocence/.env)")
+    raise SystemExit("OpenAI API key not found in /workspace/vocence/.env or dashboard-backend/.env")
 
 
 def main() -> int:

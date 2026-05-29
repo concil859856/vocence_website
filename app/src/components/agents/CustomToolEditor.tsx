@@ -17,6 +17,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Loader2, Wrench, X, Beaker, AlertCircle, CheckCircle2, ChevronDown, Check } from 'lucide-react';
+import { useConfirm } from '../../hooks/useConfirm';
 import {
   agentCustomToolsApi,
   getStoredToken,
@@ -175,15 +176,19 @@ export function CustomToolEditor({ initial, onClose, onSaved }: Props) {
   // Wrap onClose so any unsaved edit asks for confirmation first. The
   // user was losing work to fat-finger clicks outside the panel and to
   // accidental ESC presses; this is the central guard.
-  const requestClose = useCallback(() => {
+  const { confirm: confirmDiscard, dialog: confirmDialog } = useConfirm();
+  const requestClose = useCallback(async () => {
     if (isDirty) {
-      const ok = window.confirm(
-        'You have unsaved changes in this tool. Discard them and close?',
-      );
+      const ok = await confirmDiscard({
+        title: 'Unsaved Changes',
+        message: 'You have unsaved changes in this tool. Discard them and close?',
+        confirmLabel: 'Discard',
+        confirmVariant: 'danger',
+      });
       if (!ok) return;
     }
     onClose();
-  }, [isDirty, onClose]);
+  }, [isDirty, onClose, confirmDiscard]);
 
   // Close on ESC, but route through the dirty-check so an accidental
   // ESC press doesn't wipe a form full of values.
@@ -403,6 +408,7 @@ export function CustomToolEditor({ initial, onClose, onSaved }: Props) {
           </button>
         </div>
       </div>
+      {confirmDialog}
     </div>
   );
 }

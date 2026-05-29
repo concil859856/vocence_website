@@ -1,5 +1,6 @@
+import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { AlertTriangle, Home } from 'lucide-react';
+import { AlertTriangle, Eye, EyeOff, Home } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { studioSidebarItems, type StudioView } from '../studio/studioNav';
 import { ActiveJobsPill } from './ActiveJobsPill';
@@ -17,6 +18,14 @@ type Props = {
 export function StudioShell({ activeView, children, mainClassName = '' }: Props) {
   const navigate = useNavigate();
   const { user } = useAuth();
+  const [showCredits, setShowCredits] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return localStorage.getItem('vocence_show_credits') === '1';
+  });
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    localStorage.setItem('vocence_show_credits', showCredits ? '1' : '0');
+  }, [showCredits]);
   // Agents is admin-only until publicly launched — drop the item from
   // the sidebar entirely for non-admins so they don't see it.
   const hasAgentsAccess = useHasVoiceChatAccess();
@@ -53,15 +62,31 @@ export function StudioShell({ activeView, children, mainClassName = '' }: Props)
                 }`}
               >
                 <item.icon size={18} />
-                {item.label}
+                <span className="flex-1 text-left">{item.label}</span>
+                {item.badge && (
+                  <span className="text-[9px] font-semibold uppercase tracking-[0.14em] px-1.5 py-0.5 rounded-md text-indigo-300 bg-indigo-500/15 border border-indigo-400/30">
+                    {item.badge}
+                  </span>
+                )}
               </button>
             ))}
           </div>
 
           <div className="mt-6 p-4 bg-white/[0.03] rounded-xl">
-            <div className="text-xs text-[#666] uppercase tracking-wider mb-2">Credit Balance</div>
-            <div className="text-xl font-semibold mb-1">
-              {user?.credits || 0}{' '}
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-xs text-[#666] uppercase tracking-wider">Credit Balance</div>
+              <button
+                type="button"
+                onClick={() => setShowCredits((v) => !v)}
+                className="text-[#666] hover:text-[#A7B0B7] transition-colors p-0.5 -m-0.5 rounded"
+                aria-label={showCredits ? 'Hide credits' : 'Show credits'}
+                title={showCredits ? 'Hide credits' : 'Show credits'}
+              >
+                {showCredits ? <Eye size={14} /> : <EyeOff size={14} />}
+              </button>
+            </div>
+            <div className="text-xl font-semibold mb-1 tabular-nums">
+              {showCredits ? (user?.credits || 0).toLocaleString() : '•••••'}{' '}
               <span className="text-sm text-[#A7B0B7] font-normal">credits</span>
             </div>
             <Link

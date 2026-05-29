@@ -13,23 +13,58 @@ def credits_for_chars(char_count: int) -> int:
     return max(1, int(math.ceil(raw)))
 
 
-async def enforce_rate_limit(conn: aiosqlite.Connection, api_key_id: str, override_rpm: int | None) -> None:
+async def enforce_rate_limit(conn: aiosqlite.Connection, user_id: str, _legacy_override_rpm: int | None = None) -> None:
+    """Per-ACCOUNT rate limit (Nov 2026 — was per-key).
+
+    Counts requests across ALL of the user's API keys in a sliding
+    60-second window. The effective per-minute cap is the MAX
+    ``rate_limit_rpm`` across the user's keys (so any admin-bumped
+    key raises the ceiling for the whole account); otherwise the
+    global ``API_RATE_LIMIT_REQUESTS_PER_MINUTE`` default applies.
+
+    Background: previously a user could trivially bypass the limit by
+    spinning up additional keys, since each key had its own bucket.
+    Per-account closes that loophole — the limit reflects what we
+    really care about (compute cost per customer), not a per-credential
+    accounting detail.
+
+    ``_legacy_override_rpm`` is the old per-key override the caller
+    used to pass; kept for signature compatibility but ignored. The
+    DB lookup is the source of truth now.
+    """
     if not API_RATE_LIMIT_ENABLED:
         return
-    rpm = override_rpm if override_rpm is not None else API_RATE_LIMIT_REQUESTS_PER_MINUTE
+
+    # Effective cap = max(rate_limit_rpm) across the user's non-revoked
+    # keys, falling back to the global default when no key has an
+    # explicit override. One short SELECT per call; SQLite eats it.
+    cap_row = await (
+        await conn.execute(
+            """
+            SELECT MAX(rate_limit_rpm) AS rpm
+            FROM api_keys
+            WHERE user_id = ?
+              AND revoked_at IS NULL
+              AND rate_limit_rpm IS NOT NULL
+            """,
+            (user_id,),
+        )
+    ).fetchone()
+    rpm = int(cap_row["rpm"]) if cap_row and cap_row["rpm"] is not None else API_RATE_LIMIT_REQUESTS_PER_MINUTE
+
     row = await (
         await conn.execute(
             """
             SELECT COUNT(*) AS n
             FROM api_request_logs
-            WHERE api_key_id = ?
+            WHERE user_id = ?
               AND created_at >= datetime('now', '-60 seconds')
             """,
-            (api_key_id,),
+            (user_id,),
         )
     ).fetchone()
     if int(row["n"] or 0) >= rpm:
-        raise HTTPException(status_code=429, detail=f"Rate limit exceeded ({rpm} req/min)")
+        raise HTTPException(status_code=429, detail=f"Rate limit exceeded ({rpm} req/min per account)")
 
 
 async def log_api_request(

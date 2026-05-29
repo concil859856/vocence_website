@@ -8,6 +8,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ChevronDown, Pencil, Plus, Trash2, Wrench } from 'lucide-react';
+import { useConfirm } from '../../hooks/useConfirm';
 import type { AgentConfig, AgentType } from '../../lib/agents/types';
 import { SAMPLE_VOICE_INDEX, SAMPLE_VOICES, avatarGradientPairFor } from '../../data/sampleVoices';
 import { SampleVoiceAvatar } from '../studio/SampleVoiceAvatar';
@@ -36,6 +37,11 @@ interface Props {
    *  (create flow) omits this since there's no agent_id yet — users
    *  can register custom tools after first save. */
   agentId?: string | null;
+  /** Builder-only: tools the user has pre-selected to bind on first save.
+   *  When ``agentId`` is null these props track local selection state
+   *  instead of calling the bind API. Ignored in edit mode. */
+  pendingBindToolIds?: Set<string>;
+  onPendingBindToolIdsChange?: (next: Set<string>) => void;
 }
 
 // The 10 languages supported by Qwen/Qwen3-TTS-12Hz-1.7B-Base (per its
@@ -47,7 +53,7 @@ interface Props {
 // Select; DEFAULT_AGENT_CONFIG.language pins it as the saved default too.
 const LANGUAGE_OPTIONS = ['English', 'Chinese', 'Japanese', 'Korean', 'Spanish', 'French', 'German', 'Portuguese', 'Italian', 'Russian'];
 
-export function AgentConfigForm({ name, type, config, availableModels, onChange, agentId }: Props) {
+export function AgentConfigForm({ name, type, config, availableModels, onChange, agentId, pendingBindToolIds, onPendingBindToolIdsChange }: Props) {
   const isGoal = type === 'goal';
   const [voicePickerOpen, setVoicePickerOpen] = useState(false);
   const [designedVoices, setDesignedVoices] = useState<StudioDesignedVoiceItem[]>([]);
@@ -59,6 +65,7 @@ export function AgentConfigForm({ name, type, config, availableModels, onChange,
   //     to this agent.
   //   • boundTools — the subset currently bound to *this* agent. Drives
   //     the checked state of the binding toggles.
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [allUserTools, setAllUserTools] = useState<CustomTool[] | null>(null);
   const [boundToolIds, setBoundToolIds] = useState<Set<string>>(new Set());
   const [editorOpen, setEditorOpen] = useState(false);
@@ -124,7 +131,7 @@ export function AgentConfigForm({ name, type, config, availableModels, onChange,
   };
 
   const handleDeleteTool = async (tool: CustomTool) => {
-    if (!window.confirm(`Delete tool "${tool.name}"? This unbinds it from every agent and can't be undone.`)) return;
+    if (!await confirm({ title: 'Delete Tool', message: `Delete tool "${tool.name}"? This unbinds it from every agent and can't be undone.`, confirmLabel: 'Delete', confirmVariant: 'danger' })) return;
     const token = getStoredToken();
     if (!token) return;
     try {
@@ -208,7 +215,19 @@ export function AgentConfigForm({ name, type, config, availableModels, onChange,
           <TypeButton active={type === 'knowledge'} onClick={() => onChange({ type: 'knowledge' })} accent="lime">
             Knowledge
           </TypeButton>
-          <TypeButton active={type === 'goal'} onClick={() => onChange({ type: 'goal' })} accent="purple">
+          <TypeButton
+            active={type === 'goal'}
+            onClick={() => {
+              void confirm({
+                title: 'Coming Soon',
+                message: 'Goal agents (self-improving) are under active development. They\'ll be available in a future release.',
+                confirmLabel: 'Got it',
+                cancelLabel: '',
+                confirmVariant: 'primary',
+              });
+            }}
+            accent="purple"
+          >
             Goal (self-improving)
           </TypeButton>
         </div>
@@ -242,12 +261,25 @@ export function AgentConfigForm({ name, type, config, availableModels, onChange,
 
       {/* Behavior */}
       <Section title="Behavior" hint="The system prompt drives tone, refusals, fallback rules. Knowledge belongs in the next section.">
+        <Field
+          label="First message"
+          hint="The agent says this when a session opens, before the user speaks. Leave empty to start silent."
+        >
+          <input
+            type="text"
+            value={config.first_message ?? ''}
+            onChange={(e) => onChange({ config: { first_message: e.target.value } })}
+            placeholder="Hello, how may I assist you today?"
+            maxLength={500}
+            className="w-full bg-[#07080A] border border-white/15 rounded-lg px-3 py-2 text-sm text-white placeholder:text-[#666] focus:outline-none focus:border-[#DFFF00]/40"
+          />
+        </Field>
         <Field label="System prompt">
           <textarea
             value={config.system_prompt}
             onChange={(e) => onChange({ config: { system_prompt: e.target.value } })}
             placeholder="You are a friendly Postgres expert. Answer concisely. If you don't know, say so."
-            rows={8}
+            rows={20}
             className="w-full bg-[#07080A] border border-white/15 rounded-lg px-3 py-2 text-[13px] text-white placeholder:text-[#666] focus:outline-none focus:border-[#DFFF00]/40 resize-y font-mono"
           />
         </Field>
@@ -260,7 +292,7 @@ export function AgentConfigForm({ name, type, config, availableModels, onChange,
             value={config.knowledge}
             onChange={(e) => onChange({ config: { knowledge: e.target.value } })}
             placeholder="Pricing tiers, FAQ entries, API examples, error code lookups…"
-            rows={6}
+            rows={15}
             className="w-full bg-[#07080A] border border-white/15 rounded-lg px-3 py-2 text-sm text-white placeholder:text-[#666] focus:outline-none focus:border-[#DFFF00]/40 resize-y"
           />
         </Field>
@@ -447,14 +479,15 @@ export function AgentConfigForm({ name, type, config, availableModels, onChange,
       )}
 
       {/* Custom tools — user-defined webhook executors the LLM can call.
-          Shown only in the edit flow (we need an agent_id to bind).
-          In the builder, first-save creates the agent; afterwards the
-          detail page shows this section. */}
-      {agentId && (
-        <Section
-          title="Custom tools"
-          hint="Webhook endpoints the LLM can call mid-conversation. Same JSON Schema shape OpenAI/Groq/Anthropic accept."
-        >
+          In the builder (no agent_id), tracks selection locally via
+          ``pendingBindToolIds`` so AgentBuilder can bind on first save.
+          In edit mode (agent_id set), bind/unbind hits the API directly. */}
+      <Section
+        title="Custom tools"
+        hint={agentId
+          ? "Webhook endpoints the LLM can call mid-conversation. Same JSON Schema shape OpenAI/Groq/Anthropic accept."
+          : "Register webhook tools your agent can call. Selections bind automatically on first save."}
+      >
           <div className="space-y-2">
             {allUserTools === null ? (
               <p className="text-[12px] text-[#666]">Loading…</p>
@@ -464,8 +497,16 @@ export function AgentConfigForm({ name, type, config, availableModels, onChange,
               </p>
             ) : (
               allUserTools.map((tool) => {
-                const isBound = boundToolIds.has(tool.id);
+                const isBound = agentId
+                  ? boundToolIds.has(tool.id)
+                  : (pendingBindToolIds?.has(tool.id) ?? false);
                 const busy = bindingBusy.has(tool.id);
+                const togglePending = (next: boolean) => {
+                  if (!onPendingBindToolIdsChange) return;
+                  const set = new Set(pendingBindToolIds ?? []);
+                  if (next) set.add(tool.id); else set.delete(tool.id);
+                  onPendingBindToolIdsChange(set);
+                };
                 return (
                   <div
                     key={tool.id}
@@ -475,7 +516,10 @@ export function AgentConfigForm({ name, type, config, availableModels, onChange,
                       type="checkbox"
                       checked={isBound}
                       disabled={busy}
-                      onChange={(e) => void handleBindToggle(tool, e.target.checked)}
+                      onChange={(e) => {
+                        if (agentId) void handleBindToggle(tool, e.target.checked);
+                        else togglePending(e.target.checked);
+                      }}
                       className="mt-1 accent-[#DFFF00] shrink-0"
                       title={isBound ? 'Bound to this agent' : 'Bind to this agent'}
                     />
@@ -522,7 +566,6 @@ export function AgentConfigForm({ name, type, config, availableModels, onChange,
             </button>
           </div>
         </Section>
-      )}
 
       <SampleVoicePickerModal
         open={voicePickerOpen}
@@ -540,6 +583,7 @@ export function AgentConfigForm({ name, type, config, availableModels, onChange,
           onSaved={() => { void refreshCustomTools(); }}
         />
       )}
+      {confirmDialog}
     </div>
   );
 }

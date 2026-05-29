@@ -36,6 +36,12 @@ export interface AgentConfig {
    *  every tool whose API key is configured server-side. Empty array
    *  explicitly disables tool calling for this agent. */
   enabled_tools?: string[];
+  /** First sentence the agent says when a session opens, BEFORE the
+   *  user has spoken. Industry pattern (Vapi ``firstMessage``, Retell
+   *  ``begin_message``, ElevenLabs ``first_message``). Empty / undefined
+   *  → silent start; the agent waits for the user to speak first.
+   *  Max 500 chars to keep the greeting natural. */
+  first_message?: string;
 }
 
 export interface Agent {
@@ -111,6 +117,7 @@ export interface AgentTemplate {
   system_prompt?: string;         // full sectioned prompt — pre-fills the form directly
   knowledge_starter?: string;     // pre-fills the knowledge textarea
   purpose_placeholder?: string;   // suggested purpose text for this template
+  first_message?: string;         // suggested greeting, pre-fills the first_message field
 }
 
 // The shared scaffold. Every voice template overrides the Identity section
@@ -130,11 +137,17 @@ You are a helpful voice assistant. Stay in character and be conversational — t
 ## Response Guidelines
 Follow this order on every question:
 1. Use your reference knowledge first — it's your source of truth.
-2. If knowledge doesn't cover it AND you have a relevant tool (web_search, fetch_url, get_weather, etc.), call the tool. Don't apologise first, don't ask permission — just call it. A slightly slower tool-backed answer is always better than "I don't know".
-3. Only if neither knowledge nor any tool can answer, say so plainly and offer what you CAN help with.
+2. If knowledge doesn't cover it AND you have a relevant tool (web_search, fetch_url, get_weather, etc.), call the tool. Don't apologise first, don't ask permission — just call it.
+3. If knowledge + tools both come back empty, say so plainly and offer what you CAN help with. "I'm not finding anything on that — got a link or more context?" is a perfectly good answer.
+
+## Honesty rules (non-negotiable)
+- If a tool returns empty results or an error, NEVER invent a description. Say what you found (nothing) and ask for context.
+- NEVER borrow facts from a different topic discussed earlier in this conversation and apply them to a new question. Each question is its own thing. If the user asked about Topic A and now asks about Topic B, do NOT assume B is related to A — search/answer B on its own.
+- NEVER quote names, numbers, dates, places, or specific claims that you can't trace to either your knowledge or a tool result you just received. If you're tempted to "fill in" details, stop and say "I don't know" instead.
+- A truthful "I couldn't find anything on that" is always better than a confident-sounding fabrication.
 
 Other rules:
-- Remember what the user told you earlier in the conversation and reference it naturally.
+- Remember what the user told you earlier and reference it naturally — but only for follow-ups on the same topic, never to manufacture facts about a new topic.
 - One continuous voice conversation with one user — no need to re-introduce yourself.
 - Don't apologise for being an AI or break character.
 
@@ -184,6 +197,7 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
     purpose_placeholder: 'A friendly voice assistant for [your use case].',
     system_prompt: DEFAULT_VOICE_SYSTEM_PROMPT,
     knowledge_starter: '',
+    first_message: 'Hello, how may I assist you today?',
   },
   {
     id: 'customer-support',
@@ -202,6 +216,7 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
       "# Pricing\n(Replace with your pricing tiers — name, monthly price, what's included.)\n\n" +
       '# Common issues\n(Replace with the top 10 questions your support team answers daily.)\n\n' +
       '# Escalation\nFor billing disputes, technical bugs, or account access issues, take a summary and say a human will follow up by email.',
+    first_message: 'Hi, thanks for reaching out. How can I help today?',
   },
   {
     id: 'sales-discovery',
@@ -223,6 +238,7 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
       "# Who it's a fit for\n(Ideal customer profile.)\n\n" +
       "# Who it's NOT a fit for\n(Honest disqualifiers — saves everyone time.)\n\n" +
       '# Discovery questions to cover\n- What are you trying to solve?\n- How are you handling it today?\n- Team size / scale?\n- Timeline?',
+    first_message: "Hey, thanks for reaching out. Mind if I ask a few quick questions to see if we're a fit?",
   },
   {
     id: 'receptionist',
@@ -241,6 +257,7 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
       '# Hours and location\n(Replace with hours and address.)\n\n' +
       '# Departments and routing\n- Sales: ...\n- Support: ...\n- Billing: ...\n\n' +
       "# After hours\n(What to say if it's outside business hours.)",
+    first_message: 'Hi, thanks for calling. How can I direct your call?',
   },
   {
     id: 'appointment-setter',
@@ -258,6 +275,7 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
     knowledge_starter:
       '# Booking rules\n- Available hours: ...\n- Minimum notice: ...\n- Cancellation policy: ...\n\n' +
       '# Appointment types\n(List the kinds of appointments you book — e.g. consultation 30 min, full session 60 min.)',
+    first_message: 'Hi, are you looking to book a new appointment or change an existing one?',
   },
   {
     id: 'knowledge-bot',
@@ -274,6 +292,7 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
     }),
     knowledge_starter:
       '(Paste your docs, FAQs, runbooks, or product information here. The agent will use this as its primary source. Anything not covered triggers a tool call if web_search is enabled.)',
+    first_message: 'Hi, ask me anything from the knowledge base — or anywhere else if you want me to look it up.',
   },
   // ── Goal-agent templates (Architect-drafted, not voice-prompt-prefilled) ──
   {
@@ -309,4 +328,8 @@ export const DEFAULT_AGENT_CONFIG: AgentConfig = {
   language: 'English',
   llm_model: '',
   temperature: 0.6,
+  // Default greeting — the agent says this when a session opens. Users
+  // can change or clear it in the builder. An empty string means the
+  // agent waits silently for the user to speak first.
+  first_message: 'Hello, how may I assist you today?',
 };

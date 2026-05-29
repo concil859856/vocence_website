@@ -67,13 +67,15 @@ WS_CLOSE_RATE_LIMIT = 4429
 WS_CLOSE_CONFIG = 4503
 WS_CLOSE_UPSTREAM = 4502
 
-# Bounded resource controls per API key. These are in-memory (per
-# process); fine for a single dev-api instance but you'll want a
-# Redis-backed counter when you scale horizontally.
-MAX_CONCURRENT_SESSIONS_PER_KEY = 5
-MAX_SESSION_OPENS_PER_MINUTE_PER_KEY = 30
-_concurrent_sessions: dict[str, int] = {}  # api_key_id → active count
-_session_opens: dict[str, list[float]] = {}  # api_key_id → recent open timestamps
+# Bounded resource controls per ACCOUNT (Nov 2026 — was per-key).
+# A user spinning up multiple keys can no longer multiply their voice-
+# pipeline footprint. In-memory (per process); fine for a single
+# dev-api instance, but a Redis-backed counter is needed when scaling
+# horizontally so the counts stay consistent across replicas.
+MAX_CONCURRENT_SESSIONS_PER_ACCOUNT = 5
+MAX_SESSION_OPENS_PER_MINUTE_PER_ACCOUNT = 10
+_concurrent_sessions: dict[str, int] = {}  # user_id → active count
+_session_opens: dict[str, list[float]] = {}  # user_id → recent open timestamps
 
 # Bound the audio uplink to something reasonable. A 60s WAV at 24kHz/16-bit
 # mono is ~3MB; base64-encoded, ~4MB. Anything beyond is almost certainly
@@ -85,6 +87,33 @@ INNER_WS_MAX_MSG_SIZE = 4 * 1024 * 1024
 # this on creation, but we sanity-check here so a malformed URL doesn't
 # reach the DB lookup with weird characters in logs.
 _AGENT_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{8,64}$")
+
+
+async def _user_has_premium(user_id: str) -> bool:
+    """True if the user has at least one successful Premium purchase.
+
+    Voice agents are a Premium-only feature on the dev API. API key
+    creation already requires Premium, but if Premium is ever revoked
+    or expires the existing key keeps working — this re-check at
+    connect time enforces the gate at the actual usage point."""
+    conn = await get_db()
+    try:
+        row = await (
+            await conn.execute(
+                """
+                SELECT COUNT(*) AS n
+                FROM payments
+                WHERE user_id = ?
+                  AND status IN ('paid', 'completed')
+                  AND credits_granted > 0
+                  AND LOWER(COALESCE(plan_code, '')) = 'premium'
+                """,
+                (user_id,),
+            )
+        ).fetchone()
+        return int(row["n"] or 0) > 0 if row else False
+    finally:
+        await conn.close()
 
 
 async def _resolve_api_key_user(raw_key: str) -> dict | None:
@@ -162,16 +191,17 @@ async def _relay_frames(
         return
 
 
-def _check_open_rate(api_key_id: str) -> bool:
-    """Cap how often a single API key can open new sessions. Without
-    this, a stolen / leaked key could be used to flood our voice
-    pipeline with new sessions, exhausting upstream slots."""
+def _check_open_rate(user_id: str) -> bool:
+    """Cap how often a single account can open new sessions. Without
+    this, a leaked key (or just multiple keys on one account) could
+    flood our voice pipeline with new sessions, exhausting upstream
+    slots. Per-account so additional keys can't multiply the budget."""
     now = time.time()
-    bucket = _session_opens.setdefault(api_key_id, [])
+    bucket = _session_opens.setdefault(user_id, [])
     cutoff = now - 60.0
     while bucket and bucket[0] < cutoff:
         bucket.pop(0)
-    if len(bucket) >= MAX_SESSION_OPENS_PER_MINUTE_PER_KEY:
+    if len(bucket) >= MAX_SESSION_OPENS_PER_MINUTE_PER_ACCOUNT:
         return False
     bucket.append(now)
     return True
@@ -228,33 +258,69 @@ async def agent_session(ws: WebSocket, agent_id: str) -> None:
         return
 
     api_key_id = str(auth_ctx["api_key_id"])
+    user_id = str(auth_ctx["user_id"])
 
-    # 2. Rate limit: per-key open-rate AND concurrent-session cap.
-    #    Without these, a leaked key could open thousands of sessions
-    #    and drain upstream voice-pipeline slots / our wallet.
-    if not _check_open_rate(api_key_id):
+    # 2. Re-verify Premium at connect time. API keys are gated to
+    #    Premium at creation, but if Premium was revoked since then
+    #    the key would still work for everything else; voice agents
+    #    in particular need the explicit re-check.
+    if not await _user_has_premium(user_id):
+        await ws.send_json({
+            "type": "error",
+            "code": "premium_required",
+            "message": "Voice agents require an active Premium plan. Purchase Premium to enable.",
+        })
+        # 4402 (insufficient credits / payment required) is the closest
+        # WS analog; we don't have a dedicated Premium-required code.
+        await ws.close(code=4402)
+        return
+
+    # 3. Rate limit: per-ACCOUNT open-rate AND concurrent-session cap.
+    #    Per-account (not per-key) so a user can't multiply their quota
+    #    by spinning up extra keys.
+    if not _check_open_rate(user_id):
         await ws.send_json({
             "type": "error",
             "code": "rate_limited",
-            "message": f"Too many sessions opened. Limit: {MAX_SESSION_OPENS_PER_MINUTE_PER_KEY}/min per key.",
+            "message": f"Too many sessions opened. Limit: {MAX_SESSION_OPENS_PER_MINUTE_PER_ACCOUNT}/min per account.",
         })
         await ws.close(code=WS_CLOSE_RATE_LIMIT)
         return
 
-    if _concurrent_sessions.get(api_key_id, 0) >= MAX_CONCURRENT_SESSIONS_PER_KEY:
+    # Atomic check-and-reserve for the concurrent-session cap. Done
+    # BEFORE the agent-ownership lookup (which is an async DB call
+    # and would yield to other coroutines) — otherwise 5+ concurrent
+    # connects can all pass the check while awaiting ownership, then
+    # all bump the counter past the cap. With the reserve-first
+    # pattern we release the slot on any subsequent failure path.
+    if _concurrent_sessions.get(user_id, 0) >= MAX_CONCURRENT_SESSIONS_PER_ACCOUNT:
         await ws.send_json({
             "type": "error",
             "code": "concurrent_limit",
-            "message": f"Too many concurrent sessions. Limit: {MAX_CONCURRENT_SESSIONS_PER_KEY} per key.",
+            "message": f"Too many concurrent sessions. Limit: {MAX_CONCURRENT_SESSIONS_PER_ACCOUNT} per account.",
         })
         await ws.close(code=WS_CLOSE_RATE_LIMIT)
         return
+    _concurrent_sessions[user_id] = _concurrent_sessions.get(user_id, 0) + 1
+    slot_reserved = True
+
+    def _release_slot() -> None:
+        nonlocal slot_reserved
+        if not slot_reserved:
+            return
+        slot_reserved = False
+        current = _concurrent_sessions.get(user_id, 0)
+        if current > 1:
+            _concurrent_sessions[user_id] = current - 1
+        else:
+            _concurrent_sessions.pop(user_id, None)
 
     # 3. Verify agent ownership. We never proxy a connection for an
     #    agent the caller doesn't own — that would let a key holder
-    #    drive another user's agent.
-    user_id = str(auth_ctx["user_id"])
+    #    drive another user's agent. Release the slot we just reserved
+    #    if ownership fails so it doesn't leak.
     if not await _agent_belongs_to_user(agent_id, user_id):
+        _release_slot()
         await ws.send_json({
             "type": "error",
             "code": "agent_not_found",
@@ -262,9 +328,6 @@ async def agent_session(ws: WebSocket, agent_id: str) -> None:
         })
         await ws.close(code=WS_CLOSE_NOT_FOUND)
         return
-
-    # 4. Claim a concurrent-session slot for this key, released in finally.
-    _concurrent_sessions[api_key_id] = _concurrent_sessions.get(api_key_id, 0) + 1
 
     # 5. Open the inner WS to dashboard-backend with the service-token
     #    auth and explicit user_id / agent_id query params.
@@ -350,14 +413,10 @@ async def agent_session(ws: WebSocket, agent_id: str) -> None:
     finally:
         # Release the concurrent-session slot no matter how we exit
         # (graceful close, client disconnect, upstream error, exception
-        # during proxy setup). Without this, leaked slots would
-        # eventually lock out the key.
+        # during proxy setup). ``_release_slot`` is idempotent — safe
+        # to call even if an earlier failure path already released it.
         try:
-            current = _concurrent_sessions.get(api_key_id, 0)
-            if current > 1:
-                _concurrent_sessions[api_key_id] = current - 1
-            else:
-                _concurrent_sessions.pop(api_key_id, None)
+            _release_slot()
         except Exception:
             pass
         if inner_ws is not None and not inner_ws.closed:

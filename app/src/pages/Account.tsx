@@ -360,7 +360,7 @@ export function Account() {
               <div>
                 <h3 className="text-xl font-semibold mb-2">Developer API</h3>
                 <p className="text-sm text-[#A7B0B7]">
-                  Pricing: 2,000 credits per 1M chars, prepaid pay-as-you-go. Character usage counts text + instruction prompt.
+                  TTS pricing: $10 per 1M chars (4,000 credits / 1M), prepaid pay-as-you-go. See the Pricing page for STT / cloning / voice agents / music rates.
                 </p>
               </div>
 
@@ -393,13 +393,18 @@ export function Account() {
 
               <div className="space-y-2">
                 <h4 className="font-medium">Your API Keys</h4>
+                <p className="text-xs text-[#7D8A95]">
+                  Rate limits are <span className="text-white">per account</span> — every key
+                  draws from the same bucket. Creating more keys does not raise your effective
+                  request budget.
+                </p>
                 {apiKeys.length === 0 ? (
                   <div className="rounded-xl border border-white/10 bg-[#0a0a0a] p-3 text-sm text-[#A7B0B7]">No API keys yet.</div>
                 ) : apiKeys.map((k) => (
                   <div key={k.id} className="rounded-xl border border-white/10 bg-[#0a0a0a] p-3 flex items-center justify-between gap-3">
                     <div className="min-w-0">
                       <p className="text-sm text-white">{k.name} <span className="text-[#7D8A95]">({k.tier})</span></p>
-                      <p className="text-xs text-[#A7B0B7]">{k.keyPrefix}... · {k.rateLimitRpm} req/min</p>
+                      <p className="text-xs text-[#A7B0B7]">{k.keyPrefix}... · {k.rateLimitRpm} req/min (account-wide)</p>
                     </div>
                     {!k.revokedAt ? (
                       <button onClick={() => onRevokeApiKey(k.id)} className="rounded-lg border border-red-400/30 px-3 py-1 text-xs text-red-300 hover:bg-red-500/10">

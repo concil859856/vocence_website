@@ -8,7 +8,9 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { BookOpen, Bot, Loader2, Plus, Search, Sparkles, Target } from 'lucide-react';
+import { useConfirm } from '../../hooks/useConfirm';
+import { BookOpen, Loader2, Plus, Search, Sparkles } from 'lucide-react';
+import { avatarGradientPairFor } from '../../data/sampleVoices';
 import { StudioShell } from '../../components/StudioShell';
 import { AgentCard } from '../../components/agents/AgentCard';
 import { useAuth } from '../../contexts/AuthContext';
@@ -18,6 +20,7 @@ import { AGENT_TEMPLATES, type Agent, type AgentTemplate } from '../../lib/agent
 export function AgentsList() {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [agents, setAgents] = useState<Agent[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
@@ -41,7 +44,17 @@ export function AgentsList() {
     return agents.filter((a) => a.name.toLowerCase().includes(q) || a.config.purpose.toLowerCase().includes(q));
   }, [agents, search]);
 
-  const handleTemplateClick = (tpl: AgentTemplate) => {
+  const handleTemplateClick = async (tpl: AgentTemplate) => {
+    if (tpl.type === 'goal') {
+      await confirm({
+        title: 'Coming Soon',
+        message: 'Goal agents (self-improving) are under active development. They\'ll be available in a future release.',
+        confirmLabel: 'Got it',
+        cancelLabel: '',
+        confirmVariant: 'primary',
+      });
+      return;
+    }
     navigate(`/studio/agents/new?template=${encodeURIComponent(tpl.id)}`);
   };
 
@@ -57,7 +70,15 @@ export function AgentsList() {
             so it doesn't wrap awkwardly mid-sentence. */}
         <div className="flex items-start justify-between gap-4 mb-8 flex-wrap">
           <div>
-            <h1 className="text-3xl font-semibold text-white mb-1.5">Agents</h1>
+            <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+              <h1 className="text-3xl font-semibold text-white leading-none">Agents</h1>
+              <span
+                className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-semibold uppercase tracking-[0.14em] text-indigo-300 bg-indigo-500/15 border border-indigo-400/30"
+                title="Voice agents are in beta — features and pricing may change."
+              >
+                Beta
+              </span>
+            </div>
             <p className="text-[#A7B0B7] text-sm max-w-2xl">
               Voice agents with custom knowledge or autonomous goals — built by chatting, no code.
             </p>
@@ -91,6 +112,7 @@ export function AgentsList() {
         )}
       </div>
     </StudioShell>
+    {confirmDialog}
     </div>
   );
 }
@@ -114,34 +136,58 @@ function EmptyState({ onTemplateClick, error }: { onTemplateClick: (tpl: AgentTe
 
 function TemplateTile({ template, onClick }: { template: AgentTemplate; onClick: () => void }) {
   const isGoal = template.type === 'goal';
-  const Icon = isGoal ? Target : Bot;
-  // Soft type-keyed accent — purple for goal, lime for knowledge.
-  const accent = isGoal
-    ? { tile: 'border-purple-400/15 bg-purple-500/[0.04] hover:bg-purple-500/[0.08] hover:border-purple-400/30',
-        chip: 'bg-purple-500/15 text-purple-200', icon: 'text-purple-200' }
-    : { tile: 'border-[#DFFF00]/15 bg-[#DFFF00]/[0.03] hover:bg-[#DFFF00]/[0.06] hover:border-[#DFFF00]/30',
-        chip: 'bg-[#DFFF00]/15 text-[#DFFF00]', icon: 'text-[#DFFF00]' };
+  const typeLabel = isGoal ? 'Goal agent' : 'Knowledge agent';
+  // Same identity-tint pattern as AgentCard, seeded by template id so
+  // every template tile gets a distinct corner glow color.
+  const grad = avatarGradientPairFor(`agent-tpl-${template.id}`);
 
   return (
     <button
       type="button"
       onClick={onClick}
-      className={`text-left rounded-2xl border p-5 transition-all ${accent.tile}`}
+      className="group relative text-left block rounded-2xl border border-white/[0.08] bg-white/[0.02] hover:bg-white/[0.04] hover:border-white/15 hover:-translate-y-[1px] hover:shadow-[0_8px_24px_rgba(0,0,0,0.35)] transition-all duration-300 p-5 overflow-hidden"
     >
-      <div className="flex items-start gap-3 mb-3">
-        <div className={`w-10 h-10 rounded-xl bg-white/[0.04] border border-white/10 flex items-center justify-center shrink-0 ${accent.icon}`}>
-          <Icon size={18} />
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="text-white font-semibold truncate">{template.name}</span>
-            <span className={`text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded-md ${accent.chip}`}>
-              {isGoal ? 'Goal' : 'Knowledge'}
-            </span>
+      {/* Identity-tinted corner glow — mirrors AgentCard */}
+      <div
+        className={`pointer-events-none absolute -top-12 -right-12 w-36 h-36 rounded-full bg-gradient-to-br ${grad.outer} opacity-[0.10] blur-2xl group-hover:opacity-[0.16] transition-opacity duration-500`}
+        aria-hidden
+      />
+
+      {/* Header: blank-white template avatar with black initials + name + type label */}
+      <div className="relative flex items-start gap-4 mb-4">
+        <div className="transition-transform duration-300 group-hover:scale-[1.04]">
+          <div
+            className="shrink-0 w-14 h-14 rounded-full bg-white/[0.06] border border-white/10 flex items-center justify-center text-white/40 font-semibold text-lg"
+            aria-label={template.name}
+          >
+            {(template.name || '?').split(/\s+/).filter(Boolean).slice(0, 2).map((p) => p[0]!.toUpperCase()).join('')}
           </div>
         </div>
+        <div className="flex-1 min-w-0 pt-0.5">
+          <div className="flex items-center gap-2">
+            <h3 className="text-white font-semibold text-[15px] truncate leading-tight">
+              {template.name}
+            </h3>
+            <span className="shrink-0 text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded-md bg-white/[0.06] text-[#A7B0B7] border border-white/10">
+              Template
+            </span>
+          </div>
+          <div className="text-[11px] text-[#A7B0B7] mt-0.5">{typeLabel}</div>
+        </div>
       </div>
-      <p className="text-[#A7B0B7] text-sm leading-snug">{template.blurb}</p>
+
+      {/* Blurb */}
+      <p className="relative text-[#A7B0B7] text-[13px] leading-relaxed line-clamp-2 mb-5 min-h-[2.6em]">
+        {template.blurb}
+      </p>
+
+      {/* Footer */}
+      <div className="relative flex items-center gap-3 text-[11px] text-[#7a7f86]">
+        <span className="inline-flex items-center gap-1">
+          <Sparkles size={10} className="opacity-70" />
+          Quick start
+        </span>
+      </div>
     </button>
   );
 }

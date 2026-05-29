@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ArrowLeft, CreditCard, X } from 'lucide-react';
+import { ArrowLeft, X } from 'lucide-react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { PricingPlans } from '../components/PricingPlans';
 import { useAuth } from '../contexts/AuthContext';
@@ -19,7 +19,6 @@ export function Pricing() {
     selected: string;
   } | null>(null);
   const [message, setMessage] = useState<string | null>(null);
-  const [stripeComingSoon, setStripeComingSoon] = useState(false);
 
   useEffect(() => {
     api
@@ -39,8 +38,6 @@ export function Pricing() {
   const normalPlan = plans.find((p) => p.code === 'normal');
   const premiumPlan = plans.find((p) => p.code === 'premium');
 
-  // Stripe checkout logic — kept for when card payments go live.
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const startStripeCheckout = async (planCode: string) => {
     const token = localStorage.getItem('vocence_token');
     if (!token) {
@@ -62,7 +59,6 @@ export function Pricing() {
       setCheckoutLoading(null);
     }
   };
-  void startStripeCheckout;
 
   const startCryptoCheckout = async (planCode: string, payCurrency?: string) => {
     const token = localStorage.getItem('vocence_token');
@@ -134,13 +130,14 @@ export function Pricing() {
           <div className="max-w-4xl">
             <span className="label-mono mb-4 block text-[10px] tracking-[0.2em]">Pricing</span>
             <h1 className="text-2xl md:text-3xl font-semibold text-white leading-tight">Vocence Pricing</h1>
-            <p className="mt-4 max-w-xl text-sm leading-relaxed text-[#A7B0B7] md:text-base">
-              Studio features: <span className="font-medium text-white">Text-to-Speech</span>,{' '}
-              <span className="font-medium text-white">Speech-to-Text</span>,{' '}
+            <p className="mt-4 text-xs leading-relaxed text-[#A7B0B7] md:whitespace-nowrap">
+              Studio: <span className="font-medium text-white">TTS</span>,{' '}
+              <span className="font-medium text-white">STT</span>,{' '}
               <span className="font-medium text-white">Voice Cloning</span>,{' '}
-              <span className="font-medium text-white">Voice Design</span>, and{' '}
-              <span className="font-medium text-white">Music Generation</span>.{' '}
-              Premium users get never-expiring history and unlimited custom voices.
+              <span className="font-medium text-white">Voice Design</span>,{' '}
+              <span className="font-medium text-white">Music</span>,{' '}
+              <span className="font-medium text-white">Noise Remover</span>,{' '}
+              <span className="font-medium text-white">Voice Agents</span>. Premium adds never-expiring history + unlimited custom voices.
             </p>
             <Link
               to="/docs/pricing"
@@ -172,7 +169,7 @@ export function Pricing() {
                     <td className="px-4 py-2.5">
                       {normalPlan?.cryptoPriceUsd != null && normalPlan.cryptoCreditsIncluded != null
                         ? `$${Number.isInteger(normalPlan.cryptoPriceUsd) ? normalPlan.cryptoPriceUsd : normalPlan.cryptoPriceUsd.toFixed(2)} → ${formatCreditsCompact(normalPlan.cryptoCreditsIncluded)} credits`
-                        : `$20 → ${formatCreditsCompact(7000)} credits`}
+                        : `$20 → ${formatCreditsCompact(8000)} credits`}
                     </td>
                   </tr>
                   <tr>
@@ -180,7 +177,7 @@ export function Pricing() {
                     <td className="px-4 py-2.5">
                       {premiumPlan?.priceUsd != null
                         ? `$${Number.isInteger(premiumPlan.priceUsd) ? premiumPlan.priceUsd : premiumPlan.priceUsd.toFixed(2)} → ${formatCreditsCompact(premiumPlan.creditsIncluded)} credits`
-                        : `$24 → ${formatCreditsCompact(10000)} credits`}
+                        : `$24 → ${formatCreditsCompact(8000)} credits`}
                     </td>
                     <td className="px-4 py-2.5">
                       {premiumPlan?.cryptoPriceUsd != null && premiumPlan.cryptoCreditsIncluded != null
@@ -197,42 +194,6 @@ export function Pricing() {
         {message ? (
           <div className="mb-6 rounded-2xl border border-white/10 bg-white/[0.04] px-5 py-4 text-sm text-[#C6CDD4]">
             {message}
-          </div>
-        ) : null}
-
-        {stripeComingSoon ? (
-          <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="stripe-coming-soon-title"
-          >
-            <div className="relative w-full max-w-sm rounded-[28px] border border-white/10 bg-[#0c0d10] p-8 shadow-[0_0_60px_rgba(0,0,0,0.5)] text-center">
-              <button
-                type="button"
-                onClick={() => setStripeComingSoon(false)}
-                className="absolute right-4 top-4 rounded-lg p-1 text-[#A7B0B7] hover:bg-white/10 hover:text-white"
-                aria-label="Close"
-              >
-                <X size={20} />
-              </button>
-              <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-[#DFFF00]/10 border border-[#DFFF00]/20">
-                <CreditCard size={24} className="text-[#DFFF00]" />
-              </div>
-              <h2 id="stripe-coming-soon-title" className="text-lg font-semibold text-white">
-                Coming Soon
-              </h2>
-              <p className="mt-2 text-sm text-[#A7B0B7]">
-                Stripe card payments are currently under development. Please use crypto checkout in the meantime.
-              </p>
-              <button
-                type="button"
-                onClick={() => setStripeComingSoon(false)}
-                className="mt-6 w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm font-semibold text-white hover:bg-white/10"
-              >
-                Got it
-              </button>
-            </div>
           </div>
         ) : null}
 
@@ -334,10 +295,11 @@ export function Pricing() {
               <div className="grid gap-3 sm:grid-cols-2">
                 <button
                   type="button"
-                  onClick={() => setStripeComingSoon(true)}
-                  className="inline-flex items-center justify-center rounded-xl bg-[#DFFF00] px-4 py-2.5 text-sm font-semibold text-[#07080A] transition-opacity hover:opacity-90"
+                  onClick={() => startStripeCheckout(planCode)}
+                  disabled={checkoutLoading === `stripe:${planCode}`}
+                  className="inline-flex items-center justify-center rounded-xl bg-[#DFFF00] px-4 py-2.5 text-sm font-semibold text-[#07080A] transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  Credit Card
+                  {checkoutLoading === `stripe:${planCode}` ? 'Preparing…' : 'Credit Card'}
                 </button>
                 <button
                   type="button"
@@ -365,24 +327,43 @@ export function Pricing() {
             <span className="label-mono mb-3 block text-[10px] tracking-[0.2em]">Developer API</span>
             <h2 className="text-lg md:text-xl font-semibold text-white">Pay-as-you-go for API key users</h2>
             <p className="mt-2 text-xs md:text-sm text-[#A7B0B7]">
-              API usage consumes credits from your purchased balance:
-              <span className="text-white font-medium"> 2,000 credits per 1M characters</span> (character count = text + instruction prompt). If no instruction is provided, we use
-              <span className="text-white font-medium"> &quot;neutral voice&quot;</span>. Developer API access requires a successful
-              <span className="text-white font-medium"> Premium</span> purchase.
+              API usage draws credits from your purchased balance. All $ prices below
+              are quoted at the baseline rate (<span className="text-white font-medium">1 credit ≈ $0.0025</span>,
+              matching the crypto pack rate of 8,000 credits per $20). Developer API access
+              requires a successful <span className="text-white font-medium">Premium</span> purchase.
             </p>
           </div>
-          <div className="mt-6 grid gap-3 sm:grid-cols-3">
+
+          <div className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
-              <p className="text-xs uppercase tracking-[0.18em] text-[#7D8A95]">Rate</p>
-              <p className="mt-1 text-lg font-semibold text-white">2,000 credits / 1M chars</p>
+              <p className="text-xs uppercase tracking-[0.18em] text-[#7D8A95]">TTS / Voice Clone</p>
+              <p className="mt-1 text-base font-semibold text-white">$10 / 1M chars</p>
+              <p className="text-[11px] text-[#7D8A95]">4,000 credits / 1M chars</p>
             </div>
             <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
-              <p className="text-xs uppercase tracking-[0.18em] text-[#7D8A95]">Billing</p>
-              <p className="mt-1 text-lg font-semibold text-white">Prepaid pay-as-you-go</p>
+              <p className="text-xs uppercase tracking-[0.18em] text-[#7D8A95]">STT</p>
+              <p className="mt-1 text-base font-semibold text-white">$0.0075 / min</p>
+              <p className="text-[11px] text-[#7D8A95]">3 credits / min · 5 min max</p>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
+              <p className="text-xs uppercase tracking-[0.18em] text-[#7D8A95]">Noise Remover</p>
+              <p className="mt-1 text-base font-semibold text-white">$0.0025 / min</p>
+              <p className="text-[11px] text-[#7D8A95]">1 credit / min · 5 min max</p>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
+              <p className="text-xs uppercase tracking-[0.18em] text-[#7D8A95]">Voice Design</p>
+              <p className="mt-1 text-base font-semibold text-white">$0.175 / voice</p>
+              <p className="text-[11px] text-[#7D8A95]">70 credits / generation</p>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
+              <p className="text-xs uppercase tracking-[0.18em] text-[#7D8A95]">Voice Agents</p>
+              <p className="mt-1 text-base font-semibold text-white">$0.10 / min</p>
+              <p className="text-[11px] text-[#7D8A95]">40 credits / min · 6-sec billing</p>
             </div>
             <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
               <p className="text-xs uppercase tracking-[0.18em] text-[#7D8A95]">Default limit</p>
-              <p className="mt-1 text-lg font-semibold text-white">4 req / minute / key</p>
+              <p className="mt-1 text-base font-semibold text-white">4 req / minute / account</p>
+              <p className="text-[11px] text-[#7D8A95]">Shared across all your API keys</p>
             </div>
           </div>
           <p className="mt-5 text-sm text-[#A7B0B7]">

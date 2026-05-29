@@ -520,7 +520,7 @@ class StudioTtsSampleVoiceRequest(BaseModel):
 
 class StudioHistoryItemResponse(BaseModel):
     id: int
-    entry_type: str = "tts"  # "tts", "stt", "clone", "voice_design", or "music"
+    entry_type: str = "tts"  # "tts", "stt", "clone", "voice_design", "music", or "noise_remover"
     miner_hotkey: str
     model_name: str
     display_name: str

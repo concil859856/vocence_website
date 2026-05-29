@@ -92,18 +92,24 @@ export function AgentCard({ agent }: { agent: Agent }) {
         {agent.config.purpose || <span className="text-[#666] italic">No purpose set yet.</span>}
       </p>
 
-      {/* Footer stats */}
-      <div className="relative flex items-center gap-3 text-[11px] text-[#7a7f86]">
-        <span className="inline-flex items-center gap-1">
-          <Play size={10} className="opacity-70" />
-          {agent.run_count} run{agent.run_count === 1 ? '' : 's'}
-        </span>
-        <span className="text-white/10">·</span>
-        <span className="inline-flex items-center gap-1">
-          <Clock size={10} className="opacity-70" />
-          {formatRelative(agent.last_run_at)}
-        </span>
-      </div>
+      {/* Footer stats — runs / last-run are GOAL-agent concepts. For
+          knowledge (voice-chat) agents they're always 0 / never and
+          just add noise, so we hide them. Knowledge-agent footer is
+          intentionally blank for now; we can swap in conversation
+          metrics later. */}
+      {agent.type === 'goal' && (
+        <div className="relative flex items-center gap-3 text-[11px] text-[#7a7f86]">
+          <span className="inline-flex items-center gap-1">
+            <Play size={10} className="opacity-70" />
+            {agent.run_count} run{agent.run_count === 1 ? '' : 's'}
+          </span>
+          <span className="text-white/10">·</span>
+          <span className="inline-flex items-center gap-1">
+            <Clock size={10} className="opacity-70" />
+            {formatRelative(agent.last_run_at)}
+          </span>
+        </div>
+      )}
     </Link>
   );
 }

@@ -3,6 +3,8 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { FileText, Pause, Plus, RefreshCw, RotateCcw, Trash2, UploadCloud } from 'lucide-react';
+import { useConfirm } from '../../hooks/useConfirm';
+import { Select as DropdownSelect } from '../ui/DropdownSelect';
 import { opsApi } from '../../lib/ops/api';
 import {
   DEFAULT_IMAGES,
@@ -10,6 +12,8 @@ import {
   SERVICE_LABELS,
   type PodDeployRequest,
   type PodRow,
+  type PodRuntimeRow,
+  type RuntimeWindow,
   type ServerRow,
   type ServiceName,
 } from '../../lib/ops/types';
@@ -24,19 +28,29 @@ export function PodsTab({ token }: Props) {
   const [showDeploy, setShowDeploy] = useState(false);
   const [logsPodId, setLogsPodId] = useState<number | null>(null);
   const [actionBusyId, setActionBusyId] = useState<number | null>(null);
+  // Runtime % column: indexed by pod_id for O(1) row lookup.
+  const [runtimeWindow, setRuntimeWindow] = useState<RuntimeWindow>('week');
+  const [runtime, setRuntime] = useState<Record<number, PodRuntimeRow>>({});
 
   const refresh = useCallback(async () => {
     try {
-      const [pl, sl] = await Promise.all([opsApi.listPods(token), opsApi.listServers(token)]);
+      const [pl, sl, rt] = await Promise.all([
+        opsApi.listPods(token),
+        opsApi.listServers(token),
+        opsApi.podsRuntime(token, runtimeWindow),
+      ]);
       setPods(pl.pods);
       setServers(sl.servers);
+      const idx: Record<number, PodRuntimeRow> = {};
+      for (const r of rt.pods) idx[r.pod_id] = r;
+      setRuntime(idx);
       setError(null);
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setLoading(false);
     }
-  }, [token]);
+  }, [token, runtimeWindow]);
 
   useEffect(() => {
     refresh();
@@ -46,12 +60,18 @@ export function PodsTab({ token }: Props) {
 
   const serversReady = useMemo(() => servers.filter((s) => s.status === 'ready'), [servers]);
 
+  const { confirm, dialog: confirmDialog } = useConfirm();
+
   const handleAction = async (
     action: 'stop' | 'restart' | 'update' | 'drain' | 'remove',
     pod: PodRow,
   ) => {
-    if (action === 'remove' && !window.confirm(`Remove pod "${pod.name}"? Container stops + is deleted.`)) return;
-    if (action === 'update' && !window.confirm(`Roll out the latest ${pod.image} on "${pod.name}"? Container restarts (~30-60s downtime).`)) return;
+    if (action === 'remove') {
+      if (!await confirm({ title: 'Remove Pod', message: `Remove pod "${pod.name}"? Container stops and is deleted.`, confirmLabel: 'Remove', confirmVariant: 'danger' })) return;
+    }
+    if (action === 'update') {
+      if (!await confirm({ title: 'Update Pod', message: `Roll out the latest ${pod.image} on "${pod.name}"? Container restarts (~30-60s downtime).`, confirmLabel: 'Update', confirmVariant: 'primary' })) return;
+    }
     setActionBusyId(pod.id);
     setError(null);
     try {
@@ -101,6 +121,25 @@ export function PodsTab({ token }: Props) {
         </div>
       ) : (
         <div className="rounded-2xl border border-white/10 overflow-hidden">
+          <div className="flex items-center justify-between px-4 py-2 bg-white/[0.015] border-b border-white/5">
+            <div className="text-[10px] uppercase tracking-wider text-[#A7B0B7]">Runtime window</div>
+            <div className="inline-flex rounded-md border border-white/10 bg-white/[0.02] p-0.5">
+              {(['day', 'week', 'month'] as RuntimeWindow[]).map((w) => (
+                <button
+                  key={w}
+                  type="button"
+                  onClick={() => setRuntimeWindow(w)}
+                  className={`px-2 py-0.5 text-[10px] rounded transition-colors ${
+                    runtimeWindow === w
+                      ? 'bg-white/10 text-white'
+                      : 'text-[#A7B0B7] hover:text-white'
+                  }`}
+                >
+                  {w === 'day' ? '24h' : w === 'week' ? '7d' : '30d'}
+                </button>
+              ))}
+            </div>
+          </div>
           <table className="w-full text-sm">
             <thead className="bg-white/[0.03] text-[#A7B0B7] text-[11px] uppercase tracking-wider">
               <tr>
@@ -108,6 +147,7 @@ export function PodsTab({ token }: Props) {
                 <th className="text-left px-4 py-2.5">Service</th>
                 <th className="text-left px-4 py-2.5">Server : port</th>
                 <th className="text-left px-4 py-2.5">Status</th>
+                <th className="text-left px-4 py-2.5">Runtime %</th>
                 <th className="text-left px-4 py-2.5">In-flight</th>
                 <th className="text-left px-4 py-2.5">Image</th>
                 <th className="px-4 py-2.5" />
@@ -129,6 +169,9 @@ export function PodsTab({ token }: Props) {
                     </td>
                     <td className="px-4 py-3">
                       <StatusBadge status={p.status} consecutiveFailures={p.consecutive_failures} />
+                    </td>
+                    <td className="px-4 py-3">
+                      <RuntimeCell row={runtime[p.id]} />
                     </td>
                     <td className="px-4 py-3 text-[#A7B0B7]">{p.dispatcher_in_flight}</td>
                     <td className="px-4 py-3">
@@ -181,6 +224,7 @@ export function PodsTab({ token }: Props) {
       {logsPodId !== null && (
         <LogsModal token={token} podId={logsPodId} onClose={() => setLogsPodId(null)} />
       )}
+      {confirmDialog}
     </div>
   );
 }
@@ -323,28 +367,20 @@ function DeployPodModal({
           </p>
 
           <Field label="Server">
-            <select
-              value={form.server_id}
-              onChange={(e) => setForm({ ...form, server_id: Number(e.target.value) })}
-              className="input"
-            >
-              {servers.map((s) => (
-                <option key={s.id} value={s.id}>{s.name} ({s.host})</option>
-              ))}
-            </select>
+            <DropdownSelect
+              value={String(form.server_id)}
+              onChange={(v) => setForm({ ...form, server_id: Number(v) })}
+              options={servers.map((s) => ({ value: String(s.id), label: `${s.name} (${s.host})` }))}
+            />
           </Field>
 
           <div className="grid grid-cols-2 gap-3">
             <Field label="Service">
-              <select
+              <DropdownSelect
                 value={form.service}
-                onChange={(e) => handleServiceChange(e.target.value as ServiceName)}
-                className="input"
-              >
-                {(Object.keys(SERVICE_LABELS) as ServiceName[]).map((s) => (
-                  <option key={s} value={s}>{SERVICE_LABELS[s]}</option>
-                ))}
-              </select>
+                onChange={(v) => handleServiceChange(v as ServiceName)}
+                options={(Object.keys(SERVICE_LABELS) as ServiceName[]).map((s) => ({ value: s, label: SERVICE_LABELS[s] }))}
+              />
             </Field>
             <Field label="Pod name" hint="lowercase, digits, dashes">
               <input
@@ -487,15 +523,12 @@ function LogsModal({ token, podId, onClose }: { token: string; podId: number; on
         <div className="flex items-center justify-between p-4 border-b border-white/10">
           <h3 className="text-white font-semibold">Logs · pod {podId}</h3>
           <div className="flex items-center gap-2">
-            <select
-              value={tail}
-              onChange={(e) => setTail(Number(e.target.value))}
-              className="bg-[#07080A] border border-white/15 rounded-lg px-2 py-1 text-xs text-white"
-            >
-              {[100, 200, 500, 1000, 2000].map((n) => (
-                <option key={n} value={n}>last {n}</option>
-              ))}
-            </select>
+            <DropdownSelect
+              value={String(tail)}
+              onChange={(v) => setTail(Number(v))}
+              options={[100, 200, 500, 1000, 2000].map((n) => ({ value: String(n), label: `last ${n}` }))}
+              className="w-28"
+            />
             <button type="button" onClick={load} className="text-xs text-[#A7B0B7] hover:text-white px-2">
               Refresh
             </button>
@@ -511,6 +544,25 @@ function LogsModal({ token, podId, onClose }: { token: string; podId: number; on
           {loading && logs === '' ? 'Loading…' : logs || '(no logs)'}
         </pre>
       </div>
+    </div>
+  );
+}
+
+
+/** Per-row uptime % + a thin progress bar. Colour matches the same
+ *  thresholds as the FleetHealthCard score bar so the operator's eye
+ *  trains across the page. */
+function RuntimeCell({ row }: { row?: PodRuntimeRow }) {
+  if (!row) return <span className="text-[10px] text-[#666]">—</span>;
+  const pct = row.uptime_pct;
+  const color = pct >= 99 ? 'bg-[#DFFF00]' : pct >= 90 ? 'bg-amber-300' : 'bg-red-400';
+  const textColor = pct >= 99 ? 'text-[#DFFF00]' : pct >= 90 ? 'text-amber-200' : 'text-red-300';
+  return (
+    <div className="flex items-center gap-2 min-w-[90px]">
+      <div className="w-16 h-1.5 rounded-full bg-white/5 overflow-hidden shrink-0">
+        <div className={`h-full ${color}`} style={{ width: `${Math.min(100, pct)}%` }} />
+      </div>
+      <span className={`text-xs tabular-nums ${textColor}`}>{pct.toFixed(1)}%</span>
     </div>
   );
 }

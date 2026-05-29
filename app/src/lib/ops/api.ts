@@ -9,12 +9,25 @@ import { API_BASE_URL, withNetworkHint } from '../../services/baseUrl';
 import { clearStoredAdminToken, getStoredAdminToken } from '../admin/api';
 import type {
   DispatcherSnapshot,
+  FleetHealth,
+  LlmBreakdownRow,
+  LlmFailureRow,
+  LlmFallbackRow,
+  LlmOverview,
+  LlmPricingRow,
+  LlmTimeBucket,
+  LlmTimeRange,
+  LlmTimeseriesPoint,
+  LlmTopError,
   OverviewTiles,
   PodDeployRequest,
   PodEvent,
   PodRow,
+  PodRuntimeRow,
+  RuntimeWindow,
   ServerAddRequest,
   ServerRow,
+  ServerRuntimeRow,
   ServiceName,
   TimeseriesPoint,
 } from './types';
@@ -183,4 +196,84 @@ export const opsApi = {
     const url = `${base}/events${qs.toString() ? `?${qs}` : ''}`;
     return jsonFetch<{ events: PodEvent[] }>(url, { headers: authHeaders(token) });
   },
+
+  // ---- Runtime % + fleet health (Phase 1B) ------------------------------
+
+  podsRuntime: (token: string, window: RuntimeWindow) =>
+    jsonFetch<{ window: RuntimeWindow; pods: PodRuntimeRow[] }>(
+      `${base}/pods/runtime?window=${window}`,
+      { headers: authHeaders(token) },
+    ),
+
+  serversRuntime: (token: string, window: RuntimeWindow) =>
+    jsonFetch<{ window: RuntimeWindow; servers: ServerRuntimeRow[] }>(
+      `${base}/servers/runtime?window=${window}`,
+      { headers: authHeaders(token) },
+    ),
+
+  fleetHealth: (token: string, window: RuntimeWindow) =>
+    jsonFetch<FleetHealth>(`${base}/fleet/health?window=${window}`, {
+      headers: authHeaders(token),
+    }),
+
+  // ---- LLM telemetry (Phase 1B) -----------------------------------------
+
+  llmOverview: (token: string, range: LlmTimeRange) =>
+    jsonFetch<LlmOverview>(`${base}/llm/overview?range=${range}`, {
+      headers: authHeaders(token),
+    }),
+
+  llmByProvider: (token: string, range: LlmTimeRange) =>
+    jsonFetch<{ range: string; rows: LlmBreakdownRow[] }>(
+      `${base}/llm/by-provider?range=${range}`,
+      { headers: authHeaders(token) },
+    ),
+
+  llmByModel: (token: string, range: LlmTimeRange, provider?: string) => {
+    const qs = new URLSearchParams({ range });
+    if (provider) qs.set('provider', provider);
+    return jsonFetch<{ range: string; provider: string | null; rows: LlmBreakdownRow[] }>(
+      `${base}/llm/by-model?${qs}`,
+      { headers: authHeaders(token) },
+    );
+  },
+
+  llmFailures: (token: string, range: LlmTimeRange, limit = 200) =>
+    jsonFetch<{ range: string; rows: LlmFailureRow[]; top_errors: LlmTopError[] }>(
+      `${base}/llm/failures?range=${range}&limit=${limit}`,
+      { headers: authHeaders(token) },
+    ),
+
+  llmFallbacks: (token: string, range: LlmTimeRange) =>
+    jsonFetch<{ range: string; rows: LlmFallbackRow[] }>(
+      `${base}/llm/fallbacks?range=${range}`,
+      { headers: authHeaders(token) },
+    ),
+
+  llmTimeseries: (token: string, range: LlmTimeRange, bucket: LlmTimeBucket, provider?: string) => {
+    const qs = new URLSearchParams({ range, bucket });
+    if (provider) qs.set('provider', provider);
+    return jsonFetch<{ range: string; bucket: LlmTimeBucket; provider: string | null; rows: LlmTimeseriesPoint[] }>(
+      `${base}/llm/timeseries?${qs}`,
+      { headers: authHeaders(token) },
+    );
+  },
+
+  llmPricingList: (token: string) =>
+    jsonFetch<{ rows: LlmPricingRow[] }>(`${base}/llm/pricing`, {
+      headers: authHeaders(token),
+    }),
+
+  llmPricingUpsert: (token: string, row: Omit<LlmPricingRow, 'updated_at'>) =>
+    jsonFetch<{ ok: true }>(`${base}/llm/pricing`, {
+      method: 'PUT',
+      headers: authHeaders(token),
+      body: JSON.stringify(row),
+    }),
+
+  llmPricingDeactivate: (token: string, provider: string, model: string) =>
+    jsonFetch<{ ok: true }>(`${base}/llm/pricing/${encodeURIComponent(provider)}/${encodeURIComponent(model)}`, {
+      method: 'DELETE',
+      headers: authHeaders(token),
+    }),
 };

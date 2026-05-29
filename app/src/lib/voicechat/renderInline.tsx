@@ -116,6 +116,147 @@ export function renderInline(text: string): ReactNode[] {
 
 
 // ---------------------------------------------------------------------------
+// Worded-number → digit conversion
+//
+// LLMs tend to spell numbers out as English words because that's what TTS
+// reads naturally ("six billion nine hundred forty million" sounds right
+// when spoken). But in the chat BUBBLE the user wants to SCAN — a digit
+// like "6,940,393,680" is far easier to read at a glance.
+//
+// We only convert runs that include a magnitude word (hundred / thousand /
+// million / billion / trillion), so "two cats" stays as prose but
+// "two billion dollars" becomes "2,000,000,000 dollars". TTS still
+// receives the original LLM text (this only runs on the display path),
+// so the agent still SPEAKS the words naturally.
+// ---------------------------------------------------------------------------
+
+const NUM_SMALL: Record<string, number> = {
+  zero: 0, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9,
+  ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16,
+  seventeen: 17, eighteen: 18, nineteen: 19,
+  twenty: 20, thirty: 30, forty: 40, fifty: 50, sixty: 60, seventy: 70, eighty: 80, ninety: 90,
+};
+const NUM_SCALE: Record<string, number> = {
+  hundred: 100, thousand: 1_000, million: 1_000_000, billion: 1_000_000_000, trillion: 1_000_000_000_000,
+};
+// Word tokens that can appear inside a number phrase as connectors
+// without ending it. "one hundred and twenty" → 120.
+const NUM_FILLER = new Set(['and', 'a']);
+
+/** Try to parse a sequence of tokens as a single English number.
+ *  Returns null if any token is not a number word / connector. */
+function parseNumberRun(tokens: string[]): number | null {
+  if (tokens.length === 0) return null;
+  let total = 0;
+  let current = 0;
+  let consumed = false;
+  for (const raw of tokens) {
+    const t = raw.toLowerCase();
+    if (NUM_FILLER.has(t)) continue;
+    if (NUM_SMALL[t] !== undefined) {
+      current += NUM_SMALL[t];
+      consumed = true;
+    } else if (t === 'hundred') {
+      current = (current || 1) * 100;
+      consumed = true;
+    } else if (NUM_SCALE[t] !== undefined) {
+      total += (current || 1) * NUM_SCALE[t];
+      current = 0;
+      consumed = true;
+    } else {
+      return null;
+    }
+  }
+  if (!consumed) return null;
+  return total + current;
+}
+
+/** Replace runs of worded numbers with comma-formatted digits.
+ *  Only runs that include hundred/thousand/million/billion/trillion are
+ *  converted, so casual prose like "two cats" survives intact. */
+export function wordedNumbersToDigits(text: string): string {
+  if (!text) return text;
+  // Split into tokens with their separators so we can reassemble.
+  // A "word" is letters; hyphens like "ninety-three" are inner separators
+  // we treat as token boundaries too so "ninety" and "three" parse
+  // separately. Punctuation other than hyphens splits runs.
+  const NUM_WORD = /[a-zA-Z]+/g;
+  type Tok = { start: number; end: number; word: string };
+  const toks: Tok[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = NUM_WORD.exec(text)) !== null) {
+    toks.push({ start: m.index, end: m.index + m[0].length, word: m[0] });
+  }
+
+  const isNumWord = (w: string) => {
+    const t = w.toLowerCase();
+    return NUM_SMALL[t] !== undefined || NUM_SCALE[t] !== undefined || NUM_FILLER.has(t);
+  };
+
+  const ranges: { start: number; end: number; value: number }[] = [];
+  // Only whitespace and hyphens may separate two tokens that belong
+  // to the same number run. Anything else (comma, period, semicolon,
+  // letter from a different language, etc.) breaks the run so that
+  // e.g. "twelve, thousand" stays as written rather than collapsing
+  // into "12,000".
+  const GAP_OK = /^[\s-]*$/;
+  let i = 0;
+  while (i < toks.length) {
+    if (!isNumWord(toks[i].word)) { i++; continue; }
+    let j = i;
+    let hasMagnitude = false;
+    while (j < toks.length && isNumWord(toks[j].word)) {
+      if (j > i) {
+        const gap = text.slice(toks[j - 1].end, toks[j].start);
+        if (!GAP_OK.test(gap)) break;
+      }
+      const t = toks[j].word.toLowerCase();
+      if (NUM_SCALE[t] !== undefined) hasMagnitude = true;
+      j++;
+    }
+    // Don't trim FILLER on the boundaries — they'd flip non-number runs
+    // ("a cat") into number runs. So if the run is just fillers, skip.
+    const runTokens = toks.slice(i, j).filter((t) => !NUM_FILLER.has(t.word.toLowerCase()));
+    // Require a leading quantity word (small number or "hundred") so
+    // bare "thousand" / "million" / "billion" don't silently expand
+    // to 1,000 / 1,000,000 / etc. ("about 12 thousand" should keep
+    // "thousand" as a word since the preceding "12" is a digit and
+    // not in our token list.)
+    const hasLeadingQuantity = runTokens.length > 0
+      && (NUM_SMALL[runTokens[0].word.toLowerCase()] !== undefined
+          || runTokens[0].word.toLowerCase() === 'hundred');
+    if (hasMagnitude && hasLeadingQuantity) {
+      const value = parseNumberRun(toks.slice(i, j).map((t) => t.word));
+      if (value !== null) {
+        // Trim leading/trailing fillers from the highlight range so we
+        // don't eat the surrounding "a" or "and" if they were standalone.
+        let lo = i, hi = j - 1;
+        while (lo < hi && NUM_FILLER.has(toks[lo].word.toLowerCase())) lo++;
+        while (hi > lo && NUM_FILLER.has(toks[hi].word.toLowerCase())) hi--;
+        ranges.push({
+          start: toks[lo].start,
+          end: toks[hi].end,
+          value,
+        });
+      }
+    }
+    i = j;
+  }
+
+  if (ranges.length === 0) return text;
+  let out = '';
+  let cursor = 0;
+  for (const r of ranges) {
+    out += text.slice(cursor, r.start);
+    out += r.value.toLocaleString('en-US');
+    cursor = r.end;
+  }
+  out += text.slice(cursor);
+  return out;
+}
+
+
+// ---------------------------------------------------------------------------
 // Block-level renderer — used by chat bubbles. Splits on newlines, classifies
 // each line as a heading / bullet / numbered / blank / paragraph, and runs
 // inline rendering inside each.
@@ -134,6 +275,10 @@ const HRULE_RE = /^\s*-{3,}\s*$/;
 
 export function renderMessage(text: string): ReactNode {
   if (!text) return null;
+  // Pre-pass: rewrite English number phrases into digit form for the
+  // bubble. TTS receives the original text (this only runs on the
+  // visible render path) so the agent still speaks the words naturally.
+  text = wordedNumbersToDigits(text);
   const lines = text.split('\n');
   const blocks: ReactNode[] = [];
   for (let i = 0; i < lines.length; i++) {

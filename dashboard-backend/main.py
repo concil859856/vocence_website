@@ -28,6 +28,7 @@ from database import (
     acquire,
     close_pool,
     health_check,
+    ensure_core_tables,
     ensure_evaluations_audio_columns,
     ensure_graph_activity_leases_table,
     ensure_global_scoring_snapshots_table,
@@ -90,6 +91,7 @@ def _cors_allow_origins() -> list[str]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    await ensure_core_tables()
     await ensure_evaluations_audio_columns()
     await ensure_graph_activity_leases_table()
     await ensure_global_scoring_snapshots_table()
@@ -120,6 +122,15 @@ async def lifespan(app: FastAPI):
         await start_pollers()
     except Exception:
         _logging.getLogger(__name__).exception("ops module failed to start; continuing without fleet management")
+
+    # Seed the LLM pricing table with placeholder rates so cost charts
+    # have *some* number on day one. Existing rows are not overwritten
+    # (INSERT OR IGNORE) — admins edit via the /ops/llm/pricing UI.
+    try:
+        from llm_logging import seed_default_pricing
+        await seed_default_pricing()
+    except Exception:
+        _logging.getLogger(__name__).exception("llm pricing seed failed; cost charts will show 0 until pricing is added")
 
     yield
 
@@ -175,8 +186,8 @@ async def _strip_internal_headers(request, call_next):
     return await call_next(request)
 
 
-from starlette.middleware.gzip import GzipMiddleware
-app.add_middleware(GzipMiddleware, minimum_size=1000)
+from starlette.middleware.gzip import GZipMiddleware
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 app.add_middleware(
     CORSMiddleware,
@@ -229,6 +240,15 @@ app.include_router(admin_auth_router, prefix="/api/dashboard")
 # (servers + pods CRUD, deploy/stop/restart, analytics queries).
 from routers.ops import router as ops_router  # noqa: E402 — keep ops import lazy so a missing dep doesn't crash boot
 app.include_router(ops_router, prefix="/api/dashboard")
+# Admin LLM analytics (cost, failures, fallbacks, pricing CRUD).
+# Mounted under /api/dashboard/ops/llm/* alongside the other ops admin
+# pages so the same admin-unlock token gates it.
+from routers.admin_llm import router as admin_llm_router  # noqa: E402
+app.include_router(admin_llm_router, prefix="/api/dashboard")
+# Generation feedback — user-facing thumbs (POST /feedback) + admin
+# quality dashboard aggregates (/feedback/admin/*).
+from routers.feedback import router as feedback_router  # noqa: E402
+app.include_router(feedback_router, prefix="/api/dashboard")
 # Public share/embed pages mount at the ROOT (no /api prefix) so the
 # URLs the user actually pastes into tweets/Discord are short and the
 # meta-bot crawlers (which generally only fetch the literal URL) hit

@@ -12,18 +12,22 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
+import { useConfirm } from '../../hooks/useConfirm';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { Archive, ArrowLeft, BookOpen, Clock, Loader2, MoreVertical, Pause, Play, Sparkles, Target, Trash2 } from 'lucide-react';
 import { StudioShell } from '../../components/StudioShell';
 import { AgentAvatar } from '../../components/agents/AgentAvatar';
+import { AgentCall } from '../../components/agents/AgentCall';
 import { AgentChat } from '../../components/agents/AgentChat';
+import { useAgentSession } from '../../lib/voicechat/useAgentSession';
 import { AgentConfigForm } from '../../components/agents/AgentConfigForm';
+import { ArchitectDrawer } from '../../components/agents/ArchitectDrawer';
 import { useAuth } from '../../contexts/AuthContext';
 import { agentsApi, getStoredToken } from '../../lib/agents/api';
 import { avatarGradientPairFor } from '../../data/sampleVoices';
 import type { Agent, AgentConfig, AgentRun, AgentType } from '../../lib/agents/types';
 
-type Tab = 'chat' | 'runs' | 'settings';
+type Tab = 'call' | 'chat' | 'runs' | 'settings';
 
 const STATUS_DOT: Record<Agent['status'], string> = {
   active: 'bg-emerald-400',
@@ -77,9 +81,10 @@ export function AgentDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { user } = useAuth();
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [agent, setAgent] = useState<Agent | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<Tab>('chat');
+  const [activeTab, setActiveTab] = useState<Tab>('call');
   const [token, setToken] = useState<string | null>(getStoredToken());
   const [models, setModels] = useState<{ id: string; label: string }[]>([]);
   // Track unsaved changes in the Settings tab. The form lifts this up
@@ -99,14 +104,24 @@ export function AgentDetail() {
     return () => window.removeEventListener('beforeunload', handler);
   }, [settingsDirty]);
 
-  const confirmLeaveIfDirty = (): boolean => {
+  const confirmLeaveIfDirty = async (): Promise<boolean> => {
     if (!settingsDirty) return true;
-    const ok = window.confirm('You have unsaved changes in Settings. Leave anyway?');
-    if (ok) setSettingsDirty(false); // user accepted abandonment
+    const ok = await confirm({ title: 'Unsaved Changes', message: 'You have unsaved changes in Settings. Leave anyway?', confirmLabel: 'Leave', confirmVariant: 'danger' });
+    if (ok) setSettingsDirty(false);
     return ok;
   };
 
   useEffect(() => { setToken(getStoredToken()); }, [user?.id]);
+
+  // Shared session controller — single WS / single ``started`` state
+  // across both the Call tab and the Chat tab. Without this, each tab
+  // had its own ``useVoiceChat`` and they couldn't see each other's
+  // progress, so switching from Call→Chat showed the Start button on
+  // Chat even while the Call tab's session was still active.
+  // Passing an empty agentId while the agent loads is safe — the
+  // hook stays inert (enabled=false) until the user clicks Start,
+  // which can only happen after the agent has loaded.
+  const session = useAgentSession(agent?.id ?? '', token);
 
   useEffect(() => {
     if (!id || !token) return;
@@ -144,6 +159,10 @@ export function AgentDetail() {
 
   const typeLabel = agent.type === 'goal' ? 'Goal agent' : 'Knowledge agent';
   const tabs: { id: Tab; label: string; show: boolean }[] = [
+    // Call mode is the primary voice-product experience (industry
+    // standard — ElevenLabs / Vapi / Retell all lead with it). Chat
+    // stays as the secondary text-iteration surface.
+    { id: 'call', label: 'Call', show: agent.type === 'knowledge' },
     { id: 'chat', label: 'Chat', show: agent.type === 'knowledge' },
     { id: 'runs', label: 'Runs', show: agent.type === 'goal' },
     { id: 'settings', label: 'Settings', show: true },
@@ -161,7 +180,12 @@ export function AgentDetail() {
         {/* Back link — gated by the unsaved-changes confirm dialog. */}
         <Link
           to="/studio/agents"
-          onClick={(e) => { if (!confirmLeaveIfDirty()) e.preventDefault(); }}
+          onClick={(e) => {
+            if (settingsDirty) {
+              e.preventDefault();
+              void confirmLeaveIfDirty().then((ok) => { if (ok) navigate('/studio/agents'); });
+            }
+          }}
           className="text-[#A7B0B7] hover:text-white inline-flex items-center gap-1.5 text-sm mb-3"
         >
           <ArrowLeft size={14} /> All agents
@@ -193,6 +217,12 @@ export function AgentDetail() {
                   status pulse-dot. Compact for the small-hero layout. */}
               <div className="flex items-center gap-1.5 flex-wrap">
                 <span className="text-[9px] font-semibold uppercase tracking-[0.18em] text-white/70">Agent</span>
+                <span
+                  className="inline-flex items-center px-1.5 py-0.5 rounded-md text-[9px] font-semibold uppercase tracking-[0.14em] text-indigo-300 bg-indigo-500/15 border border-indigo-400/30"
+                  title="Voice agents are in beta — features and pricing may change."
+                >
+                  Beta
+                </span>
                 <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-medium ${
                   agent.type === 'goal'
                     ? 'bg-purple-500/15 text-purple-200 border border-purple-400/30'
@@ -223,22 +253,29 @@ export function AgentDetail() {
                 <p className="text-[#A7B0B7] text-xs mt-0.5 leading-snug truncate">{agent.config.purpose}</p>
               )}
 
-              <div className="flex items-center gap-1.5 mt-1 text-[11px] text-[#A7B0B7] flex-wrap">
-                <span className="inline-flex items-center gap-1">
-                  <Play size={10} />
-                  <span className="tabular-nums text-white font-medium">{agent.run_count}</span>
-                  run{agent.run_count === 1 ? '' : 's'}
-                </span>
-                <span className="text-[#444]">·</span>
-                <span className="inline-flex items-center gap-1">
-                  <Clock size={10} />
-                  <span className="text-white">{formatRelative(agent.last_run_at)}</span>
-                </span>
-                <span className="text-[#444]">·</span>
-                <span className="text-[10px] font-mono px-1 py-0.5 rounded bg-white/[0.05] text-[#A7B0B7] border border-white/10" title={agent.config.llm_model}>
-                  {shortenModelLabel(agent.config.llm_model)}
-                </span>
-              </div>
+              {/* Footer stats — runs / last-run are GOAL-agent concepts.
+                  Knowledge (voice-chat) agents never run in that sense,
+                  so 0 runs · never · model_id was pure noise. We now
+                  show the goal-agent stats only when relevant; the LLM
+                  model lives in Settings where it belongs. */}
+              {agent.type === 'goal' && (
+                <div className="flex items-center gap-1.5 mt-1 text-[11px] text-[#A7B0B7] flex-wrap">
+                  <span className="inline-flex items-center gap-1">
+                    <Play size={10} />
+                    <span className="tabular-nums text-white font-medium">{agent.run_count}</span>
+                    run{agent.run_count === 1 ? '' : 's'}
+                  </span>
+                  <span className="text-[#444]">·</span>
+                  <span className="inline-flex items-center gap-1">
+                    <Clock size={10} />
+                    <span className="text-white">{formatRelative(agent.last_run_at)}</span>
+                  </span>
+                  <span className="text-[#444]">·</span>
+                  <span className="text-[10px] font-mono px-1 py-0.5 rounded bg-white/[0.05] text-[#A7B0B7] border border-white/10" title={agent.config.llm_model}>
+                    {shortenModelLabel(agent.config.llm_model)}
+                  </span>
+                </div>
+              )}
             </div>
           </div>
 
@@ -277,7 +314,8 @@ export function AgentDetail() {
                 type="button"
                 onClick={() => {
                   // Switching AWAY from Settings while dirty asks for confirm.
-                  if (activeTab === 'settings' && t.id !== 'settings' && !confirmLeaveIfDirty()) {
+                  if (activeTab === 'settings' && t.id !== 'settings' && settingsDirty) {
+                    void confirmLeaveIfDirty().then((ok) => { if (ok) setActiveTab(t.id); });
                     return;
                   }
                   setActiveTab(t.id);
@@ -325,13 +363,26 @@ export function AgentDetail() {
             it mounted while the user types in chat would keep
             `settingsDirty` stuck. */}
         {agent.type === 'knowledge' && (
-          <div className={activeTab === 'chat' ? '' : 'hidden'}>
-            {isAgentBlocked(agent.status) ? (
-              <AgentBlockedCard agent={agent} token={token} onUpdate={(a) => setAgent(a)} />
-            ) : (
-              <AgentChat agent={agent} authToken={token} />
-            )}
-          </div>
+          <>
+            <div className={activeTab === 'call' ? '' : 'hidden'}>
+              {isAgentBlocked(agent.status) ? (
+                <AgentBlockedCard agent={agent} token={token} onUpdate={(a) => setAgent(a)} />
+              ) : (
+                <AgentCall
+                  agent={agent}
+                  session={session}
+                  onSwitchToChat={() => setActiveTab('chat')}
+                />
+              )}
+            </div>
+            <div className={activeTab === 'chat' ? '' : 'hidden'}>
+              {isAgentBlocked(agent.status) ? (
+                <AgentBlockedCard agent={agent} token={token} onUpdate={(a) => setAgent(a)} />
+              ) : (
+                <AgentChat agent={agent} session={session} />
+              )}
+            </div>
+          </>
         )}
         {agent.type === 'goal' && (
           <div className={activeTab === 'runs' ? '' : 'hidden'}>
@@ -368,6 +419,7 @@ function KebabMenu({
   onUpdate: (a: Agent) => void;
   onDelete: () => void;
 }) {
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -404,7 +456,7 @@ function KebabMenu({
   const remove = async () => {
     if (!token) return;
     setOpen(false);
-    if (!window.confirm(`Delete agent "${agent.name}"? This can't be undone.`)) return;
+    if (!await confirm({ title: 'Delete Agent', message: `Delete agent "${agent.name}"? This can't be undone.`, confirmLabel: 'Delete', confirmVariant: 'danger' })) return;
     setBusy(true);
     try {
       await agentsApi.remove(token, agent.id);
@@ -456,6 +508,7 @@ function KebabMenu({
           </button>
         </div>
       )}
+      {confirmDialog}
     </div>
   );
 }
@@ -475,11 +528,28 @@ function SettingsTab({
   onUpdated: (a: Agent) => void;
   onDirtyChange: (dirty: boolean) => void;
 }) {
+  // Migrate legacy agents that pre-date the ``first_message`` feature:
+  // their config_json has no key, so the editable input would show empty
+  // and silently propagate that as "user wants silent start" on the
+  // next save. Backfill with the default greeting on the EDIT side so
+  // the user sees what the runtime backend is using and can keep,
+  // change, or explicitly clear it.
+  const hydrateConfig = (c: AgentConfig): AgentConfig =>
+    c.first_message === undefined
+      ? { ...c, first_message: 'Hello, how may I assist you today?' }
+      : c;
+
   const [name, setName] = useState(agent.name);
   const [type, setType] = useState<AgentType>(agent.type);
-  const [config, setConfig] = useState<AgentConfig>(agent.config);
+  const [config, setConfig] = useState<AgentConfig>(() => hydrateConfig(agent.config));
   const [saveState, setSaveState] = useState<SaveState>({ kind: 'idle' });
   const [dirty, setDirty] = useState(false);
+  // Architect drawer for refining the existing agent in natural
+  // language. Same drawer used by AgentBuilder; here it patches the
+  // local edit state and flips ``dirty`` so the user reviews the
+  // change in the form and saves explicitly — we never auto-save
+  // architect drafts on top of a live agent.
+  const [architectOpen, setArchitectOpen] = useState(false);
 
   // Lift dirty state up so the parent can guard navigation.
   useEffect(() => { onDirtyChange(dirty); }, [dirty, onDirtyChange]);
@@ -492,7 +562,7 @@ function SettingsTab({
     if (dirty) return;
     setName(agent.name);
     setType(agent.type);
-    setConfig(agent.config);
+    setConfig(hydrateConfig(agent.config));
   }, [agent.id, agent.updated_at]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const save = async () => {
@@ -528,7 +598,30 @@ function SettingsTab({
   }, [dirty]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <div className="max-w-3xl space-y-4 pb-28">
+    <div
+      className={`max-w-3xl space-y-4 pb-28 transition-[margin] duration-200 ${
+        architectOpen ? 'lg:ml-auto lg:mr-[420px]' : ''
+      }`}
+    >
+      {/* Architect launcher — sits above the form so the user sees
+          "Ask Architect" before scrolling. Disabled while a save is
+          in flight to avoid concurrent edits. */}
+      <div className="flex items-center justify-end">
+        <button
+          type="button"
+          onClick={() => setArchitectOpen((v) => !v)}
+          className={`inline-flex items-center gap-2 rounded-xl px-3.5 py-2 text-xs font-medium border transition-colors ${
+            architectOpen
+              ? 'bg-[#DFFF00]/15 text-[#DFFF00] border-[#DFFF00]/30'
+              : 'bg-white/[0.04] hover:bg-white/[0.08] text-white border-white/10'
+          }`}
+          title="Refine this agent in natural language"
+        >
+          <Sparkles size={13} />
+          {architectOpen ? 'Hide Architect' : 'Ask Architect'}
+        </button>
+      </div>
+
       <AgentConfigForm
         name={name}
         type={type}
@@ -557,11 +650,26 @@ function SettingsTab({
 
       {/* Sticky save bar. Anchored to the viewport bottom while the user
           scrolls the form, so the action is always reachable. Shows
-          quiet state when saved, urgent amber tinge when unsaved. */}
+          quiet state when saved, urgent amber tinge when unsaved.
+          Shifts left when the Architect drawer is open so the action
+          stays reachable instead of hiding under the drawer. */}
       <SaveBar
         dirty={dirty}
         saveState={saveState}
         onSave={() => void save()}
+        shifted={architectOpen}
+      />
+
+      <ArchitectDrawer
+        open={architectOpen}
+        onClose={() => setArchitectOpen(false)}
+        current={{ name, type, config }}
+        onApply={(next) => {
+          setName(next.name);
+          setType(next.type);
+          setConfig(hydrateConfig(next.config));
+          setDirty(true);
+        }}
       />
     </div>
   );
@@ -571,10 +679,14 @@ function SaveBar({
   dirty,
   saveState,
   onSave,
+  shifted = false,
 }: {
   dirty: boolean;
   saveState: SaveState;
   onSave: () => void;
+  /** When the Architect drawer is open on ≥ lg, shift this bar left
+   *  so the drawer doesn't sit on top of the Save button. */
+  shifted?: boolean;
 }) {
   const saving = saveState.kind === 'saving';
   // Hide the bar entirely when there's nothing to communicate. We show
@@ -589,7 +701,13 @@ function SaveBar({
     saveState.kind === 'error';
   if (!shouldShow) return null;
   return (
-    <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 max-w-3xl w-[calc(100%-2rem)] pointer-events-none">
+    <div
+      className={`fixed bottom-4 z-40 max-w-3xl w-[calc(100%-2rem)] pointer-events-none transition-[left,transform] duration-200 ${
+        shifted
+          ? 'left-1/2 -translate-x-1/2 lg:left-auto lg:right-[440px] lg:translate-x-0'
+          : 'left-1/2 -translate-x-1/2'
+      }`}
+    >
       <div className={`pointer-events-auto rounded-2xl border backdrop-blur-md shadow-2xl shadow-black/40 px-4 py-3 flex items-center gap-3 transition-colors ${
         dirty
           ? 'border-amber-400/30 bg-[#1a1308]/90'
@@ -806,6 +924,7 @@ function RunsTab({ agent, token }: { agent: Agent; token: string | null }) {
           ))}
         </div>
       )}
+      {confirmDialog}
     </div>
   );
 }

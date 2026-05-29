@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import { useConfirm } from '../hooks/useConfirm';
 import {
   Plus, Play, Pause, Trash2, Upload, Music, X, GripVertical,
   Shuffle, ListMusic, Globe, Lock, Check, ThumbsUp, MoreHorizontal,
@@ -251,9 +252,12 @@ function PlaybookListView() {
     setPublicPlaybooks((list) => list.map((p) => p.id === id ? { ...p, play_count: p.play_count + 1 } : p));
   }, []);
 
-  const handlePlayAll = async (pb: Playbook) => {
-    if (!token || pb.track_count === 0) return;
+  const handlePlayAll = async (pb: Playbook | PublicPlaybook) => {
+    if (pb.track_count === 0) return;
     try {
+      // ``getPlaybook`` accepts a null token — public playbooks are
+      // readable anonymously, so this also works for signed-out visitors
+      // browsing the Community section.
       const detail = await dashboardApi.getPlaybook(pb.id, token);
       const tracks: Track[] = detail.tracks.map(t => ({
         src: t.audio_url, title: t.title, subtitle: t.subtitle, image: t.image_url || fallbackCoverFor(`track-${t.id}`),
@@ -266,33 +270,31 @@ function PlaybookListView() {
     } catch { /* */ }
   };
 
-  if (!user) {
-    return (
-      <div className="text-center py-20">
-        <ListMusic size={40} className="mx-auto text-[#333] mb-3" />
-        <p className="text-[#666]">Sign in to create playbooks.</p>
-      </div>
-    );
-  }
-
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-2xl font-bold">Playbooks</h2>
-          <p className="text-sm text-[#666] mt-1">Collect and organize your tracks into playlists.</p>
+      {user ? (
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-2xl font-bold">Playbooks</h2>
+            <p className="text-sm text-[#666] mt-1">Collect and organize your tracks into playlists.</p>
+          </div>
+          <button
+            onClick={handleCreate}
+            disabled={creating}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white text-[#07080A] text-sm font-semibold hover:bg-white/90 transition-colors disabled:opacity-50"
+          >
+            <Plus size={16} />
+            New Playbook
+          </button>
         </div>
-        <button
-          onClick={handleCreate}
-          disabled={creating}
-          className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white text-[#07080A] text-sm font-semibold hover:bg-white/90 transition-colors disabled:opacity-50"
-        >
-          <Plus size={16} />
-          New Playbook
-        </button>
-      </div>
+      ) : (
+        <div>
+          <h2 className="text-2xl font-bold">Community Playbooks</h2>
+          <p className="text-sm text-[#666] mt-1">Listen to playbooks shared by the Vocence community. Sign in to create your own.</p>
+        </div>
+      )}
 
-      {loading ? (
+      {!user ? null : loading ? (
         <div className="flex items-center justify-center py-20 text-[#666]">Loading...</div>
       ) : playbooks.length === 0 ? (
         <div className="text-center py-20 border border-dashed border-[#2e2f33] rounded-2xl">
@@ -339,13 +341,18 @@ function PlaybookListView() {
       {/* Public playbooks — sorted by thumb-up count (server). Two
           views: a Spotify/Suno-style grid (cards with hover-overlay
           actions) and a compact list (table-like, dense). Both keep
-          the top-3 rank-badge treatment. */}
+          the top-3 rank-badge treatment.
+          For signed-out viewers this is the primary content, so we
+          drop the border-t separator (no "My Playbooks" above it). */}
+      {!user && loading && (
+        <div className="flex items-center justify-center py-20 text-[#666]">Loading...</div>
+      )}
       {publicPlaybooks.length > 0 && (
-        <div className="pt-6 border-t border-[#2e2f33]">
+        <div className={user ? 'pt-6 border-t border-[#2e2f33]' : ''}>
           <div className="flex items-center gap-2 mb-4">
             <Globe size={14} className="text-[#666]" />
-            <h3 className="text-sm font-semibold text-white">Community Playbooks</h3>
-            <span className="text-xs text-[#444]">· top picks</span>
+            <h3 className="text-sm font-semibold text-white">{user ? 'Community Playbooks' : 'Top Picks'}</h3>
+            {user && <span className="text-xs text-[#444]">· top picks</span>}
 
             {/* Grid/list toggle. The chosen mode is persisted to
                 localStorage so the preference survives reloads. */}
@@ -716,6 +723,7 @@ function PlaybookDetailView({ playbookId }: { playbookId: number }) {
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleVal, setTitleVal] = useState('');
   const titleRef = useRef<HTMLInputElement>(null);
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [showCoverPicker, setShowCoverPicker] = useState(false);
 
   const token = localStorage.getItem('vocence_token');
@@ -729,7 +737,9 @@ function PlaybookDetailView({ playbookId }: { playbookId: number }) {
   const trackMenuRef = useRef<HTMLDivElement | null>(null);
 
   const load = useCallback(async () => {
-    if (!token) return;
+    // Public playbooks are readable anonymously, so this works for
+    // signed-out viewers too. The backend returns 403 for private
+    // playbooks without a token — we navigate back to the list.
     try {
       const pb = await dashboardApi.getPlaybook(playbookId, token);
       setPlaybook(pb);
@@ -806,7 +816,8 @@ function PlaybookDetailView({ playbookId }: { playbookId: number }) {
   };
 
   const handleDelete = async () => {
-    if (!token || !playbook || !confirm('Delete this playbook?')) return;
+    if (!token || !playbook) return;
+    if (!await confirm({ title: 'Delete Playbook', message: `Delete "${playbook.title}"? This cannot be undone.`, confirmLabel: 'Delete', confirmVariant: 'danger' })) return;
     await dashboardApi.deletePlaybook(playbook.id, token);
     navigate('/studio/playbooks');
   };
@@ -1300,6 +1311,7 @@ function PlaybookDetailView({ playbookId }: { playbookId: number }) {
           }}
         />
       )}
+      {confirmDialog}
     </div>
   );
 }

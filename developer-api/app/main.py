@@ -18,6 +18,7 @@ app = FastAPI(
         {"name": "TTS", "description": "Synthesize speech from text. Pick a voice or use a saved voice id."},
         {"name": "STT", "description": "Transcribe speech to text via Whisper."},
         {"name": "Voice Clone", "description": "One-shot voice cloning from a reference audio clip."},
+        {"name": "Audio", "description": "Audio enhancement and noise reduction."},
         {"name": "Agents", "description": "CRUD + voice WebSocket session for your Studio agents."},
         {"name": "Voices", "description": "Manage saved designed / cloned voices and synthesize with them."},
         {"name": "Custom Tools", "description": "Register webhook tools your agents can call mid-conversation."},

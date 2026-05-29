@@ -27,7 +27,7 @@ const HISTORY_PAGE_SIZE = 10;
 
 interface HistoryItem {
   id: string;
-  type: 'tts' | 'stt' | 'cloning' | 'voice_design' | 'music';
+  type: 'tts' | 'stt' | 'cloning' | 'voice_design' | 'music' | 'noise_remover';
   timestamp: string;
   date: string;
   content: string;
@@ -138,7 +138,9 @@ export function History() {
                   ? 'voice_design'
                   : item.entry_type === 'music'
                     ? 'music'
-                    : 'tts';
+                    : item.entry_type === 'noise_remover' || item.entry_type === 'noise_remover'
+                      ? 'noise_remover'
+                      : 'tts';
           const isCloneLike = item.entry_type === 'clone' || item.entry_type === 'voice_design';
           // Parse music metadata into a plain object so the expandable
           // row can render task-specific fields without each consumer
@@ -163,14 +165,18 @@ export function History() {
               ? item.target_text || item.prompt_text || ''
               : item.entry_type === 'stt'
                 ? item.transcribed_text || item.source_audio_filename || ''
-                : item.prompt_text || '',
+                : item.entry_type === 'noise_remover'
+                  ? item.source_audio_filename || 'Audio enhancement'
+                  : item.prompt_text || '',
             stylePrompt: isCloneLike
               ? (item.reference_text || '').slice(0, 120) + ((item.reference_text || '').length > 120 ? '…' : '')
               : item.entry_type === 'stt'
                 ? item.source_language || 'auto-detect'
                 : item.entry_type === 'music'
                   ? musicTaskLabel
-                  : item.style_instruction,
+                  : item.entry_type === 'noise_remover'
+                    ? 'Noise reduction'
+                    : item.style_instruction,
             model: item.display_name,
             meta:
               item.entry_type === 'voice_design'
@@ -181,7 +187,9 @@ export function History() {
                     ? item.source_audio_filename || 'Studio STT'
                     : item.entry_type === 'music'
                       ? `Studio Music · ${musicTaskLabel}`
-                      : 'Studio TTS',
+                      : item.entry_type === 'noise_remover'
+                        ? 'Noise Remover · DeepFilterNet'
+                        : 'Studio TTS',
             duration: item.duration_seconds != null ? `${item.duration_seconds.toFixed(1)}s` : '—',
             audioUrl: item.audio_url,
             expired: item.expired,
@@ -192,7 +200,9 @@ export function History() {
                   ? '?entry_type=voice_design'
                   : item.entry_type === 'music'
                     ? '?entry_type=music'
-                    : '',
+                    : item.entry_type === 'noise_remover'
+                      ? '?entry_type=noise_remover'
+                      : '',
             musicTask: item.music_task || undefined,
             lyrics: item.lyrics || undefined,
             musicMeta,
@@ -244,6 +254,8 @@ export function History() {
         return 'bg-violet-500/15 text-violet-400';
       case 'music':
         return 'bg-pink-500/15 text-pink-300';
+      case 'noise_remover':
+        return 'bg-amber-500/15 text-amber-300';
       default:
         return 'bg-white/10 text-white';
     }
@@ -257,6 +269,8 @@ export function History() {
         return 'MY VOICE';
       case 'music':
         return 'MUSIC';
+      case 'noise_remover':
+        return 'NOISE REMOVER';
       default:
         return type.toUpperCase();
     }
@@ -385,6 +399,7 @@ export function History() {
                 <SelectItem value="cloning">Voice clone</SelectItem>
                 <SelectItem value="voice_design">My voice (Voice Design)</SelectItem>
                 <SelectItem value="music">Music</SelectItem>
+                <SelectItem value="noise_remover">Noise Remover</SelectItem>
               </SelectContent>
             </Select>
           </div>

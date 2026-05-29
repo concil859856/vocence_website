@@ -319,6 +319,21 @@ SCHEMA_SQL = [
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS studio_noise_remover_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        source_audio_filename TEXT NOT NULL DEFAULT '',
+        audio_s3_bucket TEXT NOT NULL,
+        audio_s3_key TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        credits_used INTEGER NOT NULL DEFAULT 5,
+        latency_ms INTEGER,
+        status TEXT NOT NULL DEFAULT 'completed',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS studio_voice_design_previews (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id TEXT NOT NULL,
@@ -513,6 +528,104 @@ SCHEMA_SQL = [
         FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
     )
     """,
+    # Per-call LLM telemetry. Every chat/stream call from llm_client.py
+    # writes one row (or one row per attempt when fallback fires).
+    #
+    # ``mode`` is 'chat' (non-streaming) or 'stream'. ``fallback_from``
+    # is the provider of the prior attempt when this call is a fallback
+    # ladder rung — e.g. when Cerebras 429s and Grok takes over,
+    # the Grok row has fallback_from='cerebras'. ``rate_limited`` and
+    # ``timed_out`` are derived booleans for fast filtering — the
+    # canonical truth is in ``http_status``/``error_message``.
+    #
+    # ``cost_usd`` is computed at insert time from llm_pricing — if no
+    # price row exists for (provider, model) it stays NULL and the row
+    # is still useful for failure/latency analysis. ``user_id`` /
+    # ``agent_id`` may be NULL for system calls (voice design, summaries).
+    """
+    CREATE TABLE IF NOT EXISTS llm_calls (
+        id TEXT PRIMARY KEY,
+        provider TEXT NOT NULL,              -- 'cerebras'|'xai'|'groq'|'openai'|'chutes'|'local'
+        model TEXT NOT NULL,
+        mode TEXT NOT NULL,                  -- 'chat' | 'stream'
+        status TEXT NOT NULL,                -- 'ok'|'error'|'empty'
+        http_status INTEGER,                 -- transport-level status, NULL if connect failed
+        rate_limited INTEGER NOT NULL DEFAULT 0,  -- 1 when http_status=429
+        timed_out INTEGER NOT NULL DEFAULT 0,     -- 1 when underlying request timed out
+        latency_ms INTEGER,                  -- wall time from request start to call end
+        ttft_ms INTEGER,                     -- streaming only: time to first delta
+        prompt_tokens INTEGER,
+        completion_tokens INTEGER,
+        total_tokens INTEGER,
+        cost_usd REAL,                       -- NULL when no llm_pricing row matches
+        fallback_from TEXT,                  -- previous provider if this is a fallback rung
+        fallback_reason TEXT,                -- short label, e.g. 'cerebras_429', 'cerebras_timeout'
+        user_id TEXT,                        -- nullable: NULL for system/background calls
+        agent_id TEXT,                       -- nullable: agent that triggered this call
+        error_message TEXT,                  -- truncated to 500 chars at insert
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+    """,
+    # Per-provider/model pricing. ``input_per_1m`` and ``output_per_1m``
+    # are USD per million tokens for prompt / completion respectively
+    # (matches every major provider's published pricing format). The
+    # admin UI edits this table directly; llm_logging.record_call reads
+    # it on every write to compute cost_usd.
+    """
+    CREATE TABLE IF NOT EXISTS llm_pricing (
+        provider TEXT NOT NULL,
+        model TEXT NOT NULL,
+        input_per_1m REAL NOT NULL,          -- USD per 1M prompt tokens
+        output_per_1m REAL NOT NULL,         -- USD per 1M completion tokens
+        notes TEXT,                          -- e.g. 'public price 2026-05-29; private discount: 30%'
+        active INTEGER NOT NULL DEFAULT 1,   -- 0 = retired entry, kept for historical cost lookup
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (provider, model)
+    )
+    """,
+    # User-facing thumbs-up/down on a single generation output. One row
+    # per (user, entry_type, entry_id) — a user can change their vote
+    # by replacing the row (UPSERT). entry_type matches the StudioHistory
+    # categories: 'tts'|'stt'|'clone'|'voice_design'|'music'|
+    # 'noise_remover'|'agent_call'|'agent_message'. entry_id is the
+    # primary key of the corresponding history table for that type
+    # (integer id) — or, for agent_message, the message id from the
+    # voicechat session log.
+    """
+    CREATE TABLE IF NOT EXISTS generation_feedback (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        entry_type TEXT NOT NULL,
+        entry_id TEXT NOT NULL,              -- TEXT so it works for both INT and UUID keyspaces
+        rating INTEGER NOT NULL,             -- 1 = thumbs up, -1 = thumbs down
+        comment TEXT,                        -- optional short reason ('robotic', 'wrong language', etc.)
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE (user_id, entry_type, entry_id),
+        FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
+    )
+    """,
+    # Auth event log — distinct from auth_history (which is the user's
+    # action history, mis-named). Captures login/logout/failed-attempts
+    # with IP / user-agent / country so admins can spot brute force,
+    # geographic anomalies, and account-takeover signals.
+    #
+    # user_id is NULL for failed attempts when the email didn't match
+    # an account (so we don't expose existence via failed-login analytics).
+    """
+    CREATE TABLE IF NOT EXISTS auth_login_events (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,                  -- 'login_ok'|'login_fail'|'logout'|'token_refresh'
+        user_id TEXT,
+        email_attempted TEXT,                -- present for failed attempts (lowercased)
+        ip TEXT,
+        country TEXT,                        -- ISO-3166 alpha-2, derived from IP at write time if avail
+        user_agent TEXT,
+        reason TEXT,                         -- 'bad_password'|'unknown_email'|'oauth'|'manual_logout'|...
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE SET NULL
+    )
+    """,
 ]
 
 
@@ -537,6 +650,7 @@ INDEX_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_api_request_logs_key_time ON api_request_logs (api_key_id, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_api_request_logs_user_time ON api_request_logs (user_id, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_studio_music_history_user_id ON studio_music_history (user_id, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_studio_noise_remover_history_user_id ON studio_noise_remover_history (user_id, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_studio_voice_design_previews_user ON studio_voice_design_previews (user_id, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_studio_user_designed_voices_user ON studio_user_designed_voices (user_id, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_playbooks_user_id ON playbooks (user_id, created_at DESC)",
@@ -567,6 +681,22 @@ INDEX_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_agent_custom_tools_user ON agent_custom_tools (user_id, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_agent_custom_tool_bindings_agent ON agent_custom_tool_bindings (agent_id)",
     "CREATE INDEX IF NOT EXISTS idx_agent_custom_tool_bindings_tool ON agent_custom_tool_bindings (tool_id)",
+    # LLM telemetry — index the four common admin query shapes.
+    "CREATE INDEX IF NOT EXISTS idx_llm_calls_created ON llm_calls (created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_llm_calls_provider_time ON llm_calls (provider, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_llm_calls_status_time ON llm_calls (status, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_llm_calls_agent_time ON llm_calls (agent_id, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_llm_calls_user_time ON llm_calls (user_id, created_at DESC)",
+    # generation_feedback: per-entry lookups (already enforced UNIQUE) +
+    # per-user history (for "voices you've rated" type views).
+    "CREATE INDEX IF NOT EXISTS idx_generation_feedback_entry ON generation_feedback (entry_type, entry_id)",
+    "CREATE INDEX IF NOT EXISTS idx_generation_feedback_user_time ON generation_feedback (user_id, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_generation_feedback_type_rating ON generation_feedback (entry_type, rating, created_at DESC)",
+    # Auth login events: by time (for the global feed) and by user (for
+    # per-user security drill-down).
+    "CREATE INDEX IF NOT EXISTS idx_auth_login_events_time ON auth_login_events (created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_auth_login_events_user_time ON auth_login_events (user_id, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_auth_login_events_kind_time ON auth_login_events (kind, created_at DESC)",
 ]
 
 
@@ -585,23 +715,27 @@ PLAN_SEEDS = [
         "features_json": json.dumps(
             [
                 "300 free credits when you register",
-                "TTS, STT, Voice Cloning, Music Generation",
+                "TTS, STT, Voice Cloning, Music, Noise Remover",
+                "Voice Agents — pay-per-minute",
                 "Up to 5 custom voices (Voice Design)",
                 "Generation history saved for 7 days",
-                "Best for light usage and personal projects",
             ]
         ),
         "cta_label": "Buy credits",
+        # Crypto: 20% more credits per dollar (400 cr/$ vs 333 cr/$ card).
         "crypto_price_usd": 20.0,
-        "crypto_credits_included": 7000,
+        "crypto_credits_included": 8000,
     },
     {
         "code": "premium",
         "name": "Premium",
         "price_usd": 24.0,
         "billing_type": "credits",
-        "credits_included": 10000,
-        "credits_per_pack": 10000,
+        # Same cr/$ rate as Normal — predictable pricing, no volume
+        # discount on top of the existing crypto bonus. (Was 10K, now 8K
+        # so the per-dollar rate matches Normal exactly.)
+        "credits_included": 8000,
+        "credits_per_pack": 8000,
         "price_subtitle": "one-time pack",
         "description": "High-volume credit pack for active creators.",
         "sort_order": 2,
@@ -611,7 +745,7 @@ PLAN_SEEDS = [
                 "Everything in Normal, plus:",
                 "Generation history never expires",
                 "Unlimited custom voices (Voice Design)",
-                "Developer API access (TTS, STT, Clone, Music)",
+                "Developer API access (TTS, STT, Clone, Music, Voice Agents)",
                 "Ideal for teams, creators, and production workflows",
             ]
         ),
@@ -698,6 +832,23 @@ async def seed_pricing_plans(conn: aiosqlite.Connection) -> None:
 async def ensure_tables() -> None:
     conn = await get_connection()
     try:
+        # Rename the dubbing table to noise_remover BEFORE CREATE TABLE
+        # IF NOT EXISTS runs — otherwise CREATE makes a fresh empty
+        # noise_remover table next to the old populated dubbing table.
+        # Only renames if dubbing exists and noise_remover doesn't.
+        try:
+            cur = await conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('studio_dubbing_history','studio_noise_remover_history')"
+            )
+            existing_names = {row["name"] for row in await cur.fetchall()}
+            if "studio_dubbing_history" in existing_names and "studio_noise_remover_history" not in existing_names:
+                await conn.execute("ALTER TABLE studio_dubbing_history RENAME TO studio_noise_remover_history")
+        except Exception:
+            # Best-effort migration; if it fails the CREATE below just
+            # makes the new table empty and old data is orphaned. Logged
+            # by the connection driver if it happened.
+            pass
+
         for statement in SCHEMA_SQL:
             await conn.execute(statement)
 
@@ -752,7 +903,11 @@ async def ensure_tables() -> None:
         )
 
         # Referral system columns on auth_users.
-        await _ensure_column(conn, "auth_users", "referral_code", "referral_code TEXT UNIQUE")
+        await _ensure_column(conn, "auth_users", "referral_code", "referral_code TEXT")
+        await conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_users_referral_code "
+            "ON auth_users(referral_code) WHERE referral_code IS NOT NULL"
+        )
         await _ensure_column(conn, "auth_users", "referred_by", "referred_by TEXT")
         await _ensure_column(conn, "auth_users", "referral_activated", "referral_activated INTEGER NOT NULL DEFAULT 0")
 

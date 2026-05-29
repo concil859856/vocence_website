@@ -628,6 +628,155 @@ _BARE_URL = re.compile(r"\bhttps?://\S+", re.IGNORECASE)
 _WS_COLLAPSE = re.compile(r"[ \t]+")
 
 
+class JsonLeakFilter:
+    """Strip inline JSON tool-call leakage from LLM content streams.
+
+    Some open-weight models (notably gpt-oss-120b on Cerebras) emit
+    tool calls and tool-call results AS PLAIN CONTENT instead of via
+    the OpenAI ``delta.tool_calls`` field. The result: garbage like
+    ``{"query": "..."}{"query": "...", "results": []}`` ends up in
+    the chat bubble AND gets spoken by TTS.
+
+    This filter watches the streamed content, balances braces, and
+    when a complete top-level ``{...}`` block looks like a tool-call
+    or tool-result envelope (keys: query/answer/results/name/
+    arguments), it discards the whole block. Non-tool-looking JSON
+    (e.g. someone asking about JSON syntax) passes through.
+
+    State carries across ``feed()`` calls because OpenAI-style SSE
+    fragments content into small deltas — a single JSON blob arrives
+    as many separate chunks.
+
+    Edge cases handled:
+      - Strings containing braces don't confuse the depth counter
+      - Escape sequences inside strings
+      - Unterminated JSON at end of stream (flushed as content)
+      - Mixed content + JSON in the same delta
+    """
+
+    # Key sets that mark a JSON object as a leaked tool call / result.
+    # Conservative on purpose — we'd rather pass a borderline blob than
+    # eat legitimate JSON the user asked about.
+    _TOOL_LEAK_INDICATORS = (
+        frozenset({"query"}),                           # web_search args
+        frozenset({"query", "results"}),                # web_search result
+        frozenset({"query", "answer"}),                 # web_search w/ answer
+        frozenset({"query", "answer", "results"}),
+        frozenset({"name", "arguments"}),               # raw OpenAI tool-call shape
+        frozenset({"tool_call"}),
+        frozenset({"function"}),
+        frozenset({"url"}),                             # fetch_url args
+        frozenset({"location"}),                        # get_weather args
+        frozenset({"city"}),
+        frozenset({"timezone"}),                        # get_time args
+        frozenset({"title"}),                           # wikipedia_lookup args
+    )
+
+    def __init__(self) -> None:
+        self._buffer = ""
+        self._brace_depth = 0
+        self._in_string = False
+        self._escape_next = False
+
+    @property
+    def in_json(self) -> bool:
+        return self._brace_depth > 0
+
+    def feed(self, delta: str) -> str:
+        """Consume a content delta, return whatever's safe to emit.
+        May return empty if the entire delta was buffered as in-flight JSON."""
+        if not delta:
+            return ""
+        output = []
+        for ch in delta:
+            if self._brace_depth > 0:
+                # Inside a buffered JSON object.
+                self._buffer += ch
+                if self._escape_next:
+                    self._escape_next = False
+                elif self._in_string:
+                    if ch == "\\":
+                        self._escape_next = True
+                    elif ch == '"':
+                        self._in_string = False
+                else:
+                    if ch == '"':
+                        self._in_string = True
+                    elif ch == "{":
+                        self._brace_depth += 1
+                    elif ch == "}":
+                        self._brace_depth -= 1
+                        if self._brace_depth == 0:
+                            # JSON object closed — decide.
+                            blob = self._buffer
+                            self._buffer = ""
+                            if not self._looks_like_tool_leak(blob):
+                                output.append(blob)
+            else:
+                if ch == "{":
+                    # Enter buffering mode.
+                    self._brace_depth = 1
+                    self._in_string = False
+                    self._escape_next = False
+                    self._buffer = "{"
+                elif ch == "}":
+                    # Stray closing brace at top level — almost
+                    # certainly debris from a malformed tool-call leak
+                    # the LLM emitted (we saw ``}Taomind is …`` in
+                    # production after the inner JSON was filtered
+                    # but an extra ``}`` carried through). Real prose
+                    # never legitimately starts a sentence with ``}``.
+                    # We don't drop ``]`` similarly because real text
+                    # uses ``[examples like this]`` and losing the
+                    # closing bracket would corrupt the message.
+                    continue
+                else:
+                    output.append(ch)
+        return "".join(output)
+
+    def flush(self) -> str:
+        """Drain any unterminated buffer as content (graceful fallback
+        when the LLM ends a stream mid-JSON — better to leak a partial
+        than to eat it silently)."""
+        if self._brace_depth == 0:
+            return ""
+        out = self._buffer
+        self._buffer = ""
+        self._brace_depth = 0
+        self._in_string = False
+        self._escape_next = False
+        # Don't risk emitting a partial tool-call leak either. If it
+        # looks like one (incomplete but recognizable), drop it.
+        if self._looks_partial_tool_leak(out):
+            return ""
+        return out
+
+    @classmethod
+    def _looks_like_tool_leak(cls, blob: str) -> bool:
+        try:
+            obj = json.loads(blob)
+        except Exception:
+            return False
+        if not isinstance(obj, dict):
+            return False
+        keys = frozenset(obj.keys())
+        for indicator in cls._TOOL_LEAK_INDICATORS:
+            if indicator.issubset(keys):
+                return True
+        return False
+
+    @classmethod
+    def _looks_partial_tool_leak(cls, partial: str) -> bool:
+        """Heuristic for unterminated JSON. If the prefix matches a
+        recognized tool-call key, treat it as a leak."""
+        head = partial.lstrip("{").lstrip().lstrip('"')
+        for indicator in cls._TOOL_LEAK_INDICATORS:
+            for key in indicator:
+                if head.startswith(key + '"') or head.startswith(key):
+                    return True
+        return False
+
+
 def sanitize_for_tts(text: str) -> str:
     """Strip markdown decorations and inline URLs before sending text to
     the TTS engine. The frontend chat bubbles still receive the original
@@ -872,11 +1021,15 @@ class _RefNotCachedRetry(Exception):
 
 
 def _clone_ws_url_and_headers(pod_url: str | None = None, pod_api_key: str | None = None) -> tuple[str, dict]:
-    """Return (ws_url, headers) for the cloned-voice TTS service.
+    """Return (ws_url, headers) for voice-clone streaming.
+
+    The qwen3-tts-streaming server exposes ``/v1/voice-clone/stream``
+    for ref-audio clone requests (separate from ``/v1/tts/stream`` for
+    built-in speaker names). Both live on the same server / ops service
+    (``tts_streaming``).
 
     When ``pod_url``/``pod_api_key`` are provided (dispatcher path), build
-    from those. Otherwise fall back to QWEN3_CLONE_BASE_URL + QWEN3_CLONE_API_KEY
-    (legacy single-server path)."""
+    from those. Otherwise fall back to QWEN3_CLONE_BASE_URL + QWEN3_CLONE_API_KEY."""
     base = (pod_url or QWEN3_CLONE_BASE_URL).rstrip("/")
     ws_url = (
         base.replace("http://", "ws://").replace("https://", "wss://")
@@ -919,31 +1072,20 @@ async def _stream_clone_via_service(
     """
     hash_hex = hashlib.sha256(ref_audio_bytes).hexdigest()
 
-    # Dispatcher: pick a pod from the ops gpu_pool if any are registered.
-    # Falls back to the static QWEN3_CLONE_BASE_URL env when no pods exist
-    # (single-server legacy setups still work). When pods exist but the
-    # 2*N global cap is reached, NoCapacity propagates as a 503 to the user.
+    # Dispatcher: pick a tts_streaming pod from the ops gpu_pool if any
+    # are registered. Falls back to the static QWEN3_TTS_BASE_URL env
+    # when no pods exist (single-server setups still work).
     pod_cm = None
     pod_url: str | None = None
     pod_api_key: str | None = None
     try:
-        from ops import pool as gpu_pool  # local import: ops module is optional
+        from ops import pool as gpu_pool
         if gpu_pool.online_pod_count("tts_streaming") > 0:
             pod_cm = gpu_pool.pick_pod("tts_streaming")
             pod = await pod_cm.__aenter__()
             pod_url = pod.url
             pod_api_key = pod.api_key or None
-    except Exception as e:
-        # ops module not loaded OR pool truly busy. If pool busy (NoCapacity)
-        # AND we had online pods, that's a real 503 — re-raise. Else fall back.
-        try:
-            from ops.pool import NoCapacity
-            if isinstance(e, NoCapacity):
-                # Re-raise so the caller surfaces server_busy to the user.
-                raise
-        except ImportError:
-            pass
-        # ops package import failed or non-NoCapacity error: fall through to legacy URL.
+    except Exception:
         pod_cm = None
 
     try:
@@ -1149,9 +1291,16 @@ async def _stream_clone_with_refs(
     warmer: TtsWsWarmer | None = None,
 ) -> AsyncIterator[TtsChunk]:
     """Clone-based TTS given raw reference audio bytes + transcript.
-    Prefers the streaming service; falls back to direct one-shot synth
-    on transport error."""
-    if QWEN3_CLONE_BASE_URL:
+    Uses the ``/v1/voice-clone/stream`` endpoint on the tts_streaming
+    server; falls back to direct one-shot synth on transport error."""
+    has_streaming = bool(QWEN3_CLONE_BASE_URL)
+    if not has_streaming:
+        try:
+            from ops import pool as gpu_pool
+            has_streaming = gpu_pool.online_pod_count("tts_streaming") > 0
+        except Exception:
+            pass
+    if has_streaming:
         try:
             async for chunk in _stream_clone_via_service(text, ref_audio, ref_text, language, warmer=warmer):
                 yield chunk
@@ -1298,12 +1447,33 @@ TTS_PREWARM_ENABLED = (os.environ.get("TTS_PREWARM_ENABLED") or "1").strip() not
 
 
 def make_tts_warmer_for_voice(voice: str | None) -> TtsWsWarmer | None:
-    """Build a TtsWsWarmer pointing at whichever TTS service ``voice``
-    will hit. Returns None if the chosen service isn't configured OR if
-    ``TTS_PREWARM_ENABLED=0`` (in which case the streamers open a fresh
-    WS per chunk — same code path that existed before the warmer landed)."""
+    """Build a TtsWsWarmer for pre-opening WS connections.
+
+    Only works with a single known endpoint (static env var). With
+    multiple ops pods the dispatcher picks dynamically per chunk, so
+    pre-warming a specific pod would cause ref-audio cache misses on
+    the other — skip the warmer and let each chunk connect fresh."""
     if not TTS_PREWARM_ENABLED:
         return None
+    # Multiple ops pods → no warmer (dispatcher picks per-chunk)
+    try:
+        from ops import pool as gpu_pool
+        if gpu_pool.online_pod_count("tts_streaming") > 1:
+            return None
+        if gpu_pool.online_pod_count("tts_streaming") == 1:
+            from ops.pool import _routable_pods
+            p = _routable_pods("tts_streaming")[0]
+            base = p.url
+            key = p.api_key or None
+            endpoint = "/v1/voice-clone/stream" if voice_uses_clone_service(voice) else "/v1/tts/stream"
+            ws_url = base.replace("http://", "ws://").replace("https://", "wss://") + endpoint
+            headers: dict = {}
+            if key:
+                headers["Authorization"] = f"Bearer {key}"
+            return TtsWsWarmer(ws_url, headers, QWEN3_CLONE_TIMEOUT_SEC)
+    except Exception:
+        pass
+    # No ops pods — fall back to static env vars
     if voice_uses_clone_service(voice):
         if not QWEN3_CLONE_BASE_URL:
             return None

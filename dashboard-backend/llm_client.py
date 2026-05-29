@@ -47,11 +47,13 @@ import json
 import logging
 import os
 import re
+import time
 from typing import AsyncIterator, Optional
 
 import aiohttp
 
 from studio_tts_service import CHUTES_AUTH_KEY, VOICE_DESIGN_LLM_BASE_URL
+from llm_logging import record_call as _record_llm_call
 
 
 _log = logging.getLogger(__name__)
@@ -74,7 +76,7 @@ _LOCAL_LLM_USE_THINK_DEFAULT = (os.environ.get("LOCAL_LLM_USE_THINK") or "").str
 # Fireworks — just point OPENAI_BASE_URL at their /v1).
 OPENAI_API_KEY = (os.environ.get("OPENAI_API_KEY") or "").strip()
 OPENAI_BASE_URL = (os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1").strip().rstrip("/")
-OPENAI_MODEL = (os.environ.get("OPENAI_MODEL") or "gpt-5-mini").strip()
+OPENAI_MODEL = (os.environ.get("OPENAI_MODEL") or "gpt-4.1").strip()
 
 # Groq endpoint — purpose-built for low-latency voice agents. The Groq
 # API is OpenAI-compatible (same /chat/completions shape, same tool-call
@@ -92,7 +94,7 @@ GROQ_MODEL = (os.environ.get("GROQ_MODEL") or "llama-3.3-70b-versatile").strip()
 # stay explicit (Cerebras → OpenAI on stream failure).
 CEREBRAS_API_KEY = (os.environ.get("CEREBRAS_API_KEY") or "").strip()
 CEREBRAS_BASE_URL = (os.environ.get("CEREBRAS_BASE_URL") or "https://api.cerebras.ai/v1").strip().rstrip("/")
-CEREBRAS_MODEL = (os.environ.get("CEREBRAS_MODEL") or "qwen-3-235b-a22b-instruct-2507").strip()
+CEREBRAS_MODEL = (os.environ.get("CEREBRAS_MODEL") or "gpt-oss-120b").strip()
 
 # Voice-chat fallback: if the primary stream (Cerebras) fails before
 # emitting any tokens, retry once against xAI's Grok. Only kicks in
@@ -391,6 +393,21 @@ def extract_json_object(text: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _usage_from(obj: dict) -> tuple[int | None, int | None, int | None]:
+    """Extract OpenAI-compatible ``usage`` fields from a chat-completions
+    response payload. All providers we target (OpenAI/Groq/Cerebras/
+    Chutes) return the same shape; local Qwen3 currently does not, so
+    this returns (None, None, None) when no usage block is present."""
+    usage = obj.get("usage") if isinstance(obj, dict) else None
+    if not isinstance(usage, dict):
+        return None, None, None
+    return (
+        usage.get("prompt_tokens"),
+        usage.get("completion_tokens"),
+        usage.get("total_tokens"),
+    )
+
+
 async def _local_chat_complete(
     messages: list[dict],
     *,
@@ -406,20 +423,41 @@ async def _local_chat_complete(
         "temperature": temperature,
     }
     timeout = aiohttp.ClientTimeout(total=LOCAL_LLM_TIMEOUT_SEC)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.post(url, headers=_local_headers(), json=body) as resp:
-            raw = await resp.read()
-            if resp.status != 200:
-                snippet = raw[:400].decode("utf-8", errors="replace")
-                raise RuntimeError(f"local LLM returned {resp.status}: {snippet}")
-            try:
-                obj = json.loads(raw.decode("utf-8"))
-            except Exception as exc:
-                raise RuntimeError(f"local LLM returned non-JSON: {exc}")
-            content = _extract_content(obj)
-            if not content:
-                raise RuntimeError(f"local LLM returned empty content; payload={str(obj)[:300]}")
-            return content
+    t0 = time.monotonic()
+    http_status: int | None = None
+    status = "error"
+    err: str | None = None
+    p_tok = c_tok = tot_tok = None
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(url, headers=_local_headers(), json=body) as resp:
+                http_status = resp.status
+                raw = await resp.read()
+                if resp.status != 200:
+                    snippet = raw[:400].decode("utf-8", errors="replace")
+                    raise RuntimeError(f"local LLM returned {resp.status}: {snippet}")
+                try:
+                    obj = json.loads(raw.decode("utf-8"))
+                except Exception as exc:
+                    raise RuntimeError(f"local LLM returned non-JSON: {exc}")
+                p_tok, c_tok, tot_tok = _usage_from(obj)
+                content = _extract_content(obj)
+                if not content:
+                    status = "empty"
+                    raise RuntimeError(f"local LLM returned empty content; payload={str(obj)[:300]}")
+                status = "ok"
+                return content
+    except Exception as exc:  # noqa: BLE001 — re-raised below; we just capture for telemetry
+        err = str(exc)
+        raise
+    finally:
+        _record_llm_call(
+            provider="local", model="qwen3-4b" if not think else "qwen3-4b-think",
+            mode="chat", status=status, http_status=http_status,
+            latency_ms=int((time.monotonic() - t0) * 1000),
+            prompt_tokens=p_tok, completion_tokens=c_tok, total_tokens=tot_tok,
+            error_message=err,
+        )
 
 
 async def _openai_chat_complete(
@@ -443,20 +481,41 @@ async def _openai_chat_complete(
         "max_completion_tokens": max_tokens,
     }
     timeout = aiohttp.ClientTimeout(total=LOCAL_LLM_TIMEOUT_SEC)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.post(url, headers=_openai_headers(), json=body) as resp:
-            raw = await resp.read()
-            if resp.status != 200:
-                snippet = raw[:400].decode("utf-8", errors="replace")
-                raise RuntimeError(f"openai LLM returned {resp.status}: {snippet}")
-            try:
-                obj = json.loads(raw.decode("utf-8"))
-            except Exception as exc:
-                raise RuntimeError(f"openai LLM returned non-JSON: {exc}")
-            content = _extract_content(obj)
-            if not content:
-                raise RuntimeError("openai LLM returned empty content")
-            return content
+    t0 = time.monotonic()
+    http_status: int | None = None
+    status = "error"
+    err: str | None = None
+    p_tok = c_tok = tot_tok = None
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(url, headers=_openai_headers(), json=body) as resp:
+                http_status = resp.status
+                raw = await resp.read()
+                if resp.status != 200:
+                    snippet = raw[:400].decode("utf-8", errors="replace")
+                    raise RuntimeError(f"openai LLM returned {resp.status}: {snippet}")
+                try:
+                    obj = json.loads(raw.decode("utf-8"))
+                except Exception as exc:
+                    raise RuntimeError(f"openai LLM returned non-JSON: {exc}")
+                p_tok, c_tok, tot_tok = _usage_from(obj)
+                content = _extract_content(obj)
+                if not content:
+                    status = "empty"
+                    raise RuntimeError("openai LLM returned empty content")
+                status = "ok"
+                return content
+    except Exception as exc:
+        err = str(exc)
+        raise
+    finally:
+        _record_llm_call(
+            provider="openai", model=OPENAI_MODEL, mode="chat",
+            status=status, http_status=http_status,
+            latency_ms=int((time.monotonic() - t0) * 1000),
+            prompt_tokens=p_tok, completion_tokens=c_tok, total_tokens=tot_tok,
+            error_message=err,
+        )
 
 
 async def _groq_chat_complete(
@@ -482,20 +541,41 @@ async def _groq_chat_complete(
         "max_tokens": max_tokens,
     }
     timeout = aiohttp.ClientTimeout(total=LOCAL_LLM_TIMEOUT_SEC)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.post(url, headers=_groq_headers(), json=body) as resp:
-            raw = await resp.read()
-            if resp.status != 200:
-                snippet = raw[:400].decode("utf-8", errors="replace")
-                raise RuntimeError(f"groq LLM returned {resp.status}: {snippet}")
-            try:
-                obj = json.loads(raw.decode("utf-8"))
-            except Exception as exc:
-                raise RuntimeError(f"groq LLM returned non-JSON: {exc}")
-            content = _extract_content(obj)
-            if not content:
-                raise RuntimeError("groq LLM returned empty content")
-            return content
+    t0 = time.monotonic()
+    http_status: int | None = None
+    status = "error"
+    err: str | None = None
+    p_tok = c_tok = tot_tok = None
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(url, headers=_groq_headers(), json=body) as resp:
+                http_status = resp.status
+                raw = await resp.read()
+                if resp.status != 200:
+                    snippet = raw[:400].decode("utf-8", errors="replace")
+                    raise RuntimeError(f"groq LLM returned {resp.status}: {snippet}")
+                try:
+                    obj = json.loads(raw.decode("utf-8"))
+                except Exception as exc:
+                    raise RuntimeError(f"groq LLM returned non-JSON: {exc}")
+                p_tok, c_tok, tot_tok = _usage_from(obj)
+                content = _extract_content(obj)
+                if not content:
+                    status = "empty"
+                    raise RuntimeError("groq LLM returned empty content")
+                status = "ok"
+                return content
+    except Exception as exc:
+        err = str(exc)
+        raise
+    finally:
+        _record_llm_call(
+            provider="groq", model=use_model, mode="chat",
+            status=status, http_status=http_status,
+            latency_ms=int((time.monotonic() - t0) * 1000),
+            prompt_tokens=p_tok, completion_tokens=c_tok, total_tokens=tot_tok,
+            error_message=err,
+        )
 
 
 async def _cerebras_chat_complete(
@@ -521,20 +601,41 @@ async def _cerebras_chat_complete(
         "max_tokens": max_tokens,
     }
     timeout = aiohttp.ClientTimeout(total=LOCAL_LLM_TIMEOUT_SEC)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.post(url, headers=_cerebras_headers(), json=body) as resp:
-            raw = await resp.read()
-            if resp.status != 200:
-                snippet = raw[:400].decode("utf-8", errors="replace")
-                raise RuntimeError(f"cerebras LLM returned {resp.status}: {snippet}")
-            try:
-                obj = json.loads(raw.decode("utf-8"))
-            except Exception as exc:
-                raise RuntimeError(f"cerebras LLM returned non-JSON: {exc}")
-            content = _extract_content(obj)
-            if not content:
-                raise RuntimeError("cerebras LLM returned empty content")
-            return content
+    t0 = time.monotonic()
+    http_status: int | None = None
+    status = "error"
+    err: str | None = None
+    p_tok = c_tok = tot_tok = None
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(url, headers=_cerebras_headers(), json=body) as resp:
+                http_status = resp.status
+                raw = await resp.read()
+                if resp.status != 200:
+                    snippet = raw[:400].decode("utf-8", errors="replace")
+                    raise RuntimeError(f"cerebras LLM returned {resp.status}: {snippet}")
+                try:
+                    obj = json.loads(raw.decode("utf-8"))
+                except Exception as exc:
+                    raise RuntimeError(f"cerebras LLM returned non-JSON: {exc}")
+                p_tok, c_tok, tot_tok = _usage_from(obj)
+                content = _extract_content(obj)
+                if not content:
+                    status = "empty"
+                    raise RuntimeError("cerebras LLM returned empty content")
+                status = "ok"
+                return content
+    except Exception as exc:
+        err = str(exc)
+        raise
+    finally:
+        _record_llm_call(
+            provider="cerebras", model=use_model, mode="chat",
+            status=status, http_status=http_status,
+            latency_ms=int((time.monotonic() - t0) * 1000),
+            prompt_tokens=p_tok, completion_tokens=c_tok, total_tokens=tot_tok,
+            error_message=err,
+        )
 
 
 async def _chutes_chat_complete(
@@ -559,20 +660,41 @@ async def _chutes_chat_complete(
         "max_tokens": max_tokens,
     }
     timeout = aiohttp.ClientTimeout(total=LOCAL_LLM_TIMEOUT_SEC)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.post(url, headers=_chutes_headers(), json=body) as resp:
-            raw = await resp.read()
-            if resp.status != 200:
-                snippet = raw[:400].decode("utf-8", errors="replace")
-                raise RuntimeError(f"chutes LLM returned {resp.status}: {snippet}")
-            try:
-                obj = json.loads(raw.decode("utf-8"))
-            except Exception as exc:
-                raise RuntimeError(f"chutes LLM returned non-JSON: {exc}")
-            content = _extract_content(obj)
-            if not content:
-                raise RuntimeError("chutes LLM returned empty content")
-            return content
+    t0 = time.monotonic()
+    http_status: int | None = None
+    status = "error"
+    err: str | None = None
+    p_tok = c_tok = tot_tok = None
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(url, headers=_chutes_headers(), json=body) as resp:
+                http_status = resp.status
+                raw = await resp.read()
+                if resp.status != 200:
+                    snippet = raw[:400].decode("utf-8", errors="replace")
+                    raise RuntimeError(f"chutes LLM returned {resp.status}: {snippet}")
+                try:
+                    obj = json.loads(raw.decode("utf-8"))
+                except Exception as exc:
+                    raise RuntimeError(f"chutes LLM returned non-JSON: {exc}")
+                p_tok, c_tok, tot_tok = _usage_from(obj)
+                content = _extract_content(obj)
+                if not content:
+                    status = "empty"
+                    raise RuntimeError("chutes LLM returned empty content")
+                status = "ok"
+                return content
+    except Exception as exc:
+        err = str(exc)
+        raise
+    finally:
+        _record_llm_call(
+            provider="chutes", model=use_model, mode="chat",
+            status=status, http_status=http_status,
+            latency_ms=int((time.monotonic() - t0) * 1000),
+            prompt_tokens=p_tok, completion_tokens=c_tok, total_tokens=tot_tok,
+            error_message=err,
+        )
 
 
 async def chat_complete(
@@ -737,13 +859,39 @@ async def _local_stream_chat(
         sock_connect=15,
         sock_read=60,
     )
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.post(url, headers=headers, json=body) as resp:
-            if resp.status != 200:
-                snippet = (await resp.read())[:400].decode("utf-8", errors="replace")
-                raise RuntimeError(f"local LLM stream returned {resp.status}: {snippet}")
-            async for delta in _iter_sse_content(resp):
-                yield delta
+    t0 = time.monotonic()
+    ttft_ms: int | None = None
+    http_status: int | None = None
+    status = "error"
+    err: str | None = None
+    metrics: dict = {}
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(url, headers=headers, json=body) as resp:
+                http_status = resp.status
+                if resp.status != 200:
+                    snippet = (await resp.read())[:400].decode("utf-8", errors="replace")
+                    raise RuntimeError(f"local LLM stream returned {resp.status}: {snippet}")
+                async for delta in _iter_sse_content(resp, metrics=metrics):
+                    if ttft_ms is None:
+                        ttft_ms = int((time.monotonic() - t0) * 1000)
+                    yield delta
+                status = "ok" if ttft_ms is not None else "empty"
+    except Exception as exc:
+        err = str(exc)
+        raise
+    finally:
+        usage = metrics.get("usage") or {}
+        _record_llm_call(
+            provider="local", model="qwen3-4b" if not think else "qwen3-4b-think",
+            mode="stream", status=status, http_status=http_status,
+            latency_ms=int((time.monotonic() - t0) * 1000),
+            ttft_ms=ttft_ms,
+            prompt_tokens=usage.get("prompt_tokens"),
+            completion_tokens=usage.get("completion_tokens"),
+            total_tokens=usage.get("total_tokens"),
+            error_message=err,
+        )
 
 
 async def _openai_stream_chat(
@@ -757,10 +905,14 @@ async def _openai_stream_chat(
     url = f"{OPENAI_BASE_URL}/chat/completions"
     # Same provider quirks as ``_openai_chat_complete``: omit temperature
     # (gpt-5* only allows default) + use max_completion_tokens.
+    #
+    # ``stream_options.include_usage`` makes OpenAI emit a final chunk
+    # with prompt/completion/total tokens — required for cost tracking.
     body = {
         "model": OPENAI_MODEL,
         "messages": messages,
         "stream": True,
+        "stream_options": {"include_usage": True},
         "max_completion_tokens": max_tokens,
     }
     headers = {**_openai_headers(), "Accept": "text/event-stream"}
@@ -771,13 +923,39 @@ async def _openai_stream_chat(
         sock_connect=15,
         sock_read=60,
     )
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.post(url, headers=headers, json=body) as resp:
-            if resp.status != 200:
-                snippet = (await resp.read())[:400].decode("utf-8", errors="replace")
-                raise RuntimeError(f"openai LLM stream returned {resp.status}: {snippet}")
-            async for delta in _iter_sse_content(resp):
-                yield delta
+    t0 = time.monotonic()
+    ttft_ms: int | None = None
+    http_status: int | None = None
+    status = "error"
+    err: str | None = None
+    metrics: dict = {}
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(url, headers=headers, json=body) as resp:
+                http_status = resp.status
+                if resp.status != 200:
+                    snippet = (await resp.read())[:400].decode("utf-8", errors="replace")
+                    raise RuntimeError(f"openai LLM stream returned {resp.status}: {snippet}")
+                async for delta in _iter_sse_content(resp, metrics=metrics):
+                    if ttft_ms is None:
+                        ttft_ms = int((time.monotonic() - t0) * 1000)
+                    yield delta
+                status = "ok" if ttft_ms is not None else "empty"
+    except Exception as exc:
+        err = str(exc)
+        raise
+    finally:
+        usage = metrics.get("usage") or {}
+        _record_llm_call(
+            provider="openai", model=OPENAI_MODEL, mode="stream",
+            status=status, http_status=http_status,
+            latency_ms=int((time.monotonic() - t0) * 1000),
+            ttft_ms=ttft_ms,
+            prompt_tokens=usage.get("prompt_tokens"),
+            completion_tokens=usage.get("completion_tokens"),
+            total_tokens=usage.get("total_tokens"),
+            error_message=err,
+        )
 
 
 async def _groq_stream_chat(
@@ -797,18 +975,45 @@ async def _groq_stream_chat(
         "model": use_model,
         "messages": messages,
         "stream": True,
+        "stream_options": {"include_usage": True},
         "temperature": temperature,
         "max_tokens": max_tokens,
     }
     headers = {**_groq_headers(), "Accept": "text/event-stream"}
     timeout = aiohttp.ClientTimeout(total=None, sock_connect=15, sock_read=60)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.post(url, headers=headers, json=body) as resp:
-            if resp.status != 200:
-                snippet = (await resp.read())[:400].decode("utf-8", errors="replace")
-                raise RuntimeError(f"groq LLM stream returned {resp.status}: {snippet}")
-            async for delta in _iter_sse_content(resp):
-                yield delta
+    t0 = time.monotonic()
+    ttft_ms: int | None = None
+    http_status: int | None = None
+    status = "error"
+    err: str | None = None
+    metrics: dict = {}
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(url, headers=headers, json=body) as resp:
+                http_status = resp.status
+                if resp.status != 200:
+                    snippet = (await resp.read())[:400].decode("utf-8", errors="replace")
+                    raise RuntimeError(f"groq LLM stream returned {resp.status}: {snippet}")
+                async for delta in _iter_sse_content(resp, metrics=metrics):
+                    if ttft_ms is None:
+                        ttft_ms = int((time.monotonic() - t0) * 1000)
+                    yield delta
+                status = "ok" if ttft_ms is not None else "empty"
+    except Exception as exc:
+        err = str(exc)
+        raise
+    finally:
+        usage = metrics.get("usage") or {}
+        _record_llm_call(
+            provider="groq", model=use_model, mode="stream",
+            status=status, http_status=http_status,
+            latency_ms=int((time.monotonic() - t0) * 1000),
+            ttft_ms=ttft_ms,
+            prompt_tokens=usage.get("prompt_tokens"),
+            completion_tokens=usage.get("completion_tokens"),
+            total_tokens=usage.get("total_tokens"),
+            error_message=err,
+        )
 
 
 async def _cerebras_stream_chat(
@@ -828,18 +1033,45 @@ async def _cerebras_stream_chat(
         "model": use_model,
         "messages": messages,
         "stream": True,
+        "stream_options": {"include_usage": True},
         "temperature": temperature,
         "max_tokens": max_tokens,
     }
     headers = {**_cerebras_headers(), "Accept": "text/event-stream"}
     timeout = aiohttp.ClientTimeout(total=None, sock_connect=15, sock_read=60)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.post(url, headers=headers, json=body) as resp:
-            if resp.status != 200:
-                snippet = (await resp.read())[:400].decode("utf-8", errors="replace")
-                raise RuntimeError(f"cerebras LLM stream returned {resp.status}: {snippet}")
-            async for delta in _iter_sse_content(resp):
-                yield delta
+    t0 = time.monotonic()
+    ttft_ms: int | None = None
+    http_status: int | None = None
+    status = "error"
+    err: str | None = None
+    metrics: dict = {}
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(url, headers=headers, json=body) as resp:
+                http_status = resp.status
+                if resp.status != 200:
+                    snippet = (await resp.read())[:400].decode("utf-8", errors="replace")
+                    raise RuntimeError(f"cerebras LLM stream returned {resp.status}: {snippet}")
+                async for delta in _iter_sse_content(resp, metrics=metrics):
+                    if ttft_ms is None:
+                        ttft_ms = int((time.monotonic() - t0) * 1000)
+                    yield delta
+                status = "ok" if ttft_ms is not None else "empty"
+    except Exception as exc:
+        err = str(exc)
+        raise
+    finally:
+        usage = metrics.get("usage") or {}
+        _record_llm_call(
+            provider="cerebras", model=use_model, mode="stream",
+            status=status, http_status=http_status,
+            latency_ms=int((time.monotonic() - t0) * 1000),
+            ttft_ms=ttft_ms,
+            prompt_tokens=usage.get("prompt_tokens"),
+            completion_tokens=usage.get("completion_tokens"),
+            total_tokens=usage.get("total_tokens"),
+            error_message=err,
+        )
 
 
 async def _chutes_stream_chat(
@@ -859,6 +1091,7 @@ async def _chutes_stream_chat(
         "model": use_model,
         "messages": messages,
         "stream": True,
+        "stream_options": {"include_usage": True},
         "temperature": temperature,
         "max_tokens": max_tokens,
     }
@@ -873,21 +1106,56 @@ async def _chutes_stream_chat(
         sock_connect=15,
         sock_read=60,
     )
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.post(url, headers=headers, json=body) as resp:
-            if resp.status != 200:
-                snippet = (await resp.read())[:400].decode("utf-8", errors="replace")
-                raise RuntimeError(f"chutes LLM stream returned {resp.status}: {snippet}")
-            async for delta in _iter_sse_content(resp):
-                yield delta
+    t0 = time.monotonic()
+    ttft_ms: int | None = None
+    http_status: int | None = None
+    status = "error"
+    err: str | None = None
+    metrics: dict = {}
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(url, headers=headers, json=body) as resp:
+                http_status = resp.status
+                if resp.status != 200:
+                    snippet = (await resp.read())[:400].decode("utf-8", errors="replace")
+                    raise RuntimeError(f"chutes LLM stream returned {resp.status}: {snippet}")
+                async for delta in _iter_sse_content(resp, metrics=metrics):
+                    if ttft_ms is None:
+                        ttft_ms = int((time.monotonic() - t0) * 1000)
+                    yield delta
+                status = "ok" if ttft_ms is not None else "empty"
+    except Exception as exc:
+        err = str(exc)
+        raise
+    finally:
+        usage = metrics.get("usage") or {}
+        _record_llm_call(
+            provider="chutes", model=use_model, mode="stream",
+            status=status, http_status=http_status,
+            latency_ms=int((time.monotonic() - t0) * 1000),
+            ttft_ms=ttft_ms,
+            prompt_tokens=usage.get("prompt_tokens"),
+            completion_tokens=usage.get("completion_tokens"),
+            total_tokens=usage.get("total_tokens"),
+            error_message=err,
+        )
 
 
-async def _iter_sse_content(resp: aiohttp.ClientResponse) -> AsyncIterator[str]:
+async def _iter_sse_content(
+    resp: aiohttp.ClientResponse,
+    metrics: dict | None = None,
+) -> AsyncIterator[str]:
     """Iterate SSE events from a streaming chat-completions response.
 
     Stops on either provider's end-of-stream sentinel:
       • OpenAI (Chutes): ``data: [DONE]``
       • Local Qwen3-4B:  ``data: {"event":"done", ...}``
+
+    When ``metrics`` is provided, the latest ``usage`` block seen in any
+    chunk is stored at ``metrics['usage']`` (a dict with prompt_tokens /
+    completion_tokens / total_tokens). OpenAI-compatible providers emit
+    this in the final chunk when the request body includes
+    ``stream_options: {include_usage: true}``.
     """
     async for raw in resp.content:
         line = raw.decode("utf-8", errors="replace").strip()
@@ -903,6 +1171,10 @@ async def _iter_sse_content(resp: aiohttp.ClientResponse) -> AsyncIterator[str]:
         # Local-LLM done sentinel
         if obj.get("event") == "done":
             return
+        if metrics is not None:
+            usage = obj.get("usage")
+            if isinstance(usage, dict) and usage:
+                metrics["usage"] = usage
         delta = _extract_content(obj)
         if delta:
             yield delta
@@ -1120,6 +1392,7 @@ async def stream_chat_with_tools(
         and xai_llm_configured()
     )
     emitted_any = False
+    fallback_reason: str | None = None
     try:
         async for evt in _stream_chat_with_tools_once(
             url, model_id, headers, provider, messages,
@@ -1133,6 +1406,18 @@ async def stream_chat_with_tools(
     except Exception as exc:  # noqa: BLE001
         if emitted_any or not primary_eligible_for_fallback:
             raise
+        # Categorise the failure so the LLM-call log row records a
+        # short, queryable reason. The full error_message is in the
+        # prior llm_calls row written by _stream_chat_with_tools_once.
+        msg = str(exc).lower()
+        if "429" in msg or "rate limit" in msg or "rate_limit" in msg:
+            fallback_reason = "cerebras_429"
+        elif "timeout" in msg or "timed out" in msg:
+            fallback_reason = "cerebras_timeout"
+        elif "5" in msg and "returned 5" in msg:
+            fallback_reason = "cerebras_5xx"
+        else:
+            fallback_reason = "cerebras_error"
         _log.warning(
             "cerebras stream failed before first delta (%s); "
             "falling back to Grok", exc,
@@ -1151,6 +1436,7 @@ async def stream_chat_with_tools(
         fb_url, fb_model, fb_headers, "xai", messages,
         tools=tools, tool_choice=tool_choice,
         temperature=temperature, max_tokens=max_tokens,
+        fallback_from="cerebras", fallback_reason=fallback_reason,
     ):
         yield evt
 
@@ -1166,11 +1452,16 @@ async def _stream_chat_with_tools_once(
     tool_choice: str | dict,
     temperature: float,
     max_tokens: int,
+    fallback_from: str | None = None,
+    fallback_reason: str | None = None,
 ) -> AsyncIterator[dict]:
     """Single-shot streaming chat-completions reader. Yields the same
     event envelope as ``stream_chat_with_tools`` but performs no
     fallback — that lives one level up so we can decide based on
-    whether anything was emitted yet."""
+    whether anything was emitted yet.
+
+    Records one llm_calls row per attempt (including each rung of a
+    fallback ladder)."""
     # Provider-specific body shape. OpenAI's gpt-5* / o-series:
     #   • reject ``max_tokens`` with a 400 → use ``max_completion_tokens``
     #   • reject custom ``temperature`` (only the default 1 is allowed)
@@ -1181,6 +1472,9 @@ async def _stream_chat_with_tools_once(
         "model": model_id,
         "messages": messages,
         "stream": True,
+        # All providers we target are OpenAI-compatible and emit usage
+        # in the final SSE chunk when this is requested.
+        "stream_options": {"include_usage": True},
     }
     if provider == "openai":
         body["max_completion_tokens"] = max_tokens
@@ -1201,47 +1495,81 @@ async def _stream_chat_with_tools_once(
     finish_reason: str | None = None
 
     timeout = aiohttp.ClientTimeout(total=None, sock_connect=15, sock_read=60)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.post(url, headers=headers, json=body) as resp:
-            if resp.status != 200:
-                snippet = (await resp.read())[:400].decode("utf-8", errors="replace")
-                raise RuntimeError(f"{provider} stream returned {resp.status}: {snippet}")
-            async for raw in resp.content:
-                line = raw.decode("utf-8", errors="replace").strip()
-                if not line.startswith("data:"):
-                    continue
-                data = line[5:].strip()
-                if data == "[DONE]":
-                    break
-                try:
-                    obj = json.loads(data)
-                except Exception:
-                    continue
-                choices = obj.get("choices") or []
-                if not choices:
-                    continue
-                c0 = choices[0] or {}
-                fr = c0.get("finish_reason")
-                if fr:
-                    finish_reason = fr
-                delta = c0.get("delta") or {}
-                # Content tokens — yield immediately so TTS can sentence-
-                # chunk them with no buffering on our side.
-                content = delta.get("content")
-                if isinstance(content, str) and content:
-                    yield {"type": "content", "text": content}
-                # Tool-call deltas — accumulate, don't emit yet.
-                for tcd in (delta.get("tool_calls") or []):
-                    idx = int(tcd.get("index", 0))
-                    acc = tool_calls_accum.setdefault(idx, {"id": "", "name": "", "arguments": ""})
-                    if tcd.get("id"):
-                        acc["id"] = tcd["id"]
-                    fn = tcd.get("function") or {}
-                    if fn.get("name"):
-                        acc["name"] = fn["name"]
-                    args_chunk = fn.get("arguments")
-                    if isinstance(args_chunk, str):
-                        acc["arguments"] += args_chunk
+    t0 = time.monotonic()
+    ttft_ms: int | None = None
+    http_status: int | None = None
+    log_status = "error"
+    err: str | None = None
+    usage: dict | None = None
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(url, headers=headers, json=body) as resp:
+                http_status = resp.status
+                if resp.status != 200:
+                    snippet = (await resp.read())[:400].decode("utf-8", errors="replace")
+                    raise RuntimeError(f"{provider} stream returned {resp.status}: {snippet}")
+                async for raw in resp.content:
+                    line = raw.decode("utf-8", errors="replace").strip()
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        obj = json.loads(data)
+                    except Exception:
+                        continue
+                    # The final usage chunk on OpenAI-compatible providers
+                    # has an empty ``choices`` array. Capture usage and
+                    # then ``continue`` (no deltas to emit).
+                    u = obj.get("usage")
+                    if isinstance(u, dict) and u:
+                        usage = u
+                    choices = obj.get("choices") or []
+                    if not choices:
+                        continue
+                    c0 = choices[0] or {}
+                    fr = c0.get("finish_reason")
+                    if fr:
+                        finish_reason = fr
+                    delta = c0.get("delta") or {}
+                    # Content tokens — yield immediately so TTS can sentence-
+                    # chunk them with no buffering on our side.
+                    content = delta.get("content")
+                    if isinstance(content, str) and content:
+                        if ttft_ms is None:
+                            ttft_ms = int((time.monotonic() - t0) * 1000)
+                        yield {"type": "content", "text": content}
+                    # Tool-call deltas — accumulate, don't emit yet.
+                    for tcd in (delta.get("tool_calls") or []):
+                        idx = int(tcd.get("index", 0))
+                        acc = tool_calls_accum.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+                        if tcd.get("id"):
+                            acc["id"] = tcd["id"]
+                        fn = tcd.get("function") or {}
+                        if fn.get("name"):
+                            acc["name"] = fn["name"]
+                        args_chunk = fn.get("arguments")
+                        if isinstance(args_chunk, str):
+                            acc["arguments"] += args_chunk
+                log_status = "ok"
+    except Exception as exc:
+        err = str(exc)
+        raise
+    finally:
+        u = usage or {}
+        _record_llm_call(
+            provider=provider, model=model_id, mode="stream",
+            status=log_status, http_status=http_status,
+            latency_ms=int((time.monotonic() - t0) * 1000),
+            ttft_ms=ttft_ms,
+            prompt_tokens=u.get("prompt_tokens"),
+            completion_tokens=u.get("completion_tokens"),
+            total_tokens=u.get("total_tokens"),
+            fallback_from=fallback_from,
+            fallback_reason=fallback_reason,
+            error_message=err,
+        )
 
     # Stream done — emit any accumulated tool calls in index order, then
     # the terminal done event so the caller can decide whether to loop.

@@ -366,37 +366,57 @@ export function VocenceBot() {
                 Hey, I'm Logos — the Vocence Assistant. Ask me about Studio features, pricing, or how to get started.
               </div>
             )}
-            {messages.map((m) => (
-              <div
-                key={m.id}
-                className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}
-              >
-                <div
-                  className={`max-w-[85%] rounded-2xl px-3.5 py-2 text-sm leading-snug whitespace-pre-wrap break-words ${
-                    m.role === 'user'
-                      ? 'bg-[#DFFF00] text-[#07080A]'
-                      : 'bg-white/[0.06] text-white border border-white/10'
-                  }`}
-                >
-                  {m.role === 'assistant' && m.tool_calls && m.tool_calls.length > 0 && (
-                    <div className="flex flex-wrap gap-1.5 mb-1.5">
-                      {m.tool_calls.map((tc) => <ToolCallChip key={tc.id} call={tc} />)}
+            {messages.map((m) => {
+              // System messages (session_timeout / billing_exhausted)
+              // render as centered tone-coded banners so the user can
+              // tell at a glance WHY the session ended.
+              if (m.role === 'system') {
+                const tone =
+                  m.systemKind === 'billing_exhausted'
+                    ? 'border-red-400/30 bg-red-500/[0.08] text-red-100'
+                    : m.systemKind === 'idle_timeout' || m.systemKind === 'max_duration'
+                      ? 'border-amber-300/30 bg-amber-400/[0.08] text-amber-100'
+                      : 'border-white/10 bg-white/[0.04] text-[#C6CDD4]';
+                return (
+                  <div key={m.id} className="flex justify-center">
+                    <div className={`max-w-[90%] rounded-xl border px-3.5 py-2 text-xs leading-snug text-center ${tone}`}>
+                      {m.text}
                     </div>
-                  )}
-                  {m.pending && !m.text ? (
-                    <span className="inline-flex gap-1">
-                      <span className="w-1.5 h-1.5 rounded-full bg-current opacity-50 animate-pulse" />
-                      <span className="w-1.5 h-1.5 rounded-full bg-current opacity-50 animate-pulse [animation-delay:120ms]" />
-                      <span className="w-1.5 h-1.5 rounded-full bg-current opacity-50 animate-pulse [animation-delay:240ms]" />
-                    </span>
-                  ) : m.role === 'assistant' ? (
-                    renderMessage(m.text)
-                  ) : (
-                    m.text
-                  )}
+                  </div>
+                );
+              }
+              return (
+                <div
+                  key={m.id}
+                  className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                >
+                  <div
+                    className={`max-w-[85%] rounded-2xl px-3.5 py-2 text-sm leading-snug whitespace-pre-wrap break-words ${
+                      m.role === 'user'
+                        ? 'bg-[#DFFF00] text-[#07080A]'
+                        : 'bg-white/[0.06] text-white border border-white/10'
+                    }`}
+                  >
+                    {m.role === 'assistant' && m.tool_calls && m.tool_calls.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5 mb-1.5">
+                        {m.tool_calls.map((tc) => <ToolCallChip key={tc.id} call={tc} />)}
+                      </div>
+                    )}
+                    {m.pending && !m.text ? (
+                      <span className="inline-flex gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-current opacity-50 animate-pulse" />
+                        <span className="w-1.5 h-1.5 rounded-full bg-current opacity-50 animate-pulse [animation-delay:120ms]" />
+                        <span className="w-1.5 h-1.5 rounded-full bg-current opacity-50 animate-pulse [animation-delay:240ms]" />
+                      </span>
+                    ) : m.role === 'assistant' ? (
+                      renderMessage(m.text)
+                    ) : (
+                      m.text
+                    )}
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
 
           {/* Composer */}

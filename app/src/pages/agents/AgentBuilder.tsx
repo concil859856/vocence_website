@@ -12,7 +12,7 @@ import { StudioShell } from '../../components/StudioShell';
 import { AgentConfigForm } from '../../components/agents/AgentConfigForm';
 import { ArchitectDrawer } from '../../components/agents/ArchitectDrawer';
 import { useAuth } from '../../contexts/AuthContext';
-import { agentsApi, getStoredToken } from '../../lib/agents/api';
+import { agentsApi, agentCustomToolsApi, getStoredToken } from '../../lib/agents/api';
 import {
   AGENT_TEMPLATES,
   DEFAULT_AGENT_CONFIG,
@@ -40,6 +40,10 @@ export function AgentBuilder() {
         system_prompt: seedTemplate.system_prompt,
         knowledge: seedTemplate.knowledge_starter ?? '',
         purpose: seedTemplate.purpose_placeholder ?? '',
+        // Template's tailored greeting wins; fall back to the generic
+        // DEFAULT_AGENT_CONFIG.first_message if the template didn't
+        // specify one.
+        first_message: seedTemplate.first_message ?? DEFAULT_AGENT_CONFIG.first_message,
       };
     }
     if (seedTemplate?.type === 'goal') {
@@ -51,6 +55,7 @@ export function AgentBuilder() {
   const [models, setModels] = useState<{ id: string; label: string }[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pendingBindToolIds, setPendingBindToolIds] = useState<Set<string>>(new Set());
   // Architect drawer opens by default for templates that need AI drafting
   // (i.e. those without a pre-filled system_prompt — typically goal agents).
   // Voice templates already arrive pre-filled, so the form is the focus and
@@ -104,6 +109,14 @@ export function AgentBuilder() {
       if (status === 'active') {
         await agentsApi.update(token, agent.id, { status: 'active' });
       }
+      // Bind any pre-selected custom tools to the freshly created agent.
+      if (pendingBindToolIds.size > 0) {
+        await Promise.allSettled(
+          Array.from(pendingBindToolIds).map((toolId) =>
+            agentCustomToolsApi.bind(token, agent.id, toolId),
+          ),
+        );
+      }
       navigate(`/studio/agents/${agent.id}`);
     } catch (err) {
       setError((err as Error).message || 'Save failed');
@@ -131,7 +144,15 @@ export function AgentBuilder() {
             <Link to="/studio/agents" className="text-[#A7B0B7] hover:text-white inline-flex items-center gap-1 text-sm">
               <ArrowLeft size={16} /> Back
             </Link>
-            <h1 className="text-2xl font-semibold text-white">New Agent</h1>
+            <h1 className="text-2xl font-semibold text-white inline-flex items-center gap-2">
+              New Agent
+              <span
+                className="inline-flex items-center px-1.5 py-0.5 rounded-md text-[9px] font-semibold uppercase tracking-[0.14em] text-indigo-300 bg-indigo-500/15 border border-indigo-400/30"
+                title="Voice agents are in beta — features and pricing may change."
+              >
+                Beta
+              </span>
+            </h1>
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -183,6 +204,8 @@ export function AgentBuilder() {
           config={config}
           availableModels={models}
           onChange={handleConfigChange}
+          pendingBindToolIds={pendingBindToolIds}
+          onPendingBindToolIdsChange={setPendingBindToolIds}
         />
       </div>
 

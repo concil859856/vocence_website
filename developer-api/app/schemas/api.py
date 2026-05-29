@@ -23,8 +23,8 @@ class TtsGenerateRequest(BaseModel):
 
     text: str = Field(
         min_length=1,
-        max_length=500,
-        description="Text to synthesize. Up to 500 characters per call.",
+        max_length=2000,
+        description="Text to synthesize. Up to 2,000 characters per call.",
     )
     style_instruction: str | None = Field(
         default=None,
@@ -51,8 +51,8 @@ class TtsSpeakRequest(BaseModel):
 
     text: str = Field(
         min_length=1,
-        max_length=500,
-        description="Text to synthesize. Up to 500 characters per call.",
+        max_length=2000,
+        description="Text to synthesize. Up to 2,000 characters per call.",
     )
     voice: str = Field(
         min_length=1,
@@ -136,6 +136,31 @@ class VoiceCloneResponse(BaseModel):
     audio_url: str
     reference_text: str
     language: str | None = None
+    provider: str
+    credits_remaining: int
+    latency_ms: int
+    credits_used: int
+
+
+class DubbingEnhanceRequest(BaseModel):
+    """Noise Remover: remove background noise and enhance audio clarity.
+
+    Class name kept as ``DubbingEnhance*`` for backwards-compatible
+    OpenAPI references; the public endpoint is ``/v1/audio/noise-remover``.
+    """
+
+    audio_b64: str = Field(
+        min_length=1,
+        description=(
+            "Base64-encoded noisy audio. Accepts WAV, MP3, M4A, OGG, "
+            "FLAC, WebM, AAC. Max 50 MB encoded, max 5 minutes duration."
+        ),
+    )
+
+
+class DubbingEnhanceResponse(BaseModel):
+    request_id: str
+    audio_url: str
     provider: str
     credits_remaining: int
     latency_ms: int

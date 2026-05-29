@@ -1325,6 +1325,45 @@ export const dashboardApi = {
       body: JSON.stringify({ title, bucket, key, filename }),
     });
   },
+
+  // ----- Generation feedback (thumbs up/down) -----
+
+  /** Submit / replace the current user's thumb for one generation result.
+   *  Pass rating=0 to clear an existing vote (so the user can un-thumb
+   *  by clicking the active arrow again). */
+  submitGenerationFeedback(
+    body: {
+      entry_type:
+        | 'tts' | 'stt' | 'clone' | 'voice_design' | 'music'
+        | 'noise_remover' | 'agent_call' | 'agent_message';
+      entry_id: string;
+      rating: -1 | 0 | 1;
+      comment?: string;
+    },
+    token: string | null,
+  ): Promise<{ ok: true; rating: number }> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson('/api/dashboard/feedback', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+  },
+
+  /** Look up the current user's thumb for one entry — used to pre-paint
+   *  the UI on result-page load so a previous vote is reflected. Returns
+   *  rating=0 when no vote exists. */
+  getMyGenerationFeedback(
+    entry_type: string,
+    entry_id: string,
+    token: string | null,
+  ): Promise<{ rating: number; comment: string | null; created_at?: string; updated_at?: string }> {
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    const qs = new URLSearchParams({ entry_type, entry_id });
+    return fetchJson(`/api/dashboard/feedback?${qs}`, { headers });
+  },
 };
 
 export interface StudioTopModel {

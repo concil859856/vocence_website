@@ -60,6 +60,17 @@ SAMPLE_VOICE_LOCAL_FILES: dict[str, str] = {
     "voc-theo":     "pod_male3.wav",
     "voc-jasper":   "pod_male4.wav",
     "voc-owen":     "pod_male5.wav",
+
+    # Conversational / mood / news (added 2026-05)
+    "voc-nora":     "female_conv.wav",
+    "voc-sienna":   "female_engaging.wav",
+    "voc-penny":    "female_mood.wav",
+    "voc-quinn":    "female_mood1.wav",
+    "voc-eliza":    "female_news.wav",
+    "voc-magnus":   "male_deep_clean.wav",
+    "voc-felix":    "male_conv.wav",
+    "voc-bennett":  "male_conviction.wav",
+    "voc-milo":     "male_mood.wav",
 }
 
 
@@ -81,6 +92,15 @@ SAMPLE_VOICE_METADATA: dict[str, dict[str, str]] = {
     "voc-theo":     {"name": "Theo",     "description": "Thoughtful, measured male voice"},
     "voc-jasper":   {"name": "Jasper",   "description": "Warm, friendly storytelling voice"},
     "voc-owen":     {"name": "Owen",     "description": "Clear, professional podcast voice"},
+    "voc-nora":     {"name": "Nora",     "description": "Easy, conversational female voice"},
+    "voc-sienna":   {"name": "Sienna",   "description": "Vibrant, engaging female voice"},
+    "voc-penny":    {"name": "Penny",    "description": "Sunny, cheerful female voice"},
+    "voc-quinn":    {"name": "Quinn",    "description": "Upbeat, joyful female voice"},
+    "voc-eliza":    {"name": "Eliza",    "description": "Polished, anchor-style female voice"},
+    "voc-magnus":   {"name": "Magnus",   "description": "Clean, deep narrator voice"},
+    "voc-felix":    {"name": "Felix",    "description": "Friendly, conversational male voice"},
+    "voc-bennett":  {"name": "Bennett",  "description": "Passionate, persuasive male voice"},
+    "voc-milo":     {"name": "Milo",     "description": "Bright, easygoing male voice"},
     # Voice Design CDN voices
     "design-aria":   {"name": "Aria",   "description": "Bright, energetic female voice"},
     "design-aurora": {"name": "Aurora", "description": "Soft, dreamy female voice"},

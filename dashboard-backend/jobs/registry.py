@@ -93,8 +93,11 @@ def required_pools(job_type: str, payload: dict) -> dict[str, int]:
     if job_type == "stt":
         return {"stt": 1}
     if job_type == "clone":
-        # Auto-STT only when caller didn't supply reference_text
-        needs_stt = not (payload.get("reference_text") or "").strip()
+        # Auto-STT only when caller didn't supply reference_text AND
+        # isn't using a sample voice (sample voices have pre-transcribed text).
+        has_ref_text = bool((payload.get("reference_text") or "").strip())
+        has_sample = bool((payload.get("sample_voice_id") or "").strip())
+        needs_stt = not has_ref_text and not has_sample
         return {"clone": 1, **({"stt": 1} if needs_stt else {})}
     if job_type == "music":
         return {"music": 1}

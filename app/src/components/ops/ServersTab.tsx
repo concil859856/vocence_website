@@ -5,8 +5,14 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import { CheckCircle2, Cpu, Plus, RefreshCw, Trash2, XCircle } from 'lucide-react';
+import { useConfirm } from '../../hooks/useConfirm';
 import { opsApi } from '../../lib/ops/api';
-import type { ServerAddRequest, ServerRow } from '../../lib/ops/types';
+import type {
+  RuntimeWindow,
+  ServerAddRequest,
+  ServerRow,
+  ServerRuntimeRow,
+} from '../../lib/ops/types';
 
 interface Props { token: string }
 
@@ -16,18 +22,28 @@ export function ServersTab({ token }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [actionBusyId, setActionBusyId] = useState<number | null>(null);
+  // Runtime % indexed by server_id. Window applies to all rows.
+  const [runtimeWindow, setRuntimeWindow] = useState<RuntimeWindow>('week');
+  const [runtime, setRuntime] = useState<Record<number, ServerRuntimeRow>>({});
+  const { confirm, dialog: confirmDialog } = useConfirm();
 
   const refresh = useCallback(async () => {
     try {
-      const r = await opsApi.listServers(token);
+      const [r, rt] = await Promise.all([
+        opsApi.listServers(token),
+        opsApi.serversRuntime(token, runtimeWindow),
+      ]);
       setServers(r.servers);
+      const idx: Record<number, ServerRuntimeRow> = {};
+      for (const sr of rt.servers) idx[sr.server_id] = sr;
+      setRuntime(idx);
       setError(null);
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setLoading(false);
     }
-  }, [token]);
+  }, [token, runtimeWindow]);
 
   useEffect(() => {
     refresh();
@@ -48,7 +64,7 @@ export function ServersTab({ token }: Props) {
   };
 
   const handleRemove = async (id: number, name: string) => {
-    if (!window.confirm(`Remove server "${name}"? Its pods will be tombstoned (containers keep running until you SSH in and stop them).`)) return;
+    if (!await confirm({ title: 'Remove Server', message: `Remove server "${name}"? Its pods will be tombstoned (containers keep running until you SSH in and stop them).`, confirmLabel: 'Remove', confirmVariant: 'danger' })) return;
     setActionBusyId(id);
     try {
       await opsApi.removeServer(token, id);
@@ -62,17 +78,38 @@ export function ServersTab({ token }: Props) {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
         <p className="text-sm text-[#A7B0B7]">
           Rented GPU boxes the platform can deploy services to.
         </p>
-        <button
-          type="button"
-          onClick={() => setShowAdd(true)}
-          className="inline-flex items-center gap-2 rounded-xl bg-[#DFFF00] text-[#07080A] px-4 py-2 text-sm font-semibold hover:brightness-110"
-        >
-          <Plus size={14} /> Add server
-        </button>
+        <div className="flex items-center gap-3">
+          <div className="inline-flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-[#A7B0B7]">
+            Runtime
+            <div className="inline-flex rounded-md border border-white/10 bg-white/[0.02] p-0.5 normal-case tracking-normal">
+              {(['day', 'week', 'month'] as RuntimeWindow[]).map((w) => (
+                <button
+                  key={w}
+                  type="button"
+                  onClick={() => setRuntimeWindow(w)}
+                  className={`px-2 py-0.5 text-[10px] rounded transition-colors ${
+                    runtimeWindow === w
+                      ? 'bg-white/10 text-white'
+                      : 'text-[#A7B0B7] hover:text-white'
+                  }`}
+                >
+                  {w === 'day' ? '24h' : w === 'week' ? '7d' : '30d'}
+                </button>
+              ))}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowAdd(true)}
+            className="inline-flex items-center gap-2 rounded-xl bg-[#DFFF00] text-[#07080A] px-4 py-2 text-sm font-semibold hover:brightness-110"
+          >
+            <Plus size={14} /> Add server
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -89,7 +126,17 @@ export function ServersTab({ token }: Props) {
         </div>
       ) : (
         <div className="space-y-3">
-          {servers.map((s) => <ServerRowCard key={s.id} server={s} busy={actionBusyId === s.id} onReprobe={() => handleReprobe(s.id)} onRemove={() => handleRemove(s.id, s.name)} />)}
+          {servers.map((s) => (
+            <ServerRowCard
+              key={s.id}
+              server={s}
+              runtime={runtime[s.id]}
+              window={runtimeWindow}
+              busy={actionBusyId === s.id}
+              onReprobe={() => handleReprobe(s.id)}
+              onRemove={() => handleRemove(s.id, s.name)}
+            />
+          ))}
         </div>
       )}
 
@@ -100,6 +147,7 @@ export function ServersTab({ token }: Props) {
           onAdded={() => { setShowAdd(false); refresh(); }}
         />
       )}
+      {confirmDialog}
     </div>
   );
 }
@@ -107,11 +155,15 @@ export function ServersTab({ token }: Props) {
 
 function ServerRowCard({
   server,
+  runtime,
+  window,
   busy,
   onReprobe,
   onRemove,
 }: {
   server: ServerRow;
+  runtime?: ServerRuntimeRow;
+  window: RuntimeWindow;
   busy: boolean;
   onReprobe: () => void;
   onRemove: () => void;
@@ -122,6 +174,7 @@ function ServerRowCard({
     server.status === 'unreachable' ? 'text-red-300' :
     'text-amber-300';
   const StatusIcon = server.status === 'ready' ? CheckCircle2 : XCircle;
+  const windowLabel = window === 'day' ? '24h' : window === 'week' ? '7d' : '30d';
 
   return (
     <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-5">
@@ -132,6 +185,9 @@ function ServerRowCard({
             <span className={`inline-flex items-center gap-1 text-xs ${statusColor}`}>
               <StatusIcon size={13} /> {server.status}
             </span>
+            {runtime && (
+              <ServerRuntimePill pct={runtime.uptime_pct} windowLabel={windowLabel} />
+            )}
           </div>
           <div className="text-xs text-[#A7B0B7] font-mono">
             {server.ssh_user}@{server.host}:{server.ssh_port}
@@ -411,5 +467,22 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
       {children}
       {hint && <div className="text-[10px] text-[#666] mt-1">{hint}</div>}
     </label>
+  );
+}
+
+
+/** Server uptime % pill — matches PodsTab's `RuntimeCell` colour
+ *  thresholds (≥99 lime, ≥90 amber, else red) so the eye trains
+ *  across pages. The label includes the window so the pill stands
+ *  alone (no header column to reference). */
+function ServerRuntimePill({ pct, windowLabel }: { pct: number; windowLabel: string }) {
+  const tone =
+    pct >= 99 ? 'border-[#DFFF00]/35 bg-[#DFFF00]/[0.08] text-[#DFFF00]'
+    : pct >= 90 ? 'border-amber-300/35 bg-amber-300/[0.08] text-amber-200'
+    : 'border-red-400/35 bg-red-500/[0.10] text-red-200';
+  return (
+    <span className={`inline-flex items-center gap-1 text-[10px] rounded-md border px-1.5 py-0.5 tabular-nums ${tone}`}>
+      {pct.toFixed(1)}% {windowLabel}
+    </span>
   );
 }

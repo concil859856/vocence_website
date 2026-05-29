@@ -14,6 +14,7 @@ import {
 import gsap from 'gsap';
 import { formatCreditsCompact } from '../utils/formatCredits';
 import {
+  CREDIT_NOISE_REMOVER,
   CREDIT_MUSIC,
   CREDIT_MY_VOICE_GENERATE,
   CREDIT_SIGNUP_BONUS,
@@ -23,7 +24,7 @@ import {
   CREDIT_VOICE_DESIGN_PREVIEW,
 } from '../studio/creditCosts';
 
-type DocSection = 'getting-started' | 'core-concepts' | 'architecture' | 'api' | 'pricing' | 'faq' | 'troubleshooting' | 'guide-tts' | 'guide-cloning' | 'guide-stt' | 'guide-music' | 'guide-agents' | 'cookbook' | 'sdk-python' | 'sdk-cli' | 'sdk-agents' | 'sdk-webhooks' | 'miner' | 'validator';
+type DocSection = 'getting-started' | 'core-concepts' | 'architecture' | 'api' | 'pricing' | 'faq' | 'troubleshooting' | 'guide-tts' | 'guide-cloning' | 'guide-stt' | 'guide-music' | 'guide-dubbing' | 'guide-agents' | 'cookbook' | 'sdk-python' | 'sdk-cli' | 'sdk-agents' | 'sdk-webhooks' | 'miner' | 'validator';
 
 interface DocLink {
   id: DocSection;
@@ -49,6 +50,7 @@ const docLinks: DocLink[] = [
   { id: 'guide-cloning', label: 'Voice Cloning', category: 'Studio' },
   { id: 'guide-stt', label: 'Speech-to-Text', category: 'Studio' },
   { id: 'guide-music', label: 'Music', category: 'Studio' },
+  { id: 'guide-dubbing', label: 'Noise Remover', category: 'Studio' },
   // API — everything a developer needs to integrate.
   // API + Cookbook are admin-only until public launch; Pricing stays
   // public since it's a marketing concern, not a developer one.
@@ -73,7 +75,7 @@ const ADMIN_ONLY_SECTIONS: Set<DocSection> = new Set(
   docLinks.filter((l) => l.adminOnly).map((l) => l.id),
 );
 
-const DOC_SECTIONS: DocSection[] = ['getting-started', 'core-concepts', 'architecture', 'guide-agents', 'guide-tts', 'guide-cloning', 'guide-stt', 'guide-music', 'cookbook', 'api', 'pricing', 'sdk-python', 'sdk-cli', 'sdk-agents', 'sdk-webhooks', 'miner', 'validator', 'faq', 'troubleshooting'];
+const DOC_SECTIONS: DocSection[] = ['getting-started', 'core-concepts', 'architecture', 'guide-agents', 'guide-tts', 'guide-cloning', 'guide-stt', 'guide-music', 'guide-dubbing', 'cookbook', 'api', 'pricing', 'sdk-python', 'sdk-cli', 'sdk-agents', 'sdk-webhooks', 'miner', 'validator', 'faq', 'troubleshooting'];
 
 /** Stable links to the open-source subnet repo (paths use `master` branch). */
 const GH = 'https://github.com/vocence-78/vocence';
@@ -545,11 +547,11 @@ export function Docs() {
               <tr className="border-t border-white/[0.06]">
                 <td className="px-4 py-3 text-white font-medium">Normal</td>
                 <td className="px-4 py-3">$12 → {formatCreditsCompact(4000)} credits</td>
-                <td className="px-4 py-3">$20 → {formatCreditsCompact(7000)} credits</td>
+                <td className="px-4 py-3">$20 → {formatCreditsCompact(8000)} credits</td>
               </tr>
               <tr className="border-t border-white/[0.06]">
                 <td className="px-4 py-3 text-white font-medium">Premium</td>
-                <td className="px-4 py-3">$24 → {formatCreditsCompact(10000)} credits</td>
+                <td className="px-4 py-3">$24 → {formatCreditsCompact(8000)} credits</td>
                 <td className="px-4 py-3">$40 → {formatCreditsCompact(16000)} credits</td>
               </tr>
             </tbody>
@@ -620,93 +622,471 @@ export function Docs() {
               </tbody>
             </table>
           </div>
-          <p>
-            <span className="text-white font-medium">Developer API metering</span> (default server configuration, aligned
-            with Studio){' '}
-            <code className="text-white/90">
-              TTS {CREDIT_TTS} credits per request · STT {CREDIT_STT} credits per request · voice clone{' '}
-              {CREDIT_VOICE_CLONE} credits per request · music generation {CREDIT_MUSIC} credits per request
-            </code>
-            . Voice design is <span className="text-white font-medium">not</span> billed on the Developer API (Studio only).
-          </p>
           <p className="text-zinc-400 text-sm">
-            TTS can optionally use character-based credits instead: set <code className="text-white/80">API_TTS_CREDITS_PER_REQUEST=0</code>{' '}
-            on the API service; then metering uses{' '}
-            <code className="text-white/80">API_CREDITS_PER_1M_CHARS</code> on{' '}
-            <code className="text-white/80">len(text) + len(style_instruction)</code> (default style{' '}
-            <code className="text-white/80">neutral voice</code> counts toward length).
+            <span className="text-white font-medium">Studio</span> and the <span className="text-white font-medium">Developer API</span>
+            use different billing units for the same features — Studio bills per generation,
+            the API bills per character / per minute. See the Developer API table below for
+            the exact rates.
           </p>
         </div>
       </section>
 
       <section>
         <h2 className="text-lg font-semibold mb-3">Developer API cost reference</h2>
+        <p className="text-sm text-zinc-400 mb-4 leading-relaxed">
+          All $ prices below are quoted at the baseline rate{' '}
+          <span className="text-white">1 credit ≈ $0.0025</span> (the crypto pack rate of
+          8,000 credits per $20). Crypto purchases get this rate exactly; card purchases
+          fund credits at a slightly higher per-credit cost but the credit cost per
+          operation is the same.
+        </p>
         <div className="overflow-x-auto border border-white/[0.06] rounded-xl">
           <table className="w-full text-sm">
             <thead className="bg-white/5 text-[#A7B0B7]">
               <tr>
                 <th className="text-left px-4 py-3">Endpoint</th>
-                <th className="text-left px-4 py-3">Credits (default)</th>
+                <th className="text-left px-4 py-3">Rate (default)</th>
+                <th className="text-left px-4 py-3">$ equivalent</th>
               </tr>
             </thead>
             <tbody className="text-zinc-300">
               <tr className="border-t border-white/[0.06]">
-                <td className="px-4 py-3">
-                  <code className="text-white/90">POST /v1/tts/generate</code>
-                </td>
-                <td className="px-4 py-3">{CREDIT_TTS} per successful response</td>
+                <td className="px-4 py-3"><code className="text-white/90">POST /v1/tts/generate</code></td>
+                <td className="px-4 py-3">4,000 credits per 1M chars</td>
+                <td className="px-4 py-3">$10 / 1M chars</td>
               </tr>
               <tr className="border-t border-white/[0.06]">
-                <td className="px-4 py-3">
-                  <code className="text-white/90">POST /v1/stt/transcribe</code>
-                </td>
-                <td className="px-4 py-3">{CREDIT_STT} per successful response</td>
+                <td className="px-4 py-3"><code className="text-white/90">POST /v1/tts/speak</code></td>
+                <td className="px-4 py-3">4,000 credits per 1M chars</td>
+                <td className="px-4 py-3">$10 / 1M chars</td>
               </tr>
               <tr className="border-t border-white/[0.06]">
-                <td className="px-4 py-3">
-                  <code className="text-white/90">POST /v1/voice/clone</code>
-                </td>
-                <td className="px-4 py-3">{CREDIT_VOICE_CLONE} per successful response</td>
+                <td className="px-4 py-3"><code className="text-white/90">POST /v1/voices/{`{id}`}/speak</code></td>
+                <td className="px-4 py-3">4,000 credits per 1M chars</td>
+                <td className="px-4 py-3">$10 / 1M chars</td>
               </tr>
               <tr className="border-t border-white/[0.06]">
-                <td className="px-4 py-3">
-                  <code className="text-white/90">POST /v1/music/generate</code>
-                </td>
-                <td className="px-4 py-3">{CREDIT_MUSIC} per successful response</td>
+                <td className="px-4 py-3"><code className="text-white/90">POST /v1/voice/clone</code></td>
+                <td className="px-4 py-3">4,000 credits per 1M chars</td>
+                <td className="px-4 py-3">$10 / 1M chars</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">POST /v1/stt/transcribe</code></td>
+                <td className="px-4 py-3">3 credits / min · 5 min max</td>
+                <td className="px-4 py-3">$0.0075 / min</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">POST /v1/audio/noise-remover</code></td>
+                <td className="px-4 py-3">1 credit / min · 5 min / 50 MB max</td>
+                <td className="px-4 py-3">$0.0025 / min</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">POST /v1/voice/design/preview</code></td>
+                <td className="px-4 py-3">70 credits / voice</td>
+                <td className="px-4 py-3">$0.175 / voice</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">POST /v1/voice/design/save</code> · <code className="text-white/90">POST /v1/voice/clone/save</code></td>
+                <td className="px-4 py-3">20 credits / save</td>
+                <td className="px-4 py-3">$0.05 / save</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">WS /v1/agents/{`{id}`}/session</code></td>
+                <td className="px-4 py-3">40 credits / min · 6-sec billing, 30-sec min</td>
+                <td className="px-4 py-3">$0.10 / min</td>
               </tr>
             </tbody>
           </table>
         </div>
-        <p className="text-zinc-400 text-sm mt-4">
-          With <code className="text-white/80">API_TTS_CREDITS_PER_REQUEST=0</code>, TTS instead uses character-based
-          credits via <code className="text-white/80">API_CREDITS_PER_1M_CHARS</code> (see API Reference above).
-        </p>
       </section>
 
       <section>
         <h2 className="text-lg font-semibold mb-3">Access Rules</h2>
         <ul className="space-y-2 text-sm text-zinc-400 leading-relaxed">
           <li>Developer API access requires at least one successful Premium purchase.</li>
-          <li>User creates API key after Premium purchase.</li>
-          <li>All API keys have same limit: 4 requests per minute per key.</li>
-          <li>When credits are insufficient, API returns `402` and request is not processed.</li>
+          <li>User creates API keys in Account → Developer tab after the Premium purchase.</li>
+          <li>Each request consumes credits from the same balance shown in the Studio sidebar.</li>
+          <li>When credits are insufficient the API returns <code className="text-white/90">402</code> and no work is performed.</li>
         </ul>
       </section>
 
+      {/* ─────────────────── PER-ENDPOINT HARD CAPS ─────────────────── */}
       <section>
-        <h2 className="text-lg font-semibold mb-3">Billing Flow (End-to-End)</h2>
-        <ol className="space-y-2 text-sm text-zinc-400 leading-relaxed list-decimal list-inside">
-          <li>Sign in and purchase credits from pricing page (Stripe or Crypto).</li>
-          <li>Purchase Premium pack to unlock Developer API.</li>
-          <li>Create API key in Account → Developer tab.</li>
+        <h2 className="text-lg font-semibold mb-3">Per-endpoint limits</h2>
+        <p className="text-sm text-zinc-400 mb-4 leading-relaxed">
+          Every endpoint has a hard input cap. Requests over the cap are rejected with{' '}
+          <code className="text-white/90">HTTP 413</code> <span className="text-zinc-500">(Payload Too Large)</span>{' '}
+          before any credits are spent. The caps match what the Studio UI accepts —
+          for longer workloads, chunk on the client side and make multiple calls.
+        </p>
+        <div className="overflow-x-auto border border-white/[0.06] rounded-xl">
+          <table className="w-full text-sm">
+            <thead className="bg-white/5 text-[#A7B0B7]">
+              <tr>
+                <th className="text-left px-4 py-3">Endpoint</th>
+                <th className="text-left px-4 py-3">Input cap</th>
+                <th className="text-left px-4 py-3">Other</th>
+              </tr>
+            </thead>
+            <tbody className="text-zinc-300">
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">POST /v1/tts/generate</code></td>
+                <td className="px-4 py-3">2,000 chars text</td>
+                <td className="px-4 py-3">style_instruction: 500 chars</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">POST /v1/tts/speak</code></td>
+                <td className="px-4 py-3">2,000 chars text</td>
+                <td className="px-4 py-3">voice id: 64 chars</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">POST /v1/voices/{`{id}`}/speak</code></td>
+                <td className="px-4 py-3">2,000 chars text</td>
+                <td className="px-4 py-3">—</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">POST /v1/voice/clone</code></td>
+                <td className="px-4 py-3">2,000 chars target_text · 50 MB reference audio</td>
+                <td className="px-4 py-3">reference clip best at 5–30 s</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">POST /v1/stt/transcribe</code></td>
+                <td className="px-4 py-3">5 min · 50 MB audio</td>
+                <td className="px-4 py-3">language hint must be a canonical name</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">POST /v1/audio/noise-remover</code></td>
+                <td className="px-4 py-3">5 min · 50 MB audio</td>
+                <td className="px-4 py-3">WAV / MP3 / M4A / OGG / FLAC / WebM / AAC</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">POST /v1/voice/design/save</code></td>
+                <td className="px-4 py-3">display_name: 20 chars</td>
+                <td className="px-4 py-3">requires preview_token from previous call</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">POST /v1/voice/clone/save</code></td>
+                <td className="px-4 py-3">display_name: 40 chars · 50 MB audio</td>
+                <td className="px-4 py-3">5–30 s reference clip recommended</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">WS /v1/agents/{`{id}`}/session</code></td>
+                <td className="px-4 py-3">30 min max · 60 sec idle timeout</td>
+                <td className="px-4 py-3">Auto-close on balance=0 (4402), max length (4408), or idle (4410)</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      {/* ─────────────────── RATE LIMITS ─────────────────── */}
+      <section>
+        <h2 className="text-lg font-semibold mb-3">Rate limits</h2>
+        <p className="text-sm text-zinc-400 mb-4 leading-relaxed">
+          Three separate limit mechanisms apply, each with its own counter and error response.
+          All three are <span className="text-white">per-account</span> — every API key you
+          create draws from the same shared bucket, so spinning up additional keys does not
+          multiply your quota.
+        </p>
+        <div className="overflow-x-auto border border-white/[0.06] rounded-xl">
+          <table className="w-full text-sm">
+            <thead className="bg-white/5 text-[#A7B0B7]">
+              <tr>
+                <th className="text-left px-4 py-3">Scope</th>
+                <th className="text-left px-4 py-3">Limit</th>
+                <th className="text-left px-4 py-3">Error</th>
+              </tr>
+            </thead>
+            <tbody className="text-zinc-300">
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3">All HTTP endpoints (shared)</td>
+                <td className="px-4 py-3">4 req/min per account (sliding 60-sec window)</td>
+                <td className="px-4 py-3"><code className="text-white/90">HTTP 429</code></td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3">Voice agent session opens</td>
+                <td className="px-4 py-3">10 opens/min per account</td>
+                <td className="px-4 py-3">WS close <code className="text-white/90">4429</code></td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3">Voice agent concurrent sessions</td>
+                <td className="px-4 py-3">5 in-flight per account</td>
+                <td className="px-4 py-3">WS close <code className="text-white/90">4429</code></td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3">Voice agent max session length</td>
+                <td className="px-4 py-3">30 min per session</td>
+                <td className="px-4 py-3">WS close <code className="text-white/90">4408</code></td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3">Voice agent idle timeout</td>
+                <td className="px-4 py-3">60 sec without a user turn → auto-close</td>
+                <td className="px-4 py-3">WS close <code className="text-white/90">4410</code></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p className="text-sm text-zinc-400 mt-4 leading-relaxed">
+          Higher per-account limits are available on request — contact us with your
+          projected peak QPS and we'll bump the cap for your account. Voice agent session
+          limits are operationally enforced and not yet self-service configurable; ping
+          us if you need more concurrent voice sessions.
+        </p>
+      </section>
+
+      {/* ─────────────────── WORKED BILLING EXAMPLES ─────────────────── */}
+      <section>
+        <h2 className="text-lg font-semibold mb-3">Billing examples</h2>
+        <p className="text-sm text-zinc-400 mb-4 leading-relaxed">
+          The API is pay-as-you-go within each endpoint's hard cap — you pay for what you
+          actually send, not for the cap. Credits are deducted only after the work succeeds
+          (no charge on <code className="text-white/90">5xx</code> or <code className="text-white/90">413</code>).
+        </p>
+        <div className="overflow-x-auto border border-white/[0.06] rounded-xl">
+          <table className="w-full text-sm">
+            <thead className="bg-white/5 text-[#A7B0B7]">
+              <tr>
+                <th className="text-left px-4 py-3">Scenario</th>
+                <th className="text-left px-4 py-3">Math</th>
+                <th className="text-left px-4 py-3">Charge</th>
+              </tr>
+            </thead>
+            <tbody className="text-zinc-300">
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3">TTS — "Hello world" (11 chars)</td>
+                <td className="px-4 py-3 text-zinc-400">11 × 4,000 / 1,000,000 = 0.044, round up</td>
+                <td className="px-4 py-3">1 cr · $0.0025</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3">TTS — full 2,000-char article</td>
+                <td className="px-4 py-3 text-zinc-400">2,000 × 4,000 / 1,000,000 = 8</td>
+                <td className="px-4 py-3">8 cr · $0.02</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3">Voice clone — 500-char target text</td>
+                <td className="px-4 py-3 text-zinc-400">500 × 4,000 / 1,000,000 = 2</td>
+                <td className="px-4 py-3">2 cr · $0.005</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3">STT — 12-second voicemail</td>
+                <td className="px-4 py-3 text-zinc-400">ceil(12 / 60) = 1 min × 3 cr</td>
+                <td className="px-4 py-3">3 cr · $0.0075</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3">STT — 3 min 30 sec recording</td>
+                <td className="px-4 py-3 text-zinc-400">ceil(210 / 60) = 4 min × 3 cr</td>
+                <td className="px-4 py-3">12 cr · $0.03</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3">Noise remover — 45-sec clip</td>
+                <td className="px-4 py-3 text-zinc-400">ceil(45 / 60) = 1 min × 1 cr</td>
+                <td className="px-4 py-3">1 cr · $0.0025</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3">Voice design — preview + save 1 voice</td>
+                <td className="px-4 py-3 text-zinc-400">70 cr preview + 20 cr save</td>
+                <td className="px-4 py-3">90 cr · $0.225</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3">Voice agent — 3-sec accidental hang-up</td>
+                <td className="px-4 py-3 text-zinc-400">30-sec floor: 5 increments × 4 cr</td>
+                <td className="px-4 py-3">20 cr · $0.05</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3">Voice agent — 35-sec call</td>
+                <td className="px-4 py-3 text-zinc-400">ceil(35 / 6) = 6 increments × 4 cr</td>
+                <td className="px-4 py-3">24 cr · $0.06</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3">Voice agent — 7-min support call</td>
+                <td className="px-4 py-3 text-zinc-400">7 × 40 cr/min</td>
+                <td className="px-4 py-3">280 cr · $0.70</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      {/* ─────────────────── VOICE AGENT BILLING (DEEP DIVE) ─────────────────── */}
+      <section>
+        <h2 className="text-lg font-semibold mb-3">Voice agent billing model</h2>
+        <p className="text-sm text-zinc-400 mb-4 leading-relaxed">
+          Voice agent sessions are the only continuous-flow billing path. Charges accrue
+          while the WebSocket is open, not at the end. Three numbers govern the model:
+        </p>
+        <ul className="space-y-2 text-sm text-zinc-400 leading-relaxed list-disc list-inside ml-2">
           <li>
-            Call <code className="text-white/90">POST /v1/tts/generate</code>,{' '}
-            <code className="text-white/90">POST /v1/stt/transcribe</code>,{' '}
-            <code className="text-white/90">POST /v1/voice/clone</code>, and/or{' '}
-            <code className="text-white/90">POST /v1/music/generate</code> with the Bearer key.
+            <span className="text-white">40 cr/min</span> — the headline rate ($0.10/min
+            at the baseline credit rate).
           </li>
-          <li>Credits reduce per endpoint rules (flat per request by default; optional char-based TTS for operators).</li>
-          <li>View logs and spend in Account → Developer tab.</li>
+          <li>
+            <span className="text-white">6-second increments</span> — the billing loop
+            deducts 4 cr every 6 seconds during the session. A 35-second call rounds up
+            to 6 increments (24 cr), not 5.83. Same granularity as Vapi and Retell.
+          </li>
+          <li>
+            <span className="text-white">30-second minimum charge</span> — a session that
+            hangs up before 30 seconds is still billed 20 cr. Prevents flap-attacks where
+            a leaked key opens and closes hundreds of sessions per second for ~$0.
+          </li>
+        </ul>
+        <p className="text-sm text-zinc-400 mt-4 leading-relaxed">
+          Pre-flight check: at connect time we verify the user has at least 20 credits
+          (the 30-sec floor). Sessions below that balance are rejected with WS close{' '}
+          <code className="text-white/90">4402</code>. While the session is live, when
+          the balance can no longer cover the next 6-sec increment we send a{' '}
+          <code className="text-white/90">billing_exhausted</code> JSON event and close
+          with the same 4402 code. Build your SDK to surface this as a "top up credits"
+          banner rather than an unexpected disconnect.
+        </p>
+
+        <p className="text-sm text-zinc-400 mt-4 leading-relaxed">
+          Two additional auto-close conditions protect users and our pipeline:
+        </p>
+        <ul className="space-y-2 text-sm text-zinc-400 leading-relaxed list-disc list-inside ml-2 mt-2">
+          <li>
+            <span className="text-white">Max session length: 30 minutes.</span> Hard ceiling
+            per WebSocket. When reached we send{' '}
+            <code className="text-white/90">{`{"type":"session_timeout","code":"max_duration"}`}</code>{' '}
+            and close with WS code <code className="text-white/90">4408</code>. To continue,
+            open a new session — it counts as a new conversation for billing.
+          </li>
+          <li>
+            <span className="text-white">Idle timeout: 60 seconds.</span> If no user turn
+            (<code className="text-white/90">voice</code> or <code className="text-white/90">text</code>{' '}
+            message) arrives for 60 seconds, the session auto-closes with{' '}
+            <code className="text-white/90">{`{"type":"session_timeout","code":"idle_timeout"}`}</code>{' '}
+            and WS code <code className="text-white/90">4410</code>. A <code className="text-white/90">cancel</code>{' '}
+            does not count as activity. The credits already accrued are still billed.
+          </li>
+        </ul>
+      </section>
+
+      {/* ─────────────────── ERROR CODES ─────────────────── */}
+      <section>
+        <h2 className="text-lg font-semibold mb-3">Error codes</h2>
+        <p className="text-sm text-zinc-400 mb-4 leading-relaxed">
+          HTTP endpoints use standard status codes. WebSocket endpoints use 4xxx close
+          codes (the 4000 series is reserved for application-level errors per RFC 6455).
+        </p>
+        <div className="overflow-x-auto border border-white/[0.06] rounded-xl">
+          <table className="w-full text-sm">
+            <thead className="bg-white/5 text-[#A7B0B7]">
+              <tr>
+                <th className="text-left px-4 py-3">Code</th>
+                <th className="text-left px-4 py-3">Meaning</th>
+                <th className="text-left px-4 py-3">What to do</th>
+              </tr>
+            </thead>
+            <tbody className="text-zinc-300">
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">HTTP 400</code></td>
+                <td className="px-4 py-3">Bad request (missing field, malformed base64)</td>
+                <td className="px-4 py-3">Fix the request — don't retry as-is</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">HTTP 401</code></td>
+                <td className="px-4 py-3">Missing or invalid API key</td>
+                <td className="px-4 py-3">Check the Authorization header format</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">HTTP 402</code></td>
+                <td className="px-4 py-3">Insufficient credits</td>
+                <td className="px-4 py-3">Top up credits; no work was performed</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">HTTP 403</code></td>
+                <td className="px-4 py-3">Resource not owned by this API key's user, or Premium gate failed</td>
+                <td className="px-4 py-3">Check ownership; purchase Premium if first-time</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">HTTP 404</code></td>
+                <td className="px-4 py-3">Agent / voice / resource not found</td>
+                <td className="px-4 py-3">Verify the id; check spelling</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">HTTP 413</code></td>
+                <td className="px-4 py-3">Payload too large (cap exceeded)</td>
+                <td className="px-4 py-3">Chunk the input — see per-endpoint limits above</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">HTTP 429</code></td>
+                <td className="px-4 py-3">Rate limit exceeded (4 req/min per account, default)</td>
+                <td className="px-4 py-3">Back off; respect <code className="text-white/90">Retry-After</code> if present</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">HTTP 502</code></td>
+                <td className="px-4 py-3">Upstream provider error (no credits charged)</td>
+                <td className="px-4 py-3">Safe to retry with exponential backoff</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">HTTP 503</code></td>
+                <td className="px-4 py-3">Feature temporarily unavailable (no pods online)</td>
+                <td className="px-4 py-3">Retry after 30–60 seconds</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">WS 4401</code></td>
+                <td className="px-4 py-3">WebSocket auth failed (missing/invalid Bearer key)</td>
+                <td className="px-4 py-3">Check the Authorization header sent during the WS handshake</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">WS 4402</code></td>
+                <td className="px-4 py-3">Insufficient credits — pre-flight or mid-session exhaustion</td>
+                <td className="px-4 py-3">Top up credits; the session is not recoverable</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">WS 4404</code></td>
+                <td className="px-4 py-3">Agent not found / not owned by this key</td>
+                <td className="px-4 py-3">Verify the agent_id and ownership</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">WS 4423</code></td>
+                <td className="px-4 py-3">Agent is paused or archived</td>
+                <td className="px-4 py-3">Re-activate the agent from the Studio UI</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">WS 4408</code></td>
+                <td className="px-4 py-3">Session reached max duration (30 min)</td>
+                <td className="px-4 py-3">Open a new session if the conversation needs to continue</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">WS 4410</code></td>
+                <td className="px-4 py-3">Idle timeout — no user turn for 60 seconds</td>
+                <td className="px-4 py-3">Send any user turn within 60s of the previous one to keep the session alive</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">WS 4429</code></td>
+                <td className="px-4 py-3">Session-rate limit (10/min open OR 5 concurrent)</td>
+                <td className="px-4 py-3">Back off; close idle sessions before opening new ones</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">WS 4502/4503</code></td>
+                <td className="px-4 py-3">Upstream voice pipeline error</td>
+                <td className="px-4 py-3">Retry; ping us if it persists</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      {/* ─────────────────── BILLING FLOW ─────────────────── */}
+      <section>
+        <h2 className="text-lg font-semibold mb-3">End-to-end billing flow</h2>
+        <ol className="space-y-2 text-sm text-zinc-400 leading-relaxed list-decimal list-inside">
+          <li>Sign in and purchase credits from the Pricing page (Stripe or Crypto).</li>
+          <li>Purchase the Premium pack at least once to unlock the Developer API.</li>
+          <li>Create an API key in Account → Developer tab. Copy the <code className="text-white/90">voc_live_…</code> token once — it isn't shown again.</li>
+          <li>
+            Call any endpoint with <code className="text-white/90">Authorization: Bearer voc_live_…</code>.
+            The server applies rate-limit and balance checks before doing any work.
+          </li>
+          <li>
+            Credits are deducted after the work succeeds. The response includes{' '}
+            <code className="text-white/90">credits_used</code> and{' '}
+            <code className="text-white/90">credits_remaining</code> so you can drive
+            in-app usage UI without an extra balance lookup.
+          </li>
+          <li>View per-call logs and spend in Account → Developer tab.</li>
         </ol>
       </section>
     </div>
@@ -1674,8 +2054,8 @@ Authorization: Bearer <your auth secret>`}
             the saved voice.
           </li>
           <li>
-            <span className="text-zinc-200 font-medium">Keep the script under 300 characters.</span> Longer text triggers
-            the model's max output duration ceiling and the synthesis fails.
+            <span className="text-zinc-200 font-medium">Keep the script under 2,000 characters.</span> Very long text may
+            hit the model's max output duration ceiling.
           </li>
         </ol>
       </section>
@@ -1705,7 +2085,7 @@ Authorization: Bearer <your auth secret>`}
           <div className="card-vocence p-5">
             <h3 className="font-medium mb-2 text-sm">Limits</h3>
             <ul className="space-y-1 text-sm text-zinc-400">
-              <li>• Up to <span className="text-zinc-200">300 characters</span> per generation</li>
+              <li>• Up to <span className="text-zinc-200">2,000 characters</span> per generation</li>
               <li>• Up to <span className="text-zinc-200">~30 seconds</span> of audio</li>
               <li>• <span className="text-zinc-200">25 credits</span> per generation</li>
             </ul>
@@ -2349,6 +2729,64 @@ Authorization: Bearer <your auth secret>`}
     </div>
   );
 
+  const renderGuideDubbing = () => (
+    <div className="space-y-8">
+      <div className="border-b border-white/[0.06] pb-6">
+        <div className="flex items-center gap-1.5 text-xs text-zinc-500 mb-3">
+          <span>Docs</span>
+          <span>/</span>
+          <span>Studio</span>
+          <span>/</span>
+          <span className="text-zinc-300">Noise Remover</span>
+        </div>
+        <h1 className="text-3xl font-bold mb-2">Noise Remover</h1>
+        <p className="text-zinc-400 leading-relaxed">
+          Remove background noise and enhance audio clarity. Upload or record noisy audio and get a clean version back.
+        </p>
+      </div>
+
+      <section>
+        <h2 className="text-lg font-semibold mb-3">How it works</h2>
+        <ol className="space-y-3 text-sm text-zinc-400 leading-relaxed list-decimal list-inside">
+          <li>Open <Link to="/studio/noise-remover" className="text-[#DFFF00] hover:underline">Studio → Noise Remover</Link>.</li>
+          <li>Upload an audio file (drag & drop supported) or record directly in the browser.</li>
+          <li>Click <span className="text-zinc-200 font-medium">Enhance Audio</span>. The processed audio plays automatically.</li>
+          <li>Compare original vs enhanced side by side, then download the clean version.</li>
+        </ol>
+      </section>
+
+      <section>
+        <h2 className="text-lg font-semibold mb-3">Tips for best results</h2>
+        <ul className="space-y-2 text-sm text-zinc-400 leading-relaxed">
+          <li>• Use audio where speech is clearly audible above the noise — the enhancer preserves voice and removes background.</li>
+          <li>• Shorter clips (under 1 minute) process fastest.</li>
+          <li>• Works best on recordings with consistent background noise (fans, traffic, hum) rather than sudden loud interruptions.</li>
+          <li>• Supported formats: WAV, MP3, M4A, WebM, OGG, FLAC, AAC.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2 className="text-lg font-semibold mb-3">Limits</h2>
+        <div className="card-vocence p-5">
+          <ul className="space-y-1 text-sm text-zinc-400">
+            <li>• Max duration: <span className="text-zinc-200">5 minutes</span></li>
+            <li>• Max file size: <span className="text-zinc-200">50 MB</span></li>
+            <li>• Cost: <span className="text-zinc-200">{CREDIT_NOISE_REMOVER} credits</span> per enhancement</li>
+          </ul>
+        </div>
+      </section>
+
+      <section>
+        <h2 className="text-lg font-semibold mb-3">Keyboard shortcuts</h2>
+        <ul className="space-y-1 text-sm text-zinc-400">
+          <li>• <kbd className="px-1.5 py-0.5 rounded bg-white/[0.06] border border-white/[0.08] text-zinc-300 font-mono text-xs">Space</kbd> — play / pause audio</li>
+          <li>• <kbd className="px-1.5 py-0.5 rounded bg-white/[0.06] border border-white/[0.08] text-zinc-300 font-mono text-xs">R</kbd> — re-enhance with the same file</li>
+          <li>• Drag any audio file onto the page to load it</li>
+        </ul>
+      </section>
+    </div>
+  );
+
   const renderSdkPython = () => (
     <div className="space-y-8">
       <nav className="flex items-center gap-1.5 text-xs text-zinc-500">
@@ -2417,7 +2855,11 @@ audio.write_wav("hello.wav")
 
 # 3. Transcribe an audio clip
 text = client.stt.transcribe(audio_path="hello.wav", language="English").text
-print(text)`} />
+print(text)
+
+# 4. Remove background noise from audio
+enhanced = client.audio.noise_remover(audio_path="noisy_recording.wav")
+enhanced.write_wav("clean.wav")`} />
       </section>
 
       <section className="space-y-3">
@@ -2473,7 +2915,7 @@ r.write_wav("out.wav")   # → Path (downloaded + saved)
 
 # Cost estimate before firing — pure local arithmetic, no HTTP call
 client.tts.estimate(text="hello", voice="design-aria")
-# → Estimate(credits=25, chars=5, endpoint='/v1/tts/speak')`} />
+# → Estimate(credits=1, chars=5, endpoint='/v1/tts/speak')`} />
       </section>
 
       <section className="space-y-3">
@@ -2657,7 +3099,8 @@ vocence speak "Hello" -v design-aria -o out.wav      # save as WAV
 vocence speak "Hello" -v design-aria -o -            # just print the audio URL
 vocence transcribe clip.wav --language English       # STT
 vocence clone path/to/clip.wav -n "My Voice"         # upload + save reusable
-vocence design "warm female British narrator"        # preview + interactive pick + save`} />
+vocence design "warm female British narrator"        # preview + interactive pick + save
+vocence enhance noisy.wav -o clean.wav               # remove background noise`} />
       </section>
 
       <section className="space-y-3">
@@ -3252,6 +3695,28 @@ print(audio["audio_url"])`} />
       </section>
 
       <section className="space-y-3">
+        <h2 className="text-lg font-semibold tracking-tight text-white">Remove background noise from audio</h2>
+        <p className="text-sm leading-relaxed text-zinc-400">
+          Upload a noisy recording and get a clean version back. Useful for
+          pre-processing audio before cloning or transcription.
+        </p>
+        <CodeBlock code={`import requests, base64
+from pathlib import Path
+
+API_KEY = "voc_live_..."
+BASE = "https://api.vocence.ai"
+H = {"Authorization": f"Bearer {API_KEY}"}
+
+audio_b64 = base64.b64encode(Path("noisy.wav").read_bytes()).decode()
+r = requests.post(f"{BASE}/v1/audio/noise-remover", headers=H, json={
+    "audio_b64": audio_b64,
+})
+data = r.json()
+print("enhanced:", data["audio_url"])
+print(f"credits used: {data['credits_used']}, remaining: {data['credits_remaining']}")`} />
+      </section>
+
+      <section className="space-y-3">
         <h2 className="text-lg font-semibold tracking-tight text-white">Where to go next</h2>
         <p className="text-sm leading-relaxed text-zinc-400">
           Every endpoint in these recipes has its full parameter table, code
@@ -3285,6 +3750,8 @@ print(audio["audio_url"])`} />
         return renderGuideStt();
       case 'guide-music':
         return renderGuideMusic();
+      case 'guide-dubbing':
+        return renderGuideDubbing();
       case 'cookbook':
         return renderCookbook();
       case 'api':

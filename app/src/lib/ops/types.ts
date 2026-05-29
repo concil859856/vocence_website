@@ -9,7 +9,7 @@ export type ServiceName =
   | 'music'
   | 'voice_clone'
   | 'stt'
-  | 'dubbing';
+  | 'noise_remover';
 
 export type ServerStatus = 'pending' | 'ready' | 'unreachable' | 'removed';
 
@@ -137,7 +137,7 @@ export const SERVICE_LABELS: Record<ServiceName, string> = {
   music: 'Music',
   voice_clone: 'Voice Clone',
   stt: 'Speech-to-Text',
-  dubbing: 'Voice Dubbing',
+  noise_remover: 'Noise Remover',
 };
 
 /** Default Docker Hub images per service. Admin can override at deploy time.
@@ -151,7 +151,7 @@ export const DEFAULT_IMAGES: Record<ServiceName, string> = {
   voice_clone: 'vocence/voice_clone:latest',
   stt: 'vocence/asr-streaming:latest',
   music: 'vocence/text-to-music:latest',
-  dubbing: 'vocence/voice-dubbing:latest',
+  noise_remover: 'vocence/voice-dubbing:latest',
 };
 
 /** Default host port per service (matches container EXPOSE in each repo's Dockerfile). */
@@ -161,5 +161,162 @@ export const DEFAULT_PORTS: Record<ServiceName, number> = {
   voice_clone: 8113,
   stt: 8114,
   music: 8115,
-  dubbing: 8116,
+  noise_remover: 8116,
 };
+
+
+// ---------------------------------------------------------------------------
+// Pod / server runtime % + fleet health (Phase 1B)
+// ---------------------------------------------------------------------------
+
+export type RuntimeWindow = 'day' | 'week' | 'month';
+
+export interface PodRuntimeRow {
+  pod_id: number;
+  name: string;
+  service: ServiceName;
+  server_id: number;
+  status: PodStatus;
+  online_seconds: number;
+  window_seconds: number;
+  uptime_pct: number;          // 0..100
+}
+
+export interface ServerRuntimeRow {
+  server_id: number;
+  name: string;
+  host: string;
+  status: ServerStatus;
+  online_seconds: number;
+  window_seconds: number;
+  uptime_pct: number;
+}
+
+export interface PodHealthRow {
+  pod_id: number;
+  name: string;
+  service: ServiceName;
+  server_id: number;
+  status: PodStatus;
+  uptime_pct: number;
+  success_rate: number;        // 0..1
+  p95_latency_ms: number | null;
+  /** Per-service p95 target this pod was scored against. Different
+   *  services (streaming TTS vs music) have very different reasonable
+   *  targets, so this varies per row. */
+  p95_target_ms: number;
+  latency_efficiency: number;  // 0..1
+  score: number;               // 0..100
+}
+
+export interface FleetHealth {
+  window: RuntimeWindow;
+  /** Default p95 target — used only when a service isn't in the map.
+   *  Per-pod targets are in ``pods[i].p95_target_ms``. */
+  p95_target_ms: number;
+  /** Per-service target map so the UI can surface, e.g.,
+   *  "TTS target: 1000 ms · Music target: 180000 ms" if it wants. */
+  p95_targets_by_service: Record<string, number>;
+  network_mean_score: number | null;
+  active_pod_count: number;
+  pods: PodHealthRow[];
+}
+
+
+// ---------------------------------------------------------------------------
+// LLM telemetry (Phase 1B)
+// ---------------------------------------------------------------------------
+
+export type LlmTimeRange = '1h' | '24h' | '7d' | '30d';
+export type LlmTimeBucket = '1h' | '1d';
+export type LlmProvider = 'cerebras' | 'xai' | 'groq' | 'openai' | 'chutes' | 'local';
+
+export interface LlmOverview {
+  range: string;
+  calls: number;
+  ok: number;
+  errors: number;
+  empties: number;
+  rate_limited: number;
+  timed_out: number;
+  fallback_calls: number;
+  cost_usd: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  avg_latency_ms: number | null;
+  avg_ttft_ms: number | null;
+  p95_latency_ms: number | null;
+}
+
+export interface LlmBreakdownRow {
+  provider?: string;
+  model?: string;
+  calls: number;
+  ok: number;
+  errors: number;
+  rate_limited: number;
+  timed_out: number;
+  fallback_calls: number;
+  cost_usd: number;
+  total_tokens: number;
+  avg_latency_ms: number | null;
+  avg_ttft_ms: number | null;
+}
+
+export interface LlmFailureRow {
+  id: string;
+  provider: string;
+  model: string;
+  mode: 'chat' | 'stream';
+  status: 'error' | 'empty';
+  http_status: number | null;
+  rate_limited: 0 | 1;
+  timed_out: 0 | 1;
+  latency_ms: number | null;
+  ttft_ms: number | null;
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  fallback_from: string | null;
+  fallback_reason: string | null;
+  error_message: string | null;
+  created_at: string;
+}
+
+export interface LlmTopError {
+  err_prefix: string;
+  count: number;
+  provider: string;
+  model: string;
+}
+
+export interface LlmFallbackRow {
+  from_provider: string;
+  to_provider: string;
+  reason: string | null;
+  hops: number;
+  recovered: number;
+  recovery_rate: number | null;
+  cost_usd: number;
+}
+
+export interface LlmTimeseriesPoint {
+  bucket: string;        // ISO-ish, hour or day
+  calls: number;
+  errors: number;
+  rate_limited: number;
+  timed_out: number;
+  cost_usd: number;
+  avg_latency_ms: number | null;
+  avg_ttft_ms: number | null;
+}
+
+export interface LlmPricingRow {
+  provider: string;
+  model: string;
+  input_per_1m: number;
+  output_per_1m: number;
+  notes: string | null;
+  active: 0 | 1;
+  updated_at: string;
+}

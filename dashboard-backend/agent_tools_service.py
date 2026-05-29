@@ -384,11 +384,29 @@ async def safe_request(
 # ---------------------------------------------------------------------------
 
 
+_NO_FABRICATION_NOTE = (
+    "This tool returned no useful data (empty or error). Tell the user "
+    "honestly that you couldn't find the information. Do NOT invent an "
+    "answer. Do NOT borrow facts from other topics discussed earlier "
+    "in this conversation."
+)
+
+
 def _stringify_result(result: Any) -> str:
     """Tool result → string for the LLM. We always JSON-encode dicts/
     lists so the LLM gets a stable shape; plain strings pass through.
     Trims to MAX_TOOL_RESULT_CHARS so a 50 KB scrape doesn't poison
-    the context."""
+    the context.
+
+    For dict results that look like an error or empty payload, we
+    inject ``instructions_for_model`` so the LLM is explicitly told
+    not to fabricate. Implementations that return ``{"error": …}``
+    directly (without going through ``_error_payload``) get the same
+    protection here at the central choke point.
+    """
+    if isinstance(result, dict):
+        if "error" in result and "instructions_for_model" not in result:
+            result = {**result, "instructions_for_model": _NO_FABRICATION_NOTE}
     if isinstance(result, str):
         out = result
     else:
@@ -401,8 +419,26 @@ def _stringify_result(result: Any) -> str:
 def _error_payload(reason: str) -> str:
     """Structured error returned to the LLM so it can decide whether
     to recover (e.g. re-call with different args) or give up
-    gracefully. JSON-encoded so the LLM can parse if it wants to."""
-    return json.dumps({"error": reason}, ensure_ascii=False)
+    gracefully. JSON-encoded so the LLM can parse if it wants to.
+
+    Includes an ``instructions_for_model`` field so the model doesn't
+    silently fabricate a plausible answer when the tool failed —
+    especially important for small open-weight models that tend to
+    paper over errors by inventing context from elsewhere in the
+    conversation."""
+    return json.dumps(
+        {
+            "error": reason,
+            "instructions_for_model": (
+                "This tool call failed. Tell the user honestly that you "
+                "couldn't get the information. Do NOT invent an answer. "
+                "Do NOT borrow facts from other topics discussed earlier "
+                "in this conversation. You may suggest the user try "
+                "again with more specific context."
+            ),
+        },
+        ensure_ascii=False,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -510,6 +546,20 @@ async def _impl_web_search(args: dict) -> Any:
             for r in (data.get("results") or [])[:5]
         ],
     }
+    # Empty-result trip-wire. Without this the LLM (especially small
+    # open-weight models like gpt-oss-120b) will silently fabricate a
+    # plausible-sounding answer by borrowing context from earlier in
+    # the conversation. The instructions field is a direct command to
+    # the model when synthesizing its reply — visible to it as part
+    # of the tool result payload.
+    if not result["answer"] and not result["results"]:
+        result["instructions_for_model"] = (
+            "No matching information was found for this query. You MUST "
+            "tell the user honestly that you couldn't find anything on "
+            "this topic. Do NOT invent a description. Do NOT borrow "
+            "facts from other topics discussed earlier in the "
+            "conversation. Ask the user for a link or more context."
+        )
     # Cache the stringified form so cache hits skip the json.dumps
     # round-trip too.
     stringified = json.dumps(result, ensure_ascii=False)
@@ -524,9 +574,11 @@ _register(Tool(
         "from memory. Use it broadly: news and current events, prices/stocks/crypto, sports scores, "
         "specific people (their profile, current role, recent statements, achievements), companies "
         "and products, events past and present, places, niche topics, anything specific the user "
-        "names that you aren't fully sure about. ALWAYS use this BEFORE saying \"I don't know\" or "
-        "\"I'm not sure\" — search first, answer with the result. Returns a concise answer plus "
-        "3–5 source snippets covering the topic."
+        "names that you aren't fully sure about. Call this BEFORE guessing — search first, then "
+        "answer from what the search actually returned. If the search returns no useful results, "
+        "tell the user honestly that you couldn't find anything — DO NOT fabricate an answer by "
+        "borrowing context from earlier in the conversation. Returns a concise answer plus 3–5 "
+        "source snippets when matches exist."
     ),
     parameters={
         "type": "object",
@@ -798,6 +850,12 @@ async def _impl_wikipedia_lookup(args: dict) -> Any:
         "summary": data.get("extract") or "",
         "url": (data.get("content_urls") or {}).get("desktop", {}).get("page") or url,
     }
+    if not result["summary"]:
+        result["instructions_for_model"] = (
+            "Wikipedia returned no substantive summary for this query. "
+            "Tell the user honestly that you couldn't find an article. "
+            "Do NOT fabricate a description from earlier conversation context."
+        )
     stringified = json.dumps(result, ensure_ascii=False)
     _tool_cache.set(ckey, stringified)
     return stringified

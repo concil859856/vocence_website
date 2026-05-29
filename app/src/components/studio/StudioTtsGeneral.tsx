@@ -18,8 +18,9 @@ import { CREDIT_TTS } from '../../studio/creditCosts';
 import { SAMPLE_VOICE_INDEX, SAMPLE_VOICES, type SampleVoice } from '../../data/sampleVoices';
 import { SampleVoiceAvatar } from './SampleVoiceAvatar';
 import { SampleVoicePickerModal } from './SampleVoicePickerModal';
+import { ThumbsFeedback } from '../feedback/ThumbsFeedback';
 
-const TTS_CONTENT_MAX_CHARS = 300;
+const TTS_CONTENT_MAX_CHARS = 2000;
 
 export function StudioTtsGeneral() {
   const { user, setLocalCredits } = useAuth();
@@ -33,6 +34,11 @@ export function StudioTtsGeneral() {
   const [text, setText] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Most recent completed result — surfaces the thumbs-up/down control
+  // alongside the Generate button so users can rate without leaving
+  // the page. Cleared on every new Generate so the thumb refers to the
+  // generation the user just heard.
+  const [lastResultId, setLastResultId] = useState<string | null>(null);
 
   const selected: SampleVoice | null = selectedId ? SAMPLE_VOICE_INDEX[selectedId] ?? null : null;
   const charCount = text.length;
@@ -92,6 +98,10 @@ export function StudioTtsGeneral() {
         },
       });
 
+      // New generation invalidates the prior thumb target — clear it
+      // before we start polling so stale id never paints alongside the
+      // new audio.
+      setLastResultId(null);
       // Local poll so we can also auto-play in the bottom bar without waiting
       // for the toast click. (Same pattern as PromptTTS' handleGenerateAudio.)
       let done = false;
@@ -101,6 +111,7 @@ export function StudioTtsGeneral() {
           const job = await dashboardApi.getJob(submission.job_id, token);
           if (job.status === 'completed') {
             const audioUrl = (job.result?.audio_url as string | undefined) || '';
+            const historyId = (job.result?.history_id as number | undefined);
             if (audioUrl) {
               player.play({
                 src: audioUrl,
@@ -108,6 +119,16 @@ export function StudioTtsGeneral() {
                 subtitle,
                 downloadFilename: `vocence-tts-${submission.job_id.slice(0, 8)}.wav`,
               });
+            }
+            // Track the result id so the thumbs UI knows which row to
+            // rate. ``clone`` table id when this voice came from the
+            // clone-based sample-voice path; fall back to the job id
+            // so the thumb still works for results without a history
+            // row (rare).
+            if (historyId !== undefined) {
+              setLastResultId(String(historyId));
+            } else {
+              setLastResultId(submission.job_id);
             }
             done = true;
           } else if (['failed', 'timeout', 'cancelled'].includes(job.status)) {
@@ -201,6 +222,18 @@ export function StudioTtsGeneral() {
             <AlertCircle size={14} className="shrink-0 mt-0.5" />
             <span>{error}</span>
           </div>
+        )}
+
+        {/* Last completed result — thumbs feed into generation_feedback
+            for the Quality dashboard. The General sub-tab routes
+            through the voice-clone backend (sample voices use cloning
+            under the hood), so the entry_type is 'clone'. */}
+        {lastResultId && !submitting && (
+          <ThumbsFeedback
+            entryType="clone"
+            entryId={lastResultId}
+            label="How did that sound?"
+          />
         )}
       </div>
 

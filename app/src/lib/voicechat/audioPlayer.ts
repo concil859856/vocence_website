@@ -51,6 +51,14 @@ const FILLER_PREBUFFER_MS = 80;
 const REBUFFER_FLOOR_MS = 0;
 const REBUFFER_RESUME_MS = 200;
 
+// Fade-out duration applied to TTS output on barge-in. Hard-cutting the
+// audio mid-syllable produces an audible click and feels jarring — every
+// SOTA voice agent (OpenAI Realtime, ElevenLabs, Pipecat) fades to silence
+// over ~100–200 ms instead. We use 150 ms: fast enough that the agent
+// clearly stops, slow enough that there's no click. Kept short so the user
+// doesn't keep hearing the agent while they're already mid-sentence.
+const BARGE_IN_FADE_MS = 150;
+
 const WORKLET_SOURCE = `
 class PcmPlayer extends AudioWorkletProcessor {
   constructor() {
@@ -213,6 +221,11 @@ export interface AudioPlayerOptions {
 export class StreamingAudioPlayer {
   private ctx: AudioContext | null = null;
   private worklet: AudioWorkletNode | null = null;
+  // GainNode sits between the worklet and the audio output so we can
+  // ramp gain → 0 on barge-in for a smooth fade-out instead of a hard
+  // mid-syllable cut. The worklet's flush still drops queued audio
+  // immediately, but the fade hides the discontinuity.
+  private gainNode: GainNode | null = null;
   private outputRate = SAMPLE_RATE;
   private events: AudioPlayerEvents;
   private workletReady: Promise<void> | null = null;
@@ -265,7 +278,13 @@ export class StreamingAudioPlayer {
       rebufferFloorSamples,
       rebufferResumeSamples,
     });
-    this.worklet.connect(ctx.destination);
+    // worklet → gainNode → destination so the fade-out logic in
+    // ``flush()`` has somewhere to apply the ramp without re-wiring
+    // the graph at barge-in time.
+    this.gainNode = ctx.createGain();
+    this.gainNode.gain.value = 1.0;
+    this.worklet.connect(this.gainNode);
+    this.gainNode.connect(ctx.destination);
 
     if (ctx.state === 'suspended') {
       try {
@@ -299,9 +318,44 @@ export class StreamingAudioPlayer {
     this.worklet.port.postMessage({ type: 'push', pcm: f32 }, [f32.buffer]);
   }
 
-  /** Drop everything queued (barge-in). */
+  /** Drop everything queued (barge-in).
+   *
+   * Sequence:
+   *   1. Ramp the GainNode from current → 0 over BARGE_IN_FADE_MS so
+   *      whatever is already in the audio output buffer fades smoothly
+   *      to silence (no click / no mid-syllable cut).
+   *   2. After the fade completes, send ``flush`` to the worklet to
+   *      drop everything still in the queue.
+   *   3. Schedule the gain to ramp back to 1.0 just before the next
+   *      ``push`` is likely to land, so subsequent audio plays at
+   *      normal level. A 5 ms ramp avoids a click on the way back up.
+   *
+   * If no AudioContext is available (init never ran or already closed),
+   * fall back to the old behaviour — just send the flush. */
   flush(): void {
-    this.worklet?.port.postMessage({ type: 'flush' });
+    if (this.ctx && this.gainNode) {
+      const fadeSec = BARGE_IN_FADE_MS / 1000;
+      const now = this.ctx.currentTime;
+      const g = this.gainNode.gain;
+      // Cancel anything pending, anchor the current value, then ramp down.
+      try { g.cancelScheduledValues(now); } catch { /* ignore */ }
+      try { g.setValueAtTime(g.value, now); } catch { /* ignore */ }
+      g.linearRampToValueAtTime(0.0001, now + fadeSec);
+      // After the fade, drop the queue and ramp gain back up so the
+      // next sentence starts at full volume. The 5ms ramp on the way
+      // up prevents a click on the rising edge.
+      window.setTimeout(() => {
+        this.worklet?.port.postMessage({ type: 'flush' });
+        if (this.ctx && this.gainNode) {
+          const t = this.ctx.currentTime;
+          try { this.gainNode.gain.cancelScheduledValues(t); } catch { /* ignore */ }
+          try { this.gainNode.gain.setValueAtTime(0.0001, t); } catch { /* ignore */ }
+          this.gainNode.gain.linearRampToValueAtTime(1.0, t + 0.005);
+        }
+      }, BARGE_IN_FADE_MS);
+    } else {
+      this.worklet?.port.postMessage({ type: 'flush' });
+    }
     // Reset prebuffer to default after a barge-in so the next turn's
     // first content sentence gets the full cold-start cushion.
     this.setPrebufferMs(this.prebufferMs);
@@ -333,7 +387,13 @@ export class StreamingAudioPlayer {
     } catch {
       // ignore
     }
+    try {
+      this.gainNode?.disconnect();
+    } catch {
+      // ignore
+    }
     this.worklet = null;
+    this.gainNode = null;
     if (this.ctx) {
       try {
         await this.ctx.close();

@@ -13,19 +13,19 @@ export type StudioView =
   | 'voice-design'
   | 'my-voices'
   | 'music'
-  | 'dubbing'
+  | 'noise-remover'
   | 'playbooks'
   | 'history'
   | 'agents';
 
-export const studioSidebarItems: { id: StudioView; label: string; icon: LucideIcon }[] = [
-  { id: 'agents', label: 'Agents', icon: Bot },
+export const studioSidebarItems: { id: StudioView; label: string; icon: LucideIcon; badge?: string }[] = [
+  { id: 'agents', label: 'Agents', icon: Bot, badge: 'Beta' },
   { id: 'voice-design', label: 'Voice Design', icon: Sparkles },
   { id: 'tts', label: 'Text-to-Speech', icon: Mic },
   { id: 'stt', label: 'Speech-to-Text', icon: MessageSquare },
   { id: 'cloning', label: 'Voice Cloning', icon: Users },
   { id: 'music', label: 'Text-to-Music', icon: Music },
-  { id: 'dubbing', label: 'Voice Dubbing', icon: AudioLines },
+  { id: 'noise-remover', label: 'Noise Remover', icon: AudioLines },
   { id: 'my-voices', label: 'My Voices', icon: LayoutGrid },
   { id: 'playbooks', label: 'Playbooks', icon: ListMusic },
   { id: 'history', label: 'History', icon: History },

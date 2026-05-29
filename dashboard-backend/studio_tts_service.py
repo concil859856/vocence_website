@@ -103,8 +103,8 @@ VOICE_DESIGN_LLM_TEMPERATURE = float(os.environ.get("VOICE_DESIGN_LLM_TEMPERATUR
 # Retries when Chutes returns 429 / capacity (exponential backoff)
 VOICE_DESIGN_LLM_RETRY_MAX = int(os.environ.get("VOICE_DESIGN_LLM_RETRY_MAX", "5"))
 VOICE_DESIGN_LLM_RETRY_BASE_SEC = float(os.environ.get("VOICE_DESIGN_LLM_RETRY_BASE_SEC", "3"))
-VOICE_DESIGN_SAMPLE_WORDS_MIN = int(os.environ.get("VOICE_DESIGN_SAMPLE_WORDS_MIN", "6"))
-VOICE_DESIGN_SAMPLE_WORDS_MAX = int(os.environ.get("VOICE_DESIGN_SAMPLE_WORDS_MAX", "7"))
+VOICE_DESIGN_SAMPLE_WORDS_MIN = int(os.environ.get("VOICE_DESIGN_SAMPLE_WORDS_MIN", "18"))
+VOICE_DESIGN_SAMPLE_WORDS_MAX = int(os.environ.get("VOICE_DESIGN_SAMPLE_WORDS_MAX", "22"))
 VOICE_DESIGN_PREVIEW_EXPIRY_HOURS = int(os.environ.get("VOICE_DESIGN_PREVIEW_EXPIRY_HOURS", "24"))
 
 
@@ -585,27 +585,30 @@ def voice_design_llm_configured() -> bool:
 
 
 def clamp_sample_script_words(text: str, low: int | None = None, high: int | None = None) -> str:
-    """Force sample line to 6–7 words (defaults from env). Pad or truncate."""
+    """Force sample line to target word range (defaults from env). Pad or truncate."""
     lo = low if low is not None else VOICE_DESIGN_SAMPLE_WORDS_MIN
     hi = high if high is not None else VOICE_DESIGN_SAMPLE_WORDS_MAX
     if hi < lo:
         lo, hi = hi, lo
     raw = (text or "").strip()
-    # strip surrounding quotes
     if (raw.startswith('"') and raw.endswith('"')) or (raw.startswith("'") and raw.endswith("'")):
         raw = raw[1:-1].strip()
     words = raw.split() if raw else []
     if len(words) > hi:
         words = words[:hi]
     if len(words) < lo:
-        filler = ["hey", "thanks", "so", "much", "for", "this", "today"]
+        filler = [
+            "hey", "thanks", "so", "much", "for", "being", "here", "today",
+            "I", "really", "appreciate", "you", "taking", "the", "time",
+            "to", "listen", "and", "enjoy", "this", "moment", "with", "me",
+        ]
         i = 0
         while len(words) < lo and i < len(filler):
             if filler[i] not in {w.lower() for w in words}:
                 words.append(filler[i])
             i += 1
         while len(words) < lo:
-            words.append("thanks")
+            words.append("today")
     return " ".join(words)
 
 
@@ -725,7 +728,8 @@ async def voice_design_llm_plan(*, voice_description: str) -> tuple[dict | None,
         "You help design voices for PromptTTS. Reply with a single JSON object only, no markdown. "
         'Keys: "sample_script" (string) and "revised_instruction" (string). '
         f"sample_script MUST be natural spoken dialogue of exactly {VOICE_DESIGN_SAMPLE_WORDS_MIN} to "
-        f"{VOICE_DESIGN_SAMPLE_WORDS_MAX} words in English — short, fits the vibe of the voice. "
+        f"{VOICE_DESIGN_SAMPLE_WORDS_MAX} words in English — about 1–2 sentences that feel natural when spoken aloud "
+        "and fit the vibe of the described voice. "
         "revised_instruction: one clear English instruction for a TTS model describing timbre, age, emotion, pace, tone — "
         "improved from the user's wording, no quotes inside the values."
     )

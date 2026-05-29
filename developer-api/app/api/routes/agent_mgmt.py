@@ -46,8 +46,154 @@ AGENT_TOOL = Literal[
 ]
 
 from app.core.auth import require_api_key
+from app.core.config import API_VOICE_SAVE_CREDITS
 from app.db.connection import get_db
 from app.services.dashboard_proxy import call_dashboard
+from app.services.usage import enforce_rate_limit
+
+
+async def _ensure_premium(conn, user_id: str) -> None:
+    """Verify the caller has at least one successful Premium purchase.
+
+    Mirrors ``_ensure_premium`` in v1.py. Duplicated here (instead of
+    cross-importing) so this module stays self-contained — the v1.py
+    helper is module-private and we don't want to leak that contract.
+    """
+    paid_row = await (
+        await conn.execute(
+            """
+            SELECT COUNT(*) AS n
+            FROM payments
+            WHERE user_id = ?
+              AND status IN ('paid', 'completed')
+              AND credits_granted > 0
+              AND LOWER(COALESCE(plan_code, '')) = 'premium'
+            """,
+            (user_id,),
+        )
+    ).fetchone()
+    if int(paid_row["n"] or 0) <= 0:
+        raise HTTPException(status_code=402, detail="Developer API requires a successful Premium plan purchase first.")
+
+
+async def _gate_request(user_id: str) -> None:
+    """Common premium + rate-limit gate for work-doing endpoints in
+    this module. Call at the top of any endpoint that hits an upstream
+    service or deducts credits."""
+    conn = await get_db()
+    try:
+        await _ensure_premium(conn, user_id)
+        await enforce_rate_limit(conn, user_id, None)
+    finally:
+        await conn.close()
+
+
+async def _deduct_flat_credits(user_id: str, cost: int, label: str, transaction_type: str) -> int:
+    """Atomic flat-rate deduction used by per-call API endpoints.
+
+    Returns the new balance, or -1 if billing is disabled (cost == 0).
+    Raises 402 on insufficient balance. Logs one ``credit_transactions``
+    row so the user sees the charge in their billing history.
+    """
+    if cost <= 0:
+        return -1
+    conn = await get_db()
+    try:
+        row = await (await conn.execute(
+            "SELECT credits FROM auth_users WHERE id = ?", (user_id,)
+        )).fetchone()
+        balance = int(row["credits"] or 0) if row else 0
+        if balance < cost:
+            raise HTTPException(
+                status_code=402,
+                detail=f"{label.capitalize()} costs {cost} credits. You have {balance}.",
+            )
+        cur = await conn.execute(
+            "UPDATE auth_users SET credits = credits - ?, updated_at = datetime('now') "
+            "WHERE id = ? AND credits >= ?",
+            (cost, user_id, cost),
+        )
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=402, detail="Insufficient credits.")
+        new_row = await (await conn.execute(
+            "SELECT credits FROM auth_users WHERE id = ?", (user_id,)
+        )).fetchone()
+        new_balance = int(new_row["credits"] or 0) if new_row else 0
+        await conn.execute(
+            """
+            INSERT INTO credit_transactions
+            (id, user_id, transaction_type, amount, balance_after, description, reference_type, metadata_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, 'api_request', ?, datetime('now'))
+            """,
+            (
+                uuid.uuid4().hex,
+                user_id,
+                transaction_type,
+                -cost,
+                new_balance,
+                f"Developer API {label}",
+                '{"source":"developer-api"}',
+            ),
+        )
+        await conn.commit()
+        return new_balance
+    finally:
+        await conn.close()
+
+
+async def _deduct_voice_save_credits(user_id: str, label: str) -> int:
+    """Deduct the per-save voice fee atomically.
+
+    Voice saves are free on the website. Charging via the API (20 cr)
+    keeps script-spam saves from polluting users' voice lists. Returns
+    the new balance; raises 402 with current balance if insufficient.
+    """
+    cost = max(0, int(API_VOICE_SAVE_CREDITS))
+    if cost == 0:
+        return -1  # billing disabled
+    conn = await get_db()
+    try:
+        row = await (await conn.execute(
+            "SELECT credits FROM auth_users WHERE id = ?", (user_id,)
+        )).fetchone()
+        balance = int(row["credits"] or 0) if row else 0
+        if balance < cost:
+            raise HTTPException(
+                status_code=402,
+                detail=f"Saving a voice via the API costs {cost} credits. You have {balance}.",
+            )
+        cur = await conn.execute(
+            "UPDATE auth_users SET credits = credits - ?, updated_at = datetime('now') "
+            "WHERE id = ? AND credits >= ?",
+            (cost, user_id, cost),
+        )
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=402, detail="Insufficient credits.")
+        new_row = await (await conn.execute(
+            "SELECT credits FROM auth_users WHERE id = ?", (user_id,)
+        )).fetchone()
+        new_balance = int(new_row["credits"] or 0) if new_row else 0
+        # Record a transaction row so the user sees this in their billing
+        # history. Reference type matches the table the voice lands in.
+        await conn.execute(
+            """
+            INSERT INTO credit_transactions
+            (id, user_id, transaction_type, amount, balance_after, description, reference_type, metadata_json, created_at)
+            VALUES (?, ?, 'api_voice_save', ?, ?, ?, 'studio_user_designed_voices', ?, datetime('now'))
+            """,
+            (
+                uuid.uuid4().hex,
+                user_id,
+                -cost,
+                new_balance,
+                f"Developer API voice save ({label})",
+                '{"source":"developer-api"}',
+            ),
+        )
+        await conn.commit()
+        return new_balance
+    finally:
+        await conn.close()
 
 
 router = APIRouter()
@@ -117,6 +263,7 @@ def _agent_row_to_response(row: dict) -> dict:
             "llm_model": cfg.get("llm_model") or None,
             "temperature": cfg.get("temperature") if cfg.get("temperature") is not None else 0.6,
             "enabled_tools": cfg.get("enabled_tools") or None,
+            "first_message": cfg.get("first_message") if isinstance(cfg.get("first_message"), str) else None,
             "goal": cfg.get("goal") or None,
             "success_metric": cfg.get("success_metric") or None,
             "max_iterations": cfg.get("max_iterations") or None,
@@ -203,6 +350,16 @@ class AgentCreateIn(BaseModel):
             "disable tool use entirely."
         ),
     )
+    first_message: Optional[str] = Field(
+        default=None,
+        max_length=500,
+        description=(
+            "Greeting the agent speaks when a session opens, before the "
+            "user has said anything. Empty string or null = silent start. "
+            "Max 500 characters. Industry pattern: matches Vapi "
+            "`firstMessage`, Retell `begin_message`, Eleven `first_message`."
+        ),
+    )
     # Goal-agent fields. Ignored for type='knowledge'.
     goal: Optional[str] = Field(
         default=None,
@@ -242,6 +399,14 @@ class AgentPatchIn(BaseModel):
         default=None,
         max_length=16,
         description="`null` = all tools, `[]` = no tools, otherwise the subset to allow.",
+    )
+    first_message: Optional[str] = Field(
+        default=None,
+        max_length=500,
+        description=(
+            "Greeting the agent speaks at session start. "
+            "Pass empty string `\"\"` to clear and start silent."
+        ),
     )
     goal: Optional[str] = Field(default=None, max_length=2000)
     success_metric: Optional[str] = Field(default=None, max_length=2000)
@@ -288,7 +453,11 @@ class VoiceDesignPreviewIn(BaseModel):
 
 class VoiceDesignSaveIn(BaseModel):
     preview_token: str
-    chosen_variant: str = Field(description="'original' or 'revised'")
+    # The API only ever returns the "original" preview variant (see
+    # /v1/voice/design/preview) so this defaults to 'original' and is
+    # safe to omit. Field kept for forward-compat in case a multi-
+    # variant API surface is added later.
+    chosen_variant: str = Field(default="original", description="'original' (default) or 'revised'")
     display_name: str = Field(min_length=1, max_length=20)
 
 
@@ -377,6 +546,7 @@ async def create_agent(body: AgentCreateIn, auth_ctx: dict = Depends(require_api
         "llm_model": body.llm_model,
         "temperature": body.temperature if body.temperature is not None else 0.6,
         "enabled_tools": body.enabled_tools,
+        "first_message": body.first_message if body.first_message is not None else "",
         "goal": body.goal,
         "success_metric": body.success_metric,
         "max_iterations": body.max_iterations,
@@ -429,10 +599,15 @@ async def patch_agent(agent_id: str, body: AgentPatchIn, auth_ctx: dict = Depend
         "llm_model": body.llm_model,
         "temperature": body.temperature,
         "enabled_tools": body.enabled_tools,
+        "first_message": body.first_message,
         "goal": body.goal,
         "success_metric": body.success_metric,
         "max_iterations": body.max_iterations,
     }
+    # ``first_message`` is special: callers pass an empty string to
+    # clear the greeting (start silent) and ``null`` to leave it
+    # alone. The ``v is not None`` filter below correctly preserves
+    # that semantic — empty string passes through.
     for k, v in config_fields.items():
         if v is not None:
             cfg[k] = v
@@ -842,20 +1017,31 @@ async def delete_voice(voice_id: int, auth_ctx: dict = Depends(require_api_key))
 # ============================================================================
 
 
-@router.post("/v1/voice/design/preview", tags=["Voices"], summary="Generate two Voice-Design preview variants from a text description")
+@router.post("/v1/voice/design/preview", tags=["Voices"], summary="Generate a Voice-Design preview from a text description")
 async def voice_design_preview(body: VoiceDesignPreviewIn, auth_ctx: dict = Depends(require_api_key)) -> dict:
-    """Generate two voice preview variants from a text description.
-    Returns ``preview_token`` + two audio URLs (variant_a / variant_b);
-    the user / SDK picks one and POSTs to ``/v1/voice/design/save`` to
-    persist it. Costs credits (Voice Design preview pricing).
+    """Generate a voice preview from a text description.
 
-    The TTS model is the Vocence default (auto-picked server-side from
-    the configured top-models list) so callers don't have to know
-    miner_hotkey / chute_slug / model_name — those are routing details
-    internal to the network."""
-    # Pull the default model so we can forward its routing fields to
-    # the dashboard endpoint. The website passes these from its model
-    # picker UI; we don't expose that on the public surface.
+    The pipeline generates two variants internally (one matching the
+    exact prompt, one with an LLM-revised version) — but the API only
+    returns the FIRST one (``variant_a`` / "original"). That gives
+    deterministic API behavior: the same prompt → the same audio
+    surfaces, no surprises. Website users see both variants so they
+    can A/B test; API consumers don't need that UX, they need a
+    predictable single result.
+
+    Returns ``preview_token`` + ``audio_url`` (the first variant) +
+    ``voice_description``. Pass the token to ``/v1/voice/design/save``
+    to persist this voice for re-use.
+
+    Costs ``API_VOICE_DESIGN_CREDITS`` (default 70) per call. The
+    dashboard endpoint detects the internal-trust proxy header and
+    skips its own billing, so this is the sole deduction point."""
+    from app.core.config import API_VOICE_DESIGN_CREDITS
+    await _gate_request(auth_ctx["user_id"])
+    # Service-readiness check FIRST so we don't deduct credits on a
+    # request we can't fulfill. The previous order pre-charged then
+    # 503'd if no model was configured, leaving the user out 70 cr
+    # for an outage that wasn't their fault.
     top = await call_dashboard(
         "GET",
         "/api/dashboard/studio/top-models?limit=1",
@@ -865,7 +1051,15 @@ async def voice_design_preview(body: VoiceDesignPreviewIn, auth_ctx: dict = Depe
     if not models:
         raise HTTPException(status_code=503, detail="No TTS model configured for Voice Design.")
     m = models[0]
-    return await call_dashboard(
+
+    # Now safe to deduct. Once we've confirmed a model is online and
+    # have its routing details, the upstream call is highly likely to
+    # produce real work.
+    cost = max(0, int(API_VOICE_DESIGN_CREDITS))
+    new_balance = await _deduct_flat_credits(
+        auth_ctx["user_id"], cost, "voice-design preview", "api_voice_design_preview"
+    )
+    raw = await call_dashboard(
         "POST",
         "/api/dashboard/studio/voice-design/preview",
         user_id=auth_ctx["user_id"],
@@ -879,16 +1073,43 @@ async def voice_design_preview(body: VoiceDesignPreviewIn, auth_ctx: dict = Depe
         },
         timeout_sec=120.0,
     )
+    # Collapse the two-variant response down to a single audio URL —
+    # the "original" / variant_a one, matching the user's prompt
+    # exactly. The variant key naming is dashboard-side; we accept
+    # both ``variant_a`` and a flat ``audio_url`` so this still works
+    # if the upstream response shape evolves.
+    original_url = (
+        raw.get("variant_a")
+        or (raw.get("original") or {}).get("audio_url")
+        or raw.get("audio_url")
+        or ""
+    )
+    return {
+        "preview_token": raw.get("preview_token") or "",
+        "audio_url": original_url,
+        "voice_description": raw.get("voice_description") or body.voice_description,
+        "revised_instruction": raw.get("revised_instruction") or "",
+        "credits_used": cost,
+        "credits_remaining": new_balance if new_balance >= 0 else raw.get("credits_remaining"),
+    }
 
 
-@router.post("/v1/voice/design/save", status_code=201, tags=["Voices"], summary="Save a chosen Voice-Design preview as a reusable voice")
+@router.post("/v1/voice/design/save", status_code=201, tags=["Voices"], summary="Save a Voice-Design preview as a reusable voice")
 async def voice_design_save(body: VoiceDesignSaveIn, auth_ctx: dict = Depends(require_api_key)) -> dict:
-    """Persist a chosen Voice Design preview into the user's voices.
-    The resulting ``voice_id`` is then usable on agents and via
-    ``/v1/voices/{id}/speak``."""
+    """Persist a Voice Design preview into the user's voices.
+
+    Costs an additional save fee (in addition to the preview cost) —
+    same fee as the upload-voice flow. The resulting ``voice_id`` is
+    then usable on agents and via ``/v1/voices/{id}/speak``."""
+    await _gate_request(auth_ctx["user_id"])
     if body.chosen_variant not in ("original", "revised"):
         raise HTTPException(status_code=400, detail="chosen_variant must be 'original' or 'revised'")
-    return await call_dashboard(
+    # Charge the save fee BEFORE the proxy call. If the upstream save
+    # fails we don't refund — saves are cheap and effectively succeed
+    # in practice; building a refund flow for a 20-cr edge case is more
+    # mechanism than the cost justifies.
+    new_balance = await _deduct_voice_save_credits(auth_ctx["user_id"], "voice-design")
+    result = await call_dashboard(
         "POST",
         "/api/dashboard/studio/voice-design/save",
         user_id=auth_ctx["user_id"],
@@ -900,6 +1121,11 @@ async def voice_design_save(body: VoiceDesignSaveIn, auth_ctx: dict = Depends(re
         },
         timeout_sec=30.0,
     )
+    if isinstance(result, dict):
+        result["credits_used"] = int(API_VOICE_SAVE_CREDITS)
+        if new_balance >= 0:
+            result["credits_remaining"] = new_balance
+    return result
 
 
 @router.post("/v1/voice/clone/save", status_code=201, tags=["Voices"], summary="Upload an audio clip, transcribe it, and save as a reusable voice")
@@ -934,6 +1160,7 @@ async def voice_clone_save(
     transcribe the clip once at save time and store both the audio
     (long retention) and the transcription. Use the returned
     ``voice_id`` anywhere on agents / TTS to speak in this voice."""
+    await _gate_request(auth_ctx["user_id"])
     if not audio_file.filename:
         raise HTTPException(status_code=400, detail="audio_file is required")
     raw = await audio_file.read()
@@ -944,7 +1171,11 @@ async def voice_clone_save(
         form["language"] = language
     if reference_text:
         form["reference_text"] = reference_text
-    return await call_dashboard(
+    # Charge the save fee up front (same 20-cr policy as voice-design
+    # save). If STT-on-save is needed and runs upstream that's billed
+    # separately by the dashboard.
+    new_balance = await _deduct_voice_save_credits(auth_ctx["user_id"], "voice-clone")
+    result = await call_dashboard(
         "POST",
         "/api/dashboard/studio/voice-design/cloned-voices",
         user_id=auth_ctx["user_id"],
@@ -952,6 +1183,11 @@ async def voice_clone_save(
         files=[("audio_file", raw, audio_file.filename, audio_file.content_type or "audio/wav")],
         timeout_sec=90.0,
     )
+    if isinstance(result, dict):
+        result["credits_used"] = int(API_VOICE_SAVE_CREDITS)
+        if new_balance >= 0:
+            result["credits_remaining"] = new_balance
+    return result
 
 
 # ============================================================================
@@ -966,16 +1202,90 @@ async def voice_speak(
     auth_ctx: dict = Depends(require_api_key),
 ) -> dict:
     """Synthesize ``text`` using a saved voice (either designed or cloned).
-    Returns the generated audio URL + presigned expiry. Charged at
-    Studio Designed-Voice Speak rates."""
-    return await call_dashboard(
+    Returns the generated audio URL + presigned expiry.
+
+    Billed per-character at the TTS rate ($10 / 1M chars = 4,000 credits
+    / 1M). The dashboard endpoint detects the internal-trust proxy
+    header and skips its own (flat per-call) billing, so this is the
+    sole deduction point.
+    """
+    from app.core.config import API_CREDITS_PER_1M_CHARS, API_TTS_CREDITS_PER_REQUEST
+    await _gate_request(auth_ctx["user_id"])
+    text = (body.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required")
+
+    # Same per-char math as /v1/tts/generate. Operators can pin a flat
+    # per-call price via ``API_TTS_CREDITS_PER_REQUEST`` if preferred.
+    if int(API_TTS_CREDITS_PER_REQUEST) > 0:
+        credits_needed = int(API_TTS_CREDITS_PER_REQUEST)
+    else:
+        per_million = max(1, int(API_CREDITS_PER_1M_CHARS))
+        credits_needed = max(1, (len(text) * per_million + 999_999) // 1_000_000)
+
+    new_balance = await _deduct_voice_speak_credits(auth_ctx["user_id"], credits_needed, voice_id)
+    result = await call_dashboard(
         "POST",
         "/api/dashboard/studio/voice-design/speak",
         user_id=auth_ctx["user_id"],
         json={
             "user_id": auth_ctx["user_id"],
             "voice_id": voice_id,
-            "target_text": body.text,
+            "target_text": text,
         },
         timeout_sec=60.0,
     )
+    if isinstance(result, dict):
+        result["credits_used"] = credits_needed
+        if new_balance >= 0:
+            result["credits_remaining"] = new_balance
+    return result
+
+
+async def _deduct_voice_speak_credits(user_id: str, cost: int, voice_id: int) -> int:
+    """Atomic credit deduction for /v1/voices/{id}/speak. Returns the
+    new balance; raises 402 if insufficient."""
+    if cost <= 0:
+        return -1
+    conn = await get_db()
+    try:
+        row = await (await conn.execute(
+            "SELECT credits FROM auth_users WHERE id = ?", (user_id,)
+        )).fetchone()
+        balance = int(row["credits"] or 0) if row else 0
+        if balance < cost:
+            raise HTTPException(
+                status_code=402,
+                detail=f"Insufficient credits. /v1/voices/{voice_id}/speak needs {cost} credits, you have {balance}.",
+            )
+        cur = await conn.execute(
+            "UPDATE auth_users SET credits = credits - ?, updated_at = datetime('now') "
+            "WHERE id = ? AND credits >= ?",
+            (cost, user_id, cost),
+        )
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=402, detail="Insufficient credits.")
+        new_row = await (await conn.execute(
+            "SELECT credits FROM auth_users WHERE id = ?", (user_id,)
+        )).fetchone()
+        new_balance = int(new_row["credits"] or 0) if new_row else 0
+        await conn.execute(
+            """
+            INSERT INTO credit_transactions
+            (id, user_id, transaction_type, amount, balance_after, description, reference_type, reference_id, metadata_json, created_at)
+            VALUES (?, ?, 'api_voice_speak', ?, ?, ?, 'api_request', ?, ?, datetime('now'))
+            """,
+            (
+                uuid.uuid4().hex,
+                user_id,
+                -cost,
+                new_balance,
+                f"Developer API voice speak · voice {voice_id}",
+                f"voice:{voice_id}",
+                '{"source":"developer-api"}',
+            ),
+        )
+        await conn.commit()
+        return new_balance
+    finally:
+        await conn.close()

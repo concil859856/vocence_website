@@ -298,8 +298,15 @@ async def deploy_pod(body: PodDeployIn, _: str = Depends(require_admin_unlocked)
     await ops_db.log_pod_event(pod_id, "deploy_started", f"{body.image} on {server['name']}")
 
     try:
-        # 1. Pull
-        digest = await ops_ssh.docker_pull(server, body.image)
+        # 1. Pull — skip if the image is already present locally (saves
+        #    disk space on tight servers where the pull's temp snapshots
+        #    would exhaust free space even when the image hasn't changed).
+        if await ops_ssh.docker_image_exists(server, body.image):
+            _log.info("image %s already present on %s; skipping pull", body.image, server["name"])
+            digest = await ops_ssh.docker_image_digest(server, body.image)
+            await ops_db.log_pod_event(pod_id, "pull_skipped", f"{body.image} already cached")
+        else:
+            digest = await ops_ssh.docker_pull(server, body.image)
 
         # 2. Build env: per-service known key + any extras the admin supplied.
         env = dict(body.extra_env)
@@ -312,7 +319,8 @@ async def deploy_pod(body: PodDeployIn, _: str = Depends(require_admin_unlocked)
             "voice_clone": "QWEN3_CLONE_API_KEY",
             "stt": "STT_API_KEY",
             "music": "MUSIC_API_KEY",
-            "dubbing": "DUBBING_API_KEY",
+            "noise_remover": "NOISE_REMOVER_API_KEY",
+            "dubbing": "NOISE_REMOVER_API_KEY",
         }.get(body.service)
         if env_key_for_service:
             env.setdefault(env_key_for_service, api_key)
@@ -326,6 +334,7 @@ async def deploy_pod(body: PodDeployIn, _: str = Depends(require_admin_unlocked)
             "voice_clone": 8113,
             "stt": 8114,
             "music": 8115,
+            "noise_remover": 8116,
             "dubbing": 8116,
         }.get(body.service, body.port)
 
@@ -634,6 +643,331 @@ async def list_events(
                 }
                 for r in rows
             ]
+        }
+    finally:
+        await conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Runtime % + fleet health score
+# ---------------------------------------------------------------------------
+#
+# These endpoints answer the operator's "is the fleet healthy?" questions
+# using existing telemetry — no new instrumentation needed:
+#
+#   • ``ops_pod_uptime_daily.online_seconds`` (already populated by the
+#     metrics poller) gives per-pod online time per UTC day.
+#   • Same table's ``requests_total`` / ``errors_total`` give per-day
+#     success rate.
+#   • ``ops_pod_metrics_minute.duration_ms_p95`` gives latency efficiency
+#     over a short tail.
+#
+# Windows are 'day' (today so far), 'week' (last 7d), 'month' (last 30d).
+# The denominator is clamped to ``min(window_seconds, age_of_pod)`` so a
+# pod added yesterday doesn't report 14% week-uptime.
+
+_WINDOW_DAYS = {"day": 1, "week": 7, "month": 30}
+# Per-service p95 latency targets (ms). p95 at or below the target scores
+# 100% on the latency component; linearly degrades to 0 at 4× target.
+#
+# These are NOT picked uniformly — they reflect what each service is
+# actually expected to do:
+#   • tts_streaming: TTFT-style streaming — sub-second is the whole point.
+#   • stt: short audio (<60s) typical, batch model.
+#   • voice_clone / voice_design: 5–30s per run is normal.
+#   • dubbing / noise_remover: depends on input audio length.
+#   • music: long-form generation, minutes per track.
+#
+# Unknown service names fall through to a 5 s default — generous enough
+# that an un-tuned service isn't auto-flagged red, but tight enough that
+# truly broken pods still score poorly.
+_P95_TARGET_MS_DEFAULT = 5000
+_P95_TARGET_MS_BY_SERVICE = {
+    "tts_streaming": 1000,    # streaming TTS: sub-second TTFA is the point
+    "stt":           5000,    # batch STT on short audio
+    "voice_clone":  30000,    # ~10–30s per clone is normal
+    "voice_design": 30000,    # similar
+    "noise_remover": 60000,   # scales with input audio length
+    "dubbing":      60000,    # historical name for noise_remover
+    "music":       180000,    # music is minutes per track; this is generous
+}
+
+
+def _p95_target_ms_for(service: str | None) -> int:
+    """Pick the right p95 target for a pod's service. Falls back to
+    ``_P95_TARGET_MS_DEFAULT`` for unknown service names so adding a
+    new service doesn't immediately mis-score it as critical."""
+    if not service:
+        return _P95_TARGET_MS_DEFAULT
+    return _P95_TARGET_MS_BY_SERVICE.get(service, _P95_TARGET_MS_DEFAULT)
+
+
+def _window_seconds(window: str) -> int:
+    days = _WINDOW_DAYS.get(window, 7)
+    return days * 86400
+
+
+async def _pod_uptime_seconds(conn, pod_id: int, days: int) -> int:
+    """Sum of online_seconds for a pod across the last N UTC days
+    (today + previous days-1). Returns 0 for a pod with no rows."""
+    cur = await conn.execute(
+        f"""
+        SELECT COALESCE(SUM(online_seconds), 0) AS s
+        FROM ops_pod_uptime_daily
+        WHERE pod_id = ?
+          AND day >= date('now', '-{days - 1} days')
+        """,
+        (pod_id,),
+    )
+    row = await cur.fetchone()
+    return int(row["s"] or 0)
+
+
+async def _pod_requests_in_window(conn, pod_id: int, days: int) -> tuple[int, int]:
+    """(requests_total, errors_total) summed across the window."""
+    cur = await conn.execute(
+        f"""
+        SELECT COALESCE(SUM(requests_total), 0) AS req,
+               COALESCE(SUM(errors_total), 0)   AS err
+        FROM ops_pod_uptime_daily
+        WHERE pod_id = ?
+          AND day >= date('now', '-{days - 1} days')
+        """,
+        (pod_id,),
+    )
+    row = await cur.fetchone()
+    return int(row["req"] or 0), int(row["err"] or 0)
+
+
+async def _pod_recent_p95_ms(conn, pod_id: int, days: int) -> float | None:
+    """Average of per-minute p95 over the window — a cheap stand-in for
+    a true windowed p95 without a percentile op in SQLite. Better than
+    p95-of-p95 because it doesn't double-tail."""
+    cutoff = int(time.time()) - days * 86400
+    cur = await conn.execute(
+        """
+        SELECT AVG(duration_ms_p95) AS p95
+        FROM ops_pod_metrics_minute
+        WHERE pod_id = ? AND minute_ts >= ?
+          AND duration_ms_count > 0
+        """,
+        (pod_id, cutoff // 60),
+    )
+    row = await cur.fetchone()
+    p = row["p95"]
+    return float(p) if p is not None else None
+
+
+def _age_seconds(deployed_at: str | None) -> int:
+    """Seconds since the pod was deployed (or server created). Falls
+    back to the full window if the timestamp can't be parsed — we'd
+    rather slightly under-credit a borked row than divide by zero."""
+    if not deployed_at:
+        return _window_seconds("month")
+    try:
+        from datetime import datetime, timezone
+        dt = datetime.fromisoformat(deployed_at.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return max(1, int((datetime.now(tz=timezone.utc) - dt).total_seconds()))
+    except Exception:  # noqa: BLE001
+        return _window_seconds("month")
+
+
+@router.get("/pods/runtime")
+async def pods_runtime(
+    window: str = "week",
+    _: str = Depends(require_admin_unlocked),
+) -> dict:
+    """Per-pod runtime % over ``window`` (day | week | month).
+
+    Denominator is clamped to ``min(window_seconds, pod_age_seconds)``
+    so a freshly-added pod doesn't show 14% on the week chart. Excludes
+    pods with status 'removed'."""
+    if window not in _WINDOW_DAYS:
+        raise HTTPException(status_code=400, detail="window must be day|week|month")
+    days = _WINDOW_DAYS[window]
+    window_sec = _window_seconds(window)
+    from local_db import get_connection
+    conn = await get_connection()
+    try:
+        cur = await conn.execute(
+            """
+            SELECT id, name, service, server_id, status, deployed_at
+            FROM ops_pods
+            WHERE status != 'removed'
+            ORDER BY id ASC
+            """
+        )
+        pods = await cur.fetchall()
+        out = []
+        for p in pods:
+            online = await _pod_uptime_seconds(conn, int(p["id"]), days)
+            denom = min(window_sec, _age_seconds(p["deployed_at"]))
+            pct = round(100.0 * online / denom, 2) if denom > 0 else 0.0
+            out.append({
+                "pod_id": int(p["id"]),
+                "name": p["name"],
+                "service": p["service"],
+                "server_id": int(p["server_id"]),
+                "status": p["status"],
+                "online_seconds": online,
+                "window_seconds": denom,
+                "uptime_pct": min(100.0, pct),
+            })
+        return {"window": window, "pods": out}
+    finally:
+        await conn.close()
+
+
+@router.get("/servers/runtime")
+async def servers_runtime(
+    window: str = "week",
+    _: str = Depends(require_admin_unlocked),
+) -> dict:
+    """Per-server runtime % over ``window``. Computed as the
+    high-water-mark of any of the server's pods being online — if at
+    least one pod was responding to healthz at a given minute, the
+    server was reachable. This over-counts vs strict OR-of-pods (an
+    exact join would need per-minute timeline reconstruction) but is
+    accurate enough for the daily/weekly/monthly summary view.
+
+    Servers with no pods report online_seconds=0. The denominator is
+    clamped to server age, same as pods."""
+    if window not in _WINDOW_DAYS:
+        raise HTTPException(status_code=400, detail="window must be day|week|month")
+    days = _WINDOW_DAYS[window]
+    window_sec = _window_seconds(window)
+    from local_db import get_connection
+    conn = await get_connection()
+    try:
+        # Approximation: for each (server, day) take MAX(online_seconds)
+        # across that server's pods. Sum across days for the window.
+        cur = await conn.execute(
+            f"""
+            WITH per_server_day AS (
+                SELECT p.server_id, u.day, MAX(u.online_seconds) AS max_seconds
+                FROM ops_pod_uptime_daily u
+                JOIN ops_pods p ON p.id = u.pod_id
+                WHERE u.day >= date('now', '-{days - 1} days')
+                GROUP BY p.server_id, u.day
+            )
+            SELECT s.id, s.name, s.host, s.status, s.created_at,
+                   COALESCE(SUM(d.max_seconds), 0) AS online_seconds
+            FROM ops_servers s
+            LEFT JOIN per_server_day d ON d.server_id = s.id
+            GROUP BY s.id
+            ORDER BY s.name ASC
+            """
+        )
+        rows = await cur.fetchall()
+        out = []
+        for r in rows:
+            denom = min(window_sec, _age_seconds(r["created_at"]))
+            online = int(r["online_seconds"] or 0)
+            pct = round(100.0 * online / denom, 2) if denom > 0 else 0.0
+            out.append({
+                "server_id": int(r["id"]),
+                "name": r["name"],
+                "host": r["host"],
+                "status": r["status"],
+                "online_seconds": online,
+                "window_seconds": denom,
+                "uptime_pct": min(100.0, pct),
+            })
+        return {"window": window, "servers": out}
+    finally:
+        await conn.close()
+
+
+@router.get("/fleet/health")
+async def fleet_health(
+    window: str = "week",
+    _: str = Depends(require_admin_unlocked),
+) -> dict:
+    """Composite fleet-health score per pod + network mean over ``window``.
+
+    Per-pod score (0..100):
+        0.40 × uptime_pct
+        0.40 × success_rate × 100
+        0.20 × latency_efficiency × 100
+
+    where:
+        success_rate = 1 - (errors / max(requests, 1))
+        latency_efficiency = 1 - clamp((p95 - target) / (3 × target), 0..1)
+
+    The p95 target is **per-service** (``_P95_TARGET_MS_BY_SERVICE``) so
+    that a music pod's 90-second p95 doesn't get scored on the same
+    target as a streaming-TTS pod's 1-second p95. The pod's individual
+    target is surfaced in the response so the UI can display it.
+
+    Network mean = unweighted mean across pods with status != 'removed'.
+    Pods with no traffic in the window contribute their uptime + a
+    neutral 100% success / latency (we don't penalise idle pods)."""
+    if window not in _WINDOW_DAYS:
+        raise HTTPException(status_code=400, detail="window must be day|week|month")
+    days = _WINDOW_DAYS[window]
+    window_sec = _window_seconds(window)
+    from local_db import get_connection
+    conn = await get_connection()
+    try:
+        cur = await conn.execute(
+            """
+            SELECT id, name, service, server_id, status, deployed_at
+            FROM ops_pods
+            WHERE status != 'removed'
+            ORDER BY id ASC
+            """
+        )
+        pods = await cur.fetchall()
+        scored: list[dict] = []
+        for p in pods:
+            pid = int(p["id"])
+            target_ms = _p95_target_ms_for(p["service"])
+            online = await _pod_uptime_seconds(conn, pid, days)
+            denom = min(window_sec, _age_seconds(p["deployed_at"]))
+            uptime_pct = min(100.0, 100.0 * online / denom) if denom > 0 else 0.0
+            req, err = await _pod_requests_in_window(conn, pid, days)
+            success_rate = (1.0 - err / req) if req > 0 else 1.0
+            p95 = await _pod_recent_p95_ms(conn, pid, days)
+            if p95 is None:
+                latency_eff = 1.0
+            else:
+                ratio = max(0.0, (p95 - target_ms) / (3.0 * target_ms))
+                latency_eff = max(0.0, 1.0 - min(1.0, ratio))
+            score = round(
+                0.40 * uptime_pct
+                + 0.40 * success_rate * 100.0
+                + 0.20 * latency_eff * 100.0,
+                2,
+            )
+            scored.append({
+                "pod_id": pid,
+                "name": p["name"],
+                "service": p["service"],
+                "server_id": int(p["server_id"]),
+                "status": p["status"],
+                "uptime_pct": round(uptime_pct, 2),
+                "success_rate": round(success_rate, 4),
+                "p95_latency_ms": round(p95, 1) if p95 is not None else None,
+                "p95_target_ms": target_ms,
+                "latency_efficiency": round(latency_eff, 4),
+                "score": score,
+            })
+        network_mean = (
+            round(sum(p["score"] for p in scored) / len(scored), 2)
+            if scored else None
+        )
+        return {
+            "window": window,
+            # Default target is a single number for compatibility with the
+            # existing UI string; the per-pod ``p95_target_ms`` is the
+            # accurate value for each row.
+            "p95_target_ms": _P95_TARGET_MS_DEFAULT,
+            "p95_targets_by_service": _P95_TARGET_MS_BY_SERVICE,
+            "network_mean_score": network_mean,
+            "active_pod_count": len(scored),
+            "pods": scored,
         }
     finally:
         await conn.close()

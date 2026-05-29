@@ -9,18 +9,20 @@
  * confirmed admin + unlocked.
  */
 import { useState } from 'react';
-import { Activity, Cpu, Server } from 'lucide-react';
+import { Activity, Brain, Cpu, Server } from 'lucide-react';
 import { getStoredToken } from '../lib/agents/api';
 import { ServersTab } from '../components/ops/ServersTab';
 import { PodsTab } from '../components/ops/PodsTab';
 import { AnalyticsTab } from '../components/ops/AnalyticsTab';
+import { LlmTab } from '../components/ops/LlmTab';
 
-type OpsTab = 'servers' | 'pods' | 'analytics';
+type OpsTab = 'servers' | 'pods' | 'analytics' | 'llm';
 
 const TABS: { id: OpsTab; label: string; icon: typeof Server }[] = [
   { id: 'analytics', label: 'Analytics', icon: Activity },
   { id: 'servers', label: 'Servers', icon: Server },
   { id: 'pods', label: 'Pods', icon: Cpu },
+  { id: 'llm', label: 'LLM', icon: Brain },
 ];
 
 export function AdminOps() {
@@ -74,6 +76,7 @@ export function AdminOps() {
         {tab === 'analytics' && <AnalyticsTab token={token} />}
         {tab === 'servers' && <ServersTab token={token} />}
         {tab === 'pods' && <PodsTab token={token} />}
+        {tab === 'llm' && <LlmTab token={token} />}
       </div>
     </div>
   );

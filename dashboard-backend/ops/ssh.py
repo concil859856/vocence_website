@@ -327,6 +327,38 @@ async def probe_server(server: dict) -> dict:
 # Docker primitives
 # ---------------------------------------------------------------------------
 
+async def docker_image_exists(server: dict, image: str) -> bool:
+    """Check if a Docker image is already pulled on the remote server."""
+    res = await run_command(
+        server,
+        f"docker image inspect {shlex.quote(image)}",
+        timeout=15,
+        check=False,
+    )
+    return res.exit_code == 0
+
+
+async def docker_image_digest(server: dict, image: str) -> str:
+    """Get the local digest of an already-pulled image (no network pull)."""
+    res = await run_command(
+        server,
+        f"docker inspect --format='{{{{index .RepoDigests 0}}}}' {shlex.quote(image)}",
+        timeout=15,
+        check=False,
+    )
+    digest = res.stdout.strip().strip("'\"")
+    if "@" in digest:
+        digest = digest.split("@", 1)[1]
+    if not digest.startswith("sha256:"):
+        res2 = await run_command(
+            server,
+            f"docker inspect --format='{{{{.Id}}}}' {shlex.quote(image)}",
+            timeout=15, check=False,
+        )
+        digest = res2.stdout.strip().strip("'\"")
+    return digest
+
+
 async def docker_pull(server: dict, image: str, *, timeout: float = 600.0) -> str:
     """``docker pull`` then return the local digest (sha256:...) of the
     pulled image. The digest is what we record on the pod row to detect

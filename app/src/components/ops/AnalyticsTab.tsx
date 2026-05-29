@@ -6,6 +6,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Activity, AlertTriangle, CircuitBoard, Cpu, Server, Zap } from 'lucide-react';
+import { Select as DropdownSelect } from '../ui/DropdownSelect';
 import {
   Area,
   AreaChart,
@@ -27,6 +28,7 @@ import {
   type ServiceName,
   type TimeseriesPoint,
 } from '../../lib/ops/types';
+import { FleetHealthCard } from './FleetHealthCard';
 
 const REFRESH_MS = 10_000;
 
@@ -110,6 +112,11 @@ export function AnalyticsTab({ token }: Props) {
         </div>
       )}
 
+      {/* Fleet health — composite uptime+success+latency score across the
+          currently-active pods. Dynamic to add/remove. Sits above the
+          tiles so the operator's first read is "is the network OK?". */}
+      <FleetHealthCard token={token} />
+
       {/* Tiles */}
       <div className="grid gap-3 grid-cols-2 md:grid-cols-3 lg:grid-cols-6">
         <Tile
@@ -182,18 +189,15 @@ export function AnalyticsTab({ token }: Props) {
         <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
           <h2 className="text-white font-semibold">Per-pod traffic</h2>
           <div className="flex items-center gap-2">
-            <select
-              value={selectedPodId ?? ''}
-              onChange={(e) => setSelectedPodId(e.target.value ? Number(e.target.value) : null)}
-              className="bg-[#07080A] border border-white/15 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:border-[#DFFF00]/40"
-            >
-              <option value="">— pick a pod —</option>
-              {pods.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name} · {SERVICE_LABELS[p.service]}
-                </option>
-              ))}
-            </select>
+            <DropdownSelect
+              value={selectedPodId != null ? String(selectedPodId) : ''}
+              onChange={(v) => setSelectedPodId(v ? Number(v) : null)}
+              options={[
+                { value: '', label: '— pick a pod —' },
+                ...pods.map((p) => ({ value: String(p.id), label: `${p.name} · ${SERVICE_LABELS[p.service]}` })),
+              ]}
+              className="w-52"
+            />
             <div className="inline-flex rounded-lg border border-white/15 overflow-hidden">
               {([24, 168, 720] as const).map((h) => (
                 <button
