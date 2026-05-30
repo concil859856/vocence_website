@@ -60,6 +60,7 @@ from voicechat_service import (
     llm_configured,
     maybe_summarize_conversation,
     JsonLeakFilter,
+    NarrationPrefixScrubber,
     sanitize_for_tts,
     stream_llm,
     stream_tts_for_voice,
@@ -660,6 +661,19 @@ async def voicechat_session(
                     "know — live data, recent facts, a specific URL, or anything "
                     "your training wouldn't cover. Don't announce \"I'm going to "
                     "search\" first; just call it and answer.",
+                    "",
+                    "Tool-call hygiene (HARD RULES):",
+                    "- Invoke tools through the structured tool-call mechanism only. "
+                    "NEVER write tool calls as JSON in your message text "
+                    "(no `{\"tool\":...}`, no `{\"name\":...,\"arguments\":...}`, "
+                    "no `{\"response\":\"pending\"}`).",
+                    "- Do NOT narrate the tool lifecycle. Don't say \"we need to wait "
+                    "for the tool to return\", \"no result yet\", \"calling X now\", "
+                    "\"the response is pending\", or any equivalent. The user sees the "
+                    "tool indicator UI on their own.",
+                    "- After the tool result arrives, jump straight into the answer "
+                    "as if you always knew it. Don't preface with \"based on the "
+                    "search results\" — just answer.",
                     "",
                     "When the tool returns:",
                     "- Quick-data tools (weather, time, prices): one short sentence "
@@ -1266,24 +1280,29 @@ async def _run_turn(
                 {"role": m.role, "content": m.content} for m in llm_messages
             ]
 
-            # Filter that strips leaked tool-call / tool-result JSON
-            # from the LLM's content stream. Some open-weight models
-            # (gpt-oss-120b on Cerebras) emit tool calls inline as text
-            # instead of via OpenAI's ``delta.tool_calls`` field; the
-            # filter catches that and drops the noise so it never
-            # reaches the chat bubble or the TTS engine.
+            # Two filters guard the content stream against tool-call
+            # leakage from open-weight models (gpt-oss-120b on Cerebras
+            # is the chronic offender):
+            #   * JsonLeakFilter — drops inline JSON blobs that look
+            #     like raw tool calls / tool results.
+            #   * NarrationPrefixScrubber — drops the plain-prose
+            #     narration sentences ("we need to wait for web_search
+            #     to return", "no result yet") that some models emit
+            #     before the actual answer. Only inspects the opening
+            #     ~240 chars of each response, then becomes pass-through.
             json_leak_filter = JsonLeakFilter()
+            narration_scrubber = NarrationPrefixScrubber()
 
             async def _feed_content_to_tts(delta: str) -> bool:
                 """Reuse of the existing chunker/TTS flow for a single
                 content delta. Returns False if the client has hung up
                 (so the caller breaks out of the loop)."""
                 nonlocal ttft_ms, ttfs_ms, chunking_active, emitted_chars, tail_buffer
-                # Pre-filter: strip any inline tool-call JSON leakage.
-                # Returns "" while a JSON blob is mid-stream; the next
-                # delta(s) will accumulate it. ``flush()`` after stream
-                # end drains any unterminated buffer.
+                # Pre-filter: strip inline tool-call JSON leakage, then
+                # strip any opening tool-narration prose.
                 delta = json_leak_filter.feed(delta)
+                if delta:
+                    delta = narration_scrubber.feed(delta)
                 if not delta:
                     return True
                 if ttft_ms is None:
@@ -1532,12 +1551,17 @@ async def _run_turn(
                     except Exception:
                         pass
 
-                # Drain any in-flight JSON the filter was buffering.
+                # Drain any in-flight JSON the filter was buffering,
+                # then any prose still held by the narration scrubber.
                 # If the stream ended mid-JSON (rare) and the partial
                 # blob looks non-leaky, treat it as real content. The
                 # filter handles the leak-detection internally so we
                 # don't have to second-guess here.
                 leftover = json_leak_filter.flush()
+                if leftover:
+                    leftover = narration_scrubber.feed(leftover)
+                if not leftover:
+                    leftover = narration_scrubber.flush()
                 if leftover:
                     bot_text_full.append(leftover)
                     with suppress(Exception):

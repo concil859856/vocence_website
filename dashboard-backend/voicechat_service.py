@@ -665,6 +665,17 @@ class JsonLeakFilter:
         frozenset({"name", "arguments"}),               # raw OpenAI tool-call shape
         frozenset({"tool_call"}),
         frozenset({"function"}),
+        # Newer Cerebras-served gpt-oss variants emit a different
+        # inline shape: ``{"tool":"web_search","input":"..."}`` for the
+        # call and ``{"response":"pending"}`` / ``{"response": {...}}``
+        # for the wait/result. Both leak straight into chat without
+        # these indicators.
+        frozenset({"tool"}),
+        frozenset({"tool", "input"}),
+        frozenset({"tool", "arguments"}),
+        frozenset({"tool", "args"}),
+        frozenset({"response"}),
+        frozenset({"status"}),                          # ``{"status":"pending"}``
         frozenset({"url"}),                             # fetch_url args
         frozenset({"location"}),                        # get_weather args
         frozenset({"city"}),
@@ -765,6 +776,29 @@ class JsonLeakFilter:
                 return True
         return False
 
+    # Tool-narration prefix patterns the model still emits as plain prose
+    # even after we tell it not to. These ALWAYS sit at the very start of
+    # the response (before the real answer), so we only check the opening
+    # window of each turn — once we've flushed real content, the scrubber
+    # goes into pass-through and never inspects later text. Each pattern
+    # matches a full sentence terminated by ``.`` / ``!`` / ``?`` / EOL.
+    _NARRATION_SENTENCE = re.compile(
+        r"""^\s*(?:
+            we[ ']ll\s+(?:wait|need\s+to\s+wait)\b[^.!?\n]*[.!?]?
+          | we\s+(?:need|have)\s+to\s+wait\b[^.!?\n]*[.!?]?
+          | we\s+have\s+no\s+result(?:s)?(?:\s+yet|\s+returned)?\b[^.!?\n]*[.!?]?
+          | (?:no|the)\s+result(?:s)?\s+(?:yet|pending|so\s+far)\b[^.!?\n]*[.!?]?
+          | (?:i'?m|i\s+am|i'?ll|let\s+me)\s+(?:going\s+to\s+|gonna\s+)?
+                (?:search|look\s+up|fetch|call\s+the\s+tool|use\s+the\s+tool)\b[^.!?\n]*[.!?]?
+          | calling\s+(?:the\s+)?(?:tool|web[_\s-]?search|fetch[_\s-]?url|wikipedia)\b[^.!?\n]*[.!?]?
+          | (?:the\s+)?(?:tool|web[_\s-]?search|response)\s+is\s+(?:pending|loading|running)\b[^.!?\n]*[.!?]?
+          | sure\s+thing\b[\s,.!?]*
+              (?=(?:[A-Z]|i\b))     # only strip leading filler if followed by real answer
+          | based\s+on\s+(?:the\s+)?(?:search|tool)\s+results?\b[^.!?\n]*[,.!?]?
+        )\s*""",
+        re.IGNORECASE | re.VERBOSE,
+    )
+
     @classmethod
     def _looks_partial_tool_leak(cls, partial: str) -> bool:
         """Heuristic for unterminated JSON. If the prefix matches a
@@ -775,6 +809,71 @@ class JsonLeakFilter:
                 if head.startswith(key + '"') or head.startswith(key):
                     return True
         return False
+
+
+class NarrationPrefixScrubber:
+    """Strip tool-call-narration sentences from the start of an LLM stream.
+
+    The JSON leak filter handles structured tool-call leakage; this
+    handles the OTHER half — plain-prose narration like ``"we need to
+    wait for web_search to return"`` that some models emit before the
+    actual answer. The narration only ever appears at the very start
+    of a response, so once we've flushed real content we flip to
+    pass-through and stop inspecting.
+
+    Stateful: buffers up to ``MAX_BUFFER_CHARS`` of opening text or
+    until a sentence boundary, whichever comes first. On flush, runs
+    the buffer against the narration regex repeatedly to drop one or
+    more leading narration sentences, then emits whatever real prose
+    remains. Subsequent ``feed()`` calls bypass the buffer entirely.
+    """
+
+    MAX_BUFFER_CHARS = 240   # ~3 short sentences — generous safety margin
+
+    def __init__(self) -> None:
+        self._buffer = ""
+        self._passthrough = False
+
+    def feed(self, delta: str) -> str:
+        if self._passthrough:
+            return delta
+        if not delta:
+            return ""
+        self._buffer += delta
+        # Always try to strip narration sentences from the front of the
+        # buffer. We only emit (and flip to passthrough) once a sentence
+        # SURVIVES the strip — i.e. real content has arrived. If the
+        # buffer keeps matching narration we keep eating it and stay
+        # buffered until a real sentence comes.
+        return self._try_emit(final=False)
+
+    def flush(self) -> str:
+        if self._passthrough:
+            return ""
+        # Drain whatever's left, even if it has no sentence terminator.
+        return self._try_emit(final=True)
+
+    def _try_emit(self, *, final: bool) -> str:
+        # Eat any leading narration sentences (the model often stacks
+        # several: "We'll wait. No result yet. Calling the tool.").
+        for _ in range(6):
+            m = JsonLeakFilter._NARRATION_SENTENCE.match(self._buffer)
+            if not m or m.end() == 0:
+                break
+            self._buffer = self._buffer[m.end():]
+        if not self._buffer:
+            return ""
+        # If we don't have a sentence boundary yet AND haven't blown
+        # the buffer cap AND we're not at end-of-stream, hold the
+        # remaining text — the next delta may complete a sentence
+        # that's actually narration.
+        has_boundary = bool(re.search(r"[.!?\n]", self._buffer))
+        if not final and not has_boundary and len(self._buffer) < self.MAX_BUFFER_CHARS:
+            return ""
+        out = self._buffer
+        self._buffer = ""
+        self._passthrough = True
+        return out
 
 
 def sanitize_for_tts(text: str) -> str:
