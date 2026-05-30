@@ -886,7 +886,7 @@ async def voicechat_session(
                     return
                 continue
 
-            if mtype not in {"voice", "text"}:
+            if mtype not in {"voice", "text", "stream_start"}:
                 await ws.send_json({"type": "error", "code": "bad_request", "message": f"unknown type: {mtype}"})
                 continue
 
@@ -1013,8 +1013,79 @@ async def _run_turn(
     error_str: str | None = None
 
     try:
-        # ---------- 1) get user text (STT or direct) ----------
-        if mode == "voice":
+        # ---------- 1) get user text (STT, streaming, or direct) ----------
+        if mode == "stream_start":
+            # Streaming voice turn: client sends a continuous flow of
+            # 20 ms PCM frames (binary WS frames) plus an optional
+            # ``stream_commit`` text message to signal end of audio.
+            # We fan-out to STT + Smart Turn + Turn Detector pods and
+            # let the server-side ensembler decide turn-end. See
+            # voicechat_stream.StreamingTurnSession for the details.
+            from voicechat_stream import StreamingTurnSession  # local import; module pulls in ops.pool
+
+            language = (payload.get("language") or "").strip() or None
+            history_for_detector = [
+                {"role": m.role, "content": m.content}
+                for m in conversation[-8:]
+                if m.role in ("user", "assistant")
+            ]
+
+            async def _recv_next_audio() -> bytes | None:
+                """Pull the next binary frame from the client WS.
+                Returns ``None`` when the client signals end-of-audio
+                via ``{type:"stream_commit"}`` or ``{type:"cancel"}``,
+                or when the connection drops."""
+                while True:
+                    try:
+                        msg = await ws.receive()
+                    except WebSocketDisconnect:
+                        return None
+                    if msg.get("type") == "websocket.disconnect":
+                        return None
+                    if "bytes" in msg and msg["bytes"] is not None:
+                        return msg["bytes"]
+                    if "text" in msg and msg["text"] is not None:
+                        try:
+                            p = json.loads(msg["text"])
+                        except Exception:
+                            continue
+                        ctype = p.get("type")
+                        if ctype in ("stream_commit", "cancel"):
+                            return None
+                        # Ignore other control messages mid-stream.
+
+            session = StreamingTurnSession(
+                client_ws=ws,
+                language=language,
+                history=history_for_detector,
+                receive_binary=_recv_next_audio,
+                send_json=ws.send_json,
+            )
+            result = await session.run()
+            if result is None:
+                await ws.send_json({
+                    "type": "error",
+                    "code": "stt_empty",
+                    "message": "couldn't hear anything",
+                })
+                error_str = "stt_empty"
+                return
+
+            user_text_final = result.transcript
+            _log.info(
+                "[stream] turn committed: %dms text=%r silence=%dms smart=%.2f td=%.2f rule=%s",
+                result.duration_ms, user_text_final[:80],
+                result.silence_at_commit_ms,
+                result.smart_turn_p_at_commit,
+                result.turn_detector_p_at_commit,
+                result.rule_fired,
+            )
+            await ws.send_json({
+                "type": "transcript",
+                "text": user_text_final,
+                "language": result.language,
+            })
+        elif mode == "voice":
             audio_b64 = payload.get("audio_b64") or ""
             language = (payload.get("language") or "").strip() or None
             if not audio_b64:
