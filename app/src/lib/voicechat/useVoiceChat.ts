@@ -138,6 +138,11 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
   const pendingBargeInRef = useRef<number | null>(null);   // setTimeout id
   const bargeInDeferredRef = useRef<boolean>(false);       // true while grace window is open
   const isAgentSpeakingRef = useRef<boolean>(false);       // mirrors ``state === 'speaking'``
+  // Streaming-voice opt-in: set true when ready.capabilities.voice_stream
+  // is reported by the server. While true, VAD runs in stream mode and
+  // we push PCM frames over the WS instead of one-shot WAV uploads.
+  const streamingVoiceEnabledRef = useRef<boolean>(false);
+  const streamTurnOpenRef = useRef<boolean>(false);
 
   // Paced text reveal — text appears in the chat bubble at a natural
   // reading pace (~22 chars/sec) starting when audio begins playing,
@@ -291,6 +296,10 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
       }
       switch (payload.type) {
         case 'ready':
+          // Latch the streaming-voice capability for the rest of the
+          // session. Older servers (no capabilities block) stay on the
+          // one-shot WAV path.
+          streamingVoiceEnabledRef.current = !!payload?.capabilities?.voice_stream;
           break;
         case 'transcript':
           setMessages((prev) => {
@@ -623,6 +632,7 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
       // Player must exist before VAD fires, so onPlayingStart can arm
       // the lock window without a race.
       await ensurePlayer();
+      const useStream = streamingVoiceEnabledRef.current;
       const vad = new VadController(
         {
           onSpeechStart: () => {
@@ -641,42 +651,71 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
             if (!isAgentSpeakingRef.current) {
               bargeIn();
               setState('recording');
+              if (useStream && !streamTurnOpenRef.current && wsRef.current?.readyState === 1) {
+                wsRef.current.send(JSON.stringify({ type: 'stream_start' }));
+                streamTurnOpenRef.current = true;
+              }
               return;
             }
             bargeInDeferredRef.current = true;
             pendingBargeInRef.current = window.setTimeout(() => {
               pendingBargeInRef.current = null;
               bargeInDeferredRef.current = false;
-              // After the grace window: if the user is still talking
-              // (no onSpeechEnd yet) commit to the barge-in.
               bargeIn();
               setState('recording');
+              if (useStream && !streamTurnOpenRef.current && wsRef.current?.readyState === 1) {
+                wsRef.current.send(JSON.stringify({ type: 'stream_start' }));
+                streamTurnOpenRef.current = true;
+              }
             }, BACKCHANNEL_GRACE_MS);
           },
           onSpeechEnd: ({ wavBytes, durationMs }) => {
-            // If we deferred barge-in (agent was speaking when this
-            // burst started) and the burst was short enough to be a
-            // backchannel, swallow it: cancel the pending barge-in,
-            // don't submit, agent keeps speaking.
+            // Backchannel swallow path — same regardless of mode.
             if (
               bargeInDeferredRef.current &&
               durationMs <= BACKCHANNEL_MAX_MS
             ) {
               clearBackchannelGrace();
+              // If a stream had been pre-opened on the deferred barge-in
+              // path it would normally still be empty here, but be
+              // defensive: tell the server to drop it.
+              if (useStream && streamTurnOpenRef.current && wsRef.current?.readyState === 1) {
+                wsRef.current.send(JSON.stringify({ type: 'cancel' }));
+                streamTurnOpenRef.current = false;
+              }
               return;
             }
-            // Otherwise: cancel the pending grace timer (we'll do
-            // bargeIn now if it hasn't already fired) and submit the
-            // captured audio.
             const wasDeferred = bargeInDeferredRef.current;
             clearBackchannelGrace();
             if (wasDeferred) {
               bargeIn();
               setState('recording');
             }
+            if (useStream) {
+              if (streamTurnOpenRef.current && wsRef.current?.readyState === 1) {
+                wsRef.current.send(JSON.stringify({ type: 'stream_commit' }));
+                streamTurnOpenRef.current = false;
+              }
+              setState('transcribing');
+              return;
+            }
             const b64 = arrayBufferToBase64(wavBytes);
             submitVoiceB64(b64, 'audio/wav', durationMs);
           },
+          onPcmFrame: useStream
+            ? (pcm: Uint8Array) => {
+                if (!wsRef.current || wsRef.current.readyState !== 1) return;
+                // Open the streaming turn lazily on the first frame
+                // in case onSpeechStart hasn't fired yet (e.g. the
+                // very first frame after mic open arrives carrying
+                // speech that wasn't detected as start by Silero).
+                if (!streamTurnOpenRef.current) {
+                  wsRef.current.send(JSON.stringify({ type: 'stream_start' }));
+                  streamTurnOpenRef.current = true;
+                }
+                wsRef.current.send(pcm);
+              }
+            : undefined,
           onProbability: (p) => setMicLevel(p),
           onError: (err) => {
             setError(err.message || 'mic error');
@@ -684,7 +723,11 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
             setListening(false);
           },
         },
-        { endSilenceMs: 450, minSpeechMs: 250 },
+        {
+          endSilenceMs: 450,
+          minSpeechMs: 250,
+          mode: useStream ? 'stream' : 'segment',
+        },
       );
       vadRef.current = vad;
       await vad.start();

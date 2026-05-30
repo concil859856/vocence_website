@@ -43,6 +43,10 @@ export interface VadEvents {
   onSpeechEnd?: (segment: { wavBytes: ArrayBuffer; durationMs: number }) => void;
   /** Continuous speech probability (0..1) — useful for a live indicator. */
   onProbability?: (p: number) => void;
+  /** Streaming mode only — fires for every ~32 ms audio frame with
+   * raw 16-bit PCM (little-endian, 16 kHz mono) ready to ship over
+   * the WS to the streaming-STT pod. */
+  onPcmFrame?: (pcm16le: Uint8Array) => void;
   /** Permanent setup failure (mic permission denied, model fetch failed,
    * worklet crashed). The controller will not recover; caller should
    * surface to the user and disable always-on mode. */
@@ -58,12 +62,18 @@ export interface VadOptions {
    * segment is dropped silently (filters cough, single-word noise,
    * etc.). */
   minSpeechMs?: number;
+  /** Capture mode:
+   *   * ``segment`` — buffer until end-of-turn, emit one WAV (legacy).
+   *   * ``stream``  — emit every audio frame as PCM via onPcmFrame; the
+   *     server-side ensembler decides turn-end.
+   *  Default ``segment`` for backward compat. */
+  mode?: 'segment' | 'stream';
 }
 
 export class VadController {
   private vad: MicVADType | null = null;
   private events: VadEvents;
-  private opts: Required<VadOptions>;
+  private opts: Required<Omit<VadOptions, 'mode'>> & { mode: 'segment' | 'stream' };
   private paused = false;
   private lockUntil = 0;
 
@@ -72,6 +82,7 @@ export class VadController {
     this.opts = {
       endSilenceMs: opts.endSilenceMs ?? 450,
       minSpeechMs: opts.minSpeechMs ?? 250,
+      mode: opts.mode ?? 'segment',
     };
   }
 
@@ -123,9 +134,16 @@ export class VadController {
             channelCount: 1,
           },
         }),
-        onFrameProcessed: (probabilities) => {
+        onFrameProcessed: (probabilities, frame) => {
           if (this.paused) return;
           this.events.onProbability?.(probabilities.isSpeech ?? 0);
+          // Streaming mode: ship every frame as PCM so the server-
+          // side ensembler can run. We don't gate on speech vs
+          // silence here — the STT pod's own VAD does that and feeds
+          // the ensembler.
+          if (this.opts.mode === 'stream' && this.events.onPcmFrame && frame) {
+            this.events.onPcmFrame(float32ToPcm16(frame));
+          }
         },
         onSpeechStart: () => {
           if (this.paused) return;
@@ -135,6 +153,13 @@ export class VadController {
         onSpeechEnd: (audio: Float32Array) => {
           if (this.paused) return;
           if (audio.length < (this.opts.minSpeechMs / 1000) * VAD_SAMPLE_RATE) return;
+          if (this.opts.mode === 'stream') {
+            // Caller already has the audio frame-by-frame; just signal
+            // end-of-utterance with a zero-byte WAV placeholder.
+            const durationMs = Math.round((audio.length / VAD_SAMPLE_RATE) * 1000);
+            this.events.onSpeechEnd?.({ wavBytes: new ArrayBuffer(0), durationMs });
+            return;
+          }
           const wavBytes = encodeWav(audio, VAD_SAMPLE_RATE);
           const durationMs = Math.round((audio.length / VAD_SAMPLE_RATE) * 1000);
           this.events.onSpeechEnd?.({ wavBytes, durationMs });
@@ -214,6 +239,19 @@ function encodeWav(samples: Float32Array, sampleRate: number): ArrayBuffer {
 
 function writeAscii(view: DataView, offset: number, str: string): void {
   for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+}
+
+
+/** Convert a Float32Array of audio samples (-1..1) into raw PCM s16le
+ *  bytes — the shape the streaming-STT pod expects on the WS. */
+function float32ToPcm16(samples: Float32Array): Uint8Array {
+  const out = new Uint8Array(samples.length * 2);
+  const view = new DataView(out.buffer);
+  for (let i = 0; i < samples.length; i++) {
+    const s = Math.max(-1, Math.min(1, samples[i] as number));
+    view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+  }
+  return out;
 }
 
 export function arrayBufferToBase64(buffer: ArrayBuffer): string {
