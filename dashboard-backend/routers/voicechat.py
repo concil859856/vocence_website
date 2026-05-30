@@ -148,6 +148,26 @@ MAX_HISTORY_TURNS = 20  # cap conversation context to keep latency low
 MAX_USER_MESSAGE_CHARS = 4000
 
 
+# Universal tool-call hygiene rules. Some open-weight models (Cerebras
+# gpt-oss variants) bypass the structured tool-call protocol and emit
+# inline JSON / chain-of-thought narration that leaks to the chat UI.
+# We patch their behaviour with a hard-rule block that goes into every
+# agent's system prompt regardless of which prompt-assembly path runs.
+TOOL_CALL_HYGIENE_RULES = (
+    "# Tool-call hygiene (HARD RULES)\n"
+    "- Invoke tools through the structured tool-call mechanism only. "
+    "NEVER write tool calls as JSON in your message text (no `{\"tool\":...}`, "
+    "no `{\"name\":...,\"arguments\":...}`, no `{\"response\":\"pending\"}`).\n"
+    "- Do NOT narrate the tool lifecycle. Don't say \"we need to wait for "
+    "the tool to return\", \"no result yet\", \"calling X now\", \"the response "
+    "is pending\", or any equivalent. The user sees the tool indicator UI on "
+    "their own.\n"
+    "- After a tool result arrives, jump straight into the answer as if you "
+    "always knew it. Don't preface with \"based on the search results\" — "
+    "just answer."
+)
+
+
 def _decode_user_from_token(token: str | None) -> str | None:
     if not token:
         return None
@@ -627,7 +647,10 @@ async def voicechat_session(
                 )
 
             if tool_hints:
-                sections.append("# Available tools\n" + "\n".join(tool_hints))
+                sections.append(
+                    "# Available tools\n" + "\n".join(tool_hints)
+                    + "\n\n" + TOOL_CALL_HYGIENE_RULES
+                )
 
             system_prompt_text = "\n\n".join(sections)
         else:
@@ -662,18 +685,7 @@ async def voicechat_session(
                     "your training wouldn't cover. Don't announce \"I'm going to "
                     "search\" first; just call it and answer.",
                     "",
-                    "Tool-call hygiene (HARD RULES):",
-                    "- Invoke tools through the structured tool-call mechanism only. "
-                    "NEVER write tool calls as JSON in your message text "
-                    "(no `{\"tool\":...}`, no `{\"name\":...,\"arguments\":...}`, "
-                    "no `{\"response\":\"pending\"}`).",
-                    "- Do NOT narrate the tool lifecycle. Don't say \"we need to wait "
-                    "for the tool to return\", \"no result yet\", \"calling X now\", "
-                    "\"the response is pending\", or any equivalent. The user sees the "
-                    "tool indicator UI on their own.",
-                    "- After the tool result arrives, jump straight into the answer "
-                    "as if you always knew it. Don't preface with \"based on the "
-                    "search results\" — just answer.",
+                    TOOL_CALL_HYGIENE_RULES.split("\n", 1)[1].rstrip(),
                     "",
                     "When the tool returns:",
                     "- Quick-data tools (weather, time, prices): one short sentence "

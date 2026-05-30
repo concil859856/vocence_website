@@ -505,13 +505,33 @@ async def transcribe_audio_streaming(
                 async def send_audio():
                     CHUNK = 640  # 20 ms @ 16 kHz mono s16le
                     REAL_TIME_MS = 20
-                    for i in range(0, len(pcm), CHUNK):
-                        await ws.send_bytes(pcm[i:i + CHUNK])
-                        # Pace gently so the server doesn't drop us with
-                        # "client too fast" — also lets partials interleave.
-                        await asyncio.sleep(REAL_TIME_MS / 1000.0 * 0.5)
-                    await ws.send_json({"type": "commit"})
-                    await ws.send_json({"type": "close"})
+                    # The pod may close the WS the moment it commits a
+                    # final transcript — which can happen before we've
+                    # finished pushing the tail of the audio (the model
+                    # is faster than real-time at the end of a clip).
+                    # That's not an error; just stop quietly.
+                    try:
+                        for i in range(0, len(pcm), CHUNK):
+                            if ws.closed:
+                                return
+                            await ws.send_bytes(pcm[i:i + CHUNK])
+                            # Pace gently so the server doesn't drop us
+                            # with "client too fast" — also lets partials
+                            # interleave.
+                            await asyncio.sleep(REAL_TIME_MS / 1000.0 * 0.5)
+                        if not ws.closed:
+                            await ws.send_json({"type": "commit"})
+                        if not ws.closed:
+                            await ws.send_json({"type": "close"})
+                    except (
+                        aiohttp.ClientConnectionResetError,
+                        ConnectionResetError,
+                        aiohttp.ClientConnectionError,
+                    ):
+                        # Recv side already saw the close — recv_loop
+                        # will return cleanly and the wait() below
+                        # picks up the final.
+                        return
 
                 async def recv_loop():
                     nonlocal final_text, final_lang
