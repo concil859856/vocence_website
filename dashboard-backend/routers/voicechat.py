@@ -533,6 +533,22 @@ async def voicechat_session(
                 "increment_sec": INCREMENT_SEC,
                 "min_charge_sec": MIN_CHARGE_SEC,
             }
+        # Advertise the streaming-voice path so capable clients can opt
+        # into it (PCM frames over WS + server-side ensembler turn-end).
+        # Streaming requires a streaming-STT pod to be online; without
+        # one, clients should fall back to one-shot ``voice`` uploads.
+        try:
+            from ops import pool as _gpu_pool
+            streaming_stt_online = _gpu_pool.online_pod_count("asr_streaming_rt") > 0
+            turn_detection_online = _gpu_pool.online_pod_count("turn_detection") > 0
+        except Exception:
+            streaming_stt_online = False
+            turn_detection_online = False
+        ready_payload["capabilities"] = {
+            "voice_stream": streaming_stt_online,
+            "turn_detection": turn_detection_online,
+            "frame": {"sample_rate": 16000, "encoding": "pcm_s16le", "frame_ms": 20},
+        }
         await ws.send_json(ready_payload)
     except WebSocketDisconnect:
         return
