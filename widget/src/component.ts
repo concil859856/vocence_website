@@ -82,6 +82,14 @@ export class VocenceAgentElement extends LitElement {
   private vad: VadController | null = null;
   private streamingAgentMsgId: string | null = null;
 
+  /** Server has a streaming-STT pod online → we send PCM frames over
+   *  the WS and let the server-side ensembler decide turn-end. False
+   *  on legacy deployments → fall back to one-shot WAV upload. */
+  private streamingVoiceEnabled = false;
+  /** Set while an in-flight streaming turn is open on the WS.
+   *  Prevents stream_commit from firing twice if the user re-clicks. */
+  private streamTurnOpen = false;
+
   /** Once the launcher is hovered/touched we treat the user as having
    *  expressed intent to interact. AudioContext won't start outside
    *  of this gesture — Safari is strict about it. */
@@ -185,8 +193,13 @@ export class VocenceAgentElement extends LitElement {
   }
 
   private attachWsHandlers(ws: VocenceWsClient): void {
-    ws.on('open', ({ agentName }) => {
+    ws.on('open', ({ agentName, capabilities }) => {
       this.agentName = agentName || this.agentName;
+      // Latch the streaming-voice capability for the rest of the
+      // session. We don't dynamically resample mid-session if a pod
+      // goes offline — the existing turn just falls back via the
+      // server-side ensembler timeout.
+      this.streamingVoiceEnabled = !!capabilities?.voice_stream;
       this.state = 'idle';
     });
     ws.on('state', (s) => { this.state = s as State; });
@@ -264,6 +277,7 @@ export class VocenceAgentElement extends LitElement {
       return;
     }
     try {
+      const useStream = this.streamingVoiceEnabled;
       this.vad = new VadController(
         {
           onSpeechStart: () => {
@@ -273,20 +287,54 @@ export class VocenceAgentElement extends LitElement {
             if (this.state === 'speaking' || this.state === 'thinking') {
               this.player?.flush();
               this.ws?.cancel();
+              this.streamTurnOpen = false;
             }
             this.state = 'recording';
+            if (useStream && !this.streamTurnOpen) {
+              this.ws?.startVoiceStream();
+              this.streamTurnOpen = true;
+            }
           },
           onSpeechEnd: ({ wavBytes, durationMs }) => {
+            if (useStream) {
+              // Server-side ensembler usually commits on its own
+              // already; sending stream_commit is a hint, not a
+              // requirement. Then we just wait for the transcript
+              // event to flip into ``thinking``.
+              if (this.streamTurnOpen) {
+                this.ws?.commitStream();
+                this.streamTurnOpen = false;
+              }
+              this.state = 'transcribing';
+              return;
+            }
+            // Legacy one-shot path: encode the buffered WAV and ship.
             const b64 = arrayBufferToBase64(wavBytes);
             this.ws?.sendVoice(b64, 'audio/wav', durationMs);
             this.state = 'transcribing';
           },
+          onPcmFrame: useStream
+            ? (pcm: Uint8Array) => {
+                if (!this.streamTurnOpen) {
+                  // We haven't opened a turn yet — open it now (e.g.
+                  // the very first frame arrives before VAD's
+                  // ``onSpeechStart`` fires).
+                  this.ws?.startVoiceStream();
+                  this.streamTurnOpen = true;
+                }
+                this.ws?.sendPcmFrame(pcm);
+              }
+            : undefined,
           onError: (err) => {
             this.showError(`Mic error: ${err.message}`);
             this.state = 'error';
           },
         },
-        { endSilenceMs: 450, minSpeechMs: 250 },
+        {
+          endSilenceMs: 450,
+          minSpeechMs: 250,
+          mode: useStream ? 'stream' : 'segment',
+        },
       );
       await this.vad.start();
       this.consented = true;

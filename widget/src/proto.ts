@@ -18,7 +18,24 @@
 export type ClientMessage =
   | { type: 'voice'; audio_b64: string; mime: string; duration_ms: number; language?: string }
   | { type: 'text';  text: string }
+  | { type: 'stream_start'; language?: string }
+  | { type: 'stream_commit' }
   | { type: 'cancel' };
+
+export interface CapabilitiesInfo {
+  /** When true, the server hosts a streaming-STT pod and the client
+   *  may open a turn with ``stream_start`` + binary PCM frames. */
+  voice_stream: boolean;
+  /** When true, the server has a turn-detection pod online and the
+   *  ensembler will use Smart Turn + Turn Detector signals. */
+  turn_detection: boolean;
+  /** Expected PCM shape for ``stream_start`` frames. */
+  frame: {
+    sample_rate: number;
+    encoding: 'pcm_s16le';
+    frame_ms: number;
+  };
+}
 
 
 // ---------------------------------------------------------------------------
@@ -57,6 +74,7 @@ export type ServerMessage =
       agent: AgentInfo;
       session: SessionLimits;
       billing?: BillingInfo;
+      capabilities?: CapabilitiesInfo;
     }
   | { type: 'transcript'; text: string; language?: string }
   | PartialTranscriptMsg

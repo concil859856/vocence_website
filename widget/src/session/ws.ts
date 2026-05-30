@@ -26,6 +26,7 @@
  */
 
 import type {
+  CapabilitiesInfo,
   ChatMessage,
   ClientMessage,
   ServerMessage,
@@ -63,7 +64,13 @@ export interface VoicechatEvents {
   /** ``open`` fires once the underlying WS is open AND the server has
    *  sent the ``ready`` frame. Carrying the ready payload here means
    *  components don't need to listen for both events separately. */
-  open: { sessionId: string; agentName: string };
+  open: {
+    sessionId: string;
+    agentName: string;
+    /** Capability flags from the server's ready payload. Absent on
+     *  older servers — clients should default to one-shot voice. */
+    capabilities?: CapabilitiesInfo;
+  };
   /** Each user/agent/system message added or updated. The widget
    *  re-renders its message list off this. */
   message: ChatMessage;
@@ -166,6 +173,7 @@ export class VocenceWsClient {
           this.emit('open', {
             sessionId: msg.session_id,
             agentName: msg.agent.name,
+            capabilities: msg.capabilities,
           });
           this.emit('state', 'listening');
           resolve();
@@ -203,10 +211,10 @@ export class VocenceWsClient {
     this.connected = false;
   }
 
-  /** Send a captured speech segment to the backend. Audio is base64-
-   *  encoded WAV; the backend's batch STT path expects this shape.
-   *  When the streaming-STT pod lands we'll add a separate
-   *  ``startVoiceStream()`` + ``sendPcmFrame()`` pair. */
+  /** Send a captured speech segment to the backend (one-shot voice
+   *  mode). Audio is base64-encoded WAV; the backend's batch STT path
+   *  expects this shape. Used when the server hasn't advertised the
+   *  ``voice_stream`` capability. */
   sendVoice(audioB64: string, mime: string, durationMs: number): void {
     this.sendJson({
       type: 'voice',
@@ -215,6 +223,38 @@ export class VocenceWsClient {
       duration_ms: durationMs,
       language: this.opts.language,
     });
+  }
+
+  /** Begin a streaming voice turn. Subsequent calls to ``sendPcmFrame``
+   *  ship audio to the server's StreamingTurnSession; ``commitStream``
+   *  signals end-of-utterance (the server's ensembler may commit on
+   *  its own first).
+   *
+   *  Used only when the server's ready payload advertises
+   *  ``capabilities.voice_stream``. */
+  startVoiceStream(): void {
+    this.sendJson({
+      type: 'stream_start',
+      language: this.opts.language,
+    });
+  }
+
+  /** Push a 20–32 ms PCM s16le frame to the server. Pass raw bytes,
+   *  not a base64 string — WebSocket binary frames carry it as-is. */
+  sendPcmFrame(pcm: Uint8Array): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    try {
+      this.ws.send(pcm);
+    } catch {
+      // The WS state will surface via ``onclose``; nothing to do here.
+    }
+  }
+
+  /** Tell the server "I've finished speaking" — useful as a hint to
+   *  the ensembler. Safe to call even if the ensembler already
+   *  committed; the server treats it as a no-op then. */
+  commitStream(): void {
+    this.sendJson({ type: 'stream_commit' });
   }
 
   sendText(text: string): void {

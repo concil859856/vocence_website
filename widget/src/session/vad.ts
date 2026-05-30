@@ -32,12 +32,18 @@ export interface VadEvents {
   /** User started speaking. Fires BEFORE we have any audio — used to
    *  trigger barge-in immediately. */
   onSpeechStart?: () => void;
-  /** User stopped speaking. Carries the captured WAV bytes + duration
-   *  so the caller can ship it to the WS. */
+  /** User stopped speaking. In segment mode, carries the captured WAV
+   *  bytes + duration so the caller can ship a one-shot. In stream
+   *  mode, ``wavBytes`` is empty — the caller has already received
+   *  the audio frame-by-frame via ``onPcmFrame``. */
   onSpeechEnd?: (args: { wavBytes: ArrayBuffer; durationMs: number }) => void;
   /** Real-time speech probability (0..1). Drive the mic-level ring
    *  animation off this. */
   onProbability?: (p: number) => void;
+  /** Streaming mode only — fires for every ~32 ms audio frame with
+   *  raw 16-bit PCM (little-endian, 16 kHz mono) ready to ship over
+   *  the WS to the streaming-STT pod. */
+  onPcmFrame?: (pcm16le: Uint8Array) => void;
   /** Mic permission denied or hardware unavailable. */
   onError?: (err: Error) => void;
 }
@@ -48,6 +54,12 @@ export interface VadOptions {
   endSilenceMs?: number;
   /** Minimum speech duration to register a turn. */
   minSpeechMs?: number;
+  /** Capture mode:
+   *   * ``segment`` — buffer until end-of-turn, emit one WAV (legacy).
+   *   * ``stream``  — emit every audio frame as PCM via onPcmFrame; the
+   *     server-side ensembler decides turn-end.
+   *  Default ``segment`` for backward compat. */
+  mode?: 'segment' | 'stream';
 }
 
 
@@ -67,6 +79,7 @@ export class VadController {
     if (this.vad) return;
     const endSilenceMs = this.opts.endSilenceMs ?? 450;
     const minSpeechMs = this.opts.minSpeechMs ?? 250;
+    const isStream = this.opts.mode === 'stream';
     try {
       this.vad = await MicVAD.new({
         positiveSpeechThreshold: 0.55,
@@ -79,18 +92,31 @@ export class VadController {
           this.events.onSpeechStart?.();
         },
         onSpeechEnd: (audio: Float32Array) => {
-          // The library hands us 16 kHz mono Float32 samples.
-          // Convert to a WAV blob so the existing batch-STT path on
-          // the dashboard works without changes.
+          if (isStream) {
+            // In streaming mode the caller has already received the
+            // audio frame-by-frame; just signal end-of-utterance.
+            const durationMs = Math.round((audio.length / 16000) * 1000);
+            this.events.onSpeechEnd?.({ wavBytes: new ArrayBuffer(0), durationMs });
+            return;
+          }
+          // Segment mode: hand back a complete WAV.
           const wavBytes = encodeWav(audio, 16000);
           const durationMs = Math.round((audio.length / 16000) * 1000);
           this.events.onSpeechEnd?.({ wavBytes, durationMs });
         },
-        onFrameProcessed: (probabilities) => {
+        onFrameProcessed: (probabilities, frame) => {
           // ``isSpeech`` is the 0..1 confidence we want for the
           // mic-level ring animation.
           if (this.events.onProbability) {
             this.events.onProbability(probabilities.isSpeech);
+          }
+          // Streaming mode: ship every frame as PCM so the server-
+          // side ensembler can run. We don't gate on speech vs
+          // silence here — the STT pod's own VAD does that and feeds
+          // the ensembler. Sending silence frames is also cheap
+          // (640 bytes / 20ms = 32 kB/s).
+          if (isStream && this.events.onPcmFrame && frame) {
+            this.events.onPcmFrame(float32ToPcm16(frame));
           }
         },
       });
@@ -171,6 +197,19 @@ function writeString(view: DataView, offset: number, str: string): void {
   for (let i = 0; i < str.length; i++) {
     view.setUint8(offset + i, str.charCodeAt(i));
   }
+}
+
+
+/** Convert a Float32Array of audio samples (-1..1) into raw PCM s16le
+ *  bytes — the shape the streaming-STT pod expects. */
+function float32ToPcm16(samples: Float32Array): Uint8Array {
+  const out = new Uint8Array(samples.length * 2);
+  const view = new DataView(out.buffer);
+  for (let i = 0; i < samples.length; i++) {
+    const s = Math.max(-1, Math.min(1, samples[i] as number));
+    view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+  }
+  return out;
 }
 
 
