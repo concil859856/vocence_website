@@ -389,38 +389,63 @@ class TurnDetectorStream:
 
 def should_commit_turn(
     *,
-    client_vad_silence: bool,
-    server_vad_silence_ms: int,
+    silence_ms: int,
     smart_turn_p: float,
     turn_detector_p: float,
-    silence_continuous_ms: int,
-    strong_threshold: float = 0.85,
-    weak_threshold: float = 0.70,
-    vad_silence_threshold_ms: int = 800,
-    hard_cap_ms: int = 5000,
+    min_endpointing_delay_ms: int = 500,
+    max_endpointing_delay_ms: int = 6000,
+    eou_threshold: float = 0.5,
 ) -> tuple[bool, str]:
-    """Decide whether the user's turn is over given the four signals
-    available during a streaming voice session.
+    """Decide whether the user's turn is over.
+
+    Follows the well-established LiveKit / Pipecat pattern:
+      * VAD silence is the trigger — never commit while the user is
+        clearly still speaking (``silence_ms < min_endpointing_delay``).
+      * Turn-detector probability modulates the wait window:
+          - high EOU confidence (≥ ``eou_threshold``)  → commit at
+            ``min_endpointing_delay`` (fast reply)
+          - low EOU confidence                          → wait longer,
+            linearly extending toward ``max_endpointing_delay``
+      * Hard cap: commit at ``max_endpointing_delay`` regardless,
+        so a hung detector never freezes the bot.
+
+    ``silence_ms`` is the duration of contiguous silence since the
+    user last spoke, measured by the STT pod's server-side VAD
+    (``vad_silence`` events). Browser-side Silero is no longer the
+    authoritative source — we use the STT pod's VAD so a single
+    component owns the silence calculation.
+
+    ``smart_turn_p`` is the latest probability from the audio EOU
+    model (Pipecat Smart Turn v3, prosody / intonation).
+    ``turn_detector_p`` is the latest probability from the text EOU
+    model (LiveKit Turn Detector v2, semantic completeness).
+    We take ``max(smart, td)`` as the combined EOU score — either
+    model being confident is enough evidence.
+
+    Default thresholds match LiveKit Agents' published values
+    (``min_endpointing_delay=500ms``, ``max_endpointing_delay=6000ms``,
+    ``eou_threshold=0.5``) and are documented to work well across
+    OpenAI Realtime, LiveKit, and Pipecat reference deployments.
 
     Returns ``(should_commit, rule_fired)``. The second item is a
     short string identifying which rule fired — useful for logging
     when tuning the thresholds in production.
-
-    Rules (in priority order):
-
-      1. Both strong models say end-of-turn → commit.
-      2. Client VAD silence + either strong model > weak threshold → commit.
-      3. Client VAD silence + sustained server VAD silence → commit.
-      4. Hard cap: silence > 5s → commit no matter what.
     """
-    if smart_turn_p > strong_threshold and turn_detector_p > strong_threshold:
-        return True, "both_models_strong"
-    if client_vad_silence and (
-        smart_turn_p > weak_threshold or turn_detector_p > weak_threshold
-    ):
-        return True, "vad_silence_plus_model_weak"
-    if client_vad_silence and server_vad_silence_ms > vad_silence_threshold_ms:
-        return True, "vad_silence_plus_server_vad"
-    if silence_continuous_ms > hard_cap_ms:
-        return True, "hard_cap_silence"
+    if silence_ms < min_endpointing_delay_ms:
+        return False, ""
+    if silence_ms >= max_endpointing_delay_ms:
+        return True, "hard_cap"
+
+    combined_eou = max(smart_turn_p, turn_detector_p)
+
+    # Fast path: turn-detector is confident the user is done.
+    if combined_eou >= eou_threshold:
+        return True, "eou_confident"
+
+    # Slow path: scale the required wait inversely with EOU
+    # confidence — low confidence → wait closer to the max.
+    span = max_endpointing_delay_ms - min_endpointing_delay_ms
+    required_silence = min_endpointing_delay_ms + int(span * (1.0 - combined_eou))
+    if silence_ms >= required_silence:
+        return True, "eou_low_silence_extended"
     return False, ""
