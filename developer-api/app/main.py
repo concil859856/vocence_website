@@ -12,7 +12,7 @@ from app.api.routes import router
 # related endpoints sit next to each other.
 app = FastAPI(
     title="Vocence Developer API",
-    version="1.0.0",
+    version="1.1.0",
     description="",
     openapi_tags=[
         {"name": "TTS", "description": "Synthesize speech from text. Pick a voice or use a saved voice id."},
@@ -20,6 +20,8 @@ app = FastAPI(
         {"name": "Voice Clone", "description": "One-shot voice cloning from a reference audio clip."},
         {"name": "Audio", "description": "Audio enhancement and noise reduction."},
         {"name": "Agents", "description": "CRUD + voice WebSocket session for your Studio agents."},
+        {"name": "Knowledge", "description": "Per-agent RAG knowledge ingestion (text / URL / sitemap / PDF)."},
+        {"name": "Embed Tokens", "description": "Mint scoped tokens for the embeddable <vocence-agent> widget."},
         {"name": "Voices", "description": "Manage saved designed / cloned voices and synthesize with them."},
         {"name": "Custom Tools", "description": "Register webhook tools your agents can call mid-conversation."},
         {"name": "Account", "description": "Account snapshot (credits, plan) and developer-key management."},

@@ -17,11 +17,23 @@ for the canonical message reference. In short:
   Client → server (JSON):
     {"type":"text", "text":"..."}            # text-only turn
     {"type":"voice", "audio_b64":"...", "mime":"audio/wav"}
-    {"type":"cancel"}                         # barge-in
+                                              # one-shot WAV upload
+    {"type":"stream_start"}                   # open a live PCM turn
+    {"type":"stream_commit"}                  # finalise the live turn
+    {"type":"cancel"}                         # barge-in / abort
+
+  Client → server (BINARY) — only inside an open stream turn:
+    raw PCM16LE @ 16 kHz mono, 20 ms or 32 ms frames
 
   Server → client (JSON or binary):
-    {"type":"ready", "session_id":"..."}
+    {"type":"ready", "session_id":"...",
+     "capabilities":{"voice_stream":true|false,
+                     "turn_detection":true|false,
+                     "frame":{"sample_rate":16000,
+                              "encoding":"pcm_s16le",
+                              "frame_ms":20}}}
     {"type":"transcript", "text":"...", "language":"en"}
+    {"type":"partial_transcript", "text":"..."}  # only in stream turns
     {"type":"token", "text":"..."}            # LLM delta
     {"type":"audio_meta", "sentence_id":N, "sample_rate":24000, ...}
     <binary>                                  # PCM16LE 24kHz frames
@@ -30,6 +42,15 @@ for the canonical message reference. In short:
     {"type":"tool_call_started", "name":"web_search", ...}
     {"type":"tool_call_completed", "name":"...", "result_preview":"..."}
     {"type":"error", "code":"...", "message":"..."}
+    {"type":"session_timeout", "code":"idle_timeout"|"max_duration"}
+    {"type":"billing_exhausted", ...}
+    {"type":"cancelled"}                      # ack of {"type":"cancel"}
+
+Streaming voice (stream_start / binary PCM / stream_commit) is only
+available when the server advertises ``capabilities.voice_stream=true``
+in the ``ready`` event — that flag is true iff a streaming-STT pod is
+online on the deployment. Capable clients should fall back to the
+one-shot ``voice`` upload when the flag is false.
 
 The frame relay is bidirectional and concurrent — text/JSON and audio
 frames flow in both directions without blocking each other.

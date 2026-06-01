@@ -79,6 +79,13 @@ API_VOICE_DESIGN_CREDITS = int(os.environ.get("API_VOICE_DESIGN_CREDITS", "70"))
 # script-spam saves.
 API_VOICE_SAVE_CREDITS = int(os.environ.get("API_VOICE_SAVE_CREDITS", "20"))
 
+# Knowledge ingestion via API. Each PDF spends real GPU time on OCR +
+# embedding generation in the knowledge pod — 20 cr/PDF keeps script
+# loops from racking up unbounded compute on flat-rate Premium. Text
+# / URL / sitemap stay free for now (cheap enough; we can add a cost
+# later if abuse surfaces). Set 0 to make PDFs free as well.
+API_KNOWLEDGE_PDF_CREDITS = int(os.environ.get("API_KNOWLEDGE_PDF_CREDITS", "20"))
+
 # Voice agents are billed by ``dashboard-backend/voice_agent_billing.py``
 # (the billing loop runs on the dashboard side of the WS proxy, not
 # here). The actual tunables are ``VOICE_AGENT_CREDITS_PER_MIN``,
