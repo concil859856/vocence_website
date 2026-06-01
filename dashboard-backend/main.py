@@ -247,6 +247,14 @@ app.include_router(embed_tokens_router, prefix="/api/dashboard")
 # be discovered by guessing.
 from routers.public_agents import router as public_agents_router  # noqa: E402
 app.include_router(public_agents_router, prefix="/api/dashboard")
+# Voice likes — Community Voices page heart counter + popularity sort.
+# Two routers: public counts (anonymous) + authed toggle/mine.
+from routers.voice_likes import (  # noqa: E402
+    public_router as voice_likes_public_router,
+    authed_router as voice_likes_authed_router,
+)
+app.include_router(voice_likes_public_router, prefix="/api/dashboard")
+app.include_router(voice_likes_authed_router, prefix="/api/dashboard")
 # Admin sudo-mode auth (separate password on top of Google OAuth for
 # /studio/ops + other admin surfaces). Routes live at /api/dashboard/auth/admin/*.
 from routers.admin_auth import router as admin_auth_router  # noqa: E402
@@ -265,6 +273,12 @@ app.include_router(admin_llm_router, prefix="/api/dashboard")
 # quality dashboard aggregates (/feedback/admin/*).
 from routers.feedback import router as feedback_router  # noqa: E402
 app.include_router(feedback_router, prefix="/api/dashboard")
+
+# Standalone low-latency TTS + STT WebSocket endpoints — the same
+# streaming primitives the voice-agent pipeline uses, exposed as
+# their own routes for the public developer API + SDK.
+from routers.streaming import router as streaming_router  # noqa: E402
+app.include_router(streaming_router, prefix="/api/dashboard")
 # Public share/embed pages mount at the ROOT (no /api prefix) so the
 # URLs the user actually pastes into tweets/Discord are short and the
 # meta-bot crawlers (which generally only fetch the literal URL) hit
