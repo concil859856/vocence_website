@@ -18,6 +18,7 @@ Gate pattern matches the rest of the dev-api:
 from __future__ import annotations
 
 import logging
+import os
 import re
 import time
 from typing import Any, Optional
@@ -41,11 +42,12 @@ router = APIRouter()
 
 
 _AGENT_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{8,64}$")
-# Ingest jobs + sources use the same id shape (uuid hex / short slug).
-# Keep them as separate constants so a future format change for one
-# doesn't accidentally loosen the other.
-_SOURCE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{8,64}$")
-_JOB_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{8,64}$")
+# Ingest jobs + sources can be short slugs (the knowledge pod chooses
+# the format). The point of these regexes is the CHARACTER SET — they
+# block path-traversal (``..``, ``/``), JNDI ($), SQL quotes, etc.
+# Length is bounded purely to keep log volume sane.
+_SOURCE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+_JOB_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
 
 def _validate_agent_id(agent_id: str) -> None:
@@ -403,9 +405,26 @@ async def ingest_pdf(
             status_code=413,
             detail={"error": f"PDF exceeds {PDF_UPLOAD_MAX_BYTES // (1024 * 1024)} MB limit"},
         )
+
+    # Defence-in-depth: FastAPI's Form(max_length=200) already validates
+    # title length, but the handler builds the forwarded dict by hand.
+    # Re-check here so a future loosening of the Form annotation can't
+    # silently pass an oversize string upstream.
     form: dict[str, str] = {}
     if title:
+        if len(title) > 200:
+            raise HTTPException(
+                status_code=400, detail={"error": "title exceeds 200 chars"},
+            )
         form["title"] = title
+
+    # Sanitize the multipart filename: strip any path components (so an
+    # attacker can't smuggle ``../`` or platform-specific path bits into
+    # the upstream form), clamp length, and fall back to a generic name
+    # if the cleaned result is empty. The dashboard ALSO sanitizes —
+    # this is the public-edge fail-fast.
+    raw_name = file.filename or "document.pdf"
+    safe_name = os.path.basename(raw_name)[:200] or "document.pdf"
 
     # Apply the same gate as the other write endpoints before charging.
     await gate_request(auth_ctx["user_id"])
@@ -430,7 +449,7 @@ async def ingest_pdf(
             f"/api/dashboard/agents/{agent_id}/knowledge/ingest/pdf",
             user_id=auth_ctx["user_id"],
             form=form or None,
-            files=[("file", content, file.filename or "document.pdf", "application/pdf")],
+            files=[("file", content, safe_name, "application/pdf")],
         )
     except HTTPException as exc:
         # Upstream failed → return the credits we just deducted. The

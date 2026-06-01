@@ -242,6 +242,10 @@ async def list_runs(
     for clients to handle uniformly."""
     _validate_agent_id(agent_id)
     user_id = auth_ctx["user_id"]
+    # Cheap DB read, but the per-account RPM gate still applies — a
+    # poll-in-a-tight-loop pattern shouldn't go unbounded just because
+    # the underlying query is fast.
+    await gate_request(user_id)
     return await call_dashboard(
         "GET",
         f"/api/dashboard/agents/{agent_id}/runs",
@@ -293,6 +297,8 @@ async def get_run(
     _validate_agent_id(agent_id)
     _validate_run_id(run_id)
     user_id = auth_ctx["user_id"]
+    # Same poll-loop guardrail as list_runs.
+    await gate_request(user_id)
     return await call_dashboard(
         "GET",
         f"/api/dashboard/agents/{agent_id}/runs/{run_id}",
@@ -316,6 +322,7 @@ async def cancel_run(
     _validate_agent_id(agent_id)
     _validate_run_id(run_id)
     user_id = auth_ctx["user_id"]
+    await gate_request(user_id)
     return await call_dashboard(
         "POST",
         f"/api/dashboard/agents/{agent_id}/runs/{run_id}/cancel",
