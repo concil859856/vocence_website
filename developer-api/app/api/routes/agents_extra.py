@@ -18,6 +18,7 @@ The split:
 
 from __future__ import annotations
 
+import re
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -25,8 +26,36 @@ from pydantic import BaseModel, Field
 
 from app.core.auth import require_api_key
 from app.services.dashboard_proxy import call_dashboard
+from app.services.gating import gate_request
 
 router = APIRouter()
+
+
+# Same shape as the agent_id used elsewhere — UUID hex / short slug.
+# Matches agent_knowledge.py and embed_tokens.py so a typo in one
+# place doesn't open a hole in another.
+_AGENT_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{8,64}$")
+# Template ids are static catalog keys (snake_case). Tight enough to
+# reject path-traversal attempts at the dev-api boundary instead of
+# trusting downstream lookup.
+_TEMPLATE_ID_RE = re.compile(r"^[a-z0-9_-]{1,64}$")
+# Goal-agent run ids — same format as agent_id.
+_RUN_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{8,64}$")
+
+
+def _validate_agent_id(agent_id: str) -> None:
+    if not _AGENT_ID_RE.match(agent_id):
+        raise HTTPException(status_code=400, detail={"error": "malformed agent_id"})
+
+
+def _validate_template_id(template_id: str) -> None:
+    if not _TEMPLATE_ID_RE.match(template_id):
+        raise HTTPException(status_code=400, detail={"error": "malformed template_id"})
+
+
+def _validate_run_id(run_id: str) -> None:
+    if not _RUN_ID_RE.match(run_id):
+        raise HTTPException(status_code=400, detail={"error": "malformed run_id"})
 
 
 # --------------------------------------------------------------------- discovery
@@ -61,6 +90,7 @@ async def get_template(
     """Snapshot semantics: once you create an agent from a template,
     the agent owns its own copy and later template tweaks do NOT
     propagate. Treat the response as a one-time seed."""
+    _validate_template_id(template_id)
     user_id = auth_ctx["user_id"]
     return await call_dashboard(
         "GET",
@@ -143,6 +173,10 @@ async def draft_agent(
     suggested tools). Use this as a one-shot path; for an iterative
     conversational flow, use ``/v1/agents/architect/chat`` instead."""
     user_id = auth_ctx["user_id"]
+    # Gate before the proxy hop — this endpoint hits the LLM provider
+    # (OpenAI / Chutes) and bills our account per token. A loose
+    # caller could burn cost in seconds without the rate-limit ceiling.
+    await gate_request(user_id)
     return await call_dashboard(
         "POST",
         "/api/dashboard/agents/draft",
@@ -179,6 +213,9 @@ async def architect_chat(
     if body.message and not body.message.strip():
         raise HTTPException(status_code=400, detail="message is empty")
     user_id = auth_ctx["user_id"]
+    # Same LLM-cost concern as draft_agent — gate before the upstream
+    # call so the per-account RPM ceiling applies.
+    await gate_request(user_id)
     return await call_dashboard(
         "POST",
         "/api/dashboard/agents/architect/chat",
@@ -203,6 +240,7 @@ async def list_runs(
     Only relevant for agents with ``type == 'goal'``. Returns an empty
     list (NOT a 400) when called on a knowledge-style agent — easier
     for clients to handle uniformly."""
+    _validate_agent_id(agent_id)
     user_id = auth_ctx["user_id"]
     return await call_dashboard(
         "GET",
@@ -225,7 +263,12 @@ async def start_run(
     Returns the freshly-created run row in ``pending`` state — the
     actual work happens asynchronously on the server. Poll
     ``GET /v1/agents/{agent_id}/runs/{run_id}`` for progress."""
+    _validate_agent_id(agent_id)
     user_id = auth_ctx["user_id"]
+    # Gate: a goal run spawns an async LLM loop on the server. Without
+    # an RPM ceiling here, a caller could create thousands of pending
+    # runs, filling the job queue + LLM bill before anyone notices.
+    await gate_request(user_id)
     return await call_dashboard(
         "POST",
         f"/api/dashboard/agents/{agent_id}/runs",
@@ -247,6 +290,8 @@ async def get_run(
     """Returns ``{run: {...}}``. ``run.status`` is one of pending,
     running, completed, failed, cancelled. The transcript (every
     step the agent took) is in ``run.transcript_json`` as an array."""
+    _validate_agent_id(agent_id)
+    _validate_run_id(run_id)
     user_id = auth_ctx["user_id"]
     return await call_dashboard(
         "GET",
@@ -268,6 +313,8 @@ async def cancel_run(
     """Idempotent — returns ``{ok: true}`` whether or not there was
     anything to cancel. Runs already in a terminal state (completed,
     failed, cancelled) are left alone."""
+    _validate_agent_id(agent_id)
+    _validate_run_id(run_id)
     user_id = auth_ctx["user_id"]
     return await call_dashboard(
         "POST",

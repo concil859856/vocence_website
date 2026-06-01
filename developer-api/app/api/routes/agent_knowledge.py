@@ -41,6 +41,11 @@ router = APIRouter()
 
 
 _AGENT_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{8,64}$")
+# Ingest jobs + sources use the same id shape (uuid hex / short slug).
+# Keep them as separate constants so a future format change for one
+# doesn't accidentally loosen the other.
+_SOURCE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{8,64}$")
+_JOB_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{8,64}$")
 
 
 def _validate_agent_id(agent_id: str) -> None:
@@ -48,6 +53,75 @@ def _validate_agent_id(agent_id: str) -> None:
     round-trip. The dashboard ALSO validates — this is a fast-fail."""
     if not _AGENT_ID_RE.match(agent_id):
         raise HTTPException(status_code=400, detail={"error": "malformed agent_id"})
+
+
+def _validate_source_id(source_id: str) -> None:
+    if not _SOURCE_ID_RE.match(source_id):
+        raise HTTPException(status_code=400, detail={"error": "malformed source_id"})
+
+
+def _validate_job_id(job_id: str) -> None:
+    if not _JOB_ID_RE.match(job_id):
+        raise HTTPException(status_code=400, detail={"error": "malformed job_id"})
+
+
+def _validate_ingest_url(url: str) -> None:
+    """SSRF guard. The knowledge crawler runs server-side and would
+    happily fetch anything httpx.AsyncClient can dial — including
+    cloud metadata endpoints (169.254.169.254), private/internal
+    services (10/8, 172.16/12, 192.168/16, 169.254/16, loopback),
+    and exotic schemes (file:// gopher:// ftp://). All of those are
+    sources for either credential theft (IMDS) or internal-recon
+    via the agent's RAG. The backend ALSO validates as defense in
+    depth; this is the fail-fast boundary.
+
+    Allows: http:// and https:// on public hostnames + public IPs only.
+    """
+    import ipaddress
+    import socket
+    from urllib.parse import urlparse
+
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        raise HTTPException(status_code=400, detail={"error": "malformed url"})
+
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(
+            status_code=400,
+            detail={"error": f"url scheme must be http or https, got {parsed.scheme!r}"},
+        )
+    host = (parsed.hostname or "").strip()
+    if not host:
+        raise HTTPException(status_code=400, detail={"error": "url missing hostname"})
+    # Block literal-IP private/loopback/link-local + cloud metadata.
+    # If the host is a name, resolve once and check every A/AAAA result —
+    # otherwise an attacker could point a name like ``ssrf.evil.example.com``
+    # at 169.254.169.254 to bypass a name-only check.
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        # DNS failure — let the upstream fail naturally with a clearer
+        # error. Don't pre-emptively 400 since DNS can be flaky.
+        return
+    for fam, _stype, _proto, _canon, sockaddr in infos:
+        ip_str = sockaddr[0]
+        try:
+            ip = ipaddress.ip_address(ip_str)
+        except ValueError:
+            continue
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+            or ip.is_unspecified
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail={"error": "url resolves to a non-public address (SSRF blocked)"},
+            )
 
 
 async def _gated_dashboard_call(
@@ -185,6 +259,7 @@ async def get_job(
     sitemap, PDF). Poll every few seconds until ``status`` is
     ``done`` or ``failed``."""
     _validate_agent_id(agent_id)
+    _validate_job_id(job_id)
     return await call_dashboard(
         "GET",
         f"/api/dashboard/agents/{agent_id}/knowledge/jobs/{job_id}",
@@ -207,6 +282,7 @@ async def delete_source(
     auth_ctx: dict = Depends(require_api_key),
 ) -> dict:
     _validate_agent_id(agent_id)
+    _validate_source_id(source_id)
     return await _gated_dashboard_call(
         auth_ctx=auth_ctx, endpoint_label="knowledge.delete_source",
         method="DELETE",
@@ -263,6 +339,7 @@ async def ingest_url(
     auth_ctx: dict = Depends(require_api_key),
 ) -> dict:
     _validate_agent_id(agent_id)
+    _validate_ingest_url(body.url)
     return await _gated_dashboard_call(
         auth_ctx=auth_ctx, endpoint_label="knowledge.ingest.url",
         method="POST",
@@ -282,6 +359,7 @@ async def ingest_sitemap(
     auth_ctx: dict = Depends(require_api_key),
 ) -> dict:
     _validate_agent_id(agent_id)
+    _validate_ingest_url(body.url)
     return await _gated_dashboard_call(
         auth_ctx=auth_ctx, endpoint_label="knowledge.ingest.sitemap",
         method="POST",
