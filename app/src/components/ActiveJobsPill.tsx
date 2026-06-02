@@ -12,7 +12,9 @@ const TYPE_META: Record<JobType, { label: string; color: string; icon: typeof Mi
   music:        { label: 'Music',        color: '#f472b6', icon: MusicIcon, href: '/studio/music' },
 };
 
-export function ActiveJobsPill() {
+type PillVariant = 'sidebar' | 'floating';
+
+export function ActiveJobsPill({ variant = 'sidebar' }: { variant?: PillVariant } = {}) {
   const { jobs, pendingCount, dismiss } = useGenerations();
   const [open, setOpen] = useState(false);
   const navigate = useNavigate();
@@ -21,13 +23,25 @@ export function ActiveJobsPill() {
 
   const pending = jobs.filter((j) => j.status === 'pending');
   const hasStale = pending.some((j) => j.staleAfterReload);
+  const isFloating = variant === 'floating';
+
+  // Floating variant: pill is auto-width and the dropdown opens UPWARD
+  // (bottom-full) and aligns to the RIGHT so it never clips the
+  // viewport edge. Sidebar variant keeps the original "stretch to
+  // sidebar width, drop down" layout.
+  const buttonLayout = isFloating
+    ? 'inline-flex shadow-2xl'
+    : 'w-full flex';
+  const dropdownPosition = isFloating
+    ? 'absolute bottom-full right-0 mb-2 w-[280px]'
+    : 'absolute left-0 right-0 mt-2';
 
   return (
     <div className="relative">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl border text-xs transition-colors ${
+        className={`${buttonLayout} items-center gap-2 px-3 py-2 rounded-xl border text-xs transition-colors ${
           hasStale
             ? 'border-amber-300/30 bg-amber-400/[0.08] text-amber-200 hover:bg-amber-400/[0.12]'
             : 'border-[#DFFF00]/30 bg-[#DFFF00]/[0.06] text-[#DFFF00] hover:bg-[#DFFF00]/[0.10]'
@@ -46,7 +60,7 @@ export function ActiveJobsPill() {
 
       {open && (
         <div
-          className="absolute left-0 right-0 mt-2 rounded-xl border border-white/10 bg-[#0f1115] p-2 shadow-2xl z-30"
+          className={`${dropdownPosition} rounded-xl border border-white/10 bg-[#0f1115] p-2 shadow-2xl z-30`}
           role="menu"
         >
           <div className="flex items-center justify-between px-2 py-1">
@@ -115,7 +129,7 @@ export function ActiveJobsPill() {
                           <div className="space-y-1.5">
                             <p className="text-xs font-semibold text-white">Connection lost</p>
                             <p className="text-[11px] leading-relaxed text-amber-100/80">
-                              We lost the connection to this {meta.label.toLowerCase()} generation — likely because you reloaded the page.
+                              We lost the connection to this {meta.label.toLowerCase()} generation, likely because you reloaded the page.
                             </p>
                             <p className="text-[11px] leading-relaxed text-amber-100/80">
                               Check the <span className="text-amber-200 font-medium">History</span> page to see if it completed.

@@ -1,5 +1,5 @@
 /**
- * SampleVoicePicker — flat one-row-per-voice list.
+ * SampleVoicePicker, flat one-row-per-voice list.
  *
  *   ┌──────────────────────────────────────────────────────────┐
  *   │ [⭕]  Aria                                            ▶  │
@@ -323,7 +323,7 @@ function VoiceRow({
   );
 }
 
-// (small helper kept inline to stay local — same as `fmt` above; using a
+// (small helper kept inline to stay local, same as `fmt` above; using a
 // local name so the JSX below reads naturally without re-declaring fmt)
 function useFmt(t: number): string {
   return fmt(t);

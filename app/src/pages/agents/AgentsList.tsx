@@ -1,5 +1,5 @@
 /**
- * Agents list page — entry point for /studio/agents.
+ * Agents list page, entry point for /studio/agents.
  *
  * Cleaned up after the redesign: a tighter header (no oversized hero
  * card on the empty state), bigger template tiles with type-coloured
@@ -12,6 +12,7 @@ import { useConfirm } from '../../hooks/useConfirm';
 import { BookOpen, Loader2, Plus, Search, Sparkles } from 'lucide-react';
 import { avatarGradientPairFor } from '../../data/sampleVoices';
 import { StudioShell } from '../../components/StudioShell';
+import { StudioVoiceAgentSpotlight } from '../../components/StudioVoiceAgentSpotlight';
 import { AgentCard } from '../../components/agents/AgentCard';
 import { useAuth } from '../../contexts/AuthContext';
 import { agentsApi, getStoredToken } from '../../lib/agents/api';
@@ -61,55 +62,55 @@ export function AgentsList() {
   return (
     <div className="min-h-screen bg-[#07080A] pt-20">
     <StudioShell activeView="agents">
-      {/* No max-width here — let the grid breathe on wide screens.
-          More columns kick in at xl / 2xl breakpoints below. */}
-      <div>
-        {/* Header */}
-        {/* Header — title block on the left, action button at the page's
-            right edge. Description sits below the title at its own width
-            so it doesn't wrap awkwardly mid-sentence. */}
-        <div className="flex items-start justify-between gap-4 mb-8 flex-wrap">
-          <div>
-            <div className="flex items-center gap-2 mb-1.5 flex-wrap">
-              <h1 className="text-3xl font-semibold text-white leading-none">Agents</h1>
-              <span
-                className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-semibold uppercase tracking-[0.14em] text-indigo-300 bg-indigo-500/15 border border-indigo-400/30"
-                title="Voice agents are in beta — features and pricing may change."
-              >
-                Beta
-              </span>
-            </div>
-            <p className="text-[#A7B0B7] text-sm max-w-2xl">
-              Voice agents with custom knowledge or autonomous goals — built by chatting, no code.
-            </p>
-          </div>
-          <div className="flex items-center gap-2 shrink-0">
-            <Link
-              to="/docs/guide-agents"
-              target="_blank"
-              rel="noopener"
-              className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] hover:bg-white/[0.08] hover:border-white/20 px-3.5 py-2.5 text-sm text-[#A7B0B7] hover:text-white transition-colors"
-            >
-              <BookOpen size={14} /> Guide
-            </Link>
-            <Link
-              to="/studio/agents/new"
-              className="inline-flex items-center gap-2 rounded-xl bg-[#DFFF00] text-[#07080A] px-4 py-2.5 text-sm font-semibold hover:brightness-110"
-            >
-              <Plus size={16} /> New agent
-            </Link>
-          </div>
-        </div>
+      {/* Centered max-width column so the spotlight + agent grid sit
+          in a comfortable visual band instead of spanning edge-to-edge
+          on wide displays. */}
+      <div className="mx-auto w-full max-w-6xl px-2 md:px-6 space-y-10">
+        {/* Featured live agent (Logos), same call surface as the
+            Studio home spotlight. Acts as the "agents on the air"
+            section: clicking the phone starts a real session against
+            Logos right here in the panel. */}
+        <StudioVoiceAgentSpotlight />
 
-        {agents === null ? (
-          <div className="flex items-center justify-center py-20">
-            <Loader2 size={28} className="animate-spin text-[#A7B0B7]" />
+        {/* Section: user-designed agents (or templates if none yet). */}
+        <div>
+          <div className="flex items-end justify-between gap-4 mb-5 flex-wrap">
+            <div>
+              <div className="text-[11px] uppercase tracking-[0.16em] text-white/40 mb-1">
+                Your fleet
+              </div>
+              <h2 className="text-xl md:text-2xl font-semibold text-white leading-none">
+                {agents && agents.length > 0 ? 'Your agents' : 'Start from a template'}
+              </h2>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <Link
+                to="/docs/guide-agents"
+                target="_blank"
+                rel="noopener"
+                className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] hover:bg-white/[0.08] hover:border-white/20 px-3.5 py-2 text-sm text-[#A7B0B7] hover:text-white transition-colors"
+              >
+                <BookOpen size={14} /> Guide
+              </Link>
+              <Link
+                to="/studio/agents/new"
+                className="inline-flex items-center gap-2 rounded-xl bg-[#DFFF00] text-[#07080A] px-4 py-2 text-sm font-semibold hover:brightness-110"
+              >
+                <Plus size={16} /> New agent
+              </Link>
+            </div>
           </div>
-        ) : agents.length === 0 ? (
-          <EmptyState onTemplateClick={handleTemplateClick} error={error} />
-        ) : (
-          <Populated agents={filtered ?? []} search={search} setSearch={setSearch} error={error} />
-        )}
+
+          {agents === null ? (
+            <div className="flex items-center justify-center py-16">
+              <Loader2 size={26} className="animate-spin text-[#A7B0B7]" />
+            </div>
+          ) : agents.length === 0 ? (
+            <EmptyState onTemplateClick={handleTemplateClick} error={error} />
+          ) : (
+            <Populated agents={filtered ?? []} search={search} setSearch={setSearch} error={error} />
+          )}
+        </div>
       </div>
     </StudioShell>
     {confirmDialog}
@@ -119,11 +120,11 @@ export function AgentsList() {
 
 function EmptyState({ onTemplateClick, error }: { onTemplateClick: (tpl: AgentTemplate) => void; error: string | null }) {
   return (
-    <div className="space-y-6">
-      <div className="flex items-center gap-2.5 text-sm text-[#A7B0B7]">
+    <div className="space-y-4">
+      <p className="text-sm text-[#A7B0B7] flex items-center gap-2">
         <Sparkles size={14} className="text-[#DFFF00]" />
-        <span>Pick a template to start fast — or describe your own from scratch.</span>
-      </div>
+        Pick a template to start fast, or describe your own from scratch.
+      </p>
       {error && <div className="text-xs text-amber-300">{error}</div>}
       <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
         {AGENT_TEMPLATES.map((tpl) => (
@@ -147,7 +148,7 @@ function TemplateTile({ template, onClick }: { template: AgentTemplate; onClick:
       onClick={onClick}
       className="group relative text-left block rounded-2xl border border-white/[0.08] bg-white/[0.02] hover:bg-white/[0.04] hover:border-white/15 hover:-translate-y-[1px] hover:shadow-[0_8px_24px_rgba(0,0,0,0.35)] transition-all duration-300 p-5 overflow-hidden"
     >
-      {/* Identity-tinted corner glow — mirrors AgentCard */}
+      {/* Identity-tinted corner glow, mirrors AgentCard */}
       <div
         className={`pointer-events-none absolute -top-12 -right-12 w-36 h-36 rounded-full bg-gradient-to-br ${grad.outer} opacity-[0.10] blur-2xl group-hover:opacity-[0.16] transition-opacity duration-500`}
         aria-hidden

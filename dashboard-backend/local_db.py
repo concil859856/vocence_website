@@ -396,6 +396,18 @@ SCHEMA_SQL = [
         FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
     )
     """,
+    # Per-(user, voice) like for the Community Voices catalog. ``voice_id``
+    # is the catalog id string (e.g. ``voc-atlas``, ``design-aria``).
+    # Aggregate counts power the popularity sort on /studio/community-voices.
+    """
+    CREATE TABLE IF NOT EXISTS voice_likes (
+        voice_id TEXT NOT NULL,
+        user_id  TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (voice_id, user_id),
+        FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
+    )
+    """,
     """
     CREATE TABLE IF NOT EXISTS playbook_tracks (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -505,6 +517,13 @@ SCHEMA_SQL = [
         ttfa_ms INTEGER,                    -- time to first audio frame (null if turn errored before audio)
         error TEXT,
         status TEXT NOT NULL DEFAULT 'completed',
+        -- One WS open = one session_id, every turn on that WS shares it.
+        -- COUNT(DISTINCT session_id) is the true "calls handled" metric.
+        -- Old rows (pre-migration) have NULL and are excluded from counts.
+        session_id TEXT,
+        -- Which agent the call was against. NULL = Logos / Vocence
+        -- Assistant (no user-built agent attached).
+        agent_id TEXT,
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
     )
@@ -672,6 +691,51 @@ SCHEMA_SQL = [
         FOREIGN KEY (token_id) REFERENCES agent_embed_tokens(id) ON DELETE CASCADE
     )
     """,
+    # User-submitted voices for the Community Voices catalog. Reviewed
+    # by admin; on approval the voice is published, the submitter gets
+    # a credit bonus, and a notification fires. Files (audio + avatar)
+    # live in object storage (MinIO/R2); we keep only the URLs here.
+    """
+    CREATE TABLE IF NOT EXISTS voice_submissions (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        description TEXT NOT NULL,             -- ≤30 chars, user-facing tagline
+        ref_text TEXT NOT NULL,                -- the exact words spoken in audio_url
+        language TEXT NOT NULL,                -- one of the qwen3-clone supported langs
+        audio_url TEXT NOT NULL,               -- 8-15s WAV/MP3, object-storage URL
+        audio_duration_ms INTEGER NOT NULL,
+        avatar_url TEXT NOT NULL,              -- square 512x512 WebP after server-side normalize
+        status TEXT NOT NULL DEFAULT 'pending',-- pending | approved | rejected
+        reject_reason TEXT,
+        reviewed_at TEXT,
+        reviewed_by TEXT,                      -- admin email
+        approved_voice_id TEXT,                -- catalog id once published (e.g. ``community-<id>``)
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
+    )
+    """,
+    # In-product notifications. Created by the system (approval/rejection
+    # of a voice submission, credit bonuses, etc.) OR by an admin
+    # broadcasting to recipients via the admin composer. Read state is
+    # tracked per row (one row per recipient, even for broadcasts) so
+    # the unread count is a cheap COUNT(*).
+    """
+    CREATE TABLE IF NOT EXISTS notifications (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,                 -- recipient
+        kind TEXT NOT NULL,                    -- submission_approved | submission_rejected | credit_bonus | admin_announcement | ...
+        title TEXT NOT NULL,
+        body TEXT NOT NULL DEFAULT '',
+        link TEXT,                             -- optional in-app destination (e.g. /studio/community-voices)
+        image_url TEXT,                        -- optional banner image; rendered atop the detail modal when set
+        sender TEXT,                           -- 'system' or admin email
+        read_at TEXT,                          -- NULL = unread
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
+    )
+    """,
 ]
 
 
@@ -698,15 +762,22 @@ INDEX_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_studio_music_history_user_id ON studio_music_history (user_id, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_studio_noise_remover_history_user_id ON studio_noise_remover_history (user_id, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_studio_voice_design_previews_user ON studio_voice_design_previews (user_id, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_voice_submissions_status ON voice_submissions (status, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_voice_submissions_user ON voice_submissions (user_id, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_notifications_recipient_unread ON notifications (user_id, read_at, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_studio_user_designed_voices_user ON studio_user_designed_voices (user_id, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_playbooks_user_id ON playbooks (user_id, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_playbook_tracks_playbook_id ON playbook_tracks (playbook_id, position ASC)",
     "CREATE INDEX IF NOT EXISTS idx_playbook_votes_playbook ON playbook_votes (playbook_id)",
     "CREATE INDEX IF NOT EXISTS idx_playbook_votes_user ON playbook_votes (user_id)",
+    "CREATE INDEX IF NOT EXISTS idx_voice_likes_voice ON voice_likes (voice_id)",
+    "CREATE INDEX IF NOT EXISTS idx_voice_likes_user ON voice_likes (user_id)",
     "CREATE INDEX IF NOT EXISTS idx_generation_jobs_user_created ON generation_jobs (user_id, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_generation_jobs_status ON generation_jobs (status, created_at)",
     "CREATE INDEX IF NOT EXISTS idx_generation_jobs_type_status ON generation_jobs (type, status, created_at)",
     "CREATE INDEX IF NOT EXISTS idx_studio_voicechat_history_user ON studio_voicechat_history (user_id, created_at DESC)",
+    # Used by the public /stats/voice endpoint for COUNT(DISTINCT session_id).
+    "CREATE INDEX IF NOT EXISTS idx_studio_voicechat_history_session ON studio_voicechat_history (session_id) WHERE session_id IS NOT NULL",
     "CREATE INDEX IF NOT EXISTS idx_agents_user ON agents (user_id, updated_at DESC)",
     # FTS5 virtual table for agent knowledge chunks (RAG retrieval).
     # Created with porter+unicode61 tokenizer so English stems work
@@ -933,6 +1004,21 @@ async def ensure_tables() -> None:
         await _ensure_column(conn, "payments", "credits_applied_at", "credits_applied_at TEXT")
         await _ensure_column(conn, "api_keys", "tier", "tier TEXT")
         await _ensure_column(conn, "api_keys", "rate_limit_rpm", "rate_limit_rpm INTEGER")
+        # Notifications got an optional banner-image field after the
+        # initial ship. Backfill nullable so historical rows remain
+        # valid; new rows default to NULL (= no image).
+        await _ensure_column(conn, "notifications", "image_url", "image_url TEXT")
+        # session_id is required to distinguish a single voice "call"
+        # (one WS open → multiple turns) from raw turn counts. Old rows
+        # have NULL here — the stats endpoint ignores them when
+        # counting distinct calls. agent_id captures which agent the
+        # call was against (NULL = Logos / Vocence Assistant).
+        await _ensure_column(
+            conn, "studio_voicechat_history", "session_id", "session_id TEXT"
+        )
+        await _ensure_column(
+            conn, "studio_voicechat_history", "agent_id", "agent_id TEXT"
+        )
         # Public-playbook play counter. Added after the table shipped, so
         # existing rows need backfilling to 0 (NOT NULL needs a default).
         await _ensure_column(conn, "playbooks", "play_count", "play_count INTEGER NOT NULL DEFAULT 0")

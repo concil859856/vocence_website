@@ -123,8 +123,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch (error) {
       // Fallback to localStorage if API is not available. The
       // ``credential`` arg the new ``loginOrSignup`` type requires
-      // isn't useful here — the offline path can't verify with
-      // Google anyway — but we satisfy the type to keep callers
+      // isn't useful here, the offline path can't verify with
+      // Google anyway, but we satisfy the type to keep callers
       // strict-typed.
       console.warn('API not available, using localStorage fallback');
       const response = localStorageFallback.loginOrSignup({

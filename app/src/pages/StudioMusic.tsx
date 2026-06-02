@@ -16,7 +16,7 @@ import { asset } from '../data/assets';
 // so trading a one-time bundle bump for instant render with no
 // post-mount HTTP fetches is the right call. Plain `?url` imports
 // (Vite default) would still cost separate HTTP requests fired after
-// React mounts — exactly the staggered fade-in we're trying to kill.
+// React mounts, exactly the staggered fade-in we're trying to kill.
 import genre1Img from '../assets/genre/genre_1.webp?inline';
 import genre2Img from '../assets/genre/genre_2.webp?inline';
 import genre3Img from '../assets/genre/genre_3.webp?inline';
@@ -32,7 +32,7 @@ interface GenrePreset {
   label: string;
   /** Tag string for the prompt field. */
   value: string;
-  /** Lyric template that matches the genre's vibe — full song structure
+  /** Lyric template that matches the genre's vibe, full song structure
    * with proper [verse]/[chorus]/[bridge] tags. Instrumental presets
    * use [inst]. Loaded into the lyrics textarea when the genre tile is
    * picked. */
@@ -44,7 +44,7 @@ interface GenrePreset {
 const GENRE_PRESETS: GenrePreset[] = [
   {
     label: 'Upbeat Pop',
-    // Curated: Disco — danceable, glamorous, female vocals.
+    // Curated: Disco, danceable, glamorous, female vocals.
     value: 'disco, four-on-the-floor drums, slap bass, strings, hi-hats, 120 bpm, danceable, glamorous, female vocals',
     emoji: '🎤',
     image: genre1Img,
@@ -123,7 +123,7 @@ Tear it down tonight`,
   },
   {
     label: 'Street Rap',
-    // Curated: Drill — aggressive, sliding 808s, sparse hats, rapid flow.
+    // Curated: Drill, aggressive, sliding 808s, sparse hats, rapid flow.
     value: 'drill, dark trap, sliding 808s, sparse hi-hats, 140 bpm, aggressive, menacing, male vocals, rapid flow',
     emoji: '🎧',
     image: genre3Img,
@@ -159,7 +159,7 @@ Living in color in a black-and-white maze`,
   },
   {
     label: 'Club EDM',
-    // Curated: House / Electro House — peak-time club energy with a
+    // Curated: House / Electro House, peak-time club energy with a
     // catchy female hook (the model handles four-on-the-floor + 808s
     // cleanly when you ask for vocals over them).
     value: 'electronic, house, electro house, synthesizer, drums, bass, percussion, 128 bpm, energetic, uplifting, exciting, female vocals, catchy hook',
@@ -201,7 +201,7 @@ We don't stop tonight`,
   },
   {
     label: 'Smooth Jazz',
-    // Curated: Lounge / Cocktail Jazz — late-night, intimate, sultry
+    // Curated: Lounge / Cocktail Jazz, late-night, intimate, sultry
     // vocals over piano-trio backing.
     value: 'lounge jazz, soft piano, brushed drums, double bass, vibraphone, 90 bpm, smooth, relaxing, sophisticated, smoky female vocals',
     emoji: '🎷',
@@ -242,7 +242,7 @@ Let it be, let it be`,
   },
   {
     label: 'Orchestral',
-    // Curated: Cinematic / Film Score — epic, dramatic, with choir
+    // Curated: Cinematic / Film Score, epic, dramatic, with choir
     // singing in English over swelling strings and brass. The model
     // does long-vowel choral parts well when you say "choir vocals".
     value: 'cinematic, orchestral, full strings, brass swells, choir, percussion, 80 bpm, epic, dramatic, choir vocals, soaring vocals',
@@ -284,7 +284,7 @@ Till the dawn, till the dawn`,
   },
   {
     label: 'Chill Lo-fi',
-    // Curated: Lo-Fi Hip-Hop — soft, half-whispered female vocal sits
+    // Curated: Lo-Fi Hip-Hop, soft, half-whispered female vocal sits
     // above the canonical "lofi beats to study/relax to" backing.
     value: 'lofi hip hop, mellow piano, jazz drums, vinyl crackle, soft bass, 80 bpm, chill, nostalgic, soft female vocals, intimate',
     emoji: '☕',
@@ -325,7 +325,7 @@ Just stay around`,
   },
   {
     label: 'Soulful R&B',
-    // Curated: Neo-Soul — electric piano, jazz chords, soulful vocals.
+    // Curated: Neo-Soul, electric piano, jazz chords, soulful vocals.
     value: 'neo-soul, electric piano, bass, drums, jazz chords, 85 bpm, smooth, warm, female vocals, soulful vocals',
     emoji: '💜',
     image: genre8Img,
@@ -381,7 +381,7 @@ const TASK_TABS: { id: MusicTask; label: string; icon: typeof Music; desc: strin
 interface StatusMsg { type: 'success' | 'error' | 'info'; message: string; }
 
 /**
- * Compact inline guide that explains the current music task — what the
+ * Compact inline guide that explains the current music task, what the
  * prompt/lyrics fields mean *in this mode*, what audio file to upload,
  * and the one or two knobs that actually matter. Sits right above the
  * form so users learn by doing instead of bouncing to the docs page.
@@ -425,7 +425,7 @@ const MODE_GUIDES: Record<MusicTask, { tag: string; summary: string; bullets: { 
     tag: 'New track',
     summary: 'Generate a full track from a text description plus optional lyrics.',
     bullets: [
-      { label: 'Prompt', text: 'genre, instruments, tempo, mood — e.g. "upbeat synth-pop, 128 bpm, female vocals".' },
+      { label: 'Prompt', text: 'genre, instruments, tempo, mood, e.g. "upbeat synth-pop, 128 bpm, female vocals".' },
       { label: 'Lyrics', text: 'use [verse] / [chorus] / [bridge] markers. For an instrumental, set this to [inst].' },
       { label: 'Duration', text: 'pick the song length. Higher Quality modes cap shorter to stay inside the engine timeout.' },
     ],
@@ -434,18 +434,18 @@ const MODE_GUIDES: Record<MusicTask, { tag: string; summary: string; bullets: { 
     tag: 'Style transfer',
     summary: 'Generate a new track that has the vibe of your reference audio but follows your prompt for genre and instruments.',
     bullets: [
-      { label: 'Reference audio', text: 'upload any clip — your own recording, an existing track. Notes/melody aren\'t copied; only the energy and feel influence the output.' },
+      { label: 'Reference audio', text: 'upload any clip, your own recording, an existing track. Notes/melody aren\'t copied; only the energy and feel influence the output.' },
       { label: 'Prompt', text: 'describe what you want the OUTPUT to be (genre, instruments). Not the reference.' },
-      { label: 'Lyrics', text: 'optional — use [inst] for an instrumental result.' },
+      { label: 'Lyrics', text: 'optional, use [inst] for an instrumental result.' },
       { label: 'Reference Strength', text: '0 = mostly text, 0.5 (default) = balanced, 1 = reference dominates.' },
     ],
   },
   retake: {
     tag: 'Variation',
-    summary: 'Reroll the dice on the same prompt and lyrics — get a different take of the same idea. The source audio is only used to copy its duration.',
+    summary: 'Reroll the dice on the same prompt and lyrics, get a different take of the same idea. The source audio is only used to copy its duration.',
     bullets: [
       { label: 'Source audio', text: 'upload the original (only its duration is used; the audio itself does NOT influence the new generation).' },
-      { label: 'Prompt + Lyrics', text: 'use the same prompt and lyrics that produced the original — that\'s the whole point.' },
+      { label: 'Prompt + Lyrics', text: 'use the same prompt and lyrics that produced the original, that\'s the whole point.' },
       { label: 'Variance', text: '0.2 (default) = small variations, 0.5 = different feel, 1.0 = essentially a fresh text2music.' },
       { label: 'Seeds', text: 'leave empty for random; pin a number if you want a specific roll to recur.' },
     ],
@@ -462,11 +462,11 @@ const MODE_GUIDES: Record<MusicTask, { tag: string; summary: string; bullets: { 
   },
   edit: {
     tag: 'Restyle',
-    summary: 'Change a track\'s style and/or lyrics while preserving its structural shape — verses fall in the same places, drums hit at the same times, but the genre or words change.',
+    summary: 'Change a track\'s style and/or lyrics while preserving its structural shape, verses fall in the same places, drums hit at the same times, but the genre or words change.',
     bullets: [
       { label: 'Source audio', text: 'upload the track you want to restyle.' },
       { label: 'Prompt', text: 'describe the ORIGINAL track (what it currently is).' },
-      { label: 'Lyrics', text: 'paste the original lyrics — used to anchor the structure.' },
+      { label: 'Lyrics', text: 'paste the original lyrics, used to anchor the structure.' },
       { label: 'Target Prompt', text: 'describe what you WANT it to become (e.g. "country, acoustic guitar"). Required.' },
       { label: 'Target Lyrics', text: 'new lyrics you want sung. Same structure tags ([verse], [chorus]) as the original.' },
       { label: 'Type', text: '"Lyrics only" preserves more of the original sound; "Remix" allows aggressive style change.' },
@@ -574,7 +574,7 @@ export function StudioMusic() {
   const handleAudioDragOver = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
-    // ``copy`` shows the user a "+" cursor — the standard signal that
+    // ``copy`` shows the user a "+" cursor, the standard signal that
     // a drop will create something here rather than move.
     if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
     if (!isDragActive) setIsDragActive(true);
@@ -595,7 +595,7 @@ export function StudioMusic() {
   // confirm so we never silently throw away the user's own lyrics.
   const [userEditedLyrics, setUserEditedLyrics] = useState(false);
 
-  // ``Instrumental only`` toggle — when on, locks the lyric box to the
+  // ``Instrumental only`` toggle, when on, locks the lyric box to the
   // sentinel ``[inst]`` tag. Required by the music engine: empty lyrics
   // is an error; ``[inst]`` is the official "no vocals" signal.
   const [instrumentalOnly, setInstrumentalOnly] = useState(false);
@@ -654,7 +654,7 @@ export function StudioMusic() {
       setLyrics(out);
       setInstrumentalOnly(false);
       // AI-generated lyrics are user intent (they typed the topic and
-      // asked for them), so treat them as "user content" — don't let a
+      // asked for them), so treat them as "user content", don't let a
       // subsequent genre tile click silently overwrite them.
       setUserEditedLyrics(true);
       setLyricGenOpen(false);
@@ -668,7 +668,7 @@ export function StudioMusic() {
   const ALLOWED_STRUCTURE_RE = /\[(intro|verse|chorus|bridge|outro|end|inst|solo|hook|pre-chorus|break)\]/i;
   const ANY_BRACKET_RE = /\[[^\]\n]+\]/g;
   // Keywords that strongly suggest someone pasted prompt-style tags into
-  // the lyrics box. Not exhaustive — just the common cases the doc warns
+  // the lyrics box. Not exhaustive, just the common cases the doc warns
   // about: BPM, vocal qualifiers, common instruments / genres.
   const PROMPTY_IN_LYRICS_RE = /\b(\d{2,3}\s*bpm|electric guitar|drums|piano|synth|808|bass|hi-hats|saxophone|female vocals|male vocals|polished vocals|raw vocals|smooth vocals|silky vocals)\b/i;
 
@@ -724,17 +724,17 @@ export function StudioMusic() {
     // Fast client-side size cap so the user doesn't wait on a presign+413
     // round-trip when their file is too big. Server still re-checks.
     if (audioFile && audioFile.size > 300 * 1024 * 1024) {
-      setStatus({ type: 'error', message: `Audio file is ${(audioFile.size / 1024 / 1024).toFixed(0)}MB — max is 300MB. Pick a smaller file.` });
+      setStatus({ type: 'error', message: `Audio file is ${(audioFile.size / 1024 / 1024).toFixed(0)}MB, max is 300MB. Pick a smaller file.` });
       return;
     }
     if (!prompt.trim()) { setStatus({ type: 'error', message: 'Please enter a prompt.' }); return; }
-    // Lyrics required — empty lyrics is an engine error. ``[inst]`` is
+    // Lyrics required, empty lyrics is an engine error. ``[inst]`` is
     // the official instrumental sentinel.
     if (!lyrics.trim()) {
-      setStatus({ type: 'error', message: 'Lyrics is required — use [inst] for an instrumental track.' });
+      setStatus({ type: 'error', message: 'Lyrics is required, use [inst] for an instrumental track.' });
       return;
     }
-    // Soft block on the cross-field warnings — not catastrophic but
+    // Soft block on the cross-field warnings, not catastrophic but
     // results will likely be wrong, so confirm before burning credits.
     if (promptHasStructureTag || lyricsLooksLikePrompt || unknownBracketInLyrics) {
       if (!await confirm({ title: 'Mixed Up Fields?', message: 'Your prompt and lyrics may be mixed up. Generate anyway?', confirmLabel: 'Generate', confirmVariant: 'primary' })) return;
@@ -751,7 +751,7 @@ export function StudioMusic() {
     // payload.task. For tasks that need a source/reference audio we
     // upload the file first to /studio/music/upload-source (multipart,
     // small endpoint, R2) and put just the bucket+key in the job
-    // payload — keeps every job payload the same shape and size as
+    // payload, keeps every job payload the same shape and size as
     // text2music so they all behave identically through Cloudflare/HTTP2.
     let srcAudioBucket: string | undefined;
     let srcAudioKey: string | undefined;
@@ -850,7 +850,7 @@ export function StudioMusic() {
       setStatus({
         type: submission.load_warning ? 'info' : 'success',
         message: submission.load_warning
-          ? `Queued (position ${submission.queue_position}). Capacity is heavy right now — this may take roughly 2× as long as usual.`
+          ? `Queued (position ${submission.queue_position}). Capacity is heavy right now, this may take roughly 2× as long as usual.`
           : `Queued (position ${submission.queue_position}). Generating…`,
       });
       generations.trackServerJob({
@@ -907,7 +907,7 @@ export function StudioMusic() {
           stopTimer();
           return;
         }
-        // pending or processing — keep polling. Surface phase + queue position.
+        // pending or processing, keep polling. Surface phase + queue position.
         const sub = job.phase
           ? job.phase
           : job.status === 'pending'
@@ -915,7 +915,7 @@ export function StudioMusic() {
             : 'Generating…';
         setStatus({ type: 'info', message: sub });
       } catch {
-        // transient — keep polling
+        // transient, keep polling
       }
     }
   };
@@ -929,7 +929,7 @@ export function StudioMusic() {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-2xl font-bold mb-1">Text-to-Music</h2>
-          <p className="text-sm text-[#9ca3af]">Generate original music with AI — describe a style, add lyrics, and create.</p>
+          <p className="text-sm text-[#9ca3af]">Generate original music with AI, describe a style, add lyrics, and create.</p>
         </div>
         <a
           href="/docs/guide-music"
@@ -942,7 +942,7 @@ export function StudioMusic() {
         </a>
       </div>
 
-      {/* Task tabs — icon + label */}
+      {/* Task tabs, icon + label */}
       <div className="flex gap-2 flex-wrap">
         {TASK_TABS.map((tab) => {
           const Icon = tab.icon;
@@ -976,7 +976,7 @@ export function StudioMusic() {
 
       {/* Two-column layout */}
       <div className="flex flex-col lg:flex-row gap-6">
-        {/* LEFT — Main input area */}
+        {/* LEFT, Main input area */}
         <div className="flex-1 min-w-0 space-y-5">
           {/* Audio upload for non-text2music. Supports both click-to-browse
               and drag-and-drop. ``isDragActive`` paints the dropzone in the
@@ -1013,13 +1013,13 @@ export function StudioMusic() {
                       ? 'Drop to upload'
                       : `Drop ${activeTask === 'audio2audio' ? 'reference' : 'source'} audio here or click to browse`}
                   </p>
-                  <p className="text-xs text-[#666] mt-1">WAV, MP3, OGG, FLAC, M4A, WebM — max 300MB</p>
+                  <p className="text-xs text-[#666] mt-1">WAV, MP3, OGG, FLAC, M4A, WebM, max 300MB</p>
                 </>
               )}
             </div>
           )}
 
-          {/* Genre presets — only for text2music */}
+          {/* Genre presets, only for text2music */}
           {activeTask === 'text2music' && (
             <div>
               <label className={labelCls}>Genre</label>
@@ -1028,7 +1028,7 @@ export function StudioMusic() {
                   <button
                     key={g.label}
                     onClick={() => {
-                      // Always update prompt + selected tile — the two
+                      // Always update prompt + selected tile, the two
                       // fields are independent and the user clearly
                       // wants the new tag string.
                       setPrompt(g.value);
@@ -1041,7 +1041,7 @@ export function StudioMusic() {
                       //   • User has typed → leave the lyrics alone
                       //     entirely. They've put effort in; switching
                       //     genre shouldn't destroy that. The prompt
-                      //     update above is enough — they can apply a
+                      //     update above is enough, they can apply a
                       //     different style to their own lyrics.
                       if (userEditedLyrics) return;
                       const isInstrumental = g.lyrics.trim() === '[inst]';
@@ -1178,13 +1178,13 @@ export function StudioMusic() {
             />
             {instrumentalOnly && (
               <p className="text-[11px] text-[#9ca3af] mt-1.5">
-                Locked to <span className="font-mono">[inst]</span> — uncheck "Instrumental only" to write lyrics.
+                Locked to <span className="font-mono">[inst]</span>, uncheck "Instrumental only" to write lyrics.
               </p>
             )}
             {!instrumentalOnly && lyricsLooksLikePrompt && (
               <p className="text-[11px] text-amber-300 mt-1.5 flex items-center gap-1.5">
                 <AlertCircle size={11} />
-                Looks like genre / instrument tags — those go in the prompt above. Lyrics is what gets sung.
+                Looks like genre / instrument tags, those go in the prompt above. Lyrics is what gets sung.
               </p>
             )}
             {!instrumentalOnly && unknownBracketInLyrics && (
@@ -1248,7 +1248,7 @@ export function StudioMusic() {
           )}
         </div>
 
-        {/* RIGHT — Settings panel */}
+        {/* RIGHT, Settings panel */}
         <div className="lg:w-72 shrink-0 space-y-4">
           {/* Duration + Format */}
           {(activeTask === 'text2music' || activeTask === 'audio2audio') && (
@@ -1281,7 +1281,7 @@ export function StudioMusic() {
             </div>
           )}
 
-          {/* Quality mode — preset for infer_step + guidance_scale.
+          {/* Quality mode, preset for infer_step + guidance_scale.
               Most users pick a mode and never expand Advanced. */}
           {activeTask === 'text2music' && (
             <div className="rounded-xl border border-[#2e2f33] bg-[#1c1d21]/50 p-4 space-y-2">
@@ -1311,7 +1311,7 @@ export function StudioMusic() {
                 })}
               </div>
               {qualityMode === 'custom' && (
-                <p className="text-[10px] text-[#666] mt-1">Custom values from Advanced — pick a mode to reset.</p>
+                <p className="text-[10px] text-[#666] mt-1">Custom values from Advanced, pick a mode to reset.</p>
               )}
             </div>
           )}
@@ -1356,7 +1356,7 @@ export function StudioMusic() {
             )}
           </div>
 
-          {/* Generate button — disabled (and spinning) for the WHOLE
+          {/* Generate button, disabled (and spinning) for the WHOLE
               music-generation lifecycle, not just the queueing call.
               ``isGenerating`` = local ``loading`` (initial /startJob)
               OR ``generations.hasPending('music')`` (polling phase). */}
@@ -1388,10 +1388,10 @@ export function StudioMusic() {
           {isGenerating && (
             <p className="text-center text-xs text-[#A7B0B7] mt-1">
               {qualityMode === 'fast'
-                ? 'Usually around a minute — first run after the engine warms up may be longer.'
+                ? 'Usually around a minute, first run after the engine warms up may be longer.'
                 : qualityMode === 'max'
-                  ? 'Max quality takes 2–4 minutes — feel free to leave the page open.'
-                  : 'Usually 1–2 minutes — feel free to leave the page open.'}
+                  ? 'Max quality takes 2–4 minutes, feel free to leave the page open.'
+                  : 'Usually 1–2 minutes, feel free to leave the page open.'}
             </p>
           )}
         </div>
@@ -1434,7 +1434,7 @@ export function StudioMusic() {
                   a.click();
                   setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(blobUrl); }, 1000);
                 } catch {
-                  // CORS blocked — open directly
+                  // CORS blocked, open directly
                   const a = document.createElement('a');
                   a.href = url;
                   a.target = '_blank';
@@ -1494,7 +1494,7 @@ export function StudioMusic() {
               rows={4}
               value={lyricGenTopic}
               onChange={(e) => { setLyricGenTopic(e.target.value); if (lyricGenError) setLyricGenError(null); }}
-              placeholder="A driving night in the city, feeling alive — turning headlights into freedom"
+              placeholder="A driving night in the city, feeling alive, turning headlights into freedom"
               disabled={lyricGenBusy}
               className="w-full bg-[#1c1d21] border border-[#2e2f33] rounded-xl px-3 py-2.5 text-sm text-white placeholder-[#666] outline-none focus:border-[#DFFF00]/50 transition-colors resize-y disabled:opacity-50"
             />
@@ -1534,7 +1534,7 @@ export function StudioMusic() {
 }
 
 /* ==========================================================================
-   Sample music list — placeholder audio, replace later
+   Sample music list, placeholder audio, replace later
    ========================================================================== */
 
 const SAMPLE_TRACKS = [

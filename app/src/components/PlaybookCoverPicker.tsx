@@ -148,7 +148,7 @@ export function PlaybookCoverPicker({ playbookId, current, onClose, onSaved }: P
                   <Upload size={32} className="text-[#A7B0B7]" />
                   <div className="text-center">
                     <p className="text-sm text-white">Click to upload</p>
-                    <p className="text-xs text-[#666] mt-1">PNG, JPEG, or WebP — max 2 MB</p>
+                    <p className="text-xs text-[#666] mt-1">PNG, JPEG, or WebP, max 2 MB</p>
                   </div>
                   <input
                     type="file"

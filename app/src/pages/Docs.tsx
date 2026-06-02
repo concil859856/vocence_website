@@ -39,11 +39,11 @@ interface DocLink {
 }
 
 const docLinks: DocLink[] = [
-  // Introduction — orientation for newcomers.
+  // Introduction, orientation for newcomers.
   { id: 'getting-started', label: 'Getting Started', category: 'Introduction' },
   { id: 'core-concepts', label: 'Core Concepts', category: 'Introduction' },
   { id: 'architecture', label: 'Architecture', category: 'Introduction' },
-  // Studio — feature-by-feature how-to for the web app.
+  // Studio, feature-by-feature how-to for the web app.
   // Agents is admin-only until the feature launches publicly.
   { id: 'guide-agents', label: 'Agents', category: 'Studio', adminOnly: true },
   { id: 'guide-tts', label: 'Text-to-Speech', category: 'Studio' },
@@ -51,22 +51,22 @@ const docLinks: DocLink[] = [
   { id: 'guide-stt', label: 'Speech-to-Text', category: 'Studio' },
   { id: 'guide-music', label: 'Music', category: 'Studio' },
   { id: 'guide-dubbing', label: 'Noise Remover', category: 'Studio' },
-  // API — everything a developer needs to integrate.
+  // API, everything a developer needs to integrate.
   // API + Cookbook are admin-only until public launch; Pricing stays
   // public since it's a marketing concern, not a developer one.
   { id: 'api', label: 'API Reference', category: 'API', adminOnly: true },
   { id: 'cookbook', label: 'Cookbook', category: 'API', adminOnly: true },
   { id: 'pricing', label: 'Pricing', category: 'API' },
-  // SDK — official Python client library (PyPI: ``vocence``).
+  // SDK, official Python client library (PyPI: ``vocence``).
   // Entire SDK category is admin-only until public launch.
   { id: 'sdk-python', label: 'Python SDK', category: 'SDK', adminOnly: true },
   { id: 'sdk-cli', label: 'CLI Reference', category: 'SDK', adminOnly: true },
   { id: 'sdk-agents', label: 'Voice Agents', category: 'SDK', adminOnly: true },
   { id: 'sdk-webhooks', label: 'Webhooks', category: 'SDK', adminOnly: true },
-  // Subnet — running infrastructure on Bittensor (SN10).
+  // Subnet, running infrastructure on Bittensor (SN10).
   { id: 'miner', label: 'Miner Setup', category: 'Subnet' },
   { id: 'validator', label: 'Validator Setup', category: 'Subnet' },
-  // Support — last because users hit it after trying everything else.
+  // Support, last because users hit it after trying everything else.
   { id: 'faq', label: 'FAQ', category: 'Support' },
   { id: 'troubleshooting', label: 'Troubleshooting', category: 'Support' },
 ];
@@ -97,7 +97,7 @@ function RepoFileLink({ path, label }: { path: string; label: string }) {
 
 /**
  * `<pre>` with a copy-to-clipboard button pinned in the top-right.
- * Use anywhere we want a runnable snippet — Cookbook leans on it.
+ * Use anywhere we want a runnable snippet, Cookbook leans on it.
  */
 function CodeBlock({ code, language }: { code: string; language?: string }) {
   const [copied, setCopied] = useState(false);
@@ -221,7 +221,7 @@ export function Docs() {
   const sectionParamRaw = (params.section || '').toLowerCase();
   const isAdmin = useHasVoiceChatAccess();
 
-  // Filter the sidebar — admin-only sections (Agents docs, API
+  // Filter the sidebar, admin-only sections (Agents docs, API
   // Reference, Cookbook, all SDK pages) only show for users who pass
   // the launch-gate check. Categories that end up empty after filtering
   // also drop out (e.g. SDK disappears entirely for non-admins).
@@ -233,7 +233,7 @@ export function Docs() {
   const [activeSection, setActiveSection] = useState<DocSection>('getting-started');
   // Collapsed sidebar categories. We start with EVERY category
   // collapsed; a follow-up effect opens just the one containing the
-  // active section. The user can then collapse that one too — there's
+  // active section. The user can then collapse that one too, there's
   // no force-open, you're always in control.
   const [collapsedCats, setCollapsedCats] = useState<Set<string>>(() => {
     return new Set(visibleDocLinks.map((l) => l.category));
@@ -612,7 +612,7 @@ export function Docs() {
                   <td className="px-4 py-3">{CREDIT_VOICE_DESIGN_PREVIEW} for preview; saving the voice has no extra charge</td>
                 </tr>
                 <tr className="border-t border-white/[0.06]">
-                  <td className="px-4 py-3 text-white font-medium">My voice (designed) — generate speech</td>
+                  <td className="px-4 py-3 text-white font-medium">My voice (designed), generate speech</td>
                   <td className="px-4 py-3">{CREDIT_MY_VOICE_GENERATE} per generation</td>
                 </tr>
                 <tr className="border-t border-white/[0.06]">
@@ -624,7 +624,7 @@ export function Docs() {
           </div>
           <p className="text-zinc-400 text-sm">
             <span className="text-white font-medium">Studio</span> and the <span className="text-white font-medium">Developer API</span>
-            use different billing units for the same features — Studio bills per generation,
+            use different billing units for the same features, Studio bills per generation,
             the API bills per character / per minute. See the Developer API table below for
             the exact rates.
           </p>
@@ -784,7 +784,7 @@ export function Docs() {
         <h2 className="text-lg font-semibold mb-3">Rate limits</h2>
         <p className="text-sm text-zinc-400 mb-4 leading-relaxed">
           Three separate limit mechanisms apply, each with its own counter and error response.
-          All three are <span className="text-white">per-account</span> — every API key you
+          All three are <span className="text-white">per-account</span>, every API key you
           create draws from the same shared bucket, so spinning up additional keys does not
           multiply your quota.
         </p>
@@ -827,7 +827,7 @@ export function Docs() {
           </table>
         </div>
         <p className="text-sm text-zinc-400 mt-4 leading-relaxed">
-          Higher per-account limits are available on request — contact us with your
+          Higher per-account limits are available on request, contact us with your
           projected peak QPS and we'll bump the cap for your account. Voice agent session
           limits are operationally enforced and not yet self-service configurable; ping
           us if you need more concurrent voice sessions.
@@ -838,7 +838,7 @@ export function Docs() {
       <section>
         <h2 className="text-lg font-semibold mb-3">Billing examples</h2>
         <p className="text-sm text-zinc-400 mb-4 leading-relaxed">
-          The API is pay-as-you-go within each endpoint's hard cap — you pay for what you
+          The API is pay-as-you-go within each endpoint's hard cap, you pay for what you
           actually send, not for the cap. Credits are deducted only after the work succeeds
           (no charge on <code className="text-white/90">5xx</code> or <code className="text-white/90">413</code>).
         </p>
@@ -853,52 +853,52 @@ export function Docs() {
             </thead>
             <tbody className="text-zinc-300">
               <tr className="border-t border-white/[0.06]">
-                <td className="px-4 py-3">TTS — "Hello world" (11 chars)</td>
+                <td className="px-4 py-3">TTS, "Hello world" (11 chars)</td>
                 <td className="px-4 py-3 text-zinc-400">11 × 4,000 / 1,000,000 = 0.044, round up</td>
                 <td className="px-4 py-3">1 cr · $0.0025</td>
               </tr>
               <tr className="border-t border-white/[0.06]">
-                <td className="px-4 py-3">TTS — full 2,000-char article</td>
+                <td className="px-4 py-3">TTS, full 2,000-char article</td>
                 <td className="px-4 py-3 text-zinc-400">2,000 × 4,000 / 1,000,000 = 8</td>
                 <td className="px-4 py-3">8 cr · $0.02</td>
               </tr>
               <tr className="border-t border-white/[0.06]">
-                <td className="px-4 py-3">Voice clone — 500-char target text</td>
+                <td className="px-4 py-3">Voice clone, 500-char target text</td>
                 <td className="px-4 py-3 text-zinc-400">500 × 4,000 / 1,000,000 = 2</td>
                 <td className="px-4 py-3">2 cr · $0.005</td>
               </tr>
               <tr className="border-t border-white/[0.06]">
-                <td className="px-4 py-3">STT — 12-second voicemail</td>
+                <td className="px-4 py-3">STT, 12-second voicemail</td>
                 <td className="px-4 py-3 text-zinc-400">ceil(12 / 60) = 1 min × 3 cr</td>
                 <td className="px-4 py-3">3 cr · $0.0075</td>
               </tr>
               <tr className="border-t border-white/[0.06]">
-                <td className="px-4 py-3">STT — 3 min 30 sec recording</td>
+                <td className="px-4 py-3">STT, 3 min 30 sec recording</td>
                 <td className="px-4 py-3 text-zinc-400">ceil(210 / 60) = 4 min × 3 cr</td>
                 <td className="px-4 py-3">12 cr · $0.03</td>
               </tr>
               <tr className="border-t border-white/[0.06]">
-                <td className="px-4 py-3">Noise remover — 45-sec clip</td>
+                <td className="px-4 py-3">Noise remover, 45-sec clip</td>
                 <td className="px-4 py-3 text-zinc-400">ceil(45 / 60) = 1 min × 1 cr</td>
                 <td className="px-4 py-3">1 cr · $0.0025</td>
               </tr>
               <tr className="border-t border-white/[0.06]">
-                <td className="px-4 py-3">Voice design — preview + save 1 voice</td>
+                <td className="px-4 py-3">Voice design, preview + save 1 voice</td>
                 <td className="px-4 py-3 text-zinc-400">70 cr preview + 20 cr save</td>
                 <td className="px-4 py-3">90 cr · $0.225</td>
               </tr>
               <tr className="border-t border-white/[0.06]">
-                <td className="px-4 py-3">Voice agent — 3-sec accidental hang-up</td>
+                <td className="px-4 py-3">Voice agent, 3-sec accidental hang-up</td>
                 <td className="px-4 py-3 text-zinc-400">30-sec floor: 5 increments × 4 cr</td>
                 <td className="px-4 py-3">20 cr · $0.05</td>
               </tr>
               <tr className="border-t border-white/[0.06]">
-                <td className="px-4 py-3">Voice agent — 35-sec call</td>
+                <td className="px-4 py-3">Voice agent, 35-sec call</td>
                 <td className="px-4 py-3 text-zinc-400">ceil(35 / 6) = 6 increments × 4 cr</td>
                 <td className="px-4 py-3">24 cr · $0.06</td>
               </tr>
               <tr className="border-t border-white/[0.06]">
-                <td className="px-4 py-3">Voice agent — 7-min support call</td>
+                <td className="px-4 py-3">Voice agent, 7-min support call</td>
                 <td className="px-4 py-3 text-zinc-400">7 × 40 cr/min</td>
                 <td className="px-4 py-3">280 cr · $0.70</td>
               </tr>
@@ -916,16 +916,16 @@ export function Docs() {
         </p>
         <ul className="space-y-2 text-sm text-zinc-400 leading-relaxed list-disc list-inside ml-2">
           <li>
-            <span className="text-white">40 cr/min</span> — the headline rate ($0.10/min
+            <span className="text-white">40 cr/min</span>, the headline rate ($0.10/min
             at the baseline credit rate).
           </li>
           <li>
-            <span className="text-white">6-second increments</span> — the billing loop
+            <span className="text-white">6-second increments</span>, the billing loop
             deducts 4 cr every 6 seconds during the session. A 35-second call rounds up
             to 6 increments (24 cr), not 5.83. Same granularity as Vapi and Retell.
           </li>
           <li>
-            <span className="text-white">30-second minimum charge</span> — a session that
+            <span className="text-white">30-second minimum charge</span>, a session that
             hangs up before 30 seconds is still billed 20 cr. Prevents flap-attacks where
             a leaked key opens and closes hundreds of sessions per second for ~$0.
           </li>
@@ -949,7 +949,7 @@ export function Docs() {
             per WebSocket. When reached we send{' '}
             <code className="text-white/90">{`{"type":"session_timeout","code":"max_duration"}`}</code>{' '}
             and close with WS code <code className="text-white/90">4408</code>. To continue,
-            open a new session — it counts as a new conversation for billing.
+            open a new session, it counts as a new conversation for billing.
           </li>
           <li>
             <span className="text-white">Idle timeout: 60 seconds.</span> If no user turn
@@ -982,7 +982,7 @@ export function Docs() {
               <tr className="border-t border-white/[0.06]">
                 <td className="px-4 py-3"><code className="text-white/90">HTTP 400</code></td>
                 <td className="px-4 py-3">Bad request (missing field, malformed base64)</td>
-                <td className="px-4 py-3">Fix the request — don't retry as-is</td>
+                <td className="px-4 py-3">Fix the request, don't retry as-is</td>
               </tr>
               <tr className="border-t border-white/[0.06]">
                 <td className="px-4 py-3"><code className="text-white/90">HTTP 401</code></td>
@@ -1007,7 +1007,7 @@ export function Docs() {
               <tr className="border-t border-white/[0.06]">
                 <td className="px-4 py-3"><code className="text-white/90">HTTP 413</code></td>
                 <td className="px-4 py-3">Payload too large (cap exceeded)</td>
-                <td className="px-4 py-3">Chunk the input — see per-endpoint limits above</td>
+                <td className="px-4 py-3">Chunk the input, see per-endpoint limits above</td>
               </tr>
               <tr className="border-t border-white/[0.06]">
                 <td className="px-4 py-3"><code className="text-white/90">HTTP 429</code></td>
@@ -1031,7 +1031,7 @@ export function Docs() {
               </tr>
               <tr className="border-t border-white/[0.06]">
                 <td className="px-4 py-3"><code className="text-white/90">WS 4402</code></td>
-                <td className="px-4 py-3">Insufficient credits — pre-flight or mid-session exhaustion</td>
+                <td className="px-4 py-3">Insufficient credits, pre-flight or mid-session exhaustion</td>
                 <td className="px-4 py-3">Top up credits; the session is not recoverable</td>
               </tr>
               <tr className="border-t border-white/[0.06]">
@@ -1051,7 +1051,7 @@ export function Docs() {
               </tr>
               <tr className="border-t border-white/[0.06]">
                 <td className="px-4 py-3"><code className="text-white/90">WS 4410</code></td>
-                <td className="px-4 py-3">Idle timeout — no user turn for 60 seconds</td>
+                <td className="px-4 py-3">Idle timeout, no user turn for 60 seconds</td>
                 <td className="px-4 py-3">Send any user turn within 60s of the previous one to keep the session alive</td>
               </tr>
               <tr className="border-t border-white/[0.06]">
@@ -1075,7 +1075,7 @@ export function Docs() {
         <ol className="space-y-2 text-sm text-zinc-400 leading-relaxed list-decimal list-inside">
           <li>Sign in and purchase credits from the Pricing page (Stripe or Crypto).</li>
           <li>Purchase the Premium pack at least once to unlock the Developer API.</li>
-          <li>Create an API key in Account → Developer tab. Copy the <code className="text-white/90">voc_live_…</code> token once — it isn't shown again.</li>
+          <li>Create an API key in Account → Developer tab. Copy the <code className="text-white/90">voc_live_…</code> token once, it isn't shown again.</li>
           <li>
             Call any endpoint with <code className="text-white/90">Authorization: Bearer voc_live_…</code>.
             The server applies rate-limit and balance checks before doing any work.
@@ -1208,17 +1208,17 @@ export function Docs() {
         </p>
         <ul className="list-disc pl-5 space-y-2 text-sm text-zinc-400 leading-relaxed mb-4">
           <li>
-            <code className="text-white/90">VOCENCE_REPO</code> — Hugging Face repo ID (e.g. <code className="text-white/80">user/model</code>).
+            <code className="text-white/90">VOCENCE_REPO</code>, Hugging Face repo ID (e.g. <code className="text-white/80">user/model</code>).
           </li>
           <li>
-            <code className="text-white/90">VOCENCE_REVISION</code> — revision; a <strong className="text-white/90">commit hash</strong>{' '}
+            <code className="text-white/90">VOCENCE_REVISION</code>, revision; a <strong className="text-white/90">commit hash</strong>{' '}
             is strongly recommended.
           </li>
           <li>
-            <code className="text-white/90">VOCENCE_CHUTES_USER</code> — your Chutes username.
+            <code className="text-white/90">VOCENCE_CHUTES_USER</code>, your Chutes username.
           </li>
           <li>
-            <code className="text-white/90">VOCENCE_CHUTE_ID</code> — the <strong className="text-white/90">Chute deployment name</strong>{' '}
+            <code className="text-white/90">VOCENCE_CHUTE_ID</code>, the <strong className="text-white/90">Chute deployment name</strong>{' '}
             you choose; it <strong className="text-white/90">must contain &quot;vocence&quot;</strong> (any position, case-insensitive).
             The on-chain Chute UUID is separate and is <em>not</em> checked for that substring.
           </li>
@@ -1255,11 +1255,11 @@ export function Docs() {
         </p>
         <ul className="list-disc pl-5 space-y-2 text-sm text-zinc-400 leading-relaxed">
           <li>
-            <code className="text-white/90">vocence miner push</code> — deploy HF model to Chutes (
+            <code className="text-white/90">vocence miner push</code>, deploy HF model to Chutes (
             <code className="text-white/80">--model-name</code>, <code className="text-white/80">--model-revision</code>).
           </li>
           <li>
-            <code className="text-white/90">vocence miner commit</code> — commit model name, revision, and Chute ID to the chain.
+            <code className="text-white/90">vocence miner commit</code>, commit model name, revision, and Chute ID to the chain.
           </li>
         </ul>
         <p className="text-sm text-zinc-400 leading-relaxed mt-4">
@@ -1273,10 +1273,10 @@ export function Docs() {
         <h2 className="text-lg font-semibold mb-3">HTTP API your Chute must expose</h2>
         <ul className="list-disc pl-5 space-y-2 text-sm text-zinc-400 leading-relaxed">
           <li>
-            <code className="text-white/90">GET /health</code> — status, HF repo/revision, load state, sample rate, adapter.
+            <code className="text-white/90">GET /health</code>, status, HF repo/revision, load state, sample rate, adapter.
           </li>
           <li>
-            <code className="text-white/90">POST /speak</code> — JSON <code className="text-white/80">{`{ "instruction", "text" }`}</code>
+            <code className="text-white/90">POST /speak</code>, JSON <code className="text-white/80">{`{ "instruction", "text" }`}</code>
             ; response <code className="text-white/80">audio/wav</code> bytes.
           </li>
         </ul>
@@ -1333,7 +1333,7 @@ export function Docs() {
         <p className="text-[#E8DDD0] leading-7">
           You need team-provided access before a validator can run in production:{' '}
           <strong className="text-white">Chutes permission</strong> (validators call miners&apos; chutes),{' '}
-          <strong className="text-white">owner API URL</strong> (<code className="text-white/90">API_URL</code> — participants,
+          <strong className="text-white">owner API URL</strong> (<code className="text-white/90">API_URL</code>, participants,
           blocklist, evaluations, active validators), and <strong className="text-white">Hippius keys</strong> (corpus
           read-only + your validator bucket, plus readonly credentials for other validators&apos; sample buckets for global
           scoring). Without these, setup cannot be completed.
@@ -1355,11 +1355,11 @@ export function Docs() {
           </li>
           <li>
             <strong className="text-white/90">Chutes:</strong>{' '}
-            <code className="text-white/80">CHUTES_API_KEY</code> (or <code className="text-white/80">CHUTES_AUTH_KEY</code>) — team-granted.
+            <code className="text-white/80">CHUTES_API_KEY</code> (or <code className="text-white/80">CHUTES_AUTH_KEY</code>), team-granted.
           </li>
           <li>
             <strong className="text-white/90">OpenAI:</strong>{' '}
-            <code className="text-white/80">OPENAI_AUTH_KEY</code> — used in the evaluation pipeline (audio / scoring stack per repo).
+            <code className="text-white/80">OPENAI_AUTH_KEY</code>, used in the evaluation pipeline (audio / scoring stack per repo).
           </li>
           <li>
             <strong className="text-white/90">Owner API:</strong> <code className="text-white/80">API_URL</code>.
@@ -1376,7 +1376,7 @@ export function Docs() {
           </li>
           <li>
             <strong className="text-white/90">Global scoring:</strong>{' '}
-            <code className="text-white/80">VALIDATOR_BUCKETS_JSON</code> — JSON array of{' '}
+            <code className="text-white/80">VALIDATOR_BUCKETS_JSON</code>, JSON array of{' '}
             <code className="text-white/80">hotkey</code>, <code className="text-white/80">bucket_name</code>,{' '}
             <code className="text-white/80">access_key</code>, <code className="text-white/80">secret_key</code> for{' '}
             <em>readonly</em> access to each active validator&apos;s sample bucket you aggregate against.
@@ -1426,7 +1426,7 @@ uv run vocence serve`}</pre>
         <p className="text-sm text-zinc-400 leading-relaxed">
           <code className="text-white/90">vocence serve</code> runs sample generation and weight setting in one process. To split
           generator vs weight-setter for scaling, see{' '}
-          <RepoFileLink path="docs/CLI.md" label="docs/CLI.md — Validator commands" /> (
+          <RepoFileLink path="docs/CLI.md" label="docs/CLI.md, Validator commands" /> (
           <code className="text-white/80">vocence services generator</code>,{' '}
           <code className="text-white/80">vocence services validator</code>).
         </p>
@@ -1557,9 +1557,9 @@ uv run vocence serve`}</pre>
           <ChevronRight size={12} className="opacity-60" />
           <span className="text-zinc-300">Agents</span>
         </div>
-        <h1 className="text-2xl font-semibold mb-2 tracking-tight">Agents — Build &amp; Deploy Voice Agents</h1>
+        <h1 className="text-2xl font-semibold mb-2 tracking-tight">Agents, Build &amp; Deploy Voice Agents</h1>
         <p className="text-sm text-zinc-400 leading-relaxed max-w-2xl">
-          A Vocence Agent is a voice-first AI you configure once and call again and again — for support, study,
+          A Vocence Agent is a voice-first AI you configure once and call again and again, for support, study,
           brainstorming, autonomous work, and anything in between. This guide covers everything from your first agent to
           tool-calling, custom webhooks, voice tuning, persistence, costs, and troubleshooting.
         </p>
@@ -1604,7 +1604,7 @@ uv run vocence serve`}</pre>
             <h3 className="font-medium mb-2 text-sm">Self-improving</h3>
             <p className="text-sm text-zinc-400 leading-relaxed">
               You give it a goal and a success metric; it iterates toward the target, scoring itself each round and
-              refining. Examples: cold-email refiner, daily summarizer, draft brainstormer. No live chat — runs are
+              refining. Examples: cold-email refiner, daily summarizer, draft brainstormer. No live chat, runs are
               triggered and you watch the iterations.
             </p>
           </div>
@@ -1660,7 +1660,7 @@ uv run vocence serve`}</pre>
             <p className="text-sm text-zinc-400 leading-relaxed">
               Tone, personality, behavioural rules. <span className="text-zinc-300">What it should refuse, how it
               should phrase things, how long replies should be, whether it can be playful or must be formal.</span> Don't
-              put facts here — those go in Knowledge.
+              put facts here, those go in Knowledge.
             </p>
           </div>
           <div className="card-vocence p-5">
@@ -1668,7 +1668,7 @@ uv run vocence serve`}</pre>
             <p className="text-sm text-zinc-400 leading-relaxed">
               Static facts the agent should treat as authoritative. Pricing, FAQs, product specs, internal policies.
               Short knowledge (≤ a few KB) is dumped into the system prompt verbatim. Larger bodies switch to retrieval
-              automatically — relevant chunks are injected per turn so the agent only "sees" what matters for that
+              automatically, relevant chunks are injected per turn so the agent only "sees" what matters for that
               question. You don't have to do anything for retrieval to kick in; the system picks the right strategy.
             </p>
           </div>
@@ -1684,10 +1684,10 @@ uv run vocence serve`}</pre>
       </section>
 
       <section id="tools">
-        <h2 className="text-lg font-semibold mb-3">4. Tools — built-in</h2>
+        <h2 className="text-lg font-semibold mb-3">4. Tools, built-in</h2>
         <p className="text-sm text-zinc-400 leading-relaxed mb-4">
           Vocence ships five tools every agent can use out of the box. Enable them per-agent in the settings tab. The
-          agent decides when to call them — you don't have to script the trigger; the LLM matches the user's question
+          agent decides when to call them, you don't have to script the trigger; the LLM matches the user's question
           to the tool description.
         </p>
         <div className="overflow-x-auto">
@@ -1750,13 +1750,13 @@ Authorization: Bearer <your auth secret>   ← only if you set one
 
 { "arguments": { "limit": 10, "category": "active" } }
 
-# GET tool — args go as query params, no body
+# GET tool, args go as query params, no body
 GET <your endpoint>?limit=10&category=active
 Authorization: Bearer <your auth secret>`}
         </pre>
         <h3 className="text-sm font-medium text-zinc-100 mb-2">The parameters JSON Schema</h3>
         <p className="text-sm text-zinc-400 leading-relaxed mb-3">
-          This is the schema describing what arguments the LLM is allowed to send. The simplest case — your endpoint
+          This is the schema describing what arguments the LLM is allowed to send. The simplest case, your endpoint
           takes no inputs:
         </p>
         <pre className="bg-black/40 border border-white/[0.06] rounded-lg p-4 text-[12px] text-zinc-300 overflow-x-auto font-mono leading-relaxed mb-4">
@@ -1800,7 +1800,7 @@ Authorization: Bearer <your auth secret>`}
           <p className="text-zinc-300 mt-1.5">
             "Returns the current list of registered validators on subnet 36. Call this whenever the user asks who's
             validating, asks for validator membership, asks about specific hotkeys, or wants to know the size of the
-            active set. The list may change between calls — always fetch fresh, don't reuse a previous result."
+            active set. The list may change between calls, always fetch fresh, don't reuse a previous result."
           </p>
         </div>
         <div className="card-vocence p-4 text-sm leading-relaxed mt-2">
@@ -1808,7 +1808,7 @@ Authorization: Bearer <your auth secret>`}
           <p className="text-zinc-400 mt-1.5">"Get validator list"</p>
         </div>
         <p className="text-sm text-zinc-400 leading-relaxed mt-4">
-          Each property's <code className="text-zinc-300">"description"</code> matters too — that's how the LLM decides
+          Each property's <code className="text-zinc-300">"description"</code> matters too, that's how the LLM decides
           what value to fill in. <code className="text-zinc-300">"the limit"</code> is useless. <code className="text-zinc-300">"Maximum
           number of results to return. Default 20 if the user didn't specify a count."</code> is what gives the LLM a
           sensible default.
@@ -1822,23 +1822,23 @@ Authorization: Bearer <your auth secret>`}
         </p>
         <ul className="space-y-2 text-sm text-zinc-400 leading-relaxed">
           <li>
-            <span className="text-zinc-200 font-medium">Sample voices</span> — curated bank (Ryan, Olivia, Ethan, Cherry,
+            <span className="text-zinc-200 font-medium">Sample voices</span>, curated bank (Ryan, Olivia, Ethan, Cherry,
             Dylan, Abigail and more). Lowest latency. Pick one when starting out.
           </li>
           <li>
-            <span className="text-zinc-200 font-medium">Designed voices</span> — generated via Voice Design from a text
+            <span className="text-zinc-200 font-medium">Designed voices</span>, generated via Voice Design from a text
             description ("warm female voice with a slight Australian accent"). Saved to your account; selectable per
             agent.
           </li>
           <li>
-            <span className="text-zinc-200 font-medium">Cloned voices</span> — upload a 5–15 second sample of any voice
+            <span className="text-zinc-200 font-medium">Cloned voices</span>, upload a 5–15 second sample of any voice
             and clone it. Comes with the usual ethical caveats; we require consent confirmation for cloning.
           </li>
         </ul>
         <div className="card-vocence p-4 text-sm text-zinc-400 leading-relaxed mt-4">
           <span className="text-zinc-200 font-medium">Match voice to role.</span> Ryan/Ethan are neutral and fast,
           good for general assistants. Olivia/Abigail land warmer, good for support. Cherry/Dylan are tuned for Mandarin.
-          The system prompt has more influence on perceived personality than the voice itself — same voice, different
+          The system prompt has more influence on perceived personality than the voice itself, same voice, different
           prompt, completely different feel.
         </div>
       </section>
@@ -1852,7 +1852,7 @@ Authorization: Bearer <your auth secret>`}
           <li>
             <span className="text-zinc-200 font-medium">Memory is per-session.</span> The agent remembers everything
             you've said in the current connection. Switching tabs within the same agent detail page (Chat ↔ Settings)
-            keeps the connection alive — the agent still remembers. Closing the tab or refreshing wipes the conversation
+            keeps the connection alive, the agent still remembers. Closing the tab or refreshing wipes the conversation
             (this is by design; the conversation isn't logged anywhere by default).
           </li>
           <li>
@@ -1863,12 +1863,12 @@ Authorization: Bearer <your auth secret>`}
           <li>
             <span className="text-zinc-200 font-medium">Always-on listening.</span> When the chat tab is active, the
             mic stays armed. A voice activity detector (VAD) decides when you're speaking and when you stop. You can
-            barge-in mid-reply — the agent stops talking and listens.
+            barge-in mid-reply, the agent stops talking and listens.
           </li>
           <li>
             <span className="text-zinc-200 font-medium">Audio and text appear in lockstep.</span> The text in the chat
             bubble reveals at roughly reading pace as the audio plays. If you see text without audio (or vice versa),
-            something's off — see the troubleshooting section below.
+            something's off, see the troubleshooting section below.
           </li>
         </ul>
       </section>
@@ -1883,14 +1883,14 @@ Authorization: Bearer <your auth secret>`}
       </section>
 
       <section id="goal" className="bg-white/[0.03] border border-white/[0.06] rounded-xl p-5">
-        <h2 className="text-lg font-semibold mb-3">9. Goal agents — how iteration works</h2>
+        <h2 className="text-lg font-semibold mb-3">9. Goal agents, how iteration works</h2>
         <p className="text-sm text-zinc-400 leading-relaxed mb-3">
           Each run loops up to <span className="text-zinc-200">Max iterations</span> times (or stops early when the
           self-score crosses 0.9). On every iteration the agent:
         </p>
         <ol className="list-decimal space-y-2 pl-5 text-sm leading-relaxed text-zinc-400 marker:text-zinc-600">
           <li>Reads the goal, success metric, knowledge, and the last few prior outputs.</li>
-          <li>Produces a new attempt — this is the deliverable.</li>
+          <li>Produces a new attempt, this is the deliverable.</li>
           <li>Self-scores against the success metric and explains the score.</li>
           <li>
             Stores the iteration in the timeline; if it's the highest score so far, becomes the
@@ -1903,8 +1903,8 @@ Authorization: Bearer <your auth secret>`}
         </p>
         <div className="mt-4 p-3 rounded-lg border border-amber-400/20 bg-amber-500/[0.05] text-sm text-amber-100/90">
           <span className="font-medium">Tip:</span> the success metric is the entire game. "Sounds professional" is
-          bad — the agent will score itself 0.9 on the first try and stop. "Under 90 words, exactly one call-to-action,
-          no buzzwords" is good — the agent has measurable criteria to fail against and improve.
+          bad, the agent will score itself 0.9 on the first try and stop. "Under 90 words, exactly one call-to-action,
+          no buzzwords" is good, the agent has measurable criteria to fail against and improve.
         </div>
       </section>
 
@@ -1920,7 +1920,7 @@ Authorization: Bearer <your auth secret>`}
         </ul>
         <p className="text-sm text-zinc-400 leading-relaxed mt-4">
           A typical 4-turn back-and-forth conversation is around <span className="text-zinc-200">30–80 credits</span>.
-          Tool-using turns cost the same as regular turns — the tool dispatch is free; you pay for the LLM round that
+          Tool-using turns cost the same as regular turns, the tool dispatch is free; you pay for the LLM round that
           interprets the result. Goal agent runs charge per iteration. Your balance is shown in the top-right;{' '}
           <Link to="/account?tab=credits" className="text-[#DFFF00] hover:underline">top up here</Link>.
         </p>
@@ -1932,7 +1932,7 @@ Authorization: Bearer <your auth secret>`}
           <div className="card-vocence p-4">
             <h3 className="font-medium text-sm text-zinc-100 mb-1.5">The agent doesn't talk at all</h3>
             <p className="text-sm text-zinc-400 leading-relaxed">
-              Check the agent status (top of settings) — paused or archived agents block chat. Also check that your
+              Check the agent status (top of settings), paused or archived agents block chat. Also check that your
               mic permission is granted in the browser and that the connecting state passes within ~5 seconds. If the
               state stays on "connecting", you've lost the WebSocket; reload the page.
             </p>
@@ -1940,7 +1940,7 @@ Authorization: Bearer <your auth secret>`}
           <div className="card-vocence p-4">
             <h3 className="font-medium text-sm text-zinc-100 mb-1.5">Agent answers but doesn't use the tool I enabled</h3>
             <p className="text-sm text-zinc-400 leading-relaxed">
-              The trigger isn't the tool being enabled — it's the LLM matching the user's phrasing to the tool's
+              The trigger isn't the tool being enabled, it's the LLM matching the user's phrasing to the tool's
               description. Make the description more specific and use the keywords a user might naturally say. For
               custom tools, "Returns…" / "Use when the user asks about X, Y, Z" works better than "API for…".
             </p>
@@ -1948,23 +1948,23 @@ Authorization: Bearer <your auth secret>`}
           <div className="card-vocence p-4">
             <h3 className="font-medium text-sm text-zinc-100 mb-1.5">Audio plays but no text in the chat bubble (or vice versa)</h3>
             <p className="text-sm text-zinc-400 leading-relaxed">
-              Hard-refresh the page (Ctrl/Cmd-Shift-R). A stale frontend bundle is the usual culprit — Vite HMR
+              Hard-refresh the page (Ctrl/Cmd-Shift-R). A stale frontend bundle is the usual culprit, Vite HMR
               occasionally misses a streaming-related change.
             </p>
           </div>
           <div className="card-vocence p-4">
             <h3 className="font-medium text-sm text-zinc-100 mb-1.5">Replies are too short / too long</h3>
             <p className="text-sm text-zinc-400 leading-relaxed">
-              Both are system-prompt tuning. Add to the prompt: "Keep replies short — 1–2 sentences unless the user
+              Both are system-prompt tuning. Add to the prompt: "Keep replies short, 1–2 sentences unless the user
               explicitly asks for detail" (terse), or "After research-tool calls give 4–7 sentences with specifics"
-              (verbose). Existing chat sessions use the OLD prompt — refresh to apply.
+              (verbose). Existing chat sessions use the OLD prompt, refresh to apply.
             </p>
           </div>
           <div className="card-vocence p-4">
             <h3 className="font-medium text-sm text-zinc-100 mb-1.5">Latency feels high</h3>
             <p className="text-sm text-zinc-400 leading-relaxed">
               Three knobs help. (1) Switch the agent's LLM model to a faster provider in settings. (2) Trim the
-              knowledge field — large blobs are retrieved per-turn and that adds latency. (3) The filler audio kicks
+              knowledge field, large blobs are retrieved per-turn and that adds latency. (3) The filler audio kicks
               in after 350ms by default; if you still feel silence, the slow stage is upstream of where the filler
               fires (typically STT).
             </p>
@@ -1972,7 +1972,7 @@ Authorization: Bearer <your auth secret>`}
           <div className="card-vocence p-4">
             <h3 className="font-medium text-sm text-zinc-100 mb-1.5">Custom tool returns the wrong shape and the agent gets confused</h3>
             <p className="text-sm text-zinc-400 leading-relaxed">
-              Your endpoint can return any JSON or text — the agent hands the response to the LLM as-is. If results are
+              Your endpoint can return any JSON or text, the agent hands the response to the LLM as-is. If results are
               wrapped (e.g. <code className="text-zinc-300">{`{"data": [...]}`}</code>) make sure the description
               mentions the shape: "Returns an object with a <code className="text-zinc-300">data</code> array of
               hotkeys." Otherwise the LLM may guess at the structure and answer wrong.
@@ -2003,7 +2003,7 @@ Authorization: Bearer <your auth secret>`}
           <ChevronRight size={12} className="opacity-60" />
           <span className="text-zinc-300">Text-to-Speech</span>
         </div>
-        <h1 className="text-2xl font-semibold mb-2 tracking-tight">Text-to-Speech — Practice Guide</h1>
+        <h1 className="text-2xl font-semibold mb-2 tracking-tight">Text-to-Speech, Practice Guide</h1>
         <p className="text-sm text-zinc-400 leading-relaxed max-w-2xl">
           How to get the best results from Vocence Studio TTS. Tips for writing style prompts, picking lengths and
           languages, and avoiding common errors.
@@ -2013,7 +2013,7 @@ Authorization: Bearer <your auth secret>`}
       <section>
         <h2 className="text-lg font-semibold mb-3">What it does</h2>
         <p className="text-sm text-zinc-400 leading-relaxed">
-          Voice Design TTS invents a persona on the fly from your style prompt — no reference audio required. It reads
+          Voice Design TTS invents a persona on the fly from your style prompt, no reference audio required. It reads
           the text, listens to your style instruction, and renders speech in one of 10 supported languages. Every
           generation is non-deterministic: the same prompt twice will sound similar but not identical.
         </p>
@@ -2029,8 +2029,8 @@ Authorization: Bearer <your auth secret>`}
             trained on natural sentences.
           </li>
           <li>
-            <span className="text-zinc-200 font-medium">Anchor with one dominant trait.</span> Pick a single tone — calm,
-            energetic, menacing, authoritative — and add at most two modifiers (gender, pace, energy). Stacking too many
+            <span className="text-zinc-200 font-medium">Anchor with one dominant trait.</span> Pick a single tone, calm,
+            energetic, menacing, authoritative, and add at most two modifiers (gender, pace, energy). Stacking too many
             traits muddies the output.
           </li>
           <li>
@@ -2039,11 +2039,11 @@ Authorization: Bearer <your auth secret>`}
           </li>
           <li>
             <span className="text-zinc-200 font-medium">Start from a preset.</span> The 13 built-in style presets are
-            tested templates — pick the closest one and tweak the description rather than starting from scratch.
+            tested templates, pick the closest one and tweak the description rather than starting from scratch.
           </li>
           <li>
             <span className="text-zinc-200 font-medium">Match input language to output.</span> Write the script in the
-            target language. The model auto-detects and synthesizes — you don't need to mention the language in the
+            target language. The model auto-detects and synthesizes, you don't need to mention the language in the
             prompt.
           </li>
           <li>
@@ -2069,7 +2069,7 @@ Authorization: Bearer <your auth secret>`}
             ("speaking quickly", "energetic delivery").
           </li>
           <li>
-            <code className="text-zinc-300">"miner returned 503"</code> — capacity is full right now. Wait a minute and
+            <code className="text-zinc-300">"miner returned 503"</code>, capacity is full right now. Wait a minute and
             retry; your credits aren't deducted on capacity rejection.
           </li>
           <li>
@@ -2111,7 +2111,7 @@ Authorization: Bearer <your auth secret>`}
           <ChevronRight size={12} className="opacity-60" />
           <span className="text-zinc-300">Voice Cloning</span>
         </div>
-        <h1 className="text-2xl font-semibold mb-2 tracking-tight">Voice Cloning — Practice Guide</h1>
+        <h1 className="text-2xl font-semibold mb-2 tracking-tight">Voice Cloning, Practice Guide</h1>
         <p className="text-sm text-zinc-400 leading-relaxed max-w-2xl">
           How to clone any voice with high fidelity. What makes a great reference clip, when cross-lingual cloning works,
           and how to handle long scripts.
@@ -2122,8 +2122,8 @@ Authorization: Bearer <your auth secret>`}
         <h2 className="text-lg font-semibold mb-3">What it does</h2>
         <p className="text-sm text-zinc-400 leading-relaxed">
           Cloning takes a short reference clip (someone speaking) plus optional reference text, and synthesizes new
-          sentences in that exact voice. It can speak in a different language from the reference — clone an English
-          speaker reading Spanish, etc. — with strong speaker similarity across all supported languages.
+          sentences in that exact voice. It can speak in a different language from the reference, clone an English
+          speaker reading Spanish, etc., with strong speaker similarity across all supported languages.
         </p>
       </section>
 
@@ -2153,7 +2153,7 @@ Authorization: Bearer <your auth secret>`}
           <li>
             <span className="text-zinc-200 font-medium">Cross-lingual cloning works.</span> A 7-second English reference
             can speak Spanish, German, Japanese. Best directions: Chinese ↔ English. Japanese cross-lingual is the
-            weakest direction — proofread pronunciations.
+            weakest direction, proofread pronunciations.
           </li>
           <li>
             <span className="text-zinc-200 font-medium">For repeated cloning of the same voice, save it.</span> Run{' '}
@@ -2182,7 +2182,7 @@ Authorization: Bearer <your auth secret>`}
             speaker.
           </li>
           <li>
-            <code className="text-zinc-300">"Reference audio must be between 5 and 20 seconds…"</code> — re-upload or
+            <code className="text-zinc-300">"Reference audio must be between 5 and 20 seconds…"</code>, re-upload or
             re-record within range.
           </li>
         </ul>
@@ -2220,7 +2220,7 @@ Authorization: Bearer <your auth secret>`}
           <ChevronRight size={12} className="opacity-60" />
           <span className="text-zinc-300">Speech-to-Text</span>
         </div>
-        <h1 className="text-2xl font-semibold mb-2 tracking-tight">Speech-to-Text — Practice Guide</h1>
+        <h1 className="text-2xl font-semibold mb-2 tracking-tight">Speech-to-Text, Practice Guide</h1>
         <p className="text-sm text-zinc-400 leading-relaxed max-w-2xl">
           How to get accurate transcriptions. Tips for picking the right language, recording quality, and handling long
           or noisy audio.
@@ -2231,7 +2231,7 @@ Authorization: Bearer <your auth secret>`}
         <h2 className="text-lg font-semibold mb-3">What it does</h2>
         <p className="text-sm text-zinc-400 leading-relaxed">
           Vocence Studio transcribes speech to text across 30 languages and 22 Chinese dialects. It's accurate on noisy
-          audio, singing voices, and music-with-vocals mixtures — domains where most ASR systems struggle.
+          audio, singing voices, and music-with-vocals mixtures, domains where most ASR systems struggle.
         </p>
       </section>
 
@@ -2249,7 +2249,7 @@ Authorization: Bearer <your auth secret>`}
           </li>
           <li>
             <span className="text-zinc-200 font-medium">Recordings up to 3 minutes per file.</span> For longer sources,
-            split into chunks at natural pauses — pasting clips back together is trivial; mid-sentence splits are not.
+            split into chunks at natural pauses, pasting clips back together is trivial; mid-sentence splits are not.
           </li>
           <li>
             <span className="text-zinc-200 font-medium">Avoid clipping.</span> Audio recorded too loud (where waveforms
@@ -2263,7 +2263,7 @@ Authorization: Bearer <your auth secret>`}
           </li>
           <li>
             <span className="text-zinc-200 font-medium">Songs work.</span> Studio's transcription is trained on singing
-            voice — you can transcribe lyrics directly from a song mix.
+            voice, you can transcribe lyrics directly from a song mix.
           </li>
         </ol>
       </section>
@@ -2321,12 +2321,12 @@ Authorization: Bearer <your auth secret>`}
           <ChevronRight size={12} className="opacity-60" />
           <span className="text-zinc-300">Music</span>
         </div>
-        <h1 className="text-2xl font-semibold mb-2 tracking-tight">Music — Practice Guide</h1>
+        <h1 className="text-2xl font-semibold mb-2 tracking-tight">Music, Practice Guide</h1>
         <p className="text-sm text-zinc-400 leading-relaxed max-w-2xl">
           Studio gives you six music modes: <span className="text-zinc-200">Text to Music</span>,{' '}
           <span className="text-zinc-200">Style Transfer</span>, <span className="text-zinc-200">Retake</span>,{' '}
           <span className="text-zinc-200">Repaint</span>, <span className="text-zinc-200">Edit</span>, and{' '}
-          <span className="text-zinc-200">Extend</span>. This guide walks each one — when to use it, which
+          <span className="text-zinc-200">Extend</span>. This guide walks each one, when to use it, which
           fields matter, and the knobs that move the result. Start with Text-to-Music below; the other
           five modes are in <a href="#modes" className="text-[#DFFF00] hover:underline">All six modes</a>.
         </p>
@@ -2336,7 +2336,7 @@ Authorization: Bearer <your auth secret>`}
         <h2 className="text-lg font-semibold mb-3">Mental model</h2>
         <p className="text-sm text-zinc-400 leading-relaxed mb-3">
           Music generation has two distinct text inputs that do completely different jobs. The most common
-          mistake is putting the wrong content in either box — Studio shows a soft warning when this
+          mistake is putting the wrong content in either box, Studio shows a soft warning when this
           happens, but it's worth understanding why:
         </p>
         <div className="grid md:grid-cols-2 gap-4">
@@ -2345,7 +2345,7 @@ Authorization: Bearer <your auth secret>`}
             <p className="text-sm text-zinc-200 font-medium mb-1">Describes what the music sounds like.</p>
             <p className="text-sm text-zinc-400 leading-relaxed">
               Genre, instruments, BPM, key, mood, vocal style. Comma-separated tags work best.
-              Aim for 8–15 tags — fewer is too vague, more dilutes the signal.
+              Aim for 8–15 tags, fewer is too vague, more dilutes the signal.
             </p>
           </div>
           <div className="card-vocence p-5">
@@ -2354,7 +2354,7 @@ Authorization: Bearer <your auth secret>`}
             <p className="text-sm text-zinc-400 leading-relaxed">
               Plain text plus structure tags (<code className="text-zinc-300">[verse]</code>,{' '}
               <code className="text-zinc-300">[chorus]</code>, etc.). For an instrumental track, set
-              the field to <code className="text-zinc-300">[inst]</code> — never empty.
+              the field to <code className="text-zinc-300">[inst]</code>, never empty.
             </p>
           </div>
         </div>
@@ -2370,7 +2370,7 @@ Authorization: Bearer <your auth secret>`}
         </p>
         <p className="text-sm text-zinc-400 leading-relaxed">
           If you've already typed your own lyrics, picking a different genre will ask before
-          overwriting them. Your prompt always updates immediately — the two fields are independent.
+          overwriting them. Your prompt always updates immediately, the two fields are independent.
         </p>
       </section>
 
@@ -2400,11 +2400,11 @@ Authorization: Bearer <your auth secret>`}
         </div>
         <ul className="mt-4 space-y-2 text-sm text-zinc-400 leading-relaxed">
           <li>• One tag per section, on its own line, with a blank line between sections.</li>
-          <li>• Lower-case and exact form matters — <code className="text-zinc-300">[Verse]</code> and{' '}
+          <li>• Lower-case and exact form matters, <code className="text-zinc-300">[Verse]</code> and{' '}
             <code className="text-zinc-300">[verse 1]</code> are <em>not</em> the special tokens.
           </li>
           <li>• The structure-tag bar above the lyric textarea inserts these at your cursor with
-            proper blank-line padding — use it instead of typing them by hand.</li>
+            proper blank-line padding, use it instead of typing them by hand.</li>
           <li>• Match lyric length to the song duration: roughly one section per 30 seconds.
             Too few lines for a long duration → instrumental gaps; too many for a short
             duration → rushed delivery.
@@ -2417,15 +2417,15 @@ Authorization: Bearer <your auth secret>`}
         <p className="text-sm text-zinc-400 leading-relaxed mb-3">
           The <span className="text-[#DFFF00]">Generate lyrics</span> button next to the structure-tag
           bar opens a small panel that asks <em>"What's the song about?"</em> Type a topic and the AI
-          writes a full song in the right format — verse, chorus, verse, bridge, chorus, outro — and
+          writes a full song in the right format, verse, chorus, verse, bridge, chorus, outro, and
           drops it straight into the lyrics box.
         </p>
         <ul className="space-y-2 text-sm text-zinc-400 leading-relaxed">
           <li>• It uses your current <span className="text-zinc-200">prompt</span> as a style hint, so
             picking a genre first means the lyrics will match that vibe.</li>
-          <li>• Free — no credits charged for AI lyric generation.</li>
+          <li>• Free, no credits charged for AI lyric generation.</li>
           <li>• Disabled when "Instrumental only" is on (there's nothing to write).</li>
-          <li>• You can edit the generated lyrics freely afterward — they're a starting point, not
+          <li>• You can edit the generated lyrics freely afterward, they're a starting point, not
             a final answer.</li>
         </ul>
       </section>
@@ -2477,7 +2477,7 @@ Authorization: Bearer <your auth secret>`}
           Use <span className="text-zinc-200">Fast</span> for sketching ideas, then re-roll the
           winners on <span className="text-zinc-200">Balanced</span> or <span className="text-zinc-200">Max</span>.
           The Advanced panel still lets power users tune <code className="text-zinc-300">infer_step</code> and{' '}
-          <code className="text-zinc-300">guidance_scale</code> directly — touching them flips the
+          <code className="text-zinc-300">guidance_scale</code> directly, touching them flips the
           mode label to "Custom".
         </p>
       </section>
@@ -2497,7 +2497,7 @@ Authorization: Bearer <your auth secret>`}
           </li>
           <li>
             <span className="text-zinc-200 font-medium">BPM: numeric.</span> "120 bpm" or "120 BPM" both
-            work. Keep it realistic for the genre — drum-and-bass at 80 BPM won't sound right.
+            work. Keep it realistic for the genre, drum-and-bass at 80 BPM won't sound right.
           </li>
           <li>
             <span className="text-zinc-200 font-medium">"instrumental" as a literal tag.</span> Including
@@ -2506,7 +2506,7 @@ Authorization: Bearer <your auth secret>`}
           </li>
           <li>
             <span className="text-zinc-200 font-medium">Multilingual works.</span> Spanish, Chinese, Japanese
-            and several others are supported in tag form too — useful for non-English genre conventions.
+            and several others are supported in tag form too, useful for non-English genre conventions.
           </li>
         </ol>
       </section>
@@ -2515,12 +2515,12 @@ Authorization: Bearer <your auth secret>`}
         <h2 className="text-lg font-semibold mb-3">Common pitfalls</h2>
         <ul className="space-y-3 text-sm text-zinc-400 leading-relaxed">
           <li>
-            <span className="text-zinc-200 font-medium">Genre tags pasted into the lyrics box</span> — the
+            <span className="text-zinc-200 font-medium">Genre tags pasted into the lyrics box</span>, the
             model will literally try to sing "120 bpm electric guitar". Studio's linter flags this; if you
             see the warning, move the tags up to the prompt field.
           </li>
           <li>
-            <span className="text-zinc-200 font-medium">Structure tags in the prompt</span> — same issue
+            <span className="text-zinc-200 font-medium">Structure tags in the prompt</span>, same issue
             in reverse. <code className="text-zinc-300">[verse]</code> in the prompt field doesn't do anything
             useful and may confuse the tag parser.
           </li>
@@ -2531,15 +2531,15 @@ Authorization: Bearer <your auth secret>`}
             all become sung text. Use the tag bar buttons to insert valid ones.
           </li>
           <li>
-            <span className="text-zinc-200 font-medium">Empty lyrics</span> — the engine errors out. Use{' '}
+            <span className="text-zinc-200 font-medium">Empty lyrics</span>, the engine errors out. Use{' '}
             <code className="text-zinc-300">[inst]</code> for an instrumental, or just toggle "Instrumental only".
           </li>
           <li>
-            <span className="text-zinc-200 font-medium">Generic output</span> — usually means the prompt is
+            <span className="text-zinc-200 font-medium">Generic output</span>, usually means the prompt is
             too vague ("song", "good music"). Add at least one genre word and one mood word.
           </li>
           <li>
-            <span className="text-zinc-200 font-medium">Garbled vocals</span> — lyrics too dense for the
+            <span className="text-zinc-200 font-medium">Garbled vocals</span>, lyrics too dense for the
             duration, or missing structure tags. Add{' '}
             <code className="text-zinc-300">[verse]</code> /{' '}
             <code className="text-zinc-300">[chorus]</code> or shorten the lyrics.
@@ -2598,10 +2598,10 @@ Authorization: Bearer <your auth secret>`}
             <span className="text-zinc-200">Reference Strength</span> is the main control:
           </p>
           <ul className="text-sm text-zinc-400 leading-relaxed list-disc pl-5 mt-1 space-y-0.5">
-            <li><code className="text-zinc-300">0.0</code> — ignores reference, behaves like Text-to-Music</li>
-            <li><code className="text-zinc-300">0.5</code> (default) — balanced</li>
-            <li><code className="text-zinc-300">0.8+</code> — reference dominates the output's feel</li>
-            <li><code className="text-zinc-300">1.0</code> — reference dictates; prompt is a hint</li>
+            <li><code className="text-zinc-300">0.0</code>, ignores reference, behaves like Text-to-Music</li>
+            <li><code className="text-zinc-300">0.5</code> (default), balanced</li>
+            <li><code className="text-zinc-300">0.8+</code>, reference dominates the output's feel</li>
+            <li><code className="text-zinc-300">1.0</code>, reference dictates; prompt is a hint</li>
           </ul>
           <p className="text-sm text-zinc-400 leading-relaxed mt-2">
             <span className="text-zinc-200">When to use:</span> you hummed a melody on your phone and
@@ -2616,7 +2616,7 @@ Authorization: Bearer <your auth secret>`}
           <p className="text-sm text-zinc-400 leading-relaxed mb-2">
             Reroll the same prompt + lyrics with new random seeds. You get a different take of the
             same idea. <span className="text-zinc-200">The source audio is used ONLY to copy the
-            duration</span> — its actual content does NOT influence the new generation.
+            duration</span>, its actual content does NOT influence the new generation.
           </p>
           <p className="text-sm text-zinc-300 mb-2"><span className="text-zinc-400">Required:</span> Source audio (for duration) + Prompt + Lyrics. <span className="text-zinc-400">Knobs:</span> Variance, Seeds.</p>
           <p className="text-sm text-zinc-400 leading-relaxed">
@@ -2640,7 +2640,7 @@ Authorization: Bearer <your auth secret>`}
           <p className="text-sm text-zinc-400 leading-relaxed">
             <span className="text-zinc-200">Start / End</span> are seconds defining the window to
             regenerate. <span className="text-zinc-200">Variance</span> controls how different the new
-            window can be from the original — <code className="text-zinc-300">0.2</code> keeps the
+            window can be from the original, <code className="text-zinc-300">0.2</code> keeps the
             replacement close in feel, <code className="text-zinc-300">0.8+</code> makes a dramatic change.
             Transitions at the window boundaries blend naturally because the model conditions on the
             surrounding audio.
@@ -2664,7 +2664,7 @@ Authorization: Bearer <your auth secret>`}
             <span className="text-zinc-200">Prompt + Lyrics</span> describe the original (anchoring the
             structure). <span className="text-zinc-200">Target Prompt + Target Lyrics</span> describe
             what you want. <span className="text-zinc-200">Type</span> picks how aggressive the edit
-            is — <code className="text-zinc-300">Lyrics only</code> preserves more of the original sound;
+            is, <code className="text-zinc-300">Lyrics only</code> preserves more of the original sound;
             <code className="text-zinc-300">Remix</code> allows a bigger style shift. n_min/n_max are
             the underlying noise schedule controls; the Type dropdown picks sensible defaults.
           </p>
@@ -2709,7 +2709,7 @@ Authorization: Bearer <your auth secret>`}
           <div className="card-vocence p-5">
             <h3 className="font-medium mb-2 text-sm">Limits</h3>
             <ul className="space-y-1 text-sm text-zinc-400">
-              <li>• Duration cap depends on quality: <span className="text-zinc-200">Fast 400 s</span>, <span className="text-zinc-200">Balanced 300 s</span>, <span className="text-zinc-200">Max 200 s</span> — or <code className="text-zinc-300">-1</code> for random</li>
+              <li>• Duration cap depends on quality: <span className="text-zinc-200">Fast 400 s</span>, <span className="text-zinc-200">Balanced 300 s</span>, <span className="text-zinc-200">Max 200 s</span>, or <code className="text-zinc-300">-1</code> for random</li>
               <li>• Formats: WAV (default), MP3, OGG, FLAC</li>
               <li>• <span className="text-zinc-200">50 credits</span> per generation (all six modes)</li>
               <li>• Vocals are strongest in EN, ZH, RU, ES, JA, DE, FR, PT, IT, KO</li>
@@ -2758,7 +2758,7 @@ Authorization: Bearer <your auth secret>`}
       <section>
         <h2 className="text-lg font-semibold mb-3">Tips for best results</h2>
         <ul className="space-y-2 text-sm text-zinc-400 leading-relaxed">
-          <li>• Use audio where speech is clearly audible above the noise — the enhancer preserves voice and removes background.</li>
+          <li>• Use audio where speech is clearly audible above the noise, the enhancer preserves voice and removes background.</li>
           <li>• Shorter clips (under 1 minute) process fastest.</li>
           <li>• Works best on recordings with consistent background noise (fans, traffic, hum) rather than sudden loud interruptions.</li>
           <li>• Supported formats: WAV, MP3, M4A, WebM, OGG, FLAC, AAC.</li>
@@ -2779,8 +2779,8 @@ Authorization: Bearer <your auth secret>`}
       <section>
         <h2 className="text-lg font-semibold mb-3">Keyboard shortcuts</h2>
         <ul className="space-y-1 text-sm text-zinc-400">
-          <li>• <kbd className="px-1.5 py-0.5 rounded bg-white/[0.06] border border-white/[0.08] text-zinc-300 font-mono text-xs">Space</kbd> — play / pause audio</li>
-          <li>• <kbd className="px-1.5 py-0.5 rounded bg-white/[0.06] border border-white/[0.08] text-zinc-300 font-mono text-xs">R</kbd> — re-enhance with the same file</li>
+          <li>• <kbd className="px-1.5 py-0.5 rounded bg-white/[0.06] border border-white/[0.08] text-zinc-300 font-mono text-xs">Space</kbd>, play / pause audio</li>
+          <li>• <kbd className="px-1.5 py-0.5 rounded bg-white/[0.06] border border-white/[0.08] text-zinc-300 font-mono text-xs">R</kbd>, re-enhance with the same file</li>
           <li>• Drag any audio file onto the page to load it</li>
         </ul>
       </section>
@@ -2870,7 +2870,7 @@ enhanced.write_wav("clean.wav")`} />
         <ol className="ml-4 list-decimal space-y-1 text-sm text-zinc-400 marker:text-zinc-600">
           <li>Explicit <code className="rounded bg-white/[0.06] px-1 text-zinc-300">api_key=</code> argument to <code className="rounded bg-white/[0.06] px-1 text-zinc-300">Vocence(...)</code>.</li>
           <li><code className="rounded bg-white/[0.06] px-1 text-zinc-300">VOCENCE_API_KEY</code> environment variable.</li>
-          <li><code className="rounded bg-white/[0.06] px-1 text-zinc-300">~/.vocence/config.json</code> — where <code className="rounded bg-white/[0.06] px-1 text-zinc-300">vocence login</code> persists the key (mode 0600). Optional OS-keyring storage via <code className="rounded bg-white/[0.06] px-1 text-zinc-300">vocence config set-keyring on</code>.</li>
+          <li><code className="rounded bg-white/[0.06] px-1 text-zinc-300">~/.vocence/config.json</code>, where <code className="rounded bg-white/[0.06] px-1 text-zinc-300">vocence login</code> persists the key (mode 0600). Optional OS-keyring storage via <code className="rounded bg-white/[0.06] px-1 text-zinc-300">vocence config set-keyring on</code>.</li>
         </ol>
         <p className="text-sm leading-relaxed text-zinc-400">
           For servers / CI, set <code className="rounded bg-white/[0.06] px-1 text-zinc-300">VOCENCE_API_KEY</code> via your secrets manager. For local development, <code className="rounded bg-white/[0.06] px-1 text-zinc-300">vocence login</code> is the friction-free path.
@@ -2909,25 +2909,25 @@ asyncio.run(main())`} />
         <CodeBlock code={`r = client.tts.speak(text="Hello", voice="design-aria")
 
 # Three ways to get the audio:
-r.audio_url              # presigned URL — short TTL
+r.audio_url              # presigned URL, short TTL
 r.download()             # → bytes (uses the SDK's User-Agent so CDN doesn't reject)
 r.write_wav("out.wav")   # → Path (downloaded + saved)
 
-# Cost estimate before firing — pure local arithmetic, no HTTP call
+# Cost estimate before firing, pure local arithmetic, no HTTP call
 client.tts.estimate(text="hello", voice="design-aria")
 # → Estimate(credits=1, chars=5, endpoint='/v1/tts/speak')`} />
       </section>
 
       <section className="space-y-3">
         <h2 className="text-lg font-semibold tracking-tight text-white">Voice cloning + design</h2>
-        <CodeBlock code={`# One-shot clone — clip → text in that voice
+        <CodeBlock code={`# One-shot clone, clip → text in that voice
 clone = client.voice_clone.create(
     audio_path="my_voice.wav",
     target_text="Hello in my voice.",
 )
 clone.write_wav("cloned.wav")
 
-# Or from a URL — SDK fetches client-side, then sends as base64
+# Or from a URL, SDK fetches client-side, then sends as base64
 clone = client.voice_clone.create(
     audio_url="https://s3.example.com/me.wav",
     target_text="Same flow, different source.",
@@ -2985,34 +2985,34 @@ asyncio.run(render_chapters(chapters))`} />
 client = Vocence()
 try:
     client.tts.speak(text="x", voice="missing")
-except errors.AuthenticationError:        # 401 — bad / revoked key
+except errors.AuthenticationError:        # 401, bad / revoked key
     ...
-except errors.InsufficientCreditsError:   # 402 — out of credits, Premium required
+except errors.InsufficientCreditsError:   # 402, out of credits, Premium required
     ...
-except errors.RateLimitError as e:        # 429 — slow down
+except errors.RateLimitError as e:        # 429, slow down
     time.sleep(e.retry_after or 1)
-except errors.NotFoundError:              # 404 — voice / agent id missing
+except errors.NotFoundError:              # 404, voice / agent id missing
     ...
-except errors.BadRequestError:            # 400 / 422 — malformed body
+except errors.BadRequestError:            # 400 / 422, malformed body
     ...
-except errors.UpstreamError:              # 502 / 503 / 504 — provider hiccup
+except errors.UpstreamError:              # 502 / 503 / 504, provider hiccup
     ...
 except errors.APIConnectionError:         # DNS / TLS / connection refused
     ...`} />
         <p className="text-sm leading-relaxed text-zinc-400">
           Retries are on by default: GET requests + any 429 retry up to 2
           times with exponential backoff. POST/PATCH/DELETE retry only on
-          429 (never 5xx — avoids double-charge / double-create). Disable
+          429 (never 5xx, avoids double-charge / double-create). Disable
           with <code className="rounded bg-white/[0.06] px-1 text-zinc-300">Vocence(max_retries=0)</code>.
         </p>
       </section>
 
       <section className="space-y-3">
         <h2 className="text-lg font-semibold tracking-tight text-white">Debugging</h2>
-        <CodeBlock code={`# The last response's request_id — paste in support tickets
+        <CodeBlock code={`# The last response's request_id, paste in support tickets
 client.last_request_id
 
-# Quick readiness check before a long batch — round-trips GET /v1/account
+# Quick readiness check before a long batch, round-trips GET /v1/account
 client.health()           # → True / False, no credit charge
 
 # repr() never reveals the key (masked as voc_live_XXX…XXXX)
@@ -3023,19 +3023,19 @@ print(client)`} />
         <h2 className="text-lg font-semibold tracking-tight text-white">Where to next</h2>
         <ul className="ml-4 list-disc space-y-1 text-sm text-zinc-400 marker:text-zinc-600">
           <li>
-            <Link to="/docs/sdk-cli" className="text-[#DFFF00] hover:underline">CLI Reference</Link> — every <code className="rounded bg-white/[0.06] px-1 text-zinc-300">vocence</code> sub-command.
+            <Link to="/docs/sdk-cli" className="text-[#DFFF00] hover:underline">CLI Reference</Link>, every <code className="rounded bg-white/[0.06] px-1 text-zinc-300">vocence</code> sub-command.
           </li>
           <li>
-            <Link to="/docs/sdk-agents" className="text-[#DFFF00] hover:underline">Voice Agents</Link> — WebSocket sessions, conversation helper, live mic chat.
+            <Link to="/docs/sdk-agents" className="text-[#DFFF00] hover:underline">Voice Agents</Link>, WebSocket sessions, conversation helper, live mic chat.
           </li>
           <li>
-            <Link to="/docs/sdk-webhooks" className="text-[#DFFF00] hover:underline">Webhooks</Link> — verifying custom-tool callbacks from Vocence.
+            <Link to="/docs/sdk-webhooks" className="text-[#DFFF00] hover:underline">Webhooks</Link>, verifying custom-tool callbacks from Vocence.
           </li>
           <li>
-            <Link to="/docs/api" className="text-[#DFFF00] hover:underline">API Reference</Link> — the underlying REST surface the SDK wraps.
+            <Link to="/docs/api" className="text-[#DFFF00] hover:underline">API Reference</Link>, the underlying REST surface the SDK wraps.
           </li>
           <li>
-            <Link to="/docs/cookbook" className="text-[#DFFF00] hover:underline">Cookbook</Link> — end-to-end recipes combining endpoints.
+            <Link to="/docs/cookbook" className="text-[#DFFF00] hover:underline">Cookbook</Link>, end-to-end recipes combining endpoints.
           </li>
         </ul>
       </section>
@@ -3057,7 +3057,7 @@ print(client)`} />
         <p className="max-w-2xl text-sm leading-relaxed text-zinc-400">
           The <code className="rounded bg-white/[0.06] px-1 text-zinc-300">vocence</code>{' '}
           command-line tool ships with the Python SDK. Use it to log in
-          once and then drive every endpoint from the shell — no Python
+          once and then drive every endpoint from the shell, no Python
           script required for one-off jobs.
         </p>
       </header>
@@ -3066,7 +3066,7 @@ print(client)`} />
         <h2 className="text-lg font-semibold tracking-tight text-white">Authentication</h2>
         <CodeBlock code={`vocence login                          # browser device-code flow (recommended)
 vocence login --paste                  # prompt for an existing key value
-vocence login --api-key voc_live_xxx   # one-shot (discouraged — visible in shell history)
+vocence login --api-key voc_live_xxx   # one-shot (discouraged, visible in shell history)
 vocence config show                    # print where the key is stored (masked)
 vocence config set-keyring on          # move key to OS keychain (needs vocence[keyring])
 vocence config set-base-url URL        # pin to a non-default API host
@@ -3164,7 +3164,7 @@ vocence voice <agent-id>        # push-to-talk mic REPL  (requires vocence[audio
       </header>
 
       <section className="space-y-3">
-        <h2 className="text-lg font-semibold tracking-tight text-white">Layer 1 — raw event stream</h2>
+        <h2 className="text-lg font-semibold tracking-tight text-white">Layer 1, raw event stream</h2>
         <p className="text-sm leading-relaxed text-zinc-400">
           Lowest-level: drive the WS manually, iterate every event as it
           arrives. Use when you need token-by-token streaming or
@@ -3179,7 +3179,7 @@ async def main():
             await sess.send_text("What's the weather in Tokyo?")
             async for event in sess:
                 if isinstance(event, AudioFrame):
-                    # PCM16LE bytes — write to a player / file / WebRTC track
+                    # PCM16LE bytes, write to a player / file / WebRTC track
                     print(f"audio: {len(event.data)} bytes")
                 elif event.type == "token":
                     print(event.text, end="", flush=True)
@@ -3193,7 +3193,7 @@ asyncio.run(main())`} />
       </section>
 
       <section className="space-y-3">
-        <h2 className="text-lg font-semibold tracking-tight text-white">Layer 2 — Conversation helper</h2>
+        <h2 className="text-lg font-semibold tracking-tight text-white">Layer 2, Conversation helper</h2>
         <p className="text-sm leading-relaxed text-zinc-400">
           Hides the event loop. Each <code className="rounded bg-white/[0.06] px-1 text-zinc-300">.say(...)</code>{' '}
           returns a <code className="rounded bg-white/[0.06] px-1 text-zinc-300">Turn</code>{' '}
@@ -3209,7 +3209,7 @@ asyncio.run(main())`} />
     turn.write_wav("reply.wav") # save the synthesized audio
     turn.play()                 # play through speakers  (needs vocence[audio])
 
-    # Multi-turn — same conversation, second turn
+    # Multi-turn, same conversation, second turn
     turn2 = await conv.say("And of France?")
 
     # Tool calls the LLM made for this turn
@@ -3218,7 +3218,7 @@ asyncio.run(main())`} />
       </section>
 
       <section className="space-y-3">
-        <h2 className="text-lg font-semibold tracking-tight text-white">Layer 3 — Live mic ↔ agent</h2>
+        <h2 className="text-lg font-semibold tracking-tight text-white">Layer 3, Live mic ↔ agent</h2>
         <p className="text-sm leading-relaxed text-zinc-400">
           Push-to-talk microphone capture + real-time speaker playback.
           Requires <code className="rounded bg-white/[0.06] px-1 text-zinc-300">pip install "vocence[audio]"</code>{' '}
@@ -3229,7 +3229,7 @@ asyncio.run(main())`} />
     while True:
         input("press Enter to start speaking…")
         live.record()
-        input("recording — press Enter to stop…")
+        input("recording, press Enter to stop…")
         turn = await live.stop_and_send()
         print(f"you   > {turn['transcript']}")
         print(f"agent > {turn['text']}")
@@ -3237,7 +3237,7 @@ asyncio.run(main())`} />
         <p className="text-sm leading-relaxed text-zinc-400">
           The CLI wraps this as{' '}
           <code className="rounded bg-white/[0.06] px-1 text-zinc-300">vocence voice &lt;agent-id&gt;</code>{' '}
-          — zero-line setup.
+         , zero-line setup.
         </p>
       </section>
 
@@ -3273,10 +3273,10 @@ with Vocence().agents.session("agent-id") as sess:
               <tr><td className="px-4 py-3 font-mono text-cyan-300">transcript</td><td className="px-4 py-3 text-zinc-400">User-side STT echo (voice turns only)</td></tr>
               <tr><td className="px-4 py-3 font-mono text-cyan-300">token</td><td className="px-4 py-3 text-zinc-400">LLM text chunk (stream as it arrives)</td></tr>
               <tr><td className="px-4 py-3 font-mono text-cyan-300">tool_call_started / completed</td><td className="px-4 py-3 text-zinc-400">Custom-tool / built-in tool invocation</td></tr>
-              <tr><td className="px-4 py-3 font-mono text-cyan-300">audio_meta</td><td className="px-4 py-3 text-zinc-400">Format header (pcm16le, 24000 Hz, 40 ms, mono) — arrives BEFORE binary frames</td></tr>
+              <tr><td className="px-4 py-3 font-mono text-cyan-300">audio_meta</td><td className="px-4 py-3 text-zinc-400">Format header (pcm16le, 24000 Hz, 40 ms, mono), arrives BEFORE binary frames</td></tr>
               <tr><td className="px-4 py-3 font-mono text-cyan-300">&lt;binary&gt;</td><td className="px-4 py-3 text-zinc-400">PCM16 audio frame; <code>AudioFrame</code> in Python</td></tr>
               <tr><td className="px-4 py-3 font-mono text-cyan-300">audio_end</td><td className="px-4 py-3 text-zinc-400">All frames for this sentence delivered</td></tr>
-              <tr><td className="px-4 py-3 font-mono text-cyan-300">turn_end</td><td className="px-4 py-3 text-zinc-400">Turn complete — safe to send the next user input</td></tr>
+              <tr><td className="px-4 py-3 font-mono text-cyan-300">turn_end</td><td className="px-4 py-3 text-zinc-400">Turn complete, safe to send the next user input</td></tr>
               <tr><td className="px-4 py-3 font-mono text-cyan-300">error</td><td className="px-4 py-3 text-zinc-400">Upstream failure; the SDK raises <code>UpstreamError</code></td></tr>
             </tbody>
           </table>
@@ -3286,7 +3286,7 @@ with Vocence().agents.session("agent-id") as sess:
       <section className="space-y-3">
         <h2 className="text-lg font-semibold tracking-tight text-white">Building browser apps</h2>
         <p className="text-sm leading-relaxed text-zinc-400">
-          Browser JavaScript can't safely carry your API key — keys would
+          Browser JavaScript can't safely carry your API key, keys would
           be visible in source. Use the Python SDK on{' '}
           <em>your own backend</em> and proxy the WebSocket through:
         </p>
@@ -3319,7 +3319,7 @@ async def proxy(ws: WebSocket, agent_id: str):
           <code className="rounded bg-white/[0.06] px-1 text-zinc-300">getUserMedia</code>
           , send base64 audio over your own WS, queue inbound PCM16 frames
           into a Web Audio <code className="rounded bg-white/[0.06] px-1 text-zinc-300">AudioContext</code>
-          . The format is fixed at 24 kHz mono — easy to decode without a
+          . The format is fixed at 24 kHz mono, easy to decode without a
           codec library.
         </p>
       </section>
@@ -3359,7 +3359,7 @@ X-Vocence-Signature: v1=BASE64(HMAC-SHA256(secret, f"v1.{ts}.{raw_body}"))`} />
           you supplied when registering the tool. The{' '}
           <code className="rounded bg-white/[0.06] px-1 text-zinc-300">v1=</code>{' '}
           prefix lets us bump the scheme later. The timestamp is a Unix
-          epoch — receivers reject anything older than 5 minutes (default,
+          epoch, receivers reject anything older than 5 minutes (default,
           configurable) to block replay attacks.
         </p>
       </section>
@@ -3406,7 +3406,7 @@ webhooks.verify(headers, body, secret, now=fake_clock())`} />
         <h2 className="text-lg font-semibold tracking-tight text-white">Testing your receiver</h2>
         <p className="text-sm leading-relaxed text-zinc-400">
           The SDK exposes <code className="rounded bg-white/[0.06] px-1 text-zinc-300">webhooks.sign(body, secret)</code>{' '}
-          so you can fake-sign requests as Vocence would — handy for
+          so you can fake-sign requests as Vocence would, handy for
           unit tests and curl-based smoke tests.
         </p>
         <CodeBlock code={`import requests
@@ -3428,10 +3428,10 @@ print(resp.status_code)`} />
       <section className="space-y-3">
         <h2 className="text-lg font-semibold tracking-tight text-white">What's protected, what isn't</h2>
         <ul className="ml-4 list-disc space-y-1 text-sm text-zinc-400 marker:text-zinc-600">
-          <li><strong>Authenticity</strong> — only someone with the shared secret can sign a request.</li>
-          <li><strong>Integrity</strong> — flipping a single byte of the body breaks the signature.</li>
-          <li><strong>Replay protection</strong> — captured requests stop working 5 minutes after they were signed.</li>
-          <li>The wire is still HTTPS-only in prod — TLS handles confidentiality.</li>
+          <li><strong>Authenticity</strong>, only someone with the shared secret can sign a request.</li>
+          <li><strong>Integrity</strong>, flipping a single byte of the body breaks the signature.</li>
+          <li><strong>Replay protection</strong>, captured requests stop working 5 minutes after they were signed.</li>
+          <li>The wire is still HTTPS-only in prod, TLS handles confidentiality.</li>
         </ul>
         <p className="text-sm leading-relaxed text-zinc-400">
           What it does <em>not</em> cover: webhook URLs themselves are a
@@ -3470,7 +3470,7 @@ print(resp.status_code)`} />
         <h2 className="text-lg font-semibold tracking-tight text-white">Speak with a built-in voice</h2>
         <p className="text-sm leading-relaxed text-zinc-400">
           List the catalog of pre-defined speakers, pick one, then synthesize.
-          Useful when you don't want to clone or design a voice — just pick a
+          Useful when you don't want to clone or design a voice, just pick a
           good-sounding one off the shelf.
         </p>
         <CodeBlock code={`import requests
@@ -3503,7 +3503,7 @@ print("Audio URL:", audio["audio_url"])  # presigned, ~10 min TTL`} />
         <p className="text-sm leading-relaxed text-zinc-400">
           Upload a 5–30s reference clip, the API transcribes it server-side and
           saves it as a reusable voice. Reuse the same voice id any number of
-          times — no re-upload, no re-transcription.
+          times, no re-upload, no re-transcription.
         </p>
         <CodeBlock code={`import requests
 
@@ -3523,7 +3523,7 @@ with open("my_voice_sample.wav", "rb") as f:
 voice_id = saved["voice_id"]
 print("Saved voice:", voice_id, "·", saved["display_name"])
 
-# 2. Synthesize new text in that voice — any time, any number of times
+# 2. Synthesize new text in that voice, any time, any number of times
 audio = requests.post(
     f"{BASE}/v1/voices/{voice_id}/speak",
     headers={**H, "Content-Type": "application/json"},
@@ -3541,7 +3541,7 @@ print(audio["audio_url"])`} />
         <h2 className="text-lg font-semibold tracking-tight text-white">Transcribe a message and reply in voice</h2>
         <p className="text-sm leading-relaxed text-zinc-400">
           Classic STT → LLM → TTS pipeline. The LLM step is yours (OpenAI,
-          Anthropic, local — anything). Vocence handles both ends of the audio.
+          Anthropic, local, anything). Vocence handles both ends of the audio.
         </p>
         <CodeBlock code={`import base64, requests
 
@@ -3589,7 +3589,7 @@ API_KEY = "voc_live_..."
 BASE = "https://api.vocence.ai"
 H = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
 
-# 1. Register a webhook tool — Vocence will call this URL whenever the
+# 1. Register a webhook tool, Vocence will call this URL whenever the
 #    LLM decides to use the tool mid-conversation.
 tool = requests.post(f"{BASE}/v1/agent-tools", headers=H, json={
     "name": "get_stock_price",
@@ -3723,7 +3723,7 @@ print(f"credits used: {data['credits_used']}, remaining: {data['credits_remainin
           snippets in five languages, and a Try-It-Out button on the{' '}
           <Link to="/docs/api" className="text-[#DFFF00] hover:underline">API Reference</Link>{' '}
           page. If you hit a missing case here, ping us on{' '}
-          <a href="https://discord.gg/vocence" className="text-[#DFFF00] hover:underline" target="_blank" rel="noopener noreferrer">
+          <a href="https://discord.gg/TWmfwJAtXG" className="text-[#DFFF00] hover:underline" target="_blank" rel="noopener noreferrer">
             Discord
           </a>{' '}
           and we'll add the recipe.
@@ -3779,7 +3779,7 @@ print(f"credits used: {data['credits_used']}, remaining: {data['credits_remainin
     }
   };
 
-  // Group links by category — uses visibleDocLinks so admin-only
+  // Group links by category, uses visibleDocLinks so admin-only
   // sections (and their now-empty categories) drop out for non-admins.
   const groupedLinks = visibleDocLinks.reduce((acc, link) => {
     if (!acc[link.category]) acc[link.category] = [];

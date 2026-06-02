@@ -4,6 +4,7 @@ import { Menu, X } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { AuthModal } from './AuthModal';
 import { UserMenu } from './UserMenu';
+import { NotificationBell } from './NotificationBell';
 import { ADMIN_EMAIL } from '../config';
 
 export function Navbar() {
@@ -80,9 +81,12 @@ export function Navbar() {
           </div>
 
           {/* Auth Button / User Menu */}
-          <div className="hidden md:block">
+          <div className="hidden md:flex items-center gap-1">
             {isAuthenticated ? (
-              <UserMenu />
+              <>
+                <NotificationBell />
+                <UserMenu />
+              </>
             ) : (
               <button
                 onClick={() => setIsAuthModalOpen(true)}

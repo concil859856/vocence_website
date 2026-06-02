@@ -224,7 +224,7 @@ export function StudioNoiseRemover() {
           URL.revokeObjectURL(objUrl);
           setFile(null);
           setOriginalUrl(null);
-          setError(`Audio is ${Math.ceil(decoded.duration)}s — max ${MAX_DURATION_SEC}s (${Math.floor(MAX_DURATION_SEC / 60)} minutes).`);
+          setError(`Audio is ${Math.ceil(decoded.duration)}s, max ${MAX_DURATION_SEC}s (${Math.floor(MAX_DURATION_SEC / 60)} minutes).`);
           return;
         }
         setAudioMeta({
@@ -291,7 +291,7 @@ export function StudioNoiseRemover() {
   const handleSubmit = async () => {
     if (!file || !user) return;
     if ((user.credits ?? 0) < CREDIT_NOISE_REMOVER) {
-      setError(`Insufficient credits. Need ${CREDIT_NOISE_REMOVER} credits — you have ${user.credits ?? 0}.`);
+      setError(`Insufficient credits. Need ${CREDIT_NOISE_REMOVER} credits, you have ${user.credits ?? 0}.`);
       return;
     }
     setError(null);
@@ -448,7 +448,7 @@ export function StudioNoiseRemover() {
               </div>
             </div>
           ) : (
-            /* File loaded — show waveform player instead of drop zone */
+            /* File loaded, show waveform player instead of drop zone */
             originalUrl && (
               <WavePlayer
                 src={originalUrl}

@@ -1,5 +1,5 @@
 /**
- * SampleVoicePickerModal — wraps the SampleVoicePicker in a centered modal
+ * SampleVoicePickerModal, wraps the SampleVoicePicker in a centered modal
  * with a backdrop. Used by the General TTS view: click the voice pill →
  * modal opens → pick a voice → modal closes.
  */
@@ -15,7 +15,7 @@ interface Props {
   selectedId: string | null;
   onSelect: (voice: SampleVoice) => void;
   onClose: () => void;
-  /** Forwarded to the picker — when supplied, the user's My Voices are
+  /** Forwarded to the picker, when supplied, the user's My Voices are
    * shown as a separate section above the sample voices. */
   designedVoices?: StudioDesignedVoiceItem[];
   onSelectDesigned?: (encodedId: string, item: StudioDesignedVoiceItem) => void;

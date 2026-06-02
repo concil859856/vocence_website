@@ -46,6 +46,7 @@ import aiohttp
 from turn_detection_client import (
     SmartTurnStream,
     TurnDetectorStream,
+    combine_eou,
     is_configured as turn_detection_available,
     should_commit_turn,
 )
@@ -62,6 +63,25 @@ ENSEMBLER_TICK_MS = 50
 # Inactivity guard — if the client stops sending frames AND the
 # ensembler never commits, we bail rather than hang the WS.
 SESSION_HARD_TIMEOUT_S = 30.0
+
+# When the client signals end-of-audio (its local Silero hit
+# ``endSilenceMs``) we DO NOT immediately commit. If the EOU models
+# aren't confident the user is done — e.g. their last partial ended on
+# "em" / "uh" / a conjunction — we hold the turn open for up to this
+# many additional ms before forcing a commit. The grace scales with
+# how far below ``eou_threshold`` we are, capped at this value.
+# Patient default: 6 s. Users hitting natural thinking-pauses ("hmm…
+# what was I saying… oh right…") need real time to recover; 3 s wasn't
+# enough. The fast path still commits in 0.6-1 s when EOU agrees, so
+# this only adds latency to ambiguous turns where we'd rather wait.
+DEFER_GRACE_BASE_MS = 6000
+
+# Same threshold as ``should_commit_turn`` — kept in sync explicitly
+# so the two decision points use identical EOU semantics. Raised to
+# 0.75 alongside the longer grace so a borderline 0.65 Turn-Detector
+# score (which fires often on partial-but-grammatical fragments like
+# "I want to go to the store") no longer triggers fast-commit.
+DEFER_EOU_THRESHOLD = 0.75
 
 # Frame size the client is expected to send.
 EXPECTED_FRAME_BYTES = 640  # 20 ms @ 16 kHz mono s16le
@@ -81,7 +101,15 @@ class StreamingSessionResult:
 
 @dataclass
 class _SignalState:
-    """Latest values from each upstream — read every tick."""
+    """Latest values from each upstream — read every tick.
+
+    A turn can span multiple pod-side utterances. The pod auto-emits a
+    ``final`` after its internal silence threshold (default 800 ms per
+    the STT spec), which resets its partial counter. We accumulate
+    those finals into ``finals_accumulated`` so a long monologue with
+    natural pauses doesn't end up as just the first segment. The
+    ensembler — NOT the pod — decides when the turn is actually over.
+    """
     smart_turn_p: float = 0.0
     turn_detector_p: float = 0.0
     silence_ms: int = 0
@@ -90,6 +118,17 @@ class _SignalState:
     final_text: str = ""
     final_language: str | None = None
     history: list[dict] = field(default_factory=list)
+    finals_accumulated: list[str] = field(default_factory=list)
+
+    def running_transcript(self) -> str:
+        """Composed text the client should see right now: every
+        committed utterance from this turn plus the still-growing
+        partial. Empty parts are skipped so we don't insert double
+        spaces."""
+        parts = [seg for seg in self.finals_accumulated if seg]
+        if self.partial_text:
+            parts.append(self.partial_text)
+        return " ".join(parts).strip()
 
 
 class StreamingTurnSession:
@@ -194,7 +233,13 @@ class StreamingTurnSession:
                     except Exception as exc:  # noqa: BLE001
                         _log.warning("[stream] task %s raised: %s", t.get_name(), exc)
 
-            transcript = (self._state.final_text or self._state.partial_text).strip()
+            # Compose from accumulator + last partial. Falls back to
+            # ``final_text`` (which is the same join) or ``partial_text``
+            # if no final ever arrived (super-short utterance committed
+            # by the client before the pod auto-finalised).
+            transcript = self._state.running_transcript()
+            if not transcript:
+                transcript = (self._state.final_text or self._state.partial_text).strip()
             if not transcript:
                 return None
 
@@ -343,34 +388,161 @@ class StreamingTurnSession:
 
     async def _forward_frames(self) -> None:
         """Pull binary frames from the client WS and tee them to STT
-        (mandatory) + Smart Turn (best-effort)."""
+        (mandatory) + Smart Turn (best-effort).
+
+        On client-initiated commit, the client's local Silero VAD has
+        merely *guessed* the user is done. We treat that as a hint:
+          * EOU models confident → finalize immediately (fast reply).
+          * EOU models unconfident → defer for ``DEFER_GRACE_BASE_MS``
+            (scaled by how far below threshold). If PCM arrives during
+            the defer the user has resumed — re-enter the forwarding
+            loop. If the ensembler commits during the defer, we exit
+            via the FIRST_COMPLETED cancellation. Otherwise force a
+            commit when the grace expires.
+
+        After finalize, BLOCK until the pod returns a final — without
+        this wait, ``run()``'s ``FIRST_COMPLETED`` semantics fire as
+        soon as this coroutine returns and cancel ``_pump_stt`` before
+        it can read the final, leaving ``state.final_text`` empty and
+        the turn committing with no transcript.
+        """
+        frames_in = 0
+        bytes_in = 0
         while True:
             frame = await self._receive_binary()
             if frame is None:
-                # Client signalled end of audio (stream_commit) — tell
-                # STT to commit its current utterance and the ensembler
-                # will see the final.
-                if self._stt_ws is not None and not self._stt_ws.closed:
-                    try:
-                        await self._stt_ws.send_json({"type": "commit"})
-                    except Exception:
-                        pass
+                # Client signalled end of audio. Decide whether the
+                # EOU models agree, or whether to defer.
+                eou = combine_eou(
+                    self._state.smart_turn_p,
+                    self._state.turn_detector_p,
+                )
+                if eou >= DEFER_EOU_THRESHOLD:
+                    _log.info(
+                        "[stream] client commit honored (eou=%.2f >= %.2f) after %d frames / %d bytes",
+                        eou, DEFER_EOU_THRESHOLD, frames_in, bytes_in,
+                    )
+                    await self._finalize_commit()
+                    return
+
+                resumed = await self._defer_commit(eou)
+                if resumed is not None:
+                    # User resumed speaking during the grace window —
+                    # ``resumed`` is the next PCM frame; forward it and
+                    # continue the main loop.
+                    frame = resumed
+                    frames_in += 1
+                    bytes_in += len(frame)
+                    if self._stt_ws is not None and not self._stt_ws.closed:
+                        try:
+                            await self._stt_ws.send_bytes(frame)
+                        except Exception as exc:  # noqa: BLE001
+                            _log.warning("[stream] STT send_bytes failed: %s", exc)
+                    if self._smart is not None:
+                        try:
+                            await self._smart.send_pcm(frame)
+                        except Exception:
+                            pass
+                    continue
+
+                # Defer expired without resumption. Commit now even
+                # though EOU never reached the threshold.
+                _log.info(
+                    "[stream] defer expired, forcing commit (eou=%.2f) after %d frames / %d bytes",
+                    eou, frames_in, bytes_in,
+                )
+                await self._finalize_commit()
                 return
+            frames_in += 1
+            bytes_in += len(frame)
             # Forward.
             if self._stt_ws is not None and not self._stt_ws.closed:
                 try:
                     await self._stt_ws.send_bytes(frame)
-                except Exception:
-                    pass
+                except Exception as exc:  # noqa: BLE001
+                    _log.warning("[stream] STT send_bytes failed: %s", exc)
             if self._smart is not None:
                 try:
                     await self._smart.send_pcm(frame)
                 except Exception:
                     pass
 
+    async def _defer_commit(self, eou_at_commit: float) -> bytes | None:
+        """Hold the turn open after a low-EOU client commit. Scales the
+        grace window with the EOU gap so a borderline commit (e.g. 0.6
+        vs threshold 0.65) waits a brief moment while a clearly
+        mid-thought commit (e.g. 0.1) waits the full base.
+
+        Returns the next PCM frame if the user resumed speaking, or
+        ``None`` if the grace expired or another commit arrived.
+        """
+        gap = max(0.0, DEFER_EOU_THRESHOLD - eou_at_commit)
+        scale = gap / DEFER_EOU_THRESHOLD if DEFER_EOU_THRESHOLD > 0 else 1.0
+        grace_ms = int(DEFER_GRACE_BASE_MS * scale)
+        deadline = time.perf_counter() + (grace_ms / 1000.0)
+        _log.info(
+            "[stream] client commit deferred (eou=%.2f, grace=%dms)",
+            eou_at_commit, grace_ms,
+        )
+        while True:
+            remaining = deadline - time.perf_counter()
+            if remaining <= 0:
+                return None
+            # If the ensembler already produced a final transcript in
+            # the background we don't need to keep waiting.
+            if self._state.final_text:
+                return None
+            try:
+                next_msg = await asyncio.wait_for(
+                    self._receive_binary(), timeout=remaining,
+                )
+            except asyncio.TimeoutError:
+                return None
+            if next_msg is None:
+                # Another commit during defer — keep waiting; the
+                # client probably re-triggered after a tiny blip.
+                continue
+            _log.info("[stream] resumption detected during defer")
+            return next_msg
+
+    async def _finalize_commit(self) -> None:
+        """Tell STT to flush the in-progress utterance and wait up to
+        1.5 s for the pod to emit a NEW ``final`` (i.e. the accumulator
+        must grow). Waiting on ``final_text`` non-emptiness would be
+        wrong now that the accumulator persists across pod auto-finals
+        — earlier finals would short-circuit the wait and the latest
+        partial would never get flushed."""
+        finals_before = len(self._state.finals_accumulated)
+        if self._stt_ws is not None and not self._stt_ws.closed:
+            try:
+                await self._stt_ws.send_json({"type": "commit"})
+            except Exception:
+                pass
+        deadline = time.perf_counter() + 1.5
+        while (
+            len(self._state.finals_accumulated) == finals_before
+            and time.perf_counter() < deadline
+        ):
+            await asyncio.sleep(0.02)
+        _log.info(
+            "[stream] after finalize: running=%r segments=%d partial=%r",
+            self._state.running_transcript()[:120],
+            len(self._state.finals_accumulated),
+            self._state.partial_text[:80],
+        )
+
     async def _pump_stt(self) -> None:
         """Read events from STT — partials → client + detector,
-        vad_silence → ensembler, final → mark done."""
+        vad_silence → ensembler, final → accumulator.
+
+        A pod ``final`` is NOT turn-end any more. The pod auto-commits
+        a final after its internal silence threshold (~800 ms per the
+        STT spec) and resets its partial counter; treating that as
+        turn-end made any mid-utterance pause (a filler word, a breath)
+        truncate everything that followed. We accumulate finals into
+        ``finals_accumulated`` and the ensembler is the sole authority
+        on when the turn actually ends.
+        """
         ws = self._stt_ws
         if ws is None:
             return
@@ -394,30 +566,55 @@ class StreamingTurnSession:
                 text = (data.get("text") or "").strip()
                 if text:
                     self._state.partial_text = text
-                    # Surface to client UI.
+                    running = self._state.running_transcript()
+                    _log.debug("[stream] STT partial: %r running=%r", text[:80], running[:80])
+                    # Surface the COMPOSED transcript so the client
+                    # sees a stable, monotonically-growing string even
+                    # when the pod resets partials after auto-finals.
                     try:
-                        await self._send_json({"type": "partial_transcript", "text": text})
+                        await self._send_json({"type": "partial_transcript", "text": running})
                     except Exception:
                         pass
-                    # Feed text-EOU model with cumulative transcript.
+                    # Feed text-EOU with the FULL running transcript —
+                    # otherwise it'd be deciding "is this complete?" on
+                    # just the last segment instead of the whole turn.
                     if self._detector is not None:
                         try:
-                            await self._detector.send_token(text)
+                            await self._detector.send_token(running)
                         except Exception:
                             pass
             elif mtype == "final":
                 text = (data.get("text") or "").strip()
                 if text:
-                    self._state.final_text = text
+                    self._state.finals_accumulated.append(text)
+                    # ``final_text`` stays meaningful for the commit
+                    # waiters — it's the composed running transcript.
+                    self._state.final_text = " ".join(
+                        seg for seg in self._state.finals_accumulated if seg
+                    ).strip()
                 lang = data.get("language_detected")
                 if lang:
                     self._state.final_language = lang
-                # When the pod commits a final, the turn IS done from
-                # STT's perspective — the ensembler will see this and
-                # we can commit immediately.
-                self._state.silence_ms = 10_000
-                return
+                _log.info(
+                    "[stream] STT pod final: %r (segments=%d)",
+                    text[:120], len(self._state.finals_accumulated),
+                )
+                # Pod resets its partial counter after a final, so we
+                # reset ours too. Crucially we DON'T return / DON'T set
+                # silence_ms — the ensembler decides turn-end.
+                self._state.partial_text = ""
+                # Push the updated running transcript to the client so
+                # the bubble doesn't flicker to empty between utterances.
+                try:
+                    await self._send_json({
+                        "type": "partial_transcript",
+                        "text": self._state.running_transcript(),
+                    })
+                except Exception:
+                    pass
             elif mtype == "vad_speech":
+                if self._state.silence_ms != 0:
+                    _log.debug("[stream] vad_speech (was silent %dms)", self._state.silence_ms)
                 self._state.silence_ms = 0
             elif mtype == "vad_silence":
                 # Pod gives us cumulative silence_ms since last speech.
@@ -428,6 +625,8 @@ class StreamingTurnSession:
                     data.get("message") or data.get("code"),
                 )
                 return
+            else:
+                _log.debug("[stream] STT msg type=%r data=%r", mtype, str(data)[:200])
 
     async def _ensembler_loop(self) -> None:
         """Tick every ENSEMBLER_TICK_MS and decide whether to commit.
@@ -456,14 +655,20 @@ class StreamingTurnSession:
                 )
                 # Tell STT to commit so we get the cleaned-up final
                 # rather than relying on the last partial.
+                finals_before = len(self._state.finals_accumulated)
                 if self._stt_ws is not None and not self._stt_ws.closed:
                     try:
                         await self._stt_ws.send_json({"type": "commit"})
                     except Exception:
                         pass
-                # Give STT up to 1 s to deliver the final; otherwise
-                # the existing partial is good enough.
+                # Wait for the accumulator to grow by one — older finals
+                # from mid-turn auto-commits already populate it, so a
+                # bare ``final_text`` check would short-circuit before
+                # the current segment gets flushed.
                 deadline = time.perf_counter() + 1.0
-                while not self._state.final_text and time.perf_counter() < deadline:
+                while (
+                    len(self._state.finals_accumulated) == finals_before
+                    and time.perf_counter() < deadline
+                ):
                     await asyncio.sleep(0.02)
                 return

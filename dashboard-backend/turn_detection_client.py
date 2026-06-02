@@ -387,14 +387,36 @@ class TurnDetectorStream:
 # Ensembler — pure helper, no I/O
 # ---------------------------------------------------------------------------
 
+# Default weights for ``combine_eou``. Text/semantic completeness is a
+# stronger signal than audio prosody for distinguishing "user paused
+# mid-thought" from "user finished" — a confident text-EOU is hard to
+# fake, while prosody alone fires on every breath. So we lean on
+# turn-detector heavier than smart-turn.
+_DEFAULT_SMART_WEIGHT = 0.35
+_DEFAULT_TD_WEIGHT = 0.65
+
+
+def combine_eou(
+    smart_turn_p: float,
+    turn_detector_p: float,
+    *,
+    smart_weight: float = _DEFAULT_SMART_WEIGHT,
+    td_weight: float = _DEFAULT_TD_WEIGHT,
+) -> float:
+    """Weighted blend of the two EOU signals. Returns a probability
+    in [0, 1]. ``smart_weight + td_weight`` should equal 1.0 — pass
+    different values to tune which model dominates."""
+    return smart_weight * float(smart_turn_p) + td_weight * float(turn_detector_p)
+
+
 def should_commit_turn(
     *,
     silence_ms: int,
     smart_turn_p: float,
     turn_detector_p: float,
     min_endpointing_delay_ms: int = 500,
-    max_endpointing_delay_ms: int = 6000,
-    eou_threshold: float = 0.5,
+    max_endpointing_delay_ms: int = 12000,
+    eou_threshold: float = 0.75,
 ) -> tuple[bool, str]:
     """Decide whether the user's turn is over.
 
@@ -419,13 +441,24 @@ def should_commit_turn(
     model (Pipecat Smart Turn v3, prosody / intonation).
     ``turn_detector_p`` is the latest probability from the text EOU
     model (LiveKit Turn Detector v2, semantic completeness).
-    We take ``max(smart, td)`` as the combined EOU score — either
-    model being confident is enough evidence.
+    Combined via :func:`combine_eou` (weighted blend that favours
+    text-EOU; ``max()`` was too liberal — either model firing was
+    enough to commit, even when the other strongly disagreed, so
+    a noisy prosody read on a mid-thought pause would interrupt).
 
-    Default thresholds match LiveKit Agents' published values
-    (``min_endpointing_delay=500ms``, ``max_endpointing_delay=6000ms``,
-    ``eou_threshold=0.5``) and are documented to work well across
-    OpenAI Realtime, LiveKit, and Pipecat reference deployments.
+    ``eou_threshold`` defaults to 0.75 (up from LiveKit's 0.5; we
+    started at 0.65 and raised it again after observing the Turn
+    Detector returning 0.6-0.7 on grammatical-but-incomplete partials
+    like "I want to go to the store" — high enough to fast-commit
+    even though the user wasn't done). With weighted blending and a
+    0.75 threshold, BOTH signals have to be reasonably confident
+    before we cut off.
+
+    ``max_endpointing_delay_ms`` defaults to 12 s (up from LiveKit's
+    6 s) — the hard cap should be generous enough that long thinking
+    pauses don't get cut off, since the fast paths (EOU-confident +
+    eou-low-silence-extended) already commit much sooner when the
+    signal is clear.
 
     Returns ``(should_commit, rule_fired)``. The second item is a
     short string identifying which rule fired — useful for logging
@@ -436,7 +469,7 @@ def should_commit_turn(
     if silence_ms >= max_endpointing_delay_ms:
         return True, "hard_cap"
 
-    combined_eou = max(smart_turn_p, turn_detector_p)
+    combined_eou = combine_eou(smart_turn_p, turn_detector_p)
 
     # Fast path: turn-detector is confident the user is done.
     if combined_eou >= eou_threshold:

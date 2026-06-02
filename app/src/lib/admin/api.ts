@@ -2,7 +2,7 @@
  * Admin sudo-mode auth client.
  *
  * Mirrors dashboard-backend/routers/admin_auth.py. The admin_token is
- * stored in sessionStorage (cleared on browser close — by design; the
+ * stored in sessionStorage (cleared on browser close, by design; the
  * admin should re-auth after closing their laptop). All ops API calls
  * inject this token as X-Admin-Token via the wrapper in lib/ops/api.ts.
  */
@@ -58,7 +58,7 @@ async function jsonFetch<T>(url: string, init: RequestInit): Promise<T> {
 }
 
 // API_BASE_URL already ends in '/api' (see services/baseUrl.ts), so the
-// path starts with '/dashboard/...' — NOT '/api/dashboard/...' (which
+// path starts with '/dashboard/...', NOT '/api/dashboard/...' (which
 // would produce a 404 from the duplicated /api/ prefix).
 const base = `${API_BASE_URL}/dashboard/auth/admin`;
 
@@ -99,7 +99,7 @@ export function getStoredAdminToken(): string | null {
   if (expires) {
     const t = Date.parse(expires);
     if (!isNaN(t) && t < Date.now()) {
-      // Already expired client-side — clean up.
+      // Already expired client-side, clean up.
       sessionStorage.removeItem(STORAGE_KEY);
       sessionStorage.removeItem(EXPIRY_KEY);
       return null;

@@ -311,7 +311,7 @@ export function Account() {
             </div>
           </TabsContent>
 
-          {/* Credits Tab — simplified per product feedback: lead with
+          {/* Credits Tab, simplified per product feedback: lead with
               the balance + the daily-credits graph; tuck the detailed
               transaction table behind a "View detailed usage" toggle
               so the resting page isn't a wall of numbers. */}
@@ -394,7 +394,7 @@ export function Account() {
               <div className="space-y-2">
                 <h4 className="font-medium">Your API Keys</h4>
                 <p className="text-xs text-[#7D8A95]">
-                  Rate limits are <span className="text-white">per account</span> — every key
+                  Rate limits are <span className="text-white">per account</span>, every key
                   draws from the same bucket. Creating more keys does not raise your effective
                   request budget.
                 </p>
@@ -433,7 +433,7 @@ export function Account() {
 
 
 /* ==========================================================================
-   CreditsTabContent — simplified Credits tab body.
+   CreditsTabContent, simplified Credits tab body.
    ==========================================================================
 
    The previous layout dumped balance + how-credits-work + summary stats +
@@ -488,7 +488,7 @@ function CreditsTabContent({ credits, dailyCredits, dailyCreditsLoading }: Credi
 
   return (
     <div className="card-vocence p-6 space-y-6">
-      {/* Balance card — compact, single action. The detailed price
+      {/* Balance card, compact, single action. The detailed price
           breakdown moved to /pricing where it's actually relevant. */}
       <div className="bg-gradient-to-br from-[#DFFF00]/15 to-[#2E7D32]/10 border border-[#DFFF00]/30 rounded-2xl p-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
@@ -501,7 +501,7 @@ function CreditsTabContent({ credits, dailyCredits, dailyCreditsLoading }: Credi
         </Link>
       </div>
 
-      {/* Daily consumption graph — at-a-glance burn rate. */}
+      {/* Daily consumption graph, at-a-glance burn rate. */}
       <div>
         <div className="flex items-end justify-between gap-4 mb-3">
           <div>
@@ -565,7 +565,7 @@ function CreditsTabContent({ credits, dailyCredits, dailyCreditsLoading }: Credi
         )}
       </div>
 
-      {/* Detailed transactions — collapsed by default. Once expanded
+      {/* Detailed transactions, collapsed by default. Once expanded
           the panel loads page 0 and reveals pagination controls. */}
       <div>
         <button
@@ -630,7 +630,7 @@ function CreditsTabContent({ credits, dailyCredits, dailyCreditsLoading }: Credi
               </div>
             )}
 
-            {/* Pagination — Prev / Page X of N / Next. Disabled state
+            {/* Pagination, Prev / Page X of N / Next. Disabled state
                 handles the edge pages without hiding the controls so
                 the layout doesn't shift mid-flip. */}
             {txPage && txPage.total > 0 && (
@@ -801,7 +801,7 @@ function ReferralTab() {
           </li>
           <li className="flex items-start gap-2">
             <span className="text-[#DFFF00] font-bold shrink-0">4.</span>
-            Earn <strong className="text-white">10%</strong> of every purchase they make — forever
+            Earn <strong className="text-white">10%</strong> of every purchase they make, forever
           </li>
         </ol>
       </div>

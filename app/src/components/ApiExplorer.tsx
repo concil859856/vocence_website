@@ -1,5 +1,5 @@
 /**
- * ApiExplorer — custom-rendered REST reference for the Vocence developer-API.
+ * ApiExplorer, custom-rendered REST reference for the Vocence developer-API.
  *
  * Fetches /devapi/openapi.json, validates the title prefix, strips any
  * path that isn't under /v1/, then renders one card per operation with
@@ -12,7 +12,7 @@
  *
  * We hand-render instead of mounting Swagger UI because (1) we want a
  * tight visual fit with the rest of the docs page and (2) every
- * operation is then self-documenting in a single card — better for
+ * operation is then self-documenting in a single card, better for
  * humans AND for LLM agents scraping the page.
  */
 
@@ -65,7 +65,7 @@ interface Operation {
   };
   responses: ResponseEntry[];
   /** True when at least one parameter or the requestBody requires the
-   *  Authorization header — used for the "this endpoint requires
+   *  Authorization header, used for the "this endpoint requires
    *  authentication" footer note. */
   requiresAuth: boolean;
 }
@@ -231,7 +231,7 @@ const WS_AGENT_SESSION: Operation = {
       name: 'Authorization',
       in: 'header',
       required: true,
-      description: '`Bearer voc_live_...` — must own the agent.',
+      description: '`Bearer voc_live_...`, must own the agent.',
       schema: { type: 'string' },
     },
     {
@@ -320,7 +320,7 @@ function buildSnippetCtx(op: Operation, paramVals: Record<string, string>, bodyJ
     .map((x) => [x.name, paramVals[x.name] || ''])
     .filter(([_, v]) => v !== '');
   const qs = qsPairs.length ? '?' + qsPairs.map(([k, v]) => `${k}=${encodeURIComponent(v as string)}`).join('&') : '';
-  // WS uses wss:// scheme — distinct enough that we materialize a
+  // WS uses wss:// scheme, distinct enough that we materialize a
   // fully-formed URL here so each snippet template stays language-flat.
   const scheme = op.method === 'ws' ? PUBLIC_BASE.replace(/^https/, 'wss') : PUBLIC_BASE;
   return {
@@ -552,7 +552,7 @@ function Collapsible({
           {count !== undefined && <span className="text-zinc-500">({count})</span>}
         </span>
         {/* ChevronDown rotated to "right" when closed and back to down
-            when open — matches the inline triangle/caret pattern in
+            when open, matches the inline triangle/caret pattern in
             the screenshot without needing a second icon component. */}
         <ChevronDown
           size={14}
@@ -913,7 +913,7 @@ function OperationCard({ op }: { op: Operation }) {
             </div>
           </div>
 
-          {/* Request Configuration — collapsed by default like the screenshot. */}
+          {/* Request Configuration, collapsed by default like the screenshot. */}
           <Collapsible title="Request Configuration" defaultOpen={false}>
             {/* Authorization sub-card */}
             <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-3">
@@ -979,7 +979,7 @@ function OperationCard({ op }: { op: Operation }) {
             </Collapsible>
           )}
 
-          {/* Execute — REST only. WS opens a live, long-lived connection
+          {/* Execute, REST only. WS opens a live, long-lived connection
               that doesn't fit the request/response shape this button is
               built for; the language snippets are the runnable form. */}
           {op.method !== 'ws' && (

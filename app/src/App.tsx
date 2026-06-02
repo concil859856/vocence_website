@@ -9,7 +9,11 @@ import { Navbar } from './components/Navbar';
 import { Footer } from './components/Footer';
 import { ScrollToTop } from './components/ScrollToTop';
 import { StudioPlayerBar } from './components/StudioPlayerBar';
-import { VocenceBot } from './components/bot/VocenceBot';
+// Logos now lives inside the Studio home StudioVoiceAgentSpotlight card
+// (the floating VocenceBot launcher was retired). The panel + hook
+// instance the old bot used are no longer mounted globally, that
+// avoids a second useVoiceChat running in parallel with the active
+// call surface.
 import { Toaster } from './components/ui/sonner';
 import { AgentsComingSoon } from './components/AgentsComingSoon';
 import { useHasVoiceChatAccess } from './lib/voicechatAccess';
@@ -35,7 +39,7 @@ const CliAuthorize = lazy(() => import('./pages/CliAuthorize').then((m) => ({ de
 const Admin = lazy(() => import('./pages/Admin').then((m) => ({ default: m.Admin })));
 const AdminOps = lazy(() => import('./pages/AdminOps').then((m) => ({ default: m.AdminOps })));
 
-// AdminGate isn't lazy — it's a thin wrapper that needs to render the
+// AdminGate isn't lazy, it's a thin wrapper that needs to render the
 // unlock modal synchronously, and the chunk overhead would only save ~3 KB.
 // eslint-disable-next-line import/order
 import { AdminGate } from './components/admin/AdminGate';
@@ -121,7 +125,6 @@ function AppContent() {
         </main>
         <Footer />
         <StudioPlayerBar />
-        <VocenceBot />
       </div>
       </GenerationsProvider>
       </StudioPlayerProvider>

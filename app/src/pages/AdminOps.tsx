@@ -1,11 +1,11 @@
 /**
- * Vocence — Ops fleet manager (admin-only).
+ * Vocence, Ops fleet manager (admin-only).
  *
  * URL: /admin/ops
  *
  * Auth + sudo-mode unlock + cross-link nav are all handled by the
  * <AdminGate> wrapper in App.tsx. This component is just the three-tab
- * page (Analytics / Servers / Pods) — by the time it mounts, the user is
+ * page (Analytics / Servers / Pods), by the time it mounts, the user is
  * confirmed admin + unlocked.
  */
 import { useState } from 'react';

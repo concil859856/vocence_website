@@ -1,5 +1,5 @@
 /**
- * ToolCallChip — small pill rendered inside an assistant chat bubble
+ * ToolCallChip, small pill rendered inside an assistant chat bubble
  * when the agent makes a tool call mid-turn. Shows:
  *
  *   • spinner + tool name while the dispatcher is running

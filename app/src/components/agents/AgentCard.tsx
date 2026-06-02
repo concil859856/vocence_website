@@ -1,10 +1,10 @@
 /**
- * AgentCard — tile shown in the agents list grid.
+ * AgentCard, tile shown in the agents list grid.
  *
  * Visual goals:
  *   • One clear focal point: the avatar.
  *   • Subtle identity tint in the top-right corner using the agent's
- *     own outer-ring gradient — every card feels distinct without
+ *     own outer-ring gradient, every card feels distinct without
  *     shouting.
  *   • Hover lifts the card with a soft shadow + slight upward shift,
  *     and the avatar scales up a touch so the card feels alive.
@@ -92,7 +92,7 @@ export function AgentCard({ agent }: { agent: Agent }) {
         {agent.config.purpose || <span className="text-[#666] italic">No purpose set yet.</span>}
       </p>
 
-      {/* Footer stats — runs / last-run are GOAL-agent concepts. For
+      {/* Footer stats, runs / last-run are GOAL-agent concepts. For
           knowledge (voice-chat) agents they're always 0 / never and
           just add noise, so we hide them. Knowledge-agent footer is
           intentionally blank for now; we can swap in conversation

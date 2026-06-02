@@ -95,3 +95,72 @@ def render() -> tuple[bytes, str]:
     ``(body, content_type)`` so the HTTP handler can set the right
     Content-Type header (dispatcher's poller checks it)."""
     return generate_latest(), CONTENT_TYPE_LATEST
+
+
+# ---------------------------------------------------------------------------
+# JSON snapshot for the Vocence dashboard's metrics_poller.
+#
+# Same shape as the knowledge-ingestion pod's render_dashboard_snapshot.
+# See the comment there for why this exists.
+# ---------------------------------------------------------------------------
+
+import time as _time
+from prometheus_client import REGISTRY as _REGISTRY
+
+
+_PROC_STARTED_AT = _time.time()
+
+
+def _sample_value(name: str, labels: dict | None = None) -> float:
+    for fam in _REGISTRY.collect():
+        for s in fam.samples:
+            if s.name != name:
+                continue
+            if labels is None or all(s.labels.get(k) == v for k, v in labels.items()):
+                return float(s.value)
+    return 0.0
+
+
+def _sum_by_status(name: str, status: str) -> float:
+    """Sum a labelled counter across all label combinations matching
+    ``status=<status>`` — so we get the total across both models."""
+    total = 0.0
+    for fam in _REGISTRY.collect():
+        for s in fam.samples:
+            if s.name == name and s.labels.get("status") == status:
+                total += float(s.value)
+    return total
+
+
+def render_dashboard_snapshot() -> dict:
+    """Flatten the Prometheus REGISTRY into the JSON keys the Vocence
+    dashboard's metrics_poller expects."""
+    ok = int(_sum_by_status("asr_requests_total", "ok"))
+    errors = int(_sum_by_status("asr_requests_total", "error"))
+    timeouts = int(_sum_by_status("asr_requests_total", "timeout"))
+    # Sum duration over both models for the dispatcher's per-pod
+    # rollup. Per-model breakdown stays available on /metrics.
+    dur_sum = (
+        _sample_value("asr_duration_ms_sum", {"model": SMART_TURN})
+        + _sample_value("asr_duration_ms_sum", {"model": TURN_DETECTOR})
+    )
+    dur_count = int(
+        _sample_value("asr_duration_ms_count", {"model": SMART_TURN})
+        + _sample_value("asr_duration_ms_count", {"model": TURN_DETECTOR})
+    )
+    requests_err: dict[str, int] = {}
+    if errors:
+        requests_err["error"] = errors
+    if timeouts:
+        requests_err["timeout"] = timeouts
+    return {
+        "uptime_seconds": int(_time.time() - _PROC_STARTED_AT),
+        "requests_ok": ok,
+        "requests_err": requests_err,
+        "duration_ms_sum": dur_sum,
+        "duration_ms_count": dur_count,
+        "duration_ms_p95": 0.0,
+        "bytes_sent_total": 0,
+        "audio_ms_total": 0,
+        "inflight": int(_sample_value("asr_inflight")),
+    }

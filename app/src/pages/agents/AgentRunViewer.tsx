@@ -1,5 +1,5 @@
 /**
- * AgentRunViewer — /studio/agents/:id/runs/:runId
+ * AgentRunViewer, /studio/agents/:id/runs/:runId
  * Iteration timeline + best output. Polls the run while it's running.
  */
 

@@ -45,7 +45,7 @@ interface HistoryItem {
   /** Music-only: full lyrics block as it was sent to the engine. */
   lyrics?: string;
   /** Music-only: parsed mode-specific params. The set of keys depends on
-   *  ``musicTask`` — retake has variance/seeds, repaint has start/end,
+   *  ``musicTask``, retake has variance/seeds, repaint has start/end,
    *  edit has target_prompt/target_lyrics, extend has left/right, etc. */
   musicMeta?: Record<string, unknown>;
 }
@@ -71,7 +71,7 @@ export function History() {
       return next;
     });
   // Track which field was most recently copied (per row) so the icon
-  // briefly flips to a checkmark — small affordance that makes copy
+  // briefly flips to a checkmark, small affordance that makes copy
   // feel responsive.
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const copyValue = async (key: string, value: string) => {
@@ -341,7 +341,7 @@ export function History() {
       if (meta.right_extend_length != null) rows.push({ label: 'Right (sec)', value: String(meta.right_extend_length) });
       if (meta.extend_seeds) rows.push({ label: 'Seeds', value: String(meta.extend_seeds) });
     }
-    // Common engine knobs, last — most users won't care, but power users want them.
+    // Common engine knobs, last, most users won't care, but power users want them.
     if (meta.infer_step != null) rows.push({ label: 'Infer step', value: String(meta.infer_step) });
     if (meta.guidance_scale != null) rows.push({ label: 'Guidance', value: String(meta.guidance_scale) });
     return (

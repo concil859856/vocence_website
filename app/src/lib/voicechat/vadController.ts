@@ -1,5 +1,5 @@
 /**
- * VAD controller — wraps `@ricky0123/vad-web` (Silero VAD) into a small
+ * VAD controller, wraps `@ricky0123/vad-web` (Silero VAD) into a small
  * event-driven controller for the always-on voice chat.
  *
  * Lifecycle:
@@ -16,14 +16,14 @@
  *
  * Barge-in lock: callers can call `lockSpeechStartFor(ms)` after the
  * agent starts speaking. While that window is active, onSpeechStart is
- * dropped — this prevents the agent's own first syllable bleeding
+ * dropped, this prevents the agent's own first syllable bleeding
  * through cheap speakers and being misread as a user interrupt before
  * echo cancellation has settled.
  */
 
 // MicVAD + onnxruntime-web are large (~MB of WASM + model). Dynamic-
 // import them inside `start()` so they're only fetched when the user
-// actually opens a voice chat — keeps the cold-start bundle lean for
+// actually opens a voice chat, keeps the cold-start bundle lean for
 // users who never interact with Logos or an agent.
 import type { MicVAD as MicVADType } from '@ricky0123/vad-web';
 
@@ -35,15 +35,15 @@ const VAD_SAMPLE_RATE = 16_000;
 const VAD_ASSET_BASE = '/vad/';
 
 export interface VadEvents {
-  /** Speech onset detected. Treat as user-is-talking — barge-in here. */
+  /** Speech onset detected. Treat as user-is-talking, barge-in here. */
   onSpeechStart?: () => void;
   /** Speech segment captured. `wavBytes` is a complete 16 kHz mono PCM16
    * WAV (with RIFF header), already base64-encodable. Submit it as a
    * voice turn. */
   onSpeechEnd?: (segment: { wavBytes: ArrayBuffer; durationMs: number }) => void;
-  /** Continuous speech probability (0..1) — useful for a live indicator. */
+  /** Continuous speech probability (0..1), useful for a live indicator. */
   onProbability?: (p: number) => void;
-  /** Streaming mode only — fires for every ~32 ms audio frame with
+  /** Streaming mode only, fires for every ~32 ms audio frame with
    * raw 16-bit PCM (little-endian, 16 kHz mono) ready to ship over
    * the WS to the streaming-STT pod. */
   onPcmFrame?: (pcm16le: Uint8Array) => void;
@@ -63,8 +63,8 @@ export interface VadOptions {
    * etc.). */
   minSpeechMs?: number;
   /** Capture mode:
-   *   * ``segment`` — buffer until end-of-turn, emit one WAV (legacy).
-   *   * ``stream``  — emit every audio frame as PCM via onPcmFrame; the
+   *   * ``segment``, buffer until end-of-turn, emit one WAV (legacy).
+   *   * ``stream`` , emit every audio frame as PCM via onPcmFrame; the
    *     server-side ensembler decides turn-end.
    *  Default ``segment`` for backward compat. */
   mode?: 'segment' | 'stream';
@@ -80,14 +80,22 @@ export class VadController {
   constructor(events: VadEvents, opts: VadOptions = {}) {
     this.events = events;
     this.opts = {
-      endSilenceMs: opts.endSilenceMs ?? 450,
-      minSpeechMs: opts.minSpeechMs ?? 250,
+      // Patient defaults, 1.0 s of post-speech silence and 0.5 s
+      // minimum recording. RealtimeSTT's 0.6 s default cuts users off
+      // mid-thought when they trail into "uh..." or take a breath; 1.0
+      // gives natural thinking-pause room without feeling broken. The
+      // EOU-confident fast path on the server still commits in ~600 ms
+      // for clean endings (Turn Detector says "done"), so this doesn't
+      // slow down snappy questions, it only matters for the long-pause
+      // case the user is hitting.
+      endSilenceMs: opts.endSilenceMs ?? 1000,
+      minSpeechMs: opts.minSpeechMs ?? 500,
       mode: opts.mode ?? 'segment',
     };
   }
 
   /** Kick off the controller. Returns once the mic is open and the model
-   * is loaded — that may take 200-800ms on first load (ONNX warmup). */
+   * is loaded, that may take 200-800ms on first load (ONNX warmup). */
   async start(): Promise<void> {
     if (this.vad) return;
     try {
@@ -104,7 +112,7 @@ export class VadController {
         // Worker pointed at ort-wasm-simd-threaded.mjs, which Vite's
         // dev server refuses to load from /public via the module
         // pipeline. Silero VAD inference is ~1 ms per 32 ms frame on
-        // the main thread — threading buys nothing here and removes
+        // the main thread, threading buys nothing here and removes
         // the dev-server fight. Also flip off the wasm proxy so the
         // model runs in the page instead of an extra worker.
         ortConfig: (ort) => {
@@ -122,7 +130,7 @@ export class VadController {
         redemptionMs: this.opts.endSilenceMs,
         minSpeechMs: this.opts.minSpeechMs,
         // Caller-supplied MediaStream so we can apply echo cancellation,
-        // noise suppression, and AGC — without these the agent hears
+        // noise suppression, and AGC, without these the agent hears
         // itself through laptop speakers and self-interrupts. The lib
         // (v0.0.30) wires whatever stream this returns into its
         // AudioContext, so the constraints stick for the whole session.
@@ -139,7 +147,7 @@ export class VadController {
           this.events.onProbability?.(probabilities.isSpeech ?? 0);
           // Streaming mode: ship every frame as PCM so the server-
           // side ensembler can run. We don't gate on speech vs
-          // silence here — the STT pod's own VAD does that and feeds
+          // silence here, the STT pod's own VAD does that and feeds
           // the ensembler.
           if (this.opts.mode === 'stream' && this.events.onPcmFrame && frame) {
             this.events.onPcmFrame(float32ToPcm16(frame));
@@ -184,7 +192,7 @@ export class VadController {
   }
 
   /** Drop onSpeechStart events for the next `ms` milliseconds. Used
-   * right after the agent's audio actually starts playing — gives the
+   * right after the agent's audio actually starts playing, gives the
    * browser's echo canceller a moment to settle before we trust the mic
    * to distinguish the user from the agent's own voice. */
   lockSpeechStartFor(ms: number): void {
@@ -201,7 +209,7 @@ export class VadController {
       this.vad.pause();
       this.vad.destroy();
     } catch {
-      // ignore — best-effort teardown
+      // ignore, best-effort teardown
     }
     this.vad = null;
   }
@@ -243,7 +251,7 @@ function writeAscii(view: DataView, offset: number, str: string): void {
 
 
 /** Convert a Float32Array of audio samples (-1..1) into raw PCM s16le
- *  bytes — the shape the streaming-STT pod expects on the WS. */
+ *  bytes, the shape the streaming-STT pod expects on the WS. */
 function float32ToPcm16(samples: Float32Array): Uint8Array {
   const out = new Uint8Array(samples.length * 2);
   const view = new DataView(out.buffer);
@@ -256,7 +264,7 @@ function float32ToPcm16(samples: Float32Array): Uint8Array {
 
 export function arrayBufferToBase64(buffer: ArrayBuffer): string {
   // Chunked to avoid String.fromCharCode argument-count limits on big
-  // buffers — 8KB at a time stays well below every browser's cap.
+  // buffers, 8KB at a time stays well below every browser's cap.
   const bytes = new Uint8Array(buffer);
   let binary = '';
   const chunk = 0x8000;

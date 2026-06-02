@@ -148,6 +148,21 @@ async def metrics_endpoint() -> Response:
     return Response(content=body, media_type=content_type)
 
 
+@app.get("/metrics.json")
+async def metrics_json_endpoint() -> dict:
+    """JSON-shaped metrics snapshot for the Vocence dashboard's
+    metrics_poller.
+
+    The dashboard's scraper expects bespoke keys like ``requests_ok``,
+    ``inflight``, ``duration_ms_sum`` etc. It can't parse Prometheus
+    text format, so a pod that ONLY exposed ``/metrics`` would show
+    up as a permanently flat line on the admin Ops graph regardless
+    of real traffic. This endpoint flattens our Prometheus counters
+    into the schema the dashboard wants. The Prometheus endpoint
+    above is unchanged for external scrapers."""
+    return metrics.render_dashboard_snapshot()
+
+
 # --- Auth-gated endpoints ---
 
 @app.post("/v1/ingest", dependencies=[Depends(require_api_key)])

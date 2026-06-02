@@ -25,7 +25,7 @@ export const MUSIC_SAMPLE_COVERS: string[] = shuffleOnce(
 );
 
 /** All abstract images uploaded to R2, in their manifest order. This
- *  is the **stable** list — never shuffled — used by ``fallbackCoverFor``
+ *  is the **stable** list, never shuffled, used by ``fallbackCoverFor``
  *  so a given seed always lands on the same image across reloads.
  *  Sorted by key for a deterministic order even if the JSON manifest
  *  is regenerated with a different field order. */
@@ -36,7 +36,7 @@ const STABLE_ABSTRACT_COVERS: string[] =
     .map((k) => asset(k))
     .filter(Boolean);
 
-/** Display-order abstract covers — shuffled at module load so the
+/** Display-order abstract covers, shuffled at module load so the
  *  cover-picker gallery doesn't always start with the same image.
  *  Do NOT use this for ``fallbackCoverFor`` lookups; the shuffle
  *  makes the same seed land on a different URL each session. */
@@ -52,7 +52,7 @@ export const PLAYBOOK_COVERS: string[] = shuffleOnce([
 
 /**
  * Tiny string-hash for deterministic fallback selection. Same input
- * always lands on the same index — no flicker between renders. Mirrors
+ * always lands on the same index, no flicker between renders. Mirrors
  * the seed pattern in ``avatarGradientPairFor``.
  */
 function _seedHash(seed: string): number {
@@ -69,11 +69,11 @@ function _seedHash(seed: string): number {
  * Deterministic fallback cover from the abstract pool. Items lacking an
  * explicit image (no ``cover_image_url``, no ``image_url``, etc.) get
  * a stable, colorful identity by hashing their id into the **stable**
- * abstract list — NOT the shuffled display list — so the same id
+ * abstract list, NOT the shuffled display list, so the same id
  * always lands on the same image across page reloads / sessions.
  *
  * Use anywhere an item needs a visual identity but the user hasn't
- * provided one — playbook list cards, track rows, agent avatars, etc.
+ * provided one, playbook list cards, track rows, agent avatars, etc.
  */
 export function fallbackCoverFor(seed: string | number): string {
   if (STABLE_ABSTRACT_COVERS.length === 0) return '';

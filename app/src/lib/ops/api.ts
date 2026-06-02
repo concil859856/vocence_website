@@ -1,6 +1,6 @@
 /**
  * Vocence ops REST client.
- * Mirrors dashboard-backend/routers/ops.py — every endpoint is admin-only
+ * Mirrors dashboard-backend/routers/ops.py, every endpoint is admin-only
  * (gated server-side on require_admin_session). Token is the same JWT
  * used elsewhere; admin gating is by email match in the backend.
  */
@@ -94,7 +94,7 @@ async function jsonFetch<T>(url: string, init: RequestInit): Promise<T> {
 }
 
 // API_BASE_URL already ends in '/api' (see services/baseUrl.ts), so the
-// path starts with '/dashboard/...' — NOT '/api/dashboard/...' (which
+// path starts with '/dashboard/...', NOT '/api/dashboard/...' (which
 // would produce a 404 from the duplicated /api/ prefix).
 const base = `${API_BASE_URL}/dashboard/ops`;
 

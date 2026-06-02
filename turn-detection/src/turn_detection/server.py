@@ -145,6 +145,14 @@ async def metrics_endpoint() -> Response:
     return Response(content=body, media_type=content_type)
 
 
+@app.get("/metrics.json")
+async def metrics_json_endpoint() -> dict:
+    """JSON-shaped metrics snapshot for the Vocence dashboard. See
+    ``metrics.render_dashboard_snapshot`` for why this exists — the
+    dashboard's poller can't parse Prometheus text format."""
+    return metrics.render_dashboard_snapshot()
+
+
 # Auth-gated REST batch endpoints — convenient for testing without WS plumbing.
 app.include_router(batch_router, prefix="/v1", dependencies=[Depends(require_api_key)])
 

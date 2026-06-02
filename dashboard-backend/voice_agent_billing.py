@@ -155,9 +155,16 @@ class VoiceAgentBilling:
         )
 
         self._started_at: float = 0.0
-        # Bumped on every user turn so the idle watchdog can detect a
-        # quiet client. Initialized to start time at session begin.
+        # Bumped each time an agent turn ENDS — that is, when the agent
+        # stops talking. Idle is measured from this timestamp, NOT from
+        # the user sending a turn, so the 60-second rule reads exactly
+        # as "60 s after the agent stops talking" (see ``mark_turn_ended``).
         self._last_activity_at: float = 0.0
+        # Number of agent turns currently in flight (LLM running / TTS
+        # streaming). While > 0 the watchdog skips the idle check —
+        # otherwise a turn that takes longer than IDLE_TIMEOUT_SEC would
+        # self-terminate mid-speech.
+        self._in_flight_turns: int = 0
         self._total_charged: int = 0
         self._task: asyncio.Task | None = None
         self._stopping = asyncio.Event()
@@ -186,6 +193,26 @@ class VoiceAgentBilling:
         self._task = asyncio.create_task(
             self._loop(), name=f"voice_agent_billing:{self.session_id}"
         )
+
+    def mark_turn_started(self) -> None:
+        """Note that an agent turn is now in flight (LLM + TTS streaming).
+
+        While a turn is in flight, the idle watchdog SKIPS its idle check
+        — long-running turns (tool calls, slow LLMs) used to self-
+        terminate at the 60-second mark even though the agent was still
+        mid-speech, because ``mark_activity`` only fires at turn-end.
+        Decoupling "user activity" from "turn in flight" lets the idle
+        rule be exactly what we want: 60 s after the agent STOPS
+        talking, regardless of how long the previous turn took."""
+        self._in_flight_turns += 1
+
+    def mark_turn_ended(self) -> None:
+        """Called when an agent turn finishes (TTS drained / cancelled /
+        errored). Resets the idle clock AND decrements the in-flight
+        counter — both transitions happen atomically so the watchdog
+        sees a consistent state on its next tick."""
+        self._in_flight_turns = max(0, self._in_flight_turns - 1)
+        self._last_activity_at = time.monotonic()
 
     def mark_activity(self) -> None:
         """Call when ANY user turn arrives (voice or text). Resets the
@@ -311,7 +338,11 @@ class VoiceAgentBilling:
             # 2. Idle timeout — also before deduction. A user who walked
             #    away shouldn't be charged for one more increment past
             #    the threshold; we close on the increment AT the boundary.
-            if IDLE_TIMEOUT_SEC > 0 and (now - self._last_activity_at) >= IDLE_TIMEOUT_SEC:
+            if (
+                IDLE_TIMEOUT_SEC > 0
+                and self._in_flight_turns == 0
+                and (now - self._last_activity_at) >= IDLE_TIMEOUT_SEC
+            ):
                 await self._fire_end(self.REASON_IDLE_TIMEOUT)
                 return
 

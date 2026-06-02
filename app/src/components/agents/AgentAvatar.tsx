@@ -1,5 +1,5 @@
 /**
- * AgentAvatar — colorful, deterministic identity tile.
+ * AgentAvatar, colorful, deterministic identity tile.
  *
  * Each agent gets a unique abstract artwork pulled from the
  * ``ABSTRACT_COVERS`` pool (50+ pre-generated cover images), seeded
@@ -10,11 +10,11 @@
  *
  * Previously this rendered a two-ring gradient. We swapped to the
  * image-based identity so the avatar matches the rest of the cover
- * system (playbook covers, track artwork) — anywhere an item lacks
+ * system (playbook covers, track artwork), anywhere an item lacks
  * its own image, this is the visual it gets.
  *
  * Same component is used by My Voices tiles (via avatarGradientPairFor
- * still — that one's voice-keyed, not agent-keyed), agent cards,
+ * still, that one's voice-keyed, not agent-keyed), agent cards,
  * agent detail header, agent chat header, and any future surface
  * that needs an agent identity tile.
  */
@@ -22,9 +22,9 @@
 import { fallbackCoverFor } from '../../data/playbookCovers';
 
 interface Props {
-  /** Stable id (or any deterministic string) — seeds the cover pick. */
+  /** Stable id (or any deterministic string), seeds the cover pick. */
   id: string;
-  /** Display name — used to derive the initials overlay. */
+  /** Display name, used to derive the initials overlay. */
   name: string;
   /** Tailwind size class set; defaults to medium (44 px). ``xl`` is
    *  the hero-sized variant used on the AgentDetail header. ``xs``
@@ -35,7 +35,7 @@ interface Props {
    *  identity blocks (large hero covers, list thumbnails). */
   rounded?: 'lg' | 'xl' | '2xl' | 'full';
   className?: string;
-  /** Hide the initials overlay — useful when the surrounding UI
+  /** Hide the initials overlay, useful when the surrounding UI
    *  already shows the agent name big and the initials add noise. */
   hideInitials?: boolean;
 }
@@ -45,7 +45,7 @@ const SIZE_CLS: Record<NonNullable<Props['size']>, { outer: string; text: string
   sm: { outer: 'w-9 h-9',                       text: 'text-[12px]' },
   md: { outer: 'w-11 h-11',                     text: 'text-sm' },
   lg: { outer: 'w-14 h-14',                     text: 'text-lg' },
-  // Hero sizing — bigger initials drop-shadow so the letter stays
+  // Hero sizing, bigger initials drop-shadow so the letter stays
   // readable over the high-saturation abstract artwork.
   xl: { outer: 'w-32 h-32 sm:w-36 sm:h-36',     text: 'text-3xl sm:text-4xl' },
 };
@@ -75,7 +75,7 @@ export function AgentAvatar({
 }: Props) {
   const initials = initialsOf(name);
   // Same seed shape used elsewhere ("agent-${id}") so the agent's
-  // image is stable across every surface that displays it — card,
+  // image is stable across every surface that displays it, card,
   // detail hero, chat header all land on the same artwork.
   const cover = fallbackCoverFor(`agent-${id}`);
   const sz = SIZE_CLS[size];

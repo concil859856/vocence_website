@@ -1,5 +1,5 @@
 /**
- * CLI device-code approval page — /cli/authorize?user_code=ABCD-1234
+ * CLI device-code approval page, /cli/authorize?user_code=ABCD-1234
  *
  * When a user runs ``vocence login`` the CLI opens this page. We confirm
  * the user_code, then they click Approve (mints a fresh API key bound to
@@ -86,7 +86,7 @@ export function CliAuthorize() {
         {state === 'approved' && (
           <div className="space-y-4">
             <div className="rounded-lg border border-emerald-400/30 bg-emerald-500/10 p-4 text-sm text-emerald-200">
-              <Check className="mb-1 inline" size={16} /> Authorized. Return to your terminal — the CLI
+              <Check className="mb-1 inline" size={16} /> Authorized. Return to your terminal, the CLI
               has already received the new key.
             </div>
             <Link to="/account/developer" className="text-sm text-zinc-400 underline">

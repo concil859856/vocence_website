@@ -443,12 +443,25 @@ async def update_pod_endpoint(pod_id: int, _: str = Depends(require_admin_unlock
         extra_env = json.loads(ops_crypto.decrypt(pod.get("extra_env_enc") or "") or "{}")
 
         env = dict(extra_env)
+        # KEEP IN SYNC with the deploy-pod handler ~140 lines up. The two
+        # tables diverged once (newer services were added to deploy but
+        # not update), which meant clicking "Update" on a knowledge /
+        # turn-detection / asr_streaming_rt pod silently re-launched it
+        # WITHOUT the X-API-Key env var — the container's config loader
+        # then exits with ``env var KN_API_KEY is required`` and the
+        # pod restart-loops forever. Treat both tables as one source of
+        # truth and add new services to BOTH at the same time.
         env_key_for_service = {
             "tts_streaming": "QWEN3_TTS_API_KEY",
             "voice_design": "QWEN3_VD_API_KEY",
             "voice_clone": "QWEN3_CLONE_API_KEY",
             "stt": "STT_API_KEY",
             "music": "MUSIC_API_KEY",
+            "noise_remover": "NOISE_REMOVER_API_KEY",
+            "dubbing": "NOISE_REMOVER_API_KEY",
+            "asr_streaming_rt": "ASR_API_KEY",
+            "turn_detection": "TD_API_KEY",
+            "knowledge_ingestion": "KN_API_KEY",
         }.get(pod["service"])
         if env_key_for_service and api_key:
             env.setdefault(env_key_for_service, api_key)
@@ -459,6 +472,11 @@ async def update_pod_endpoint(pod_id: int, _: str = Depends(require_admin_unlock
             "voice_clone": 8113,
             "stt": 8114,
             "music": 8115,
+            "noise_remover": 8116,
+            "dubbing": 8116,
+            "asr_streaming_rt": 8117,
+            "turn_detection": 8119,
+            "knowledge_ingestion": 8118,
         }.get(pod["service"], int(pod["port"]))
 
         container_name = f"vocence-{pod['service']}-{pod_id}"

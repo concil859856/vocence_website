@@ -134,6 +134,12 @@ developer-api/venv/
 .cache/
 
 
-# SDK lives in a sibling directory, never inside this repo
+# Sibling repos cloned into the workspace root for in-session
+# development. Each has its own canonical repo elsewhere; we never
+# want their working trees committed under vocence_website.
 /vocence-sdk
 vocence-sdk/
+/knowledge-ingestion
+knowledge-ingestion/
+/turn-detection
+turn-detection/

@@ -86,7 +86,7 @@ function buildPositions(nodes: SubnetGraphNode[]): Record<string, PositionedNode
   const xGap = columns > 1 ? aspectWidth / (columns - 1) : 0;
   // 40 = no-overlap spacing for the r=11 node (diameter 22) with margin.
   // When miner count grows past what fits in (y2 - y1) at this gap, the
-  // gap shrinks to fit the band — overlap is acceptable per the design.
+  // gap shrinks to fit the band, overlap is acceptable per the design.
   const yGap = rows > 1 ? Math.min(40, aspectHeight / (rows - 1)) : 0;
   // Bottom-anchor so few miners sit at the visual bottom (y≈394, matching
   // the original layout) and only dense subnets reach upward toward the

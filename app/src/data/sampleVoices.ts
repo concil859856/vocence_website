@@ -1,7 +1,7 @@
 /**
  * Sample voice catalog for the General TTS subpage.
  *
- * 28 voices — flat list (no groups). The backend has its own copy of the
+ * 28 voices, flat list (no groups). The backend has its own copy of the
  * audio URLs / file paths in dashboard-backend/sample_voices_data.py —
  * keep them in sync.
  *
@@ -23,16 +23,28 @@ export interface SampleVoice {
   // …or a backend-static path (newer local voices)
   imageStaticPath?: string;   // file under /api/dashboard/sample-voices/
   audioStaticPath?: string;
+
+  // …or a direct URL (community-contributed voices stored in MinIO/R2).
+  // When present these take priority over the *Path / *Key resolvers.
+  imageDirectUrl?: string;
+  audioDirectUrl?: string;
+
+  // Present only for community-submitted voices. Drives the small
+  // submitter-avatar overlay on the card + the hover tooltip.
+  submitter?: {
+    name: string | null;
+    picture: string | null;
+  };
 }
 
-// Order is hand-shuffled and intentionally fixed — voices interleave so
+// Order is hand-shuffled and intentionally fixed, voices interleave so
 // nothing groups by source (CDN vs local, design vs character).
 // Don't re-sort or re-shuffle.
 export const SAMPLE_VOICES: SampleVoice[] = [
   { id: 'voc-atlas',   name: 'Atlas',   description: 'Deep, commanding male voice',
     audioStaticPath: 'deep_male.wav',  imageStaticPath: 'voc-atlas.webp' },
   { id: 'design-aria', name: 'Aria',    description: 'Bright, energetic female voice',
-    imageAssetKey: 'voice-design.aria',  audioAssetKey: 'voice-design-audio.aria' },
+    imageStaticPath: 'design-aria.webp', audioAssetKey: 'voice-design-audio.aria' },
   { id: 'voc-magnus',  name: 'Magnus',  description: 'Clean, deep narrator voice',
     audioStaticPath: 'male_deep_clean.wav', imageStaticPath: 'voc-magnus.webp' },
   { id: 'voc-harper',  name: 'Harper',  description: 'Warm, conversational podcast voice',
@@ -44,13 +56,13 @@ export const SAMPLE_VOICES: SampleVoice[] = [
   { id: 'voc-camille', name: 'Camille', description: 'Smooth, polished female voice',
     audioStaticPath: 'feamle2.wav',      imageStaticPath: 'voc-camille.webp' },
   { id: 'design-aurora', name: 'Aurora', description: 'Soft, dreamy female voice',
-    imageAssetKey: 'voice-design.aurora', audioAssetKey: 'voice-design-audio.aurora' },
+    imageStaticPath: 'design-aurora.webp', audioAssetKey: 'voice-design-audio.aurora' },
   { id: 'voc-felix',   name: 'Felix',   description: 'Friendly, conversational male voice',
     audioStaticPath: 'male_conv.wav',    imageStaticPath: 'voc-felix.webp' },
   { id: 'voc-chase',   name: 'Chase',   description: 'Energetic, engaging podcast host',
     audioStaticPath: 'pod_male1.wav',    imageStaticPath: 'voc-chase.webp' },
   { id: 'design-dante', name: 'Dante',  description: 'Deep, confident male voice',
-    imageAssetKey: 'voice-design.dante', audioAssetKey: 'voice-design-audio.dante' },
+    imageStaticPath: 'design-dante.webp', audioAssetKey: 'voice-design-audio.dante' },
   { id: 'voc-sienna',  name: 'Sienna',  description: 'Vibrant, engaging female voice',
     audioStaticPath: 'female_engaging.wav', imageStaticPath: 'voc-sienna.webp' },
   { id: 'voc-iris',    name: 'Iris',    description: 'Bright, articulate female voice',
@@ -62,19 +74,19 @@ export const SAMPLE_VOICES: SampleVoice[] = [
   { id: 'voc-theo',    name: 'Theo',    description: 'Thoughtful, measured male voice',
     audioStaticPath: 'pod_male3.wav',    imageStaticPath: 'voc-theo.webp' },
   { id: 'design-kai',  name: 'Kai',     description: 'Smooth, friendly male voice',
-    imageAssetKey: 'voice-design.kai',   audioAssetKey: 'voice-design-audio.kai' },
+    imageStaticPath: 'design-kai.webp',  audioAssetKey: 'voice-design-audio.kai' },
   { id: 'voc-penny',   name: 'Penny',   description: 'Sunny, cheerful female voice',
     audioStaticPath: 'female_mood.wav',  imageStaticPath: 'voc-penny.webp' },
   { id: 'voc-roman',   name: 'Roman',   description: 'Rich, classical male tone',
     audioStaticPath: 'deep_male2.wav',   imageStaticPath: 'voc-roman.webp' },
   { id: 'real-sophia', name: 'Sophia',  description: 'Warm, expressive female voice',
-    imageAssetKey: 'clone.sophia',       audioAssetKey: 'clone-audio.sophia' },
+    imageStaticPath: 'real-sophia.webp', audioAssetKey: 'clone-audio.sophia' },
   { id: 'voc-eliza',   name: 'Eliza',   description: 'Polished, anchor-style female voice',
     audioStaticPath: 'female_news.wav',  imageStaticPath: 'voc-eliza.webp' },
   { id: 'voc-maximus', name: 'Maximus', description: 'Bold, authoritative male voice',
     audioStaticPath: 'deep_male4.wav',   imageStaticPath: 'voc-maximus.webp' },
   { id: 'design-luna', name: 'Luna',    description: 'Mysterious, ethereal female voice',
-    imageAssetKey: 'voice-design.luna',  audioAssetKey: 'voice-design-audio.luna' },
+    imageStaticPath: 'design-luna.webp', audioAssetKey: 'voice-design-audio.luna' },
   { id: 'voc-owen',    name: 'Owen',    description: 'Clear, professional podcast voice',
     audioStaticPath: 'pod_male5.wav',    imageStaticPath: 'voc-owen.webp' },
   { id: 'voc-quinn',   name: 'Quinn',   description: 'Upbeat, joyful female voice',
@@ -84,7 +96,7 @@ export const SAMPLE_VOICES: SampleVoice[] = [
   { id: 'voc-vincent', name: 'Vincent', description: 'Refined, baritone male voice',
     audioStaticPath: 'deep_male3.wav',   imageStaticPath: 'voc-vincent.webp' },
   { id: 'design-yuki', name: 'Yuki',    description: 'Calm, gentle female voice',
-    imageAssetKey: 'voice-design.yuki',  audioAssetKey: 'voice-design-audio.yuki' },
+    imageStaticPath: 'design-yuki.webp', audioAssetKey: 'voice-design-audio.yuki' },
   { id: 'voc-milo',    name: 'Milo',    description: 'Bright, easygoing male voice',
     audioStaticPath: 'male_mood.wav',    imageStaticPath: 'voc-milo.webp' },
   { id: 'voc-lyle',    name: 'Lyle',    description: 'Smooth, easy-listening male voice',
@@ -92,15 +104,15 @@ export const SAMPLE_VOICES: SampleVoice[] = [
   { id: 'char-happy-female', name: 'Happy Female', description: 'Cheerful, upbeat female voice',
     imageAssetKey: 'tts-style.happy-female', audioAssetKey: 'tts-demo.happy-female' },
   { id: 'design-marcus', name: 'Marcus', description: 'Authoritative, mature male voice',
-    imageAssetKey: 'voice-design.marcus', audioAssetKey: 'voice-design-audio.marcus' },
+    imageStaticPath: 'design-marcus.webp', audioAssetKey: 'voice-design-audio.marcus' },
   { id: 'voc-jasper',  name: 'Jasper',  description: 'Warm, friendly storytelling voice',
     audioStaticPath: 'pod_male4.wav',    imageStaticPath: 'voc-jasper.webp' },
   { id: 'design-ember', name: 'Ember',  description: 'Warm, soulful female voice',
-    imageAssetKey: 'voice-design.ember', audioAssetKey: 'voice-design-audio.ember' },
+    imageStaticPath: 'design-ember.webp', audioAssetKey: 'voice-design-audio.ember' },
   { id: 'char-military-commander', name: 'Military Commander', description: 'Stern, commanding officer voice',
     imageAssetKey: 'tts-style.military-commander', audioAssetKey: 'tts-demo.military-commander' },
   { id: 'design-rafael', name: 'Rafael', description: 'Charismatic, expressive male voice',
-    imageAssetKey: 'voice-design.rafael', audioAssetKey: 'voice-design-audio.rafael' },
+    imageStaticPath: 'design-rafael.webp', audioAssetKey: 'voice-design-audio.rafael' },
   { id: 'char-neutral-male', name: 'Neutral Male', description: 'Clear, neutral male narrator',
     imageAssetKey: 'tts-style.neutral-male', audioAssetKey: 'tts-demo.neutral-male' },
 ];
@@ -121,6 +133,9 @@ export function resolveSampleVoiceAudioUrl(
   assetResolve: (key: string) => string,
   apiBaseUrl: string,
 ): string {
+  // Direct URLs (community submissions) win, they were uploaded
+  // by the user and live in object storage, not in the CDN catalog.
+  if (voice.audioDirectUrl) return voice.audioDirectUrl;
   if (voice.audioStaticPath) {
     const base = apiBaseUrl.replace(/\/$/, '');
     return `${base}/dashboard/sample-voices/${voice.audioStaticPath}`;
@@ -138,7 +153,7 @@ export function resolveSampleVoiceAudioUrl(
  * RING with a multi-stop cool gradient (4 colours), a small visible gap,
  * then a deeper inner BODY with its own multi-stop cool gradient
  * (3 colours). White initials sit on the inner body. Same cool palette
- * across the product (emerald / teal / cyan / sky / green / blue) — no
+ * across the product (emerald / teal / cyan / sky / green / blue), no
  * warm colours, no overly-bright pastels, no overly-dark muds.
  *
  * The outer ring's lighter saturation makes the avatar pop without
@@ -192,7 +207,7 @@ export function avatarGradientFor(voiceId: string): string {
 
 /** Two-ring gradient pair (outer ring + inner body). The two indices
  * are deliberately offset so a single id rarely lands on the same
- * gradient twice — avoids "concentric circles in the same hue". */
+ * gradient twice, avoids "concentric circles in the same hue". */
 export function avatarGradientPairFor(id: string): { outer: string; inner: string } {
   const h = _hash(id);
   const outer = OUTER_RING_GRADIENTS[h % OUTER_RING_GRADIENTS.length];

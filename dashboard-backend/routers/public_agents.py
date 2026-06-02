@@ -55,3 +55,55 @@ async def public_agent(agent_id: str) -> dict:
         "type": agent["type"],          # 'knowledge' | 'goal'
         "status": agent["status"],      # 'active' | 'paused' | 'draft' | 'archived'
     }
+
+
+# Languages list is kept in sync with the Studio Speech-to-Text picker
+# (app/src/pages/Studio.tsx · STT_LANGUAGES). When that array grows,
+# bump the number here too — the Studio home spotlight card reads this
+# value so it stays accurate without anyone having to remember.
+_SUPPORTED_LANGUAGES_COUNT = 24
+
+
+@router.get("/stats/voice")
+async def voice_stats() -> dict:
+    """Read-only platform stats for the Studio home spotlight card.
+
+    Returns honest, measurable numbers — no marketing inflation:
+      * ``calls_handled`` — distinct voice sessions completed against
+        ANY agent (Logos / Vocence Assistant calls included — they
+        share the same WS path). One WS open = one session_id =
+        one call, regardless of how many turns happened within it.
+        Old rows (pre-migration) had no session_id and are skipped.
+      * ``languages``     — supported STT language count.
+    """
+    conn = await get_connection()
+    try:
+        # COUNT distinct sessions regardless of turn mode. A "call" is
+        # one WS open → many turns; the turn shape (voice WAV upload,
+        # streamed PCM, or text-only) doesn't change whether it counts
+        # as a call. status filter lets failed handshakes drop out.
+        cur = await conn.execute(
+            "SELECT COUNT(DISTINCT session_id) AS n "
+            "FROM studio_voicechat_history "
+            "WHERE status = 'completed' "
+            "  AND session_id IS NOT NULL"
+        )
+        row = await cur.fetchone()
+        calls = int(row["n"] or 0) if row else 0
+
+        # Total ACTIVE user-created agents across the network. We
+        # restrict to ``active`` so the marquee number reflects what's
+        # live on the platform — not drafts a user spun up and never
+        # activated (which would also be a free counter to spam).
+        cur = await conn.execute(
+            "SELECT COUNT(*) AS n FROM agents WHERE status = 'active'"
+        )
+        row = await cur.fetchone()
+        agents_created = int(row["n"] or 0) if row else 0
+    finally:
+        await conn.close()
+    return {
+        "calls_handled": calls,
+        "languages": _SUPPORTED_LANGUAGES_COUNT,
+        "agents_created": agents_created,
+    }

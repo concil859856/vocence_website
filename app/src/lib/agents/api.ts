@@ -12,6 +12,8 @@ import type {
   AgentDraftResponse,
   AgentRun,
   AgentType,
+  ArchitectChatRequest,
+  ArchitectChatResponse,
 } from './types';
 
 function authHeaders(token: string | null): HeadersInit {
@@ -81,6 +83,17 @@ export const agentsApi = {
 
   async draft(token: string, body: AgentDraftRequest): Promise<AgentDraftResponse> {
     return jsonFetch(`${API_BASE_URL}/dashboard/agents/draft`, {
+      method: 'POST',
+      headers: authHeaders(token),
+      body: JSON.stringify(body),
+    });
+  },
+
+  async architectChat(
+    token: string,
+    body: ArchitectChatRequest,
+  ): Promise<ArchitectChatResponse> {
+    return jsonFetch(`${API_BASE_URL}/dashboard/agents/architect/chat`, {
       method: 'POST',
       headers: authHeaders(token),
       body: JSON.stringify(body),
@@ -182,7 +195,7 @@ export interface CustomTool {
   auth_type: CustomToolAuthType;
   auth_header_name: string | null;
   /** Whether a secret is set on the server. The actual secret value
-   *  is never returned to the client — only the boolean indicator,
+   *  is never returned to the client, only the boolean indicator,
    *  so the UI can show "[set]" instead of an empty field on edit. */
   has_secret: boolean;
   timeout_ms: number;

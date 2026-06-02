@@ -1,5 +1,5 @@
 /**
- * Servers tab — list rented GPU boxes, add new ones, re-probe, remove.
+ * Servers tab, list rented GPU boxes, add new ones, re-probe, remove.
  * The "Add Server" form runs probe_server synchronously so the admin
  * immediately sees whether SSH + Docker + nvidia-smi all came back ok.
  */
@@ -311,7 +311,7 @@ function AddServerModal({ token, onClose, onAdded }: { token: string; onClose: (
         notes: form.notes?.trim() || null,
       });
       if (r.probe_error) {
-        // Server row was created but SSH probe failed — leave the modal open
+        // Server row was created but SSH probe failed, leave the modal open
         // so the admin can fix and retry.
         setProbeError(r.probe_error);
       } else {
@@ -434,7 +434,7 @@ function AddServerModal({ token, onClose, onAdded }: { token: string; onClose: (
               disabled={submitting}
               className="inline-flex items-center gap-2 rounded-xl bg-[#DFFF00] text-[#07080A] px-4 py-2 text-sm font-semibold hover:brightness-110 disabled:opacity-50"
             >
-              {submitting ? 'Probing…' : probeError ? 'Done — close' : 'Add + probe'}
+              {submitting ? 'Probing…' : probeError ? 'Done, close' : 'Add + probe'}
             </button>
           </div>
         </form>
@@ -471,7 +471,7 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
 }
 
 
-/** Server uptime % pill — matches PodsTab's `RuntimeCell` colour
+/** Server uptime % pill, matches PodsTab's `RuntimeCell` colour
  *  thresholds (≥99 lime, ≥90 amber, else red) so the eye trains
  *  across pages. The label includes the window so the pill stands
  *  alone (no header column to reference). */

@@ -1,5 +1,5 @@
 /**
- * Tiny pub/sub for "is a fullscreen-ish overlay open right now?" — used
+ * Tiny pub/sub for "is a fullscreen-ish overlay open right now?", used
  * by the floating Vocence Assistant launcher to step out of the way when
  * the Agent Architect drawer takes the right side of the screen.
  */

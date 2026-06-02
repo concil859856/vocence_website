@@ -41,7 +41,7 @@ function formatDuration(sec: number): string {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-// Hero stat formatter — picks a coarser unit than mm:ss for total
+// Hero stat formatter, picks a coarser unit than mm:ss for total
 // playback length. Mirrors how Spotify/Apple Music describe album
 // length: short playbooks read as "12 min", long ones as "1 h 23 min".
 function formatTotalLength(sec: number): string {
@@ -66,7 +66,7 @@ function buildPlaybookShareUrl(id: number): string {
 // Friendlier share body for the X/WhatsApp/Telegram/Email intents. The
 // 1st-person "I created…" framing kicks in when the viewer owns the
 // playbook; everyone else gets a "check this out" variant. The Vocence
-// reference is in the body intentionally — the link itself goes in a
+// reference is in the body intentionally, the link itself goes in a
 // separate URL field on every platform's intent, and including the
 // brand inline survives previews that strip URL metadata.
 //
@@ -78,12 +78,12 @@ function buildPlaybookShareUrl(id: number): string {
 function buildPlaybookShareText(title: string, viewerIsOwner: boolean): string {
   if (viewerIsOwner) {
     return (
-      `Listen to my playbook "${title}" — I created it on Vocence (https://www.vocence.ai).\n` +
+      `Listen to my playbook "${title}", I created it on Vocence (https://www.vocence.ai).\n` +
       `I really like how it turned out, hope you do too!`
     );
   }
   return (
-    `Listen to "${title}" — a playbook on Vocence (https://www.vocence.ai).\n` +
+    `Listen to "${title}", a playbook on Vocence (https://www.vocence.ai).\n` +
     `I really like it, please check it out!`
   );
 }
@@ -102,7 +102,7 @@ function formatCount(n: number): string {
 }
 
 /** Three pulsing vertical bars used in place of the row index when a
- *  track is actively playing — Spotify/Apple Music's "now playing"
+ *  track is actively playing, Spotify/Apple Music's "now playing"
  *  affordance. CSS-only so it costs nothing to render. */
 function EqualizerBars() {
   return (
@@ -175,7 +175,7 @@ function PlaybookListView() {
 
   // Toggle the viewer's thumb on a community playbook. Optimistic so the
   // count and button state flip immediately; reverts on server failure.
-  // We don't re-sort the visible grid as votes come in — the server's
+  // We don't re-sort the visible grid as votes come in, the server's
   // initial order (by vote_count DESC) is preserved per-load to avoid
   // cards jumping while the user interacts.
   const handleToggleVote = useCallback(async (pb: PublicPlaybook) => {
@@ -246,7 +246,7 @@ function PlaybookListView() {
   const bumpLocalPlayCount = useCallback((id: number) => {
     // Optimistically bump the play counter in both lists so the user
     // sees their own play register immediately. The server is the
-    // source of truth — recordPlaybookPlay() fires alongside this and
+    // source of truth, recordPlaybookPlay() fires alongside this and
     // the next refresh resolves any drift.
     setPlaybooks((list) => list.map((p) => p.id === id ? { ...p, play_count: p.play_count + 1 } : p));
     setPublicPlaybooks((list) => list.map((p) => p.id === id ? { ...p, play_count: p.play_count + 1 } : p));
@@ -255,7 +255,7 @@ function PlaybookListView() {
   const handlePlayAll = async (pb: Playbook | PublicPlaybook) => {
     if (pb.track_count === 0) return;
     try {
-      // ``getPlaybook`` accepts a null token — public playbooks are
+      // ``getPlaybook`` accepts a null token, public playbooks are
       // readable anonymously, so this also works for signed-out visitors
       // browsing the Community section.
       const detail = await dashboardApi.getPlaybook(pb.id, token);
@@ -308,7 +308,7 @@ function PlaybookListView() {
           </button>
         </div>
       ) : (
-        // Same PlaybookCard as the community grid below — uniform card
+        // Same PlaybookCard as the community grid below, uniform card
         // size, same fields shown. Creator is filled in from the auth
         // context since the API doesn't echo it back for own playbooks.
         // Vote-toggle is only enabled for public playbooks (private
@@ -338,7 +338,7 @@ function PlaybookListView() {
         </div>
       )}
 
-      {/* Public playbooks — sorted by thumb-up count (server). Two
+      {/* Public playbooks, sorted by thumb-up count (server). Two
           views: a Spotify/Suno-style grid (cards with hover-overlay
           actions) and a compact list (table-like, dense). Both keep
           the top-3 rank-badge treatment.
@@ -406,7 +406,7 @@ function PlaybookListView() {
 }
 
 /* ==========================================================================
-   PlaybookCard — unified card used by both the user's own grid and the
+   PlaybookCard, unified card used by both the user's own grid and the
    community grid.
    ==========================================================================
 
@@ -417,7 +417,7 @@ function PlaybookListView() {
       avatar Creator
       ♫ 12   🎧 245   👍 4
 
-   The kebab is the platform "options" — currently just share (Copy /
+   The kebab is the platform "options", currently just share (Copy /
    X / Reddit / WhatsApp / Telegram / Email / native share). Owner-only
    ops (delete, change cover, visibility) live on the detail page.
 */
@@ -442,7 +442,7 @@ interface PlaybookCardProps {
   token: string | null;
   onOpen: () => void;
   onPlay: () => void;
-  /** Optional — if omitted, the vote pill isn't interactive (e.g.
+  /** Optional, if omitted, the vote pill isn't interactive (e.g.
    *  private playbook in the user's own grid). */
   onToggleVote?: () => void;
 }
@@ -482,7 +482,7 @@ function PlaybookCard(props: PlaybookCardProps) {
         </div>
       )}
 
-      {/* Cover — hover reveals scrim + lift-in play button. Other
+      {/* Cover, hover reveals scrim + lift-in play button. Other
           actions (vote, share) sit below the cover in the info area
           so they're permanently visible and tappable on mobile. */}
       <div className="aspect-square rounded-xl bg-gradient-to-br from-[#1c1d21] to-[#111215] mb-2.5 flex items-center justify-center relative overflow-hidden">
@@ -502,7 +502,7 @@ function PlaybookCard(props: PlaybookCardProps) {
       </div>
 
       {/* Title row: title + share kebab. The kebab is the "options"
-          button — currently share-only; owner ops stay on the
+          button, currently share-only; owner ops stay on the
           detail page. */}
       <div className="flex items-start gap-1.5 min-w-0">
         <h3 className="flex-1 min-w-0 text-xs font-semibold text-white truncate" title={title}>{title}</h3>
@@ -524,7 +524,7 @@ function PlaybookCard(props: PlaybookCardProps) {
         <span className="text-[11px] text-[#9ca3af] truncate">{creatorName}</span>
       </div>
 
-      {/* Stats row — tracks · listens · votes. Vote count is the only
+      {/* Stats row, tracks · listens · votes. Vote count is the only
           interactive stat (toggles thumb when signed in). The other
           two are read-only. */}
       <div className="flex items-center gap-2 mt-1.5 text-[11px] text-[#666]">
@@ -557,7 +557,7 @@ function PlaybookCard(props: PlaybookCardProps) {
 }
 
 /* ==========================================================================
-   COMMUNITY SECTION — list helper (grid uses the PlaybookCard above)
+   COMMUNITY SECTION, list helper (grid uses the PlaybookCard above)
    ==========================================================================
 */
 
@@ -605,7 +605,7 @@ function CommunityGrid({ playbooks, token, onOpen, onPlay, onToggleVote }: Commu
 function CommunityList({ playbooks, token, onOpen, onPlay, onToggleVote }: CommunityRowProps) {
   return (
     <div className="rounded-2xl border border-[#2e2f33] overflow-hidden">
-      {/* Column header — Spotify-style small-caps, dim. Hidden on
+      {/* Column header, Spotify-style small-caps, dim. Hidden on
           mobile where some columns are collapsed. */}
       <div className="hidden md:grid grid-cols-[2rem_minmax(0,1fr)_minmax(0,9rem)_4rem_4rem_4rem_2rem] gap-3 px-3 py-2 border-b border-[#2e2f33] bg-white/[0.02] text-[10px] uppercase tracking-wider text-[#555]">
         <div className="text-center">#</div>
@@ -628,7 +628,7 @@ function CommunityList({ playbooks, token, onOpen, onPlay, onToggleVote }: Commu
               onClick={() => onOpen(pb.id)}
               className="grid grid-cols-[2rem_minmax(0,1fr)_5rem_2rem] md:grid-cols-[2rem_minmax(0,1fr)_minmax(0,9rem)_4rem_4rem_4rem_2rem] items-center gap-3 px-3 py-2 cursor-pointer hover:bg-white/[0.03] transition-colors group border-b border-white/[0.04] last:border-b-0"
             >
-              {/* Rank cell — number at rest, lime chip when top-3, swap
+              {/* Rank cell, number at rest, lime chip when top-3, swap
                   to play button on hover. */}
               <div className="relative h-8 w-8 flex items-center justify-center">
                 {isTop ? (
@@ -649,7 +649,7 @@ function CommunityList({ playbooks, token, onOpen, onPlay, onToggleVote }: Commu
                 </button>
               </div>
 
-              {/* Title cell — cover thumb + title. Truncates aggressively. */}
+              {/* Title cell, cover thumb + title. Truncates aggressively. */}
               <div className="flex items-center gap-2.5 min-w-0">
                 <div className="w-9 h-9 rounded-md overflow-hidden shrink-0 bg-gradient-to-br from-[#1c1d21] to-[#111215] flex items-center justify-center">
                   {rowCover
@@ -659,7 +659,7 @@ function CommunityList({ playbooks, token, onOpen, onPlay, onToggleVote }: Commu
                 <p className="text-sm font-medium text-white truncate">{pb.title}</p>
               </div>
 
-              {/* Creator — hidden on mobile to save space */}
+              {/* Creator, hidden on mobile to save space */}
               <div className="hidden md:flex items-center gap-1.5 min-w-0">
                 {pb.user_picture && (
                   <img src={pb.user_picture} alt="" className="w-4 h-4 rounded-full shrink-0" />
@@ -667,18 +667,18 @@ function CommunityList({ playbooks, token, onOpen, onPlay, onToggleVote }: Commu
                 <span className="text-xs text-[#9ca3af] truncate">{pb.user_name}</span>
               </div>
 
-              {/* Tracks — desktop only */}
+              {/* Tracks, desktop only */}
               <span className="hidden md:block text-xs text-[#888] tabular-nums text-right">
                 {formatCount(pb.track_count)}
               </span>
 
-              {/* Listens — desktop only. Compact format so 1.2k doesn't
+              {/* Listens, desktop only. Compact format so 1.2k doesn't
                   push the column wider than its allocation. */}
               <span className="hidden md:block text-xs text-[#888] tabular-nums text-right">
                 {formatCount(pb.play_count)}
               </span>
 
-              {/* Votes pill — interactive on mobile too (we don't have
+              {/* Votes pill, interactive on mobile too (we don't have
                   hover there, so the affordance is always visible). */}
               <button
                 onClick={(e) => { e.stopPropagation(); if (token) onToggleVote(pb); }}
@@ -692,7 +692,7 @@ function CommunityList({ playbooks, token, onOpen, onPlay, onToggleVote }: Commu
                 <span className="tabular-nums">{formatCount(pb.vote_count)}</span>
               </button>
 
-              {/* Share kebab — community context, so the message uses
+              {/* Share kebab, community context, so the message uses
                   the non-owner "check this out" variant. */}
               <div onClick={(e) => e.stopPropagation()} className="justify-self-end">
                 <ShareButton
@@ -739,7 +739,7 @@ function PlaybookDetailView({ playbookId }: { playbookId: number }) {
   const load = useCallback(async () => {
     // Public playbooks are readable anonymously, so this works for
     // signed-out viewers too. The backend returns 403 for private
-    // playbooks without a token — we navigate back to the list.
+    // playbooks without a token, we navigate back to the list.
     try {
       const pb = await dashboardApi.getPlaybook(playbookId, token);
       setPlaybook(pb);
@@ -783,7 +783,7 @@ function PlaybookDetailView({ playbookId }: { playbookId: number }) {
   }, [playbook?.title]);
 
   // Close the owner action menu / per-track menu on outside click or
-  // Escape. Same pattern as ShareButton — kept local since these
+  // Escape. Same pattern as ShareButton, kept local since these
   // popovers are short-lived and don't merit a shared component.
   useEffect(() => {
     if (!ownerMenuOpen && openTrackMenuId === null) return;
@@ -847,11 +847,11 @@ function PlaybookDetailView({ playbookId }: { playbookId: number }) {
   const handleToggleVisibility = async () => {
     if (!token || !playbook) return;
     if (playbook.visibility === 'private') {
-      // Going public — show confirmation first
+      // Going public, show confirmation first
       setShowPublicConfirm(true);
       return;
     }
-    // Going private — no confirmation needed
+    // Going private, no confirmation needed
     await dashboardApi.updatePlaybook(playbook.id, { visibility: 'private' }, token);
     setPlaybook(p => p ? { ...p, visibility: 'private' } : p);
   };
@@ -863,7 +863,7 @@ function PlaybookDetailView({ playbookId }: { playbookId: number }) {
     setShowPublicConfirm(false);
   };
 
-  // Thumb-up toggle on the detail header. Optimistic — reverts on
+  // Thumb-up toggle on the detail header. Optimistic, reverts on
   // server failure. Only meaningful for public playbooks; the button
   // isn't rendered for private ones.
   const handleToggleVote = async () => {
@@ -898,7 +898,7 @@ function PlaybookDetailView({ playbookId }: { playbookId: number }) {
       {/* ── HERO ──────────────────────────────────────────────────────
           Spotify/Apple-Music-style: the cover image is rendered twice —
           once large at the front, once blurred + saturated as the
-          backdrop — so the page picks up the cover's color automatically
+          backdrop, so the page picks up the cover's color automatically
           without needing a JS color extractor. Bleeds to the edges of
           the Studio content area via -mx-6/-mx-10 to feel album-like.
 
@@ -969,7 +969,7 @@ function PlaybookDetailView({ playbookId }: { playbookId: number }) {
               </h1>
             )}
 
-            {/* Stats line — tracks · length · listens · thumbs.
+            {/* Stats line, tracks · length · listens · thumbs.
                 Plays + thumbs only show for public playbooks since both
                 are zero by design on private ones (server doesn't
                 increment them). */}
@@ -995,7 +995,7 @@ function PlaybookDetailView({ playbookId }: { playbookId: number }) {
           </div>
         </div>
 
-        {/* Action row — sits below the hero block but inside the bleed
+        {/* Action row, sits below the hero block but inside the bleed
             so the gradient backdrop softly continues underneath. */}
         <div className="relative mt-6 flex items-center gap-2.5 flex-wrap">
           <button
@@ -1031,7 +1031,7 @@ function PlaybookDetailView({ playbookId }: { playbookId: number }) {
             </button>
           )}
 
-          {/* Share menu — public playbooks only. The ShareButton owns
+          {/* Share menu, public playbooks only. The ShareButton owns
               its popover state, copy feedback, and the native share
               fallback on supported devices. */}
           {isPublic && <ShareButton url={shareUrl} title={playbook.title} text={shareText} />}
@@ -1045,7 +1045,7 @@ function PlaybookDetailView({ playbookId }: { playbookId: number }) {
             </button>
           )}
 
-          {/* Owner kebab — collapses the secondary actions (cover,
+          {/* Owner kebab, collapses the secondary actions (cover,
               visibility toggle, delete) so the action row stays clean. */}
           {playbook.is_owner && (
             <div className="relative" ref={ownerMenuRef}>
@@ -1111,7 +1111,7 @@ function PlaybookDetailView({ playbookId }: { playbookId: number }) {
         </div>
       ) : (
         <div className="space-y-0.5">
-          {/* Header row — only on wider screens, like Spotify */}
+          {/* Header row, only on wider screens, like Spotify */}
           <div className="hidden md:grid grid-cols-[2rem_1fr_4rem_2rem] gap-3 px-3 pb-2 mb-1 border-b border-white/[0.04] text-[10px] uppercase tracking-wider text-[#555]">
             <div className="text-center">#</div>
             <div>Title</div>
@@ -1160,7 +1160,7 @@ function PlaybookDetailView({ playbookId }: { playbookId: number }) {
                 } ${isDragging ? 'opacity-40' : ''} ${isDragTarget ? 'ring-1 ring-[#DFFF00]/40' : ''}`}
               >
                 {/* Index / hover-play. Drag handle for owner replaces the
-                    index when hovering — same column, swapped affordance. */}
+                    index when hovering, same column, swapped affordance. */}
                 <div className="relative h-8 w-8 flex items-center justify-center shrink-0">
                   {/* Static state: index number (or playing equalizer) */}
                   <span className={`absolute inset-0 flex items-center justify-center transition-opacity ${
@@ -1198,7 +1198,7 @@ function PlaybookDetailView({ playbookId }: { playbookId: number }) {
                   <div className="flex-1 min-w-0">
                     <p className={`text-sm font-medium truncate ${isThis ? 'text-[#DFFF00]' : 'text-white'}`}>{t.title}</p>
                     <div className="flex items-center gap-1.5 mt-0.5">
-                      {/* Source pip — same info as before, much quieter */}
+                      {/* Source pip, same info as before, much quieter */}
                       <span
                         className={`w-1.5 h-1.5 rounded-full shrink-0 ${
                           t.source_type === 'generated' ? 'bg-indigo-400/70'
@@ -1381,7 +1381,7 @@ function AddTracksModal({ playbookId, onClose, onAdded }: { playbookId: number; 
     // round-trip when they pick a too-big file. Server still re-checks.
     const MAX_BYTES = 300 * 1024 * 1024;
     if (file.size > MAX_BYTES) {
-      alert(`File is ${(file.size / 1024 / 1024).toFixed(0)}MB — max is 300MB. Pick a smaller file.`);
+      alert(`File is ${(file.size / 1024 / 1024).toFixed(0)}MB, max is 300MB. Pick a smaller file.`);
       return;
     }
     setUploading(true);
@@ -1496,7 +1496,7 @@ function AddTracksModal({ playbookId, onClose, onAdded }: { playbookId: number; 
                 <>
                   <Upload size={28} className="mx-auto text-[#444] mb-3" />
                   <p className="text-sm text-[#9ca3af]">Drop audio file here or click to browse</p>
-                  <p className="text-xs text-[#555] mt-1">WAV, MP3, OGG, FLAC — max 300MB</p>
+                  <p className="text-xs text-[#555] mt-1">WAV, MP3, OGG, FLAC, max 300MB</p>
                 </>
               )}
             </div>

@@ -43,6 +43,9 @@ _SETUP_TIMEOUT_SEC = float(os.environ.get("KN_CLIENT_SETUP_TIMEOUT_SEC") or "60"
 _QUERY_TIMEOUT_SEC = float(os.environ.get("KN_CLIENT_QUERY_TIMEOUT_SEC") or "1.5")
 
 
+from contextlib import asynccontextmanager
+
+
 def is_configured() -> bool:
     """True when at least one knowledge_ingestion pod is online.
 
@@ -60,28 +63,30 @@ def is_configured() -> bool:
     return any(p.get("status") == "online" for p in svc.get("pods", []))
 
 
-async def _pick_pod() -> tuple[str, str] | None:
-    """Resolve a healthy knowledge_ingestion pod.
+@asynccontextmanager
+async def _pod():
+    """Acquire a healthy knowledge_ingestion pod via the ops dispatcher.
 
-    Returns ``(base_url, api_key)`` from the per-pod encrypted ops
-    registry entry, or ``None`` if nothing is online — callers must
-    handle that explicitly. First-fit selection is fine here since
-    knowledge calls are infrequent compared to TTS/STT."""
-    # Late import — ops.pool is loaded at app start and we don't want
-    # a circular import at module load time.
+    Yields ``(base_url, api_key)`` for the duration of one HTTP call.
+    The dispatcher increments ``in_flight`` on enter and decrements on
+    exit — that's what the Ops admin page's per-pod activity graph
+    plots, so EVERY pod call MUST go through this CM or it'll look
+    like the pod is doing nothing even when it's serving traffic.
+
+    Raises :class:`ops.pool.NoCapacity` if no pod is online — the
+    caller's wrapper translates that to a clean error for the user.
+    The previous implementation returned ``None`` on no-pod, which
+    silently bypassed both the dispatcher AND made every call site
+    repeat the ``if picked is None`` check; using the standard
+    NoCapacity exception unifies the behaviour with TTS/STT/voice-
+    design.
+    """
+    # Late import — ops.pool loads at app start; importing here avoids
+    # a circular dep at module load.
     from ops import pool as ops_pool
-    try:
-        snap = ops_pool.snapshot()
-    except Exception:  # noqa: BLE001
-        return None
-    svc = snap.get("knowledge_ingestion")
-    if not svc:
-        return None
-    for p in svc.get("pods", []):
-        if p.get("status") == "online":
-            key = p.get("api_key") or ""
-            return f"http://{p['host']}:{p['port']}", key
-    return None
+    async with ops_pool.pick_pod("knowledge_ingestion") as pod:
+        base = f"http://{pod.host}:{pod.port}"
+        yield base, (pod.api_key or "")
 
 
 # ---------------------------------------------------------------------------
@@ -146,25 +151,26 @@ async def ingest_pdf(
     title: str | None = None,
 ) -> dict[str, Any]:
     """PDF goes through multipart. We use ``aiohttp.FormData`` rather
-    than hand-rolling the boundary so binary content is encoded safely."""
-    picked = await _pick_pod()
-    if picked is None:
-        raise RuntimeError("no knowledge_ingestion pod available")
-    base_url, api_key = picked
-    form = aiohttp.FormData()
-    form.add_field("source_type", "pdf")
-    form.add_field("agent_id", agent_id)
-    if title:
-        form.add_field("title", title)
-    form.add_field("file", file_bytes, filename=filename, content_type="application/pdf")
-    timeout = aiohttp.ClientTimeout(total=_SETUP_TIMEOUT_SEC)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.post(
-            f"{base_url}/v1/ingest",
-            data=form,
-            headers={"X-API-Key": api_key},
-        ) as resp:
-            return await _parse_or_raise(resp)
+    than hand-rolling the boundary so binary content is encoded safely.
+
+    Goes through the dispatcher context manager so the in-flight
+    counter ticks for the duration of the upload — operator can see
+    the pod working on the Ops graph."""
+    async with _pod() as (base_url, api_key):
+        form = aiohttp.FormData()
+        form.add_field("source_type", "pdf")
+        form.add_field("agent_id", agent_id)
+        if title:
+            form.add_field("title", title)
+        form.add_field("file", file_bytes, filename=filename, content_type="application/pdf")
+        timeout = aiohttp.ClientTimeout(total=_SETUP_TIMEOUT_SEC)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(
+                f"{base_url}/v1/ingest",
+                data=form,
+                headers={"X-API-Key": api_key},
+            ) as resp:
+                return await _parse_or_raise(resp)
 
 
 async def get_job(job_id: str) -> dict[str, Any]:
@@ -193,33 +199,34 @@ async def query(
     WARN. The voice turn proceeds without retrieved knowledge — much
     better than dropping the turn because the knowledge pod is down.
     """
-    picked = await _pick_pod()
-    if picked is None:
-        return []
-    base_url, api_key = picked
     timeout = aiohttp.ClientTimeout(total=_QUERY_TIMEOUT_SEC)
     try:
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(
-                f"{base_url}/v1/query",
-                json={
-                    "agent_id": agent_id,
-                    "text": text,
-                    "top_k": top_k,
-                    "min_score": min_score,
-                },
-                headers={"X-API-Key": api_key},
-            ) as resp:
-                if resp.status != 200:
-                    _log.warning(
-                        "knowledge query: pod returned %d for agent=%s",
-                        resp.status, agent_id,
-                    )
-                    return []
-                body = await resp.json()
-                return body.get("chunks") or []
+        async with _pod() as (base_url, api_key):
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(
+                    f"{base_url}/v1/query",
+                    json={
+                        "agent_id": agent_id,
+                        "text": text,
+                        "top_k": top_k,
+                        "min_score": min_score,
+                    },
+                    headers={"X-API-Key": api_key},
+                ) as resp:
+                    if resp.status != 200:
+                        _log.warning(
+                            "knowledge query: pod returned %d for agent=%s",
+                            resp.status, agent_id,
+                        )
+                        return []
+                    body = await resp.json()
+                    return body.get("chunks") or []
     except Exception as exc:  # noqa: BLE001
-        _log.warning("knowledge query failed for agent=%s: %s", agent_id, exc)
+        # ``NoCapacity`` (no pod online) is the most common path here
+        # — it's expected when knowledge ingestion is intentionally
+        # offline. Log at debug, not warn, so we don't spam the log
+        # on every voice turn when the feature isn't enabled.
+        _log.debug("knowledge query failed for agent=%s: %s", agent_id, exc)
         return []
 
 
@@ -228,45 +235,36 @@ async def query(
 # ---------------------------------------------------------------------------
 
 async def _post_json(path: str, body: dict[str, Any]) -> dict[str, Any]:
-    picked = await _pick_pod()
-    if picked is None:
-        raise RuntimeError("no knowledge_ingestion pod available")
-    base_url, api_key = picked
     timeout = aiohttp.ClientTimeout(total=_SETUP_TIMEOUT_SEC)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.post(
-            f"{base_url}{path}", json=body,
-            headers={"X-API-Key": api_key, "Content-Type": "application/json"},
-        ) as resp:
-            return await _parse_or_raise(resp)
+    async with _pod() as (base_url, api_key):
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(
+                f"{base_url}{path}", json=body,
+                headers={"X-API-Key": api_key, "Content-Type": "application/json"},
+            ) as resp:
+                return await _parse_or_raise(resp)
 
 
 async def _get_json(path: str) -> dict[str, Any]:
-    picked = await _pick_pod()
-    if picked is None:
-        raise RuntimeError("no knowledge_ingestion pod available")
-    base_url, api_key = picked
     timeout = aiohttp.ClientTimeout(total=_SETUP_TIMEOUT_SEC)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.get(
-            f"{base_url}{path}",
-            headers={"X-API-Key": api_key},
-        ) as resp:
-            return await _parse_or_raise(resp)
+    async with _pod() as (base_url, api_key):
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(
+                f"{base_url}{path}",
+                headers={"X-API-Key": api_key},
+            ) as resp:
+                return await _parse_or_raise(resp)
 
 
 async def _delete_json(path: str, *, params: dict[str, str]) -> dict[str, Any]:
-    picked = await _pick_pod()
-    if picked is None:
-        raise RuntimeError("no knowledge_ingestion pod available")
-    base_url, api_key = picked
     timeout = aiohttp.ClientTimeout(total=_SETUP_TIMEOUT_SEC)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.delete(
-            f"{base_url}{path}", params=params,
-            headers={"X-API-Key": api_key},
-        ) as resp:
-            return await _parse_or_raise(resp)
+    async with _pod() as (base_url, api_key):
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.delete(
+                f"{base_url}{path}", params=params,
+                headers={"X-API-Key": api_key},
+            ) as resp:
+                return await _parse_or_raise(resp)
 
 
 async def _parse_or_raise(resp: aiohttp.ClientResponse) -> dict[str, Any]:

@@ -4,7 +4,7 @@ const RAW_API_URL =
     : '';
 
 /**
- * Dev: empty string → same-origin `/api/...` (use Vite `server.proxy` to the backend — no CORS issues).
+ * Dev: empty string → same-origin `/api/...` (use Vite `server.proxy` to the backend, no CORS issues).
  * Prod: empty → same-origin (set rewrites on the host) or set VITE_API_URL to your API origin.
  */
 export const API_ORIGIN_BASE =
@@ -21,7 +21,7 @@ export function withNetworkHint(error: unknown): Error {
     //   1. backend truly unreachable (DNS / connection refused / hang up)
     //   2. CORS preflight rejected (e.g. backend missing the right
     //      Access-Control-Allow-Headers entry, or 5xx response with no
-    //      CORS headers — both make the browser discard the response body)
+    //      CORS headers, both make the browser discard the response body)
     //   3. request aborted client-side (timeout, AbortController)
     // The previous message assumed #1 only and falsely blamed VITE_API_URL
     // when the real cause was usually #2 (e.g. a backend 500 that lost its

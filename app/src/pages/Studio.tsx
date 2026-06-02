@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { useConfirm } from '../hooks/useConfirm';
 import {
   Mic,
@@ -59,6 +60,7 @@ import { StudioNoiseRemover } from './StudioNoiseRemover';
 import { StudioHome } from './StudioHome';
 import { StudioPlaybooks } from './StudioPlaybooks';
 import { StudioTtsGeneral } from '../components/studio/StudioTtsGeneral';
+import { StudioCommunityVoices } from '../components/studio/StudioCommunityVoices';
 import { useStudioPlayer } from '../contexts/StudioPlayerContext';
 import { api } from '../services/api';
 import {
@@ -77,7 +79,7 @@ const USER_FACING_TRY_AGAIN = 'Something went wrong. Please try again later.';
  * The backend forwards whatever we send as ``language`` verbatim to
  * the miner; the miner rejects anything not in this exact spelling
  * (e.g. "en" → 500, "US" → 500). Keep this list in sync with the
- * miner's ``Supported:`` enumeration — surfacing it as a dropdown
+ * miner's ``Supported:`` enumeration, surfacing it as a dropdown
  * means users can't type something invalid in the first place.
  */
 const STT_LANGUAGES: readonly string[] = [
@@ -108,7 +110,7 @@ const STT_LANGUAGES: readonly string[] = [
 /**
  * Dark-themed language picker for the Upload Voice modal. Replaces a
  * native ``<select>`` so the menu surface (border, hover, checkmark)
- * matches our UI — the OS popup looks wrong on every Windows / Linux
+ * matches our UI, the OS popup looks wrong on every Windows / Linux
  * browser we tested. Handles click-outside to close and scrolls when
  * the option list overflows.
  */
@@ -153,7 +155,7 @@ function LanguagePicker({
           role="listbox"
           className="absolute z-50 mt-1 w-full max-h-64 overflow-y-auto rounded-lg border border-white/10 bg-[#0B0D10] shadow-2xl shadow-black/60 py-1"
         >
-          {/* Auto-detect option pinned at the top — matches the previous
+          {/* Auto-detect option pinned at the top, matches the previous
               "leave blank" semantic. */}
           <LanguageOption value="" current={value} label="Auto-detect" onPick={(v) => { onChange(v); setOpen(false); }} muted />
           <div className="border-t border-white/[0.05] my-1" />
@@ -235,7 +237,7 @@ function ComingSoonView({ view }: { view: StudioView }) {
         <h2 className="text-2xl font-semibold mb-3">{label}</h2>
         <p className="text-sm text-[#A7B0B7]">
           We're putting the finishing touches on this feature. In the meantime,
-          try out Text-to-Speech — it's live now.
+          try out Text-to-Speech, it's live now.
         </p>
         <Link to="/studio/tts" className="btn-primary inline-flex mt-6">
           Go to Text-to-Speech
@@ -280,7 +282,7 @@ const TTS_STYLE_PRESETS = [
   {
     id: 'friendly-ai-assistant',
     label: 'Friendly AI Assistant',
-    description: 'A polite, slightly synthetic assistant voice — warm, precise, and helpful.',
+    description: 'A polite, slightly synthetic assistant voice, warm, precise, and helpful.',
   },
   {
     id: 'epic-warrior',
@@ -310,7 +312,7 @@ const TTS_STYLE_PRESETS = [
   {
     id: 'cyberpunk-ai',
     label: 'Cyberpunk / AI Voice',
-    description: 'A robotic synthetic voice — cold, precise, and emotionless.',
+    description: 'A robotic synthetic voice, cold, precise, and emotionless.',
   },
   {
     id: 'orc-monster',
@@ -364,7 +366,7 @@ export function Studio() {
     ? (resolvedView as StudioView)
     : 'home';
   // Rewrite the URL so the user sees the canonical path. Runs once on
-  // mount of a legacy URL — replace (not push) to keep the back button
+  // mount of a legacy URL, replace (not push) to keep the back button
   // sensible.
   useEffect(() => {
     if (routeViewRaw in LEGACY_VIEW_ALIASES) {
@@ -385,7 +387,7 @@ export function Studio() {
   const [studioHistoryPage, setStudioHistoryPage] = useState(1);
   const [studioHistoryDateRange, setStudioHistoryDateRange] = useState<'all' | '24h' | '7d' | '30d'>('all');
   const [studioHistorySelected, setStudioHistorySelected] = useState<Set<string>>(new Set());
-  // Music rows on the Studio history table are expandable — click to
+  // Music rows on the Studio history table are expandable, click to
   // open a details panel that shows lyrics + mode-specific knobs
   // (variance, repaint window, edit target, etc.) with per-field copy
   // buttons. Mirrors the behavior on the Account History page.
@@ -491,7 +493,7 @@ export function Studio() {
   const [deleteConfirmVoiceId, setDeleteConfirmVoiceId] = useState<number | null>(null);
   const [deleteVoiceLoading, setDeleteVoiceLoading] = useState(false);
   const [myVoicesNotice, setMyVoicesNotice] = useState<{ type: 'error' | 'success'; message: string } | null>(null);
-  // "Upload your voice" modal — saves a real-voice reference clip as a
+  // "Upload your voice" modal, saves a real-voice reference clip as a
   // reusable cloned voice. Server transcribes once on save.
   const [uploadVoiceOpen, setUploadVoiceOpen] = useState(false);
   const [uploadVoiceFile, setUploadVoiceFile] = useState<File | null>(null);
@@ -868,7 +870,7 @@ export function Studio() {
     }
   };
 
-  // ---- STT browser recording — capped to STT_MAX_DURATION_SEC (5 min)
+  // ---- STT browser recording, capped to STT_MAX_DURATION_SEC (5 min)
   // so the in-browser recorder can't produce audio the upload path
   // would later reject for over-cap duration. Stays in sync with the
   // file-upload validation in handleStartTranscription.
@@ -950,7 +952,7 @@ export function Studio() {
         setCloneTargetLimitNotice(true);
         return;
       }
-      // Consent gate — shown EVERY time, not cached. Voice cloning's
+      // Consent gate, shown EVERY time, not cached. Voice cloning's
       // abuse risk doesn't get cheaper with familiarity; one past
       // acceptance shouldn't stand in for fresh attestation about a
       // possibly-different voice the user is about to clone now.
@@ -969,7 +971,7 @@ export function Studio() {
     try {
       // Browser → R2 directly via presigned PUT, then submit job with the
       // R2 key only. Sidesteps the per-request body limit on the API's
-      // Cloudflare proxy — works for big reference recordings.
+      // Cloudflare proxy, works for big reference recordings.
       const uploaded = await dashboardApi.uploadDirectToR2('voice-clone-ref', cloningFile, token);
       const submission = await dashboardApi.startJob({
         type: 'clone',
@@ -988,7 +990,7 @@ export function Studio() {
       setCloneStatus({
         type: submission.load_warning ? 'info' : 'info',
         message: submission.load_warning
-          ? `Queued (position ${submission.queue_position}). Capacity is heavy — this might take roughly 2× as long as usual.`
+          ? `Queued (position ${submission.queue_position}). Capacity is heavy, this might take roughly 2× as long as usual.`
           : `Queued (position ${submission.queue_position}). Cloning…`,
       });
       generations.trackServerJob({
@@ -1218,7 +1220,7 @@ export function Studio() {
       if (sttFile.size > STT_MAX_UPLOAD_BYTES) {
         const sizeMb = (sttFile.size / (1024 * 1024)).toFixed(1);
         const maxMb = STT_MAX_UPLOAD_BYTES / (1024 * 1024);
-        alert(`Audio is ${sizeMb} MB — Speech-to-Text is limited to ${maxMb} MB.`);
+        alert(`Audio is ${sizeMb} MB, Speech-to-Text is limited to ${maxMb} MB.`);
         return;
       }
       if (user && user.credits < CREDIT_STT) {
@@ -1233,17 +1235,17 @@ export function Studio() {
       void (async () => {
         try {
           // Reject over-cap audio before uploading. NaN means we couldn't
-          // probe (corrupt header / exotic codec) — let the server be
+          // probe (corrupt header / exotic codec), let the server be
           // the final authority in that case.
           const dur = await getAudioDurationSec(fileRef);
           if (Number.isFinite(dur) && dur > STT_MAX_DURATION_SEC) {
             const mins = Math.floor(STT_MAX_DURATION_SEC / 60);
-            alert(`Audio is ${dur.toFixed(1)}s — Speech-to-Text is limited to ${mins} minutes (${STT_MAX_DURATION_SEC}s).`);
+            alert(`Audio is ${dur.toFixed(1)}s, Speech-to-Text is limited to ${mins} minutes (${STT_MAX_DURATION_SEC}s).`);
             setGenerateLoading(false);
             return;
           }
           // Browser → R2 directly via presigned PUT, then submit job
-          // with the R2 key only — sidesteps the API Cloudflare proxy's
+          // with the R2 key only, sidesteps the API Cloudflare proxy's
           // body-size limit for long recordings.
           const uploaded = await dashboardApi.uploadDirectToR2('stt-source', fileRef, token);
           const submission = await dashboardApi.startJob({
@@ -1367,7 +1369,7 @@ export function Studio() {
       });
 
       // Local-only deduction. We deliberately do NOT call the server
-      // /credits PATCH endpoint here — that endpoint is admin-only (see
+      // /credits PATCH endpoint here, that endpoint is admin-only (see
       // routers/auth.py:update_credits) after the 2026-05-14 incident
       // where a user used it to grant themselves 100k credits. This
       // chat is a UI demo and not a real LLM call, so deducting in
@@ -1430,7 +1432,7 @@ export function Studio() {
           setVdStatus({
             type: 'info',
             message: submission.load_warning
-              ? `Queued (position ${submission.queue_position}). Capacity is heavy — this might take roughly 2× as long as usual.`
+              ? `Queued (position ${submission.queue_position}). Capacity is heavy, this might take roughly 2× as long as usual.`
               : `Queued (position ${submission.queue_position}). Designing voice…`,
           });
           generations.trackServerJob({
@@ -2159,9 +2161,19 @@ export function Studio() {
           }}
         />
 
-        {uploadVoiceOpen ? (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60">
-            <div className="bg-[#0B0D10] border border-white/15 rounded-2xl w-full max-w-lg max-h-[90vh] flex flex-col overflow-hidden shadow-2xl shadow-black/60">
+        {uploadVoiceOpen ? createPortal(
+          // Render via createPortal to document.body so the modal
+          // escapes ANY ancestor positioning context (sticky sidebar,
+          // flex layout, the Studio content `<main>`, etc.). Anchored
+          // near the top of the viewport with ``items-start`` + a
+          // small top inset so on short windows the header + close
+          // button stay reachable, the inner ``overflow-y-auto``
+          // body scrolls if the form is taller than the viewport.
+          <div
+            className="fixed inset-0 z-[100] flex items-start justify-center px-4 pt-[6vh] pb-[6vh] bg-black/60 overflow-y-auto"
+            onMouseDown={(e) => { if (e.target === e.currentTarget && !uploadVoiceBusy) closeUploadVoice(); }}
+          >
+            <div className="bg-[#0B0D10] border border-white/15 rounded-2xl w-full max-w-lg my-auto flex flex-col overflow-hidden shadow-2xl shadow-black/60">
               <div className="flex items-center justify-between px-5 py-4 border-b border-white/10">
                 <h3 className="text-base font-semibold text-white">Add my voice</h3>
                 <button
@@ -2282,10 +2294,10 @@ export function Studio() {
 
                 <div>
                   <label className="block text-xs uppercase tracking-wider text-[#A7B0B7] mb-1.5">
-                    Language <span className="text-[#666] normal-case">(optional — leave on Auto-detect if unsure)</span>
+                    Language <span className="text-[#666] normal-case">(optional, leave on Auto-detect if unsure)</span>
                   </label>
                   {/* Fully-custom dropdown so the menu styling matches
-                      the modal — native <select> opens a browser-themed
+                      the modal, native <select> opens a browser-themed
                       menu that clashes with our dark UI, especially on
                       Windows. The options list scrolls when it overflows. */}
                   <LanguagePicker
@@ -2321,7 +2333,8 @@ export function Studio() {
                 </button>
               </div>
             </div>
-          </div>
+          </div>,
+          document.body,
         ) : null}
       </>
     );
@@ -2393,7 +2406,7 @@ export function Studio() {
 
             {/* Style Instruction */}
             <div>
-              <label className="label-mono mb-2 block">Style Instruction — describe the voice you want</label>
+              <label className="label-mono mb-2 block">Style Instruction, describe the voice you want</label>
               <div className="bg-[#0a0a0a] border border-white/10 rounded-xl focus-within:border-[#DFFF00]/40 transition-colors">
                 <input
                   type="text"
@@ -2431,7 +2444,7 @@ export function Studio() {
           </div>
         </div>
 
-        {/* Style presets panel — compact sidebar */}
+        {/* Style presets panel, compact sidebar */}
         <div className="mt-4 lg:mt-0 w-full lg:w-72 flex-shrink-0">
           <div ref={ttsRightPanelRef} className="bg-gradient-to-b from-[#0b0b10] to-[#050506] border border-[#2b2b35] rounded-xl p-2.5 flex flex-col gap-2 overflow-hidden">
             <p className="text-[10px] uppercase tracking-[0.16em] text-[#DFFF00] px-1 shrink-0">
@@ -2830,14 +2843,7 @@ export function Studio() {
   const renderCloningView = () => (
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h2 className="text-2xl font-semibold mb-2">Voice Cloning</h2>
-          <p className="text-[#A7B0B7] max-w-3xl">
-            Upload a reference recording or capture one with your microphone. We transcribe the reference audio automatically,
-            then synthesize your target text in that voice. Output is stored for 7 days — play or download below. Each run
-            uses {CREDIT_VOICE_CLONE} credits.
-          </p>
-        </div>
+        <h2 className="text-2xl font-semibold">Voice Cloning</h2>
         <a
           href="/docs/guide-cloning"
           target="_blank"
@@ -2853,7 +2859,7 @@ export function Studio() {
         <Lightbulb size={16} className="shrink-0 mt-0.5 text-cyan-300" />
         <div className="space-y-1">
           <p><span className="font-semibold text-cyan-200">For best results:</span> use 5–10 seconds of a single speaker, with no background music and no clipping or distortion.</p>
-          <p className="text-cyan-100/70 text-xs">If you know exactly what was said, type it as the reference script below — that's more accurate than auto-transcription. Leave it empty and we'll transcribe automatically.</p>
+          <p className="text-cyan-100/70 text-xs">If you know exactly what was said, type it as the reference script below, that's more accurate than auto-transcription. Leave it empty and we'll transcribe automatically.</p>
         </div>
       </div>
 
@@ -3019,7 +3025,7 @@ export function Studio() {
             <input
               value={cloneLanguage}
               onChange={(e) => setCloneLanguage(e.target.value)}
-              placeholder="e.g. en — helps STT for non-English references"
+              placeholder="e.g. en, helps STT for non-English references"
               className="w-full bg-[#0a0a0a] border border-white/10 rounded-xl px-3 py-2 text-sm text-white placeholder-[#666] outline-none"
             />
           </div>
@@ -3030,7 +3036,7 @@ export function Studio() {
               value={cloneReferenceScript}
               onChange={(e) => setCloneReferenceScript(e.target.value)}
               rows={3}
-              placeholder="What is said in the reference clip — improves cloning accuracy. Leave empty and we'll auto-transcribe."
+              placeholder="What is said in the reference clip, improves cloning accuracy. Leave empty and we'll auto-transcribe."
               className="w-full bg-[#0a0a0a] border border-white/10 rounded-xl px-3 py-2 text-sm text-white placeholder-[#666] outline-none resize-y"
             />
           </div>
@@ -3153,7 +3159,7 @@ export function Studio() {
                 Open player page
               </button>
             )}
-            {/* Thumbs feed into the Quality dashboard at /admin/* — see
+            {/* Thumbs feed into the Quality dashboard at /admin/*, see
                 generation_feedback table + /api/dashboard/feedback. */}
             <ThumbsFeedback
               entryType="clone"
@@ -3210,6 +3216,7 @@ export function Studio() {
             {activeView === 'cloning' && renderCloningView()}
             {activeView === 'voice-design' && renderVoiceDesignView()}
             {activeView === 'my-voices' && renderMyVoicesView()}
+            {activeView === 'community-voices' && <StudioCommunityVoices />}
             {activeView === 'music' && <StudioMusic />}
             {activeView === 'noise-remover' && <StudioNoiseRemover />}
             {activeView === 'playbooks' && <StudioPlaybooks />}
@@ -3450,7 +3457,7 @@ export function Studio() {
                                           : item.entry_type === 'noise_remover' || item.entry_type === 'dubbing'
                                             ? '?entry_type=noise_remover'
                                             : '';
-                                  // Parse music metadata lazily — only when this row is music.
+                                  // Parse music metadata lazily, only when this row is music.
                                   // The schema field is a JSON string ({}-default).
                                   const musicMeta: Record<string, unknown> = (() => {
                                     if (!isMusic) return {};
@@ -3737,7 +3744,7 @@ export function Studio() {
               Adding {studioHistorySelected.size} item{studioHistorySelected.size === 1 ? '' : 's'}. STT and expired items will be skipped.
             </p>
             {studioPlaybooksList.length === 0 ? (
-              <p className="text-sm text-[#A7B0B7]">No playbooks yet — create one first from the Playbooks page.</p>
+              <p className="text-sm text-[#A7B0B7]">No playbooks yet, create one first from the Playbooks page.</p>
             ) : (
               <div className="space-y-1 max-h-72 overflow-y-auto">
                 {studioPlaybooksList.map((pb) => (
@@ -3775,7 +3782,7 @@ export function Studio() {
 }
 
 /* ==========================================================================
-   Clone samples section — shown at bottom of voice cloning page
+   Clone samples section, shown at bottom of voice cloning page
    ========================================================================== */
 
 const CLONE_SAMPLE_TRACKS = [
@@ -3828,11 +3835,11 @@ function CloneSamplesSection() {
               <h4 className="text-sm text-white font-medium mb-2">{c.name}</h4>
               <div className="space-y-1.5">
                 <div className="flex items-center gap-2">
-                  <PlayBtn src={c.originalAudio} title={`${c.name} — Original`} subtitle={c.originalLabel} image={c.avatar} />
+                  <PlayBtn src={c.originalAudio} title={`${c.name}, Original`} subtitle={c.originalLabel} image={c.avatar} />
                   <span className="text-xs text-[#A7B0B7]">{c.originalLabel}</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <PlayBtn src={c.clonedAudio} title={`${c.name} — Cloned`} subtitle={c.clonedLabel} image={c.avatar} />
+                  <PlayBtn src={c.clonedAudio} title={`${c.name}, Cloned`} subtitle={c.clonedLabel} image={c.avatar} />
                   <span className="text-xs text-[#A7B0B7]">{c.clonedLabel}</span>
                 </div>
               </div>

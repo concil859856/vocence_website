@@ -135,7 +135,7 @@ export function StudioDesignedVoiceWorkspace() {
       setGenLoading(true);
       setNotice(null);
       setResult(null);
-      const label = `${voice?.display_name || 'Designed voice'} — ${text.slice(0, 60)}`;
+      const label = `${voice?.display_name || 'Designed voice'}, ${text.slice(0, 60)}`;
       void (async () => {
         try {
           const submission = await dashboardApi.startJob({
@@ -147,7 +147,7 @@ export function StudioDesignedVoiceWorkspace() {
           setNotice({
             type: 'info' as never,
             message: submission.load_warning
-              ? `Queued (position ${submission.queue_position}). Capacity is heavy — this might take roughly 2× as long as usual.`
+              ? `Queued (position ${submission.queue_position}). Capacity is heavy, this might take roughly 2× as long as usual.`
               : `Queued (position ${submission.queue_position}). Generating…`,
           } as never);
           generations.trackServerJob({

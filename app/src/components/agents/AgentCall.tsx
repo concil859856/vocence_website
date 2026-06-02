@@ -1,12 +1,12 @@
 /**
- * AgentCall — voice-only "phone call" mode for testing an agent.
+ * AgentCall, voice-only "phone call" mode for testing an agent.
  *
  * No chat bubbles, no text input. One animated orb in the centre,
  * the agent's name and current state below it, an End Call button
  * at the bottom, and small mute / open-transcript secondaries.
  *
  * The session itself lives in ``useAgentSession`` one level up so
- * the Call and Chat tabs share a single WebSocket — clicking
+ * the Call and Chat tabs share a single WebSocket, clicking
  * "Open transcript" switches to Chat with the same conversation
  * still going.
  */
@@ -86,7 +86,7 @@ export function AgentCall({ agent, session, onSwitchToChat }: Props) {
       .join('');
   }, [agent.name]);
 
-  // Most-recent system message — surfaced after onEnd auto-fires so
+  // Most-recent system message, surfaced after onEnd auto-fires so
   // the user sees WHY the call ended (timeout vs. credits vs. manual).
   const lastSystemMsg = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -207,7 +207,7 @@ export function AgentCall({ agent, session, onSwitchToChat }: Props) {
 
       {!started && !lastSystemMsg && (
         <p className="mt-6 text-[11px] text-[#7D8A95] text-center max-w-sm relative">
-          When you start, the agent greets you and the mic opens. Talk naturally — the call ends when you click End, or after 30 min of conversation / 60 s of silence.
+          When you start, the agent greets you and the mic opens. Talk naturally, the call ends when you click End, or after 30 min of conversation / 60 s of silence.
         </p>
       )}
     </div>

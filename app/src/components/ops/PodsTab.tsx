@@ -1,5 +1,5 @@
 /**
- * Pods tab — list, deploy, stop/restart/update/drain/remove, view logs.
+ * Pods tab, list, deploy, stop/restart/update/drain/remove, view logs.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { FileText, Pause, Plus, RefreshCw, RotateCcw, Trash2, UploadCloud } from 'lucide-react';
@@ -116,7 +116,7 @@ export function PodsTab({ token }: Props) {
       ) : pods.length === 0 ? (
         <div className="rounded-xl border border-dashed border-white/15 p-8 text-center text-sm text-[#A7B0B7]">
           {serversReady.length === 0
-            ? 'No ready servers yet — add one in the Servers tab first.'
+            ? 'No ready servers yet, add one in the Servers tab first.'
             : 'No pods deployed. Click Deploy to start a service.'}
         </div>
       ) : (

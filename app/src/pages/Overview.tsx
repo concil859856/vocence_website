@@ -924,7 +924,7 @@ export function Overview() {
             </p>
           </div>
 
-          {/* Horizontal timeline: line with Q1 — Q2 — Q3 nodes */}
+          {/* Horizontal timeline: line with Q1, Q2, Q3 nodes */}
           <div className="flex items-center w-full mb-8">
             <div className="flex-1 h-0.5 bg-white/10 rounded-l" aria-hidden />
             {ROADMAP_QUARTERS.map((q, index) => (

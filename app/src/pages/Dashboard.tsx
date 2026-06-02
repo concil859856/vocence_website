@@ -1098,7 +1098,7 @@ export function Dashboard() {
         </div>
       </div>
 
-      {/* Validation detail slide-out (right side) — above navbar (z-[60]) */}
+      {/* Validation detail slide-out (right side), above navbar (z-[60]) */}
       {selectedValidationDetail && (
         <div
           className="fixed inset-0 z-[60] flex justify-end bg-black/50 backdrop-blur-sm"

@@ -68,6 +68,24 @@ class AgentDraftIn(BaseModel):
     existing: Optional[dict] = None
 
 
+class _ArchitectChatTurn(BaseModel):
+    role: str = Field(pattern="^(user|assistant)$")
+    content: str = Field(min_length=1, max_length=4000)
+
+
+class AgentArchitectChatIn(BaseModel):
+    """Conversational architect turn — the default architect entry
+    point. The architect responds in plain English; only when the
+    user explicitly asks for an edit does the response include
+    ``proposed_changes`` for the UI to surface as an Apply button.
+    Replaces the silent auto-rewrite behaviour the old /draft-only
+    flow had: an off-hand question like "what can you help with?"
+    now stays as conversation rather than mutating the agent."""
+    message: str = Field(min_length=1, max_length=4000)
+    history: list[_ArchitectChatTurn] = Field(default_factory=list, max_length=24)
+    existing: Optional[dict] = None
+
+
 # ---------------------------------------------------------------------------
 # Row → JSON helpers
 # ---------------------------------------------------------------------------
@@ -221,6 +239,28 @@ async def draft_agent(body: AgentDraftIn, user_id: str = Depends(require_auth)) 
     except Exception as exc:  # noqa: BLE001
         _log.exception("draft failed")
         raise HTTPException(status_code=502, detail=f"draft failed: {exc}")
+    return result
+
+
+@router.post("/architect/chat")
+async def architect_chat(body: AgentArchitectChatIn, user_id: str = Depends(require_auth)) -> dict:
+    """One conversational turn with the architect. Returns
+    ``{reply, proposed_changes}``: the UI shows ``reply`` as a chat
+    bubble, and only renders an "Apply" button when ``proposed_changes``
+    is non-null (the architect's signal that the user clearly asked
+    for an edit). The old ``/draft`` endpoint still works for code that
+    wants the one-shot rewrite."""
+    if not agents_service.llm_configured():
+        raise HTTPException(status_code=503, detail="agents LLM not configured")
+    try:
+        result = await agents_service.chat_with_architect(
+            user_message=body.message,
+            history=[h.model_dump() for h in body.history],
+            existing=body.existing,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _log.exception("architect chat failed")
+        raise HTTPException(status_code=502, detail=f"architect chat failed: {exc}")
     return result
 
 

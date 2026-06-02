@@ -1,5 +1,5 @@
 /**
- * useVoiceChat — React hook that owns the WS state machine for the
+ * useVoiceChat, React hook that owns the WS state machine for the
  * Vocence in-Studio assistant bot.
  *
  * Two modes:
@@ -21,20 +21,20 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { API_ORIGIN_BASE } from '../../services/baseUrl';
 import { StreamingAudioPlayer } from './audioPlayer';
 import { MicRecorder } from './recorder';
 import { VadController, arrayBufferToBase64 } from './vadController';
+import { API_ORIGIN_BASE } from '../../services/baseUrl';
 
 export type BotState = 'idle' | 'connecting' | 'listening' | 'recording' | 'uploading' | 'transcribing' | 'thinking' | 'speaking' | 'error';
 
 export interface ToolCallStatus {
-  /** LLM-emitted call id — stable across started/completed events. */
+  /** LLM-emitted call id, stable across started/completed events. */
   id: string;
   /** Tool name as the LLM saw it (e.g. ``web_search``, ``get_weather``,
    *  or a user-defined name like ``lookup_order``). */
   name: string;
-  /** ``builtin`` or ``custom`` — drives the chip icon/color so the user
+  /** ``builtin`` or ``custom``, drives the chip icon/color so the user
    *  can tell at a glance whether the agent called a Vocence built-in
    *  or one of their own webhook tools. */
   kind: 'builtin' | 'custom';
@@ -52,11 +52,11 @@ export interface BotMessage {
   text: string;
   pending?: boolean;
   /** Tool calls the agent made during *this* assistant turn. Rendered
-   *  as inline chips above the message text — "🔍 Searching the web…"
+   *  as inline chips above the message text, "🔍 Searching the web…"
    *  while running, then the result preview when complete. */
   tool_calls?: ToolCallStatus[];
   /** Hint used by the chat UI to render system messages distinctly.
-   *  e.g. ``'idle_timeout'`` → "Session ended — no activity" banner. */
+   *  e.g. ``'idle_timeout'`` → "Session ended, no activity" banner. */
   systemKind?: 'idle_timeout' | 'max_duration' | 'billing_exhausted' | 'info';
 }
 
@@ -94,7 +94,16 @@ export interface UseVoiceChatResult {
 }
 
 function buildWsUrl(token: string, agentId?: string | null): string {
-  const origin = API_ORIGIN_BASE || `${window.location.protocol}//${window.location.host}`;
+  // ALWAYS use the page's own origin for the WS, even when
+  // ``API_ORIGIN_BASE`` (= VITE_API_URL) points at a different backend
+  // host. The dev Vite proxy forwards same-origin ``/api/*`` WebSocket
+  // upgrades to the backend (vite.config.ts → ``ws: true``).
+  //
+  // Going direct cross-origin (page on :5173 → ws on :8095) trips
+  // Chrome's cross-origin WebSocket handling and closes the
+  // connection with code 1006 immediately after handshake. Same-origin
+  // through the proxy avoids it entirely.
+  const origin = `${window.location.protocol}//${window.location.host}`;
   const wsOrigin = origin.replace(/^http:/, 'ws:').replace(/^https:/, 'wss:');
   const params = new URLSearchParams({ token });
   if (agentId) params.set('agent_id', agentId);
@@ -117,15 +126,24 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
   const playerRef = useRef<StreamingAudioPlayer | null>(null);
   const recorderRef = useRef<MicRecorder | null>(null);
   const vadRef = useRef<VadController | null>(null);
+  // Set true while ``startListening`` is mid-flight (await on
+  // ``new VadController()``/``vad.start()``). Without this, React 18
+  // StrictMode's double-mount fires startListening twice concurrently
+  //, the second call passes the ``vadRef.current`` guard (still null
+  // because the first await hasn't resolved), so both calls construct
+  // a MicVAD. Both mic streams stay open, both fire onFrameProcessed,
+  // PCM is sent at 2× rate to the server, and the STT pod's input
+  // becomes garbled. The console then shows ``2× started micVAD``.
+  const vadStartingRef = useRef<boolean>(false);
   const currentBotMsgIdRef = useRef<string | null>(null);
   const audioStartedForTurnRef = useRef(false);
   // Lock window after the agent starts speaking. While this is set,
-  // VAD onSpeechStart events are ignored — gives the browser echo
+  // VAD onSpeechStart events are ignored, gives the browser echo
   // canceller a moment to settle so we don't mistake the agent's own
   // first syllable (leaking through speakers) for a user barge-in.
   const POST_SPEAK_LOCK_MS = 600;
 
-  // Backchannel filter — short speech bursts during agent playback
+  // Backchannel filter, short speech bursts during agent playback
   // (e.g. "uh-huh", "yeah", "mhm", "right") shouldn't cut the agent
   // off. When VAD detects speech-start *while the agent is speaking*,
   // we defer the barge-in by BACKCHANNEL_GRACE_MS. If speech ends
@@ -144,7 +162,7 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
   const streamingVoiceEnabledRef = useRef<boolean>(false);
   const streamTurnOpenRef = useRef<boolean>(false);
 
-  // Paced text reveal — text appears in the chat bubble at a natural
+  // Paced text reveal, text appears in the chat bubble at a natural
   // reading pace (~22 chars/sec) starting when audio begins playing,
   // rather than dumping the whole reply the moment the LLM finishes.
   // The full text is buffered behind the scenes; the timer copies it
@@ -196,7 +214,7 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
       }
       if (s.shown >= s.full.length) {
         // Caught up. If the turn ended, finalise and stop. Otherwise
-        // keep the timer alive — more tokens may still be on the wire.
+        // keep the timer alive, more tokens may still be on the wire.
         if (s.ended) {
           const id = s.msgId;
           setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, pending: false } : m)));
@@ -214,17 +232,17 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
 
   const ensurePlayer = useCallback(async () => {
     if (!playerRef.current) {
-      // DIAGNOSTIC: surface buffer-underrun events to the browser console
-      // so we can see if the "audio gets bad after 7-9s" symptom is a
-      // queue-drain pattern (rebuffering fires mid-reply) or something
-      // else entirely. Remove the console.* lines once the bug is fixed.
+      // Audio-pipeline diagnostics, only emitted in dev so we don't
+      // spam every paying customer's DevTools console (or get picked
+      // up by user-installed console-forwarding extensions / RUM).
+      const DEBUG_AUDIO = import.meta.env.DEV;
       const turnStart = performance.now();
       playerRef.current = new StreamingAudioPlayer({
         onIdle: () => {
-          console.log(`[audio] idle  t=${Math.round(performance.now() - turnStart)}ms`);
+          if (DEBUG_AUDIO) console.log(`[audio] idle  t=${Math.round(performance.now() - turnStart)}ms`);
         },
         onPlayingStart: () => {
-          console.log(`[audio] playing  t=${Math.round(performance.now() - turnStart)}ms`);
+          if (DEBUG_AUDIO) console.log(`[audio] playing  t=${Math.round(performance.now() - turnStart)}ms`);
           // The agent's audio just started hitting the speakers. Arm
           // the VAD lock so the agent's own first syllable bleeding
           // through speakers doesn't trip a false barge-in before the
@@ -232,10 +250,8 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
           vadRef.current?.lockSpeechStartFor(POST_SPEAK_LOCK_MS);
         },
         onRebuffering: (queuedMs) => {
-          // This firing mid-reply means the audio buffer ran out of
-          // queued frames while the user was still hearing the bot
-          // talk — almost always perceived as "broken/glitchy audio".
-          console.warn(
+          // Buffer ran out mid-reply, surfaces "broken/glitchy audio".
+          if (DEBUG_AUDIO) console.warn(
             `[audio] REBUFFERING (underrun)  t=${Math.round(performance.now() - turnStart)}ms  queued=${queuedMs.toFixed(0)}ms`,
           );
         },
@@ -282,7 +298,7 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
         if (!audioStartedForTurnRef.current) {
           audioStartedForTurnRef.current = true;
           setState('speaking');
-          // Audio is now flowing — start (or keep) the paced text reveal
+          // Audio is now flowing, start (or keep) the paced text reveal
           // so chat-bubble text is in step with what the user is hearing.
           if (revealStateRef.current) startRevealTimer();
         }
@@ -321,8 +337,11 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
           // of waiting for the full turn to commit.
           //
           // ``payload.text`` is the cumulative running transcript
-          // (NOT a delta) — replace, don't append. ``audio_ms_consumed``
+          // (NOT a delta), replace, don't append. ``audio_ms_consumed``
           // is optional metadata for debugging.
+          if (import.meta.env.DEV) {
+            console.log('[voicechat] ← partial_transcript', payload.text);
+          }
           setMessages((prev) => {
             const next = prev.slice();
             const last = next[next.length - 1];
@@ -339,7 +358,7 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
           // The agent decided to invoke a tool. Render a chip on the
           // current assistant bubble so the user knows why the LLM
           // hasn't replied yet ("Searching the web…" beats silence).
-          // If no assistant bubble exists yet, create one now — the
+          // If no assistant bubble exists yet, create one now, the
           // LLM may emit tool_calls before any content tokens.
           const tc: ToolCallStatus = {
             id: String(payload.id || makeId()),
@@ -347,7 +366,7 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
             kind: payload.kind === 'custom' ? 'custom' : 'builtin',
             status: 'running',
           };
-          // SYNC: claim the ref BEFORE setMessages — the previous version
+          // SYNC: claim the ref BEFORE setMessages, the previous version
           // mutated the ref inside the state-updater callback, which only
           // runs at commit time. A token frame arriving in the same
           // microtask would still see ``currentBotMsgIdRef.current === null``
@@ -360,7 +379,7 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
             currentBotMsgIdRef.current = msgId;
             // Bind the reveal buffer to this bubble proactively so any
             // content tokens that arrive after the tool result have a
-            // home — without this, every post-tool-call token gets
+            // home, without this, every post-tool-call token gets
             // dropped on the floor (audio plays, text doesn't show).
             revealStateRef.current = { msgId, full: '', shown: 0, ended: false };
           }
@@ -406,7 +425,7 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
         }
         case 'token': {
           // Tokens go into the reveal buffer, NOT directly into the
-          // visible message — the timer copies them out at reading
+          // visible message, the timer copies them out at reading
           // pace once audio starts. The visible message is created
           // empty so the typing-dots animation shows during the
           // pre-audio wait.
@@ -431,7 +450,7 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
               ended: false,
             };
             // If audio is already playing for this turn, the binary-frame
-            // handler won't trigger again — kick the reveal timer here so
+            // handler won't trigger again, kick the reveal timer here so
             // the text actually appears.
             if (audioStartedForTurnRef.current) startRevealTimer();
           }
@@ -443,7 +462,7 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
         }
         case 'audio_meta':
           // server is about to send PCM frames for sentence N.
-          // is_filler=true means "Hmm,", "Okay," etc. — drop the
+          // is_filler=true means "Hmm,", "Okay," etc., drop the
           // prebuffer to ~80 ms so the filler plays immediately and
           // actually masks LLM latency instead of sitting hidden inside
           // the cold-start cushion.
@@ -468,7 +487,7 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
             setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, pending: false } : m)));
           }
           currentBotMsgIdRef.current = null;
-          // No more frames coming — let the player drain to silence
+          // No more frames coming, let the player drain to silence
           // without entering the rebuffer state.
           playerRef.current?.signalEnd();
           // Always-on: go back to listening so the mic is still hot
@@ -485,7 +504,7 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
         case 'cancelled':
           stopRevealTimer();
           if (revealStateRef.current) {
-            // On cancel, drop whatever was buffered — the user is moving on.
+            // On cancel, drop whatever was buffered, the user is moving on.
             const id = revealStateRef.current.msgId;
             setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, pending: false } : m)));
             revealStateRef.current = null;
@@ -506,7 +525,7 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
           });
           break;
         case 'session_timeout': {
-          // Backend auto-closed the session — either the 30-min hard
+          // Backend auto-closed the session, either the 30-min hard
           // cap (code: max_duration) or the 60-sec idle watchdog
           // (code: idle_timeout). Surface a system bubble so the
           // user knows WHY the session ended; without this they
@@ -514,9 +533,9 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
           const subCode = String(payload.code || '');
           const messageText = String(payload.message || (
             subCode === 'idle_timeout'
-              ? 'Session ended — no activity for 60 seconds. Start a new conversation to continue.'
+              ? 'Session ended, no activity for 60 seconds. Start a new conversation to continue.'
               : subCode === 'max_duration'
-                ? 'Session ended — reached the 30-minute maximum. Start a new conversation to continue.'
+                ? 'Session ended, reached the 30-minute maximum. Start a new conversation to continue.'
                 : 'Session ended.'
           ));
           setMessages((prev) => [
@@ -536,7 +555,7 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
         case 'billing_exhausted': {
           // User ran out of credits mid-session. Same UX pattern:
           // visible system message + state back to idle.
-          const messageText = String(payload.message || 'Session ended — credit balance reached zero. Top up to continue.');
+          const messageText = String(payload.message || 'Session ended, credit balance reached zero. Top up to continue.');
           setMessages((prev) => [
             ...prev,
             { id: makeId(), role: 'system', text: messageText, systemKind: 'billing_exhausted' },
@@ -576,6 +595,18 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
     }
     return () => {
       try { wsRef.current?.close(); } catch { /* ignore */ }
+      // React 18 StrictMode double-mounts effects in dev, without
+      // tearing down VAD here, the orphan MicVAD from the first mount
+      // keeps its mic stream open and its onFrameProcessed firing,
+      // racing the second-mount VAD against the same wsRef and
+      // streamTurnOpenRef. Net effect: 2× PCM frames shipped, garbled
+      // audio at the STT pod, and ``2× started micVAD`` in the
+      // console. Destroy here so the second mount starts clean.
+      if (vadRef.current) {
+        void vadRef.current.destroy();
+        vadRef.current = null;
+      }
+      vadStartingRef.current = false;
     };
   }, [enabled, authToken, agentId, connect]);
 
@@ -623,7 +654,41 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
   const startListening = useCallback(async () => {
     if (!alwaysOn) return;
     if (vadRef.current) return;
-    if (!wsRef.current || wsRef.current.readyState !== 1) {
+    // StrictMode double-mount guard: the first call enters the async
+    // setup (`new VadController()` / `await vad.start()`); a parallel
+    // second call would pass the vadRef.current null-check above and
+    // construct a second MicVAD. Mark startup-in-flight so the second
+    // call bails fast.
+    if (vadStartingRef.current) return;
+    vadStartingRef.current = true;
+    // Wait up to 5s for the WS to finish its handshake. Callers
+    // (useAgentSession, the Studio home spotlight) fire startListening
+    // off the same state transition that opens the WS, if we bail
+    // synchronously on readyState !== OPEN we lose a race the server
+    // had no chance to win. CONNECTING (0) is benign; only treat
+    // CLOSING/CLOSED as a real error.
+    const ws = wsRef.current;
+    if (!ws) {
+      vadStartingRef.current = false;
+      setError('not connected');
+      setState('error');
+      return;
+    }
+    if (ws.readyState === 0) {
+      const ok = await new Promise<boolean>((resolve) => {
+        const t = window.setTimeout(() => resolve(false), 5000);
+        ws.addEventListener('open', () => { window.clearTimeout(t); resolve(true); }, { once: true });
+        ws.addEventListener('error', () => { window.clearTimeout(t); resolve(false); }, { once: true });
+        ws.addEventListener('close', () => { window.clearTimeout(t); resolve(false); }, { once: true });
+      });
+      if (!ok || ws.readyState !== 1) {
+        vadStartingRef.current = false;
+        setError('not connected');
+        setState('error');
+        return;
+      }
+    } else if (ws.readyState !== 1) {
+      vadStartingRef.current = false;
       setError('not connected');
       setState('error');
       return;
@@ -633,6 +698,32 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
       // the lock window without a race.
       await ensurePlayer();
       const useStream = streamingVoiceEnabledRef.current;
+      const DEBUG_STREAM = import.meta.env.DEV;
+      // Per-turn counters so DevTools shows exactly how much PCM we
+      // shipped between stream_start and stream_commit. If the server
+      // reports a different byte count, the WS path is corrupting
+      // frames; if both agree but STT is empty, the pod itself
+      // isn't transcribing.
+      let streamFramesSent = 0;
+      let streamBytesSent = 0;
+      let streamStartAt = 0;
+      // Show a pending user bubble (typing dots) the instant we open
+      // a streaming turn. The previous behaviour waited for the first
+      // ``partial_transcript`` event to create the bubble, which left
+      // the user staring at nothing for the pod's time-to-first-
+      // partial (~200-400 ms), and if the pod silently dropped
+      // partials, the bubble never appeared at all. Painting it
+      // immediately gives instant visual feedback; partials then
+      // replace the dots with live text as they arrive.
+      const openPendingUserBubble = () => {
+        setMessages((prev) => {
+          const last = prev[prev.length - 1];
+          if (last && last.role === 'user' && last.pending) {
+            return prev;  // already have one, don't double up
+          }
+          return [...prev, { id: makeId(), role: 'user', text: '', pending: true }];
+        });
+      };
       const vad = new VadController(
         {
           onSpeechStart: () => {
@@ -646,7 +737,7 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
             //    short backchannel ("uh-huh", "yeah") that ends inside
             //    that window with total duration ≤ BACKCHANNEL_MAX_MS,
             //    onSpeechEnd will skip both the barge-in and the
-            //    submission — the agent keeps talking. Otherwise the
+            //    submission, the agent keeps talking. Otherwise the
             //    deferred timer fires the normal barge-in path.
             if (!isAgentSpeakingRef.current) {
               bargeIn();
@@ -654,6 +745,11 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
               if (useStream && !streamTurnOpenRef.current && wsRef.current?.readyState === 1) {
                 wsRef.current.send(JSON.stringify({ type: 'stream_start' }));
                 streamTurnOpenRef.current = true;
+                streamFramesSent = 0;
+                streamBytesSent = 0;
+                streamStartAt = performance.now();
+                openPendingUserBubble();
+                if (DEBUG_STREAM) console.log('[voicechat] → stream_start (immediate)');
               }
               return;
             }
@@ -666,11 +762,16 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
               if (useStream && !streamTurnOpenRef.current && wsRef.current?.readyState === 1) {
                 wsRef.current.send(JSON.stringify({ type: 'stream_start' }));
                 streamTurnOpenRef.current = true;
+                streamFramesSent = 0;
+                streamBytesSent = 0;
+                streamStartAt = performance.now();
+                openPendingUserBubble();
+                if (DEBUG_STREAM) console.log('[voicechat] → stream_start (deferred barge-in)');
               }
             }, BACKCHANNEL_GRACE_MS);
           },
           onSpeechEnd: ({ wavBytes, durationMs }) => {
-            // Backchannel swallow path — same regardless of mode.
+            // Backchannel swallow path, same regardless of mode.
             if (
               bargeInDeferredRef.current &&
               durationMs <= BACKCHANNEL_MAX_MS
@@ -695,6 +796,12 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
               if (streamTurnOpenRef.current && wsRef.current?.readyState === 1) {
                 wsRef.current.send(JSON.stringify({ type: 'stream_commit' }));
                 streamTurnOpenRef.current = false;
+                if (DEBUG_STREAM) {
+                  const elapsed = Math.round(performance.now() - streamStartAt);
+                  console.log(
+                    `[voicechat] → stream_commit  frames=${streamFramesSent} bytes=${streamBytesSent} elapsed=${elapsed}ms speech_dur=${durationMs}ms`,
+                  );
+                }
               }
               setState('transcribing');
               return;
@@ -705,15 +812,27 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
           onPcmFrame: useStream
             ? (pcm: Uint8Array) => {
                 if (!wsRef.current || wsRef.current.readyState !== 1) return;
-                // Open the streaming turn lazily on the first frame
-                // in case onSpeechStart hasn't fired yet (e.g. the
-                // very first frame after mic open arrives carrying
-                // speech that wasn't detected as start by Silero).
+                // Open the streaming turn lazily on the first frame so
+                // we don't truncate the start of the utterance.
+                // Silero's onSpeechStart fires ~500-700 ms AFTER speech
+                // actually begins (it needs to accumulate confidence),
+                // so gating stream_start on onSpeechStart drops the
+                // first word of every turn, STT then receives a
+                // half-word and returns empty. The streaming pod's own
+                // server-side VAD filters out the leading silence; we
+                // just need to make sure the actual speech all arrives.
                 if (!streamTurnOpenRef.current) {
                   wsRef.current.send(JSON.stringify({ type: 'stream_start' }));
                   streamTurnOpenRef.current = true;
+                  streamFramesSent = 0;
+                  streamBytesSent = 0;
+                  streamStartAt = performance.now();
+                  openPendingUserBubble();
+                  if (DEBUG_STREAM) console.log('[voicechat] → stream_start (first frame)');
                 }
                 wsRef.current.send(pcm);
+                streamFramesSent += 1;
+                streamBytesSent += pcm.byteLength;
               }
             : undefined,
           onProbability: (p) => setMicLevel(p),
@@ -724,8 +843,8 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
           },
         },
         {
-          endSilenceMs: 450,
-          minSpeechMs: 250,
+          endSilenceMs: 1000,
+          minSpeechMs: 500,
           mode: useStream ? 'stream' : 'segment',
         },
       );
@@ -739,6 +858,8 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
       setListening(false);
       vadRef.current?.destroy();
       vadRef.current = null;
+    } finally {
+      vadStartingRef.current = false;
     }
   }, [alwaysOn, ensurePlayer, bargeIn, submitVoiceB64]);
 

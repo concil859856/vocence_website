@@ -15,6 +15,7 @@ import {
   AlertCircle, Check, Code, Copy, KeyRound, Loader2, Plus, Trash2,
 } from 'lucide-react';
 import { dashboardApi, type EmbedTokenRow } from '../../services/dashboardApi';
+import { useConfirm } from '../../hooks/useConfirm';
 
 
 interface Props {
@@ -24,11 +25,12 @@ interface Props {
 
 
 export function AgentEmbedTokensPanel({ agentId, token }: Props) {
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [rows, setRows] = useState<EmbedTokenRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
-  // The "just-minted" plaintext + snippet — shown once in a modal
+  // The "just-minted" plaintext + snippet, shown once in a modal
   // after the create call returns.
   const [justMinted, setJustMinted] = useState<{
     plaintext: string;
@@ -51,9 +53,17 @@ export function AgentEmbedTokensPanel({ agentId, token }: Props) {
   useEffect(() => { void refresh(); }, [refresh]);
 
   const handleRevoke = async (tokenId: string, label: string) => {
-    if (!window.confirm(`Revoke token "${label}"? Existing widget embeds using it will stop working.`)) {
-      return;
-    }
+    const ok = await confirm({
+      title: 'Revoke this embed token?',
+      message:
+        `"${label}" will be revoked immediately. Any website still using this token in the ` +
+        `<vocence-agent> widget will start failing to open sessions, you'll need to mint a new ` +
+        `token and update those sites.`,
+      confirmLabel: 'Revoke token',
+      cancelLabel: 'Keep it',
+      confirmVariant: 'danger',
+    });
+    if (!ok) return;
     try {
       await dashboardApi.revokeAgentEmbedToken(agentId, tokenId, token);
       void refresh();
@@ -174,6 +184,7 @@ export function AgentEmbedTokensPanel({ agentId, token }: Props) {
           onClose={() => setJustMinted(null)}
         />
       )}
+      {confirmDialog}
     </section>
   );
 }
@@ -219,7 +230,7 @@ function CreateTokenModal({
       <div className="bg-[#0d0e10] border border-white/15 rounded-2xl max-w-lg w-full p-5 space-y-3">
         <h3 className="text-white font-semibold">New embed token</h3>
         <p className="text-xs text-[#A7B0B7] leading-relaxed">
-          The plaintext token is shown once after creation. Save it then — we
+          The plaintext token is shown once after creation. Save it then, we
           store only a hash and won't be able to retrieve it later.
         </p>
 

@@ -207,7 +207,7 @@ export function PricingPlans({
                 <div className={`mt-4 shrink-0 ${overviewCompact ? 'space-y-2.5' : 'space-y-2'}`}>
                   {compact && !forOverview ? (
                     <p className="text-[9px] leading-snug text-[#8B96A0]">
-                      <span className="text-[#C6CDD4]">Card vs crypto</span> — different packs.{' '}
+                      <span className="text-[#C6CDD4]">Card vs crypto</span>, different packs.{' '}
                       <Link to="/pricing" className="text-[#DFFF00]/90 underline-offset-2 hover:underline">
                         Pricing
                       </Link>

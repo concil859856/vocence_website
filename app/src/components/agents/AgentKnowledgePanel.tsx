@@ -1,5 +1,5 @@
 /**
- * Agent Knowledge panel — manages external knowledge sources attached
+ * Agent Knowledge panel, manages external knowledge sources attached
  * to one agent. Lives in the Settings tab.
  *
  * Source types supported:
@@ -22,6 +22,7 @@ import {
   Plus, Trash2, Upload,
 } from 'lucide-react';
 import { dashboardApi, type KnowledgeSource, type KnowledgeIngestResponse } from '../../services/dashboardApi';
+import { useConfirm } from '../../hooks/useConfirm';
 
 type SourceKind = 'pdf' | 'url' | 'sitemap' | 'text' | 'markdown';
 
@@ -36,14 +37,26 @@ interface PendingJob {
   label: string;
 }
 
+interface FailedJob {
+  jobId: string;
+  label: string;
+  reason: string;
+}
+
 
 export function AgentKnowledgePanel({ agentId, token }: Props) {
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [sources, setSources] = useState<KnowledgeSource[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [unsupported, setUnsupported] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
   const [pendingJobs, setPendingJobs] = useState<PendingJob[]>([]);
+  // Surfaces async ingest failures (URL fetch 404, sitemap parse error,
+  // PDF OCR crash, …). Without this the polling loop silently dropped
+  // failed jobs and the user saw an empty source list, with no idea
+  // their ingest had actually been attempted and failed.
+  const [failedJobs, setFailedJobs] = useState<FailedJob[]>([]);
 
   const refresh = useCallback(async () => {
     try {
@@ -69,29 +82,46 @@ export function AgentKnowledgePanel({ agentId, token }: Props) {
 
   useEffect(() => { void refresh(); }, [refresh]);
 
-  // Poll in-flight ingest jobs every 2s until each one finishes.
+  // Poll in-flight ingest jobs every 2s until each one finishes. On
+  // completion → refresh the sources list. On failure → move the job
+  // to ``failedJobs`` so the user sees a red banner with the reason
+  // (previously the failure was silently dropped, the user saw an
+  // empty list and assumed the request never happened).
   useEffect(() => {
     if (pendingJobs.length === 0) return;
     const interval = window.setInterval(async () => {
       const stillPending: PendingJob[] = [];
+      const newlyFailed: FailedJob[] = [];
       for (const job of pendingJobs) {
         try {
           const status = await dashboardApi.getAgentKnowledgeJob(agentId, job.jobId, token);
-          if (status.status === 'completed' || status.status === 'failed') {
-            // Job finished — refresh the sources list to show the new row.
+          if (status.status === 'completed') {
             void refresh();
+          } else if (status.status === 'failed') {
+            newlyFailed.push({
+              jobId: job.jobId,
+              label: job.label,
+              // The pod returns a structured ``error`` field with the
+              // root cause (HTTP status, parse error, etc.). Surface
+              // whatever it gave us, fall back to a generic string.
+              reason: status.error || status.message || 'Ingestion failed',
+            });
           } else {
             // Still running; keep polling.
             stillPending.push(job);
           }
         } catch {
-          // If polling fails (pod restarted, etc.) drop the job after a few
-          // tries. For now, drop on the first failure — the user can re-poll
-          // by refreshing.
+          // Polling network failure (pod restart, brief proxy blip) —
+          // keep the job in the pending queue and try again on the
+          // next tick.
+          stillPending.push(job);
         }
       }
       if (stillPending.length !== pendingJobs.length) {
         setPendingJobs(stillPending);
+      }
+      if (newlyFailed.length > 0) {
+        setFailedJobs((prev) => [...prev, ...newlyFailed]);
       }
     }, 2000);
     return () => window.clearInterval(interval);
@@ -111,9 +141,14 @@ export function AgentKnowledgePanel({ agentId, token }: Props) {
   };
 
   const handleDelete = async (sourceId: string, title: string) => {
-    if (!window.confirm(`Delete "${title}"? Its chunks will be removed from the knowledge base.`)) {
-      return;
-    }
+    const ok = await confirm({
+      title: 'Delete knowledge source?',
+      message: `"${title}" will be removed from this agent's knowledge base, and its chunks will be deleted on the next index sync. This can't be undone.`,
+      confirmLabel: 'Delete source',
+      cancelLabel: 'Keep it',
+      confirmVariant: 'danger',
+    });
+    if (!ok) return;
     try {
       await dashboardApi.deleteAgentKnowledgeSource(agentId, sourceId, token);
       setSources((prev) => prev.filter((s) => s.source_id !== sourceId));
@@ -148,7 +183,7 @@ export function AgentKnowledgePanel({ agentId, token }: Props) {
           <Database size={16} className="text-[#A7B0B7]" />
           <h3 className="text-white font-semibold">External knowledge</h3>
           <span className="text-[11px] text-[#A7B0B7]">
-            PDF, URL, sitemap, or text — searched per turn at runtime
+            PDF, URL, sitemap, or text, searched per turn at runtime
           </span>
         </div>
         <button
@@ -178,12 +213,35 @@ export function AgentKnowledgePanel({ agentId, token }: Props) {
       {pendingJobs.length > 0 && (
         <div className="mb-3 rounded-lg border border-amber-300/25 bg-amber-300/[0.05] px-3 py-2">
           <div className="text-[10px] uppercase tracking-wider text-amber-200 mb-1">
-            Ingesting…
+            Ingesting… (typically 5–30 s; you can leave this page)
           </div>
           {pendingJobs.map((j) => (
-            <div key={j.jobId} className="flex items-center gap-2 text-xs text-amber-100">
+            <div key={j.jobId} className="flex items-center gap-2 text-xs text-amber-100 py-0.5">
               <Loader2 size={12} className="animate-spin" />
-              <span>{j.label}</span>
+              <span className="truncate">{j.label}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {failedJobs.length > 0 && (
+        <div className="mb-3 rounded-lg border border-red-400/30 bg-red-500/[0.06] px-3 py-2">
+          <div className="flex items-center justify-between mb-1.5">
+            <div className="text-[10px] uppercase tracking-wider text-red-300">
+              Ingestion failed
+            </div>
+            <button
+              type="button"
+              onClick={() => setFailedJobs([])}
+              className="text-[10px] uppercase tracking-wider text-red-200/70 hover:text-red-100"
+            >
+              Dismiss
+            </button>
+          </div>
+          {failedJobs.map((j) => (
+            <div key={j.jobId} className="text-xs text-red-100 py-0.5">
+              <span className="font-semibold">{j.label}</span>
+              <span className="text-red-200/85">, {j.reason}</span>
             </div>
           ))}
         </div>
@@ -232,6 +290,7 @@ export function AgentKnowledgePanel({ agentId, token }: Props) {
           </table>
         </div>
       ) : null}
+      {confirmDialog}
     </section>
   );
 }
@@ -249,7 +308,7 @@ function AddSourceForm({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [title, setTitle] = useState('');
-  // Per-kind form state — declared at top level so React doesn't churn
+  // Per-kind form state, declared at top level so React doesn't churn
   // them as the user toggles kind.
   const [text, setText] = useState('');
   const [url, setUrl] = useState('');

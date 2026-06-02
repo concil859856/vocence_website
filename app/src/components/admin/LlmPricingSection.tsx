@@ -1,5 +1,5 @@
 /**
- * LLM Pricing — admin-editable price table.
+ * LLM Pricing, admin-editable price table.
  *
  * Each row is (provider, model) → input_per_1m + output_per_1m USD.
  * The backend reads this table when computing ``cost_usd`` on every
@@ -9,7 +9,7 @@
  * require admin sudo-unlock. We rely on the same JWT in localStorage
  * + X-Admin-Token in sessionStorage that ``opsApi`` already sends.
  *
- * Lives on /admin (Admin.tsx) — not /admin/ops — so the admin can edit
+ * Lives on /admin (Admin.tsx), not /admin/ops, so the admin can edit
  * pricing without leaving the catalogue / ops surfaces unintentionally.
  */
 
@@ -18,11 +18,13 @@ import { Coins, Pencil, Plus, Trash2 } from 'lucide-react';
 import { opsApi } from '../../lib/ops/api';
 import { getStoredToken } from '../../lib/agents/api';
 import type { LlmPricingRow } from '../../lib/ops/types';
+import { useConfirm } from '../../hooks/useConfirm';
 
 const ACCENT = '#D1F840';
 
 
 export function LlmPricingSection() {
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [rows, setRows] = useState<LlmPricingRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -58,9 +60,17 @@ export function LlmPricingSection() {
   };
 
   const handleDeactivate = async (row: LlmPricingRow) => {
-    if (!window.confirm(`Deactivate pricing for ${row.provider}/${row.model}? Existing llm_calls rows keep their cost, but future calls will show NULL cost until you re-add it.`)) {
-      return;
-    }
+    const ok = await confirm({
+      title: 'Deactivate pricing row?',
+      message:
+        `Deactivate pricing for ${row.provider}/${row.model}? Existing llm_calls rows keep ` +
+        `their cost, but every NEW call to this model will show NULL cost until you re-add ` +
+        `pricing for it.`,
+      confirmLabel: 'Deactivate',
+      cancelLabel: 'Cancel',
+      confirmVariant: 'danger',
+    });
+    if (!ok) return;
     const token = getStoredToken() || '';
     try {
       await opsApi.llmPricingDeactivate(token, row.provider, row.model);
@@ -102,7 +112,7 @@ export function LlmPricingSection() {
 
       <p className="text-xs text-[#A7B0B7] mb-3 leading-relaxed">
         Rates are USD per 1 million tokens. Edits take effect on the next
-        LLM call — cached prices refresh every 60 seconds, so the cost
+        LLM call, cached prices refresh every 60 seconds, so the cost
         column in the LLM tab will update shortly after a change. Existing
         ``llm_calls`` rows keep the cost they were tagged with at write
         time, so historical totals stay correct.
@@ -182,6 +192,7 @@ export function LlmPricingSection() {
           onSave={(row) => handleSave(row, showNew)}
         />
       )}
+      {confirmDialog}
     </section>
   );
 }

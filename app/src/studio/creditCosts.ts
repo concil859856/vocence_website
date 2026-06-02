@@ -1,5 +1,5 @@
 /**
- * Studio credit costs — keep aligned with `dashboard-backend/routers/studio.py`
+ * Studio credit costs, keep aligned with `dashboard-backend/routers/studio.py`
  * (STUDIO_* env vars can override server defaults).
  *
  * Pricing model (Nov 2026 redesign):
@@ -17,7 +17,7 @@ export const CREDIT_VOICE_DESIGN_PREVIEW = 70;   // generate sample voice from p
 export const CREDIT_MY_VOICE_GENERATE = 30;      // TTS using a saved designed/cloned voice, up to 2,000 chars
 export const CREDIT_MUSIC = 30;                  // ACE-Step text2music + all derived modes
 export const CREDIT_NOISE_REMOVER = 5;           // DeepFilterNet enhancement, up to 5 min audio (was "dubbing")
-/** Per-minute rate for voice agents — billed in 6-second increments while a session is active. */
+/** Per-minute rate for voice agents, billed in 6-second increments while a session is active. */
 export const CREDIT_VOICE_AGENT_PER_MIN = 40;    // ~$0.10/min at crypto rate
 
 // ── Limits (enforced frontend + backend) ──────────────────────────────────

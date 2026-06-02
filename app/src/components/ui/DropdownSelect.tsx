@@ -1,7 +1,7 @@
 /**
  * Dark-theme custom select. Native ``<select>`` rendering is jarringly
  * inconsistent across OSes (the OS picks the panel colour, the OS picks
- * the highlight, fonts don't match) — and on dark themes it's especially
+ * the highlight, fonts don't match), and on dark themes it's especially
  * ugly. This component is a tiny, self-contained replacement that:
  *   • Looks identical to the rest of the Vocence form inputs.
  *   • Closes on outside click and Escape.

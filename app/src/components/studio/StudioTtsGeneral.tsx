@@ -1,5 +1,5 @@
 /**
- * StudioTtsGeneral — sample-voice-based TTS view.
+ * StudioTtsGeneral, sample-voice-based TTS view.
  *
  * Uses the existing job system: startJob({ type: 'clone', payload: { sample_voice_id, target_text } })
  * + generations.trackServerJob(...). The user gets the same UX as PromptTTS:
@@ -8,7 +8,8 @@
  *   - Auto-play in the bottom StudioPlayerBar
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { AlertCircle, ChevronDown, Loader2, Play } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useGenerations } from '../../contexts/GenerationsContext';
@@ -27,14 +28,30 @@ export function StudioTtsGeneral() {
   const generations = useGenerations();
   const player = useStudioPlayer();
 
-  // Default to the first Voice Design entry so the "no voice picked" state is rare
-  const [selectedId, setSelectedId] = useState<string | null>(() => SAMPLE_VOICES[0]?.id ?? null);
+  // ``?voice=<id>`` from Community Voices preselects a specific entry;
+  // otherwise default to the first Voice Design voice so the page
+  // never lands in a "no voice picked" state.
+  const [searchParams] = useSearchParams();
+  const initialVoiceId = (() => {
+    const param = searchParams.get('voice');
+    if (param && SAMPLE_VOICE_INDEX[param]) return param;
+    return SAMPLE_VOICES[0]?.id ?? null;
+  })();
+  const [selectedId, setSelectedId] = useState<string | null>(initialVoiceId);
+  // If the user navigates from Community Voices while this page is
+  // already mounted, swap to the requested voice without remount.
+  useEffect(() => {
+    const param = searchParams.get('voice');
+    if (param && SAMPLE_VOICE_INDEX[param]) {
+      setSelectedId(param);
+    }
+  }, [searchParams]);
   const [pickerOpen, setPickerOpen] = useState(false);
 
   const [text, setText] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Most recent completed result — surfaces the thumbs-up/down control
+  // Most recent completed result, surfaces the thumbs-up/down control
   // alongside the Generate button so users can rate without leaving
   // the page. Cleared on every new Generate so the thumb refers to the
   // generation the user just heard.
@@ -63,7 +80,7 @@ export function StudioTtsGeneral() {
     const target = text.trim();
     if (!target) { setError('Type something for the voice to say.'); return; }
     if ((user.credits ?? 0) < CREDIT_TTS) {
-      setError(`Need ${CREDIT_TTS} credits — you have ${user.credits ?? 0}.`);
+      setError(`Need ${CREDIT_TTS} credits, you have ${user.credits ?? 0}.`);
       return;
     }
     setSubmitting(true);
@@ -98,7 +115,7 @@ export function StudioTtsGeneral() {
         },
       });
 
-      // New generation invalidates the prior thumb target — clear it
+      // New generation invalidates the prior thumb target, clear it
       // before we start polling so stale id never paints alongside the
       // new audio.
       setLastResultId(null);
@@ -147,7 +164,7 @@ export function StudioTtsGeneral() {
 
   return (
     <div className="space-y-5">
-      {/* Top control bar — voice picker pill */}
+      {/* Top control bar, voice picker pill */}
       <div className="flex flex-wrap items-center gap-3">
         <button
           type="button"
@@ -224,7 +241,7 @@ export function StudioTtsGeneral() {
           </div>
         )}
 
-        {/* Last completed result — thumbs feed into generation_feedback
+        {/* Last completed result, thumbs feed into generation_feedback
             for the Quality dashboard. The General sub-tab routes
             through the voice-clone backend (sample voices use cloning
             under the hood), so the entry_type is 'clone'. */}

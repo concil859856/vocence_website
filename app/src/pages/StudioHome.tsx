@@ -12,10 +12,11 @@ import { dashboardApi, type StudioHistoryItem, type StudioDesignedVoiceItem } fr
 import { asset } from '../data/assets';
 import { MyVoiceCardArt } from '../components/MyVoiceCardArt';
 import { DEFAULT_ABSTRACT_CARD_IMAGES } from '../data/abstractCardImages';
-import { WelcomeBanner, shouldShowWelcomeBanner } from '../components/WelcomeBanner';
+import { StudioHeroBanner } from '../components/StudioHeroBanner';
+import { StudioVoiceAgentSpotlight } from '../components/StudioVoiceAgentSpotlight';
 
 /* ==========================================================================
-   Placeholder data — replace with real content later.
+   Placeholder data, replace with real content later.
    Audio: /samples/audio/<file>.wav
    Images: /samples/images/<file>.webp
    ========================================================================== */
@@ -84,6 +85,8 @@ const MUSIC_PRESETS: MusicPresetItem[] = [
   { id: 'mp4', genre: 'Pulse Drop', mood: 'Club EDM', prompt: 'edm, synth, bass, kick drum, 128 bpm, euphoric, pulsating, energetic, instrumental', audioSrc: '/samples/audios/club.wav', image: '/samples/images/music_4.webp' },
   { id: 'mp5', genre: 'Midnight Blues', mood: 'Smooth Jazz', prompt: 'jazz, saxophone, piano, double bass, 110 bpm, smooth, improvisational, soulful, instrumental', audioSrc: '/samples/audios/jazz.wav', image: '/samples/images/music_5.webp' },
   { id: 'mp6', genre: 'Code & Coffee', mood: 'Chill Lo-fi', prompt: 'lo-fi, piano, soft drums, vinyl crackle, 75 bpm, chill, mellow, warm, instrumental', audioSrc: '/samples/audios/chill.wav', image: '/samples/images/music_7.webp' },
+  { id: 'mp7', genre: 'Velvet Skies', mood: 'Cinematic Orchestra', prompt: 'orchestral, strings, woodwinds, brass, timpani, 90 bpm, cinematic, sweeping, emotional, instrumental', audioSrc: '/samples/audios/orchestral.wav', image: '/samples/images/music_6.webp' },
+  { id: 'mp8', genre: 'Sunset Drive', mood: 'Soulful Indie', prompt: 'indie, acoustic guitar, soft drums, warm synth, 100 bpm, soulful, reflective, easy listening, male vocals', audioSrc: '/samples/audios/soundful.wav', image: '/samples/images/music_8.webp' },
 ];
 
 const TTS_STYLE_EXAMPLES: StyleExampleItem[] = [
@@ -92,7 +95,7 @@ const TTS_STYLE_EXAMPLES: StyleExampleItem[] = [
     name: 'Neutral Male',
     tags: ['Calm', 'Natural', 'Male'],
     description: 'Versatile everyday voice for narration, dialogue, and conversational delivery.',
-    text: "The best part of a morning run isn't the exercise — it's the ten minutes afterwards when everything feels quiet, and you remember why you started.",
+    text: "The best part of a morning run isn't the exercise, it's the ten minutes afterwards when everything feels quiet, and you remember why you started.",
     audioSrc: asset('tts-demo.neutral-male'),
     avatar: asset('tts-style.neutral-male'),
   },
@@ -100,8 +103,8 @@ const TTS_STYLE_EXAMPLES: StyleExampleItem[] = [
     id: 'epic-warrior',
     name: 'Epic Warrior',
     tags: ['Heroic', 'Shouting', 'Male'],
-    description: 'Cinematic battle voice — loud, aggressive, high energy. Perfect for action scenes.',
-    text: 'For every brother we have lost, a thousand of theirs will fall! Raise your shields! Tonight — we end this war!',
+    description: 'Cinematic battle voice, loud, aggressive, high energy. Perfect for action scenes.',
+    text: 'For every brother we have lost, a thousand of theirs will fall! Raise your shields! Tonight, we end this war!',
     audioSrc: asset('tts-demo.epic-warrior'),
     avatar: asset('tts-style.epic-warrior'),
   },
@@ -109,8 +112,8 @@ const TTS_STYLE_EXAMPLES: StyleExampleItem[] = [
     id: 'friendly-ai-assistant',
     name: 'AI Assistant',
     tags: ['Polite', 'Clear', 'Female'],
-    description: 'Friendly digital assistant — precise, professional, slightly robotic.',
-    text: "Of course — I've rescheduled your meeting to Thursday at 3 PM and notified your team. Would you like a summary of tomorrow's agenda?",
+    description: 'Friendly digital assistant, precise, professional, slightly robotic.',
+    text: "Of course, I've rescheduled your meeting to Thursday at 3 PM and notified your team. Would you like a summary of tomorrow's agenda?",
     audioSrc: asset('tts-demo.friendly-ai-assistant'),
     avatar: asset('tts-style.friendly-ai-assistant'),
   },
@@ -118,8 +121,8 @@ const TTS_STYLE_EXAMPLES: StyleExampleItem[] = [
     id: 'military-commander',
     name: 'Military Commander',
     tags: ['Authoritative', 'Tactical', 'Male'],
-    description: 'Commanding battlefield voice — strong, confident, radio-clear delivery.',
-    text: 'All units, hold position and await my signal. Recon reports hostiles two klicks east. On my mark — we move fast, we move clean. Execute.',
+    description: 'Commanding battlefield voice, strong, confident, radio-clear delivery.',
+    text: 'All units, hold position and await my signal. Recon reports hostiles two klicks east. On my mark, we move fast, we move clean. Execute.',
     audioSrc: asset('tts-demo.military-commander'),
     avatar: asset('tts-style.military-commander'),
   },
@@ -127,7 +130,7 @@ const TTS_STYLE_EXAMPLES: StyleExampleItem[] = [
     id: 'little-girl',
     name: 'Little Girl',
     tags: ['Cheerful', 'Playful', 'Child'],
-    description: 'Cute, high-pitched, innocent voice — youthful and expressive.',
+    description: 'Cute, high-pitched, innocent voice, youthful and expressive.',
     text: 'Look at my dragon drawing! He breathes rainbow fire, and his name is Mister Sparkles. Isn\u2019t he the best?',
     audioSrc: asset('tts-demo.little-girl'),
     avatar: asset('tts-style.little-girl'),
@@ -136,15 +139,15 @@ const TTS_STYLE_EXAMPLES: StyleExampleItem[] = [
     id: 'happy-female',
     name: 'Happy Female',
     tags: ['Bright', 'Upbeat', 'Female'],
-    description: 'Warm, cheerful, energetic — natural smile-in-the-voice delivery.',
-    text: "Oh my god, you got the job?! I'm so proud of you — we are absolutely going out to celebrate tonight, my treat, no arguments!",
+    description: 'Warm, cheerful, energetic, natural smile-in-the-voice delivery.',
+    text: "Oh my god, you got the job?! I'm so proud of you, we are absolutely going out to celebrate tonight, my treat, no arguments!",
     audioSrc: asset('tts-demo.happy-female'),
     avatar: asset('tts-style.neutral-female'),
   },
 ];
 
 /* ==========================================================================
-   Play button — triggers the global studio player bar
+   Play button, triggers the global studio player bar
    ========================================================================== */
 
 function PlayBtn({ src, title, subtitle, image }: { src: string; title: string; subtitle?: string; image?: string }) {
@@ -228,25 +231,18 @@ export function StudioHome() {
       .catch(() => setDesignedVoices([]));
   }, [user]);
 
-  const showWelcome = !!user && shouldShowWelcomeBanner(user.credits ?? 0);
-  const [welcomeOpen, setWelcomeOpen] = useState(showWelcome);
-
   return (
     <div className="space-y-14">
-      {/* First-time welcome */}
-      {welcomeOpen && (
-        <WelcomeBanner onDismiss={() => setWelcomeOpen(false)} />
-      )}
+      {/* Welcome message moved to the in-product notification inbox —
+          new users get a friendly notification with their 300 free
+          credits and starter tips instead of a dismissible studio
+          banner. See routers/auth.py:login signup branch. */}
 
       {/* ---- Hero ---- */}
-      <div className="text-center py-6">
-        <h1 className="text-3xl md:text-4xl font-bold mb-3">Vocence Studio</h1>
-        <p className="text-[#A7B0B7] text-base md:text-lg mx-auto leading-relaxed">
-          Create speech, design your favorite characters with prompt, clone voice and generate music.
-          <br />
-          Powered by decentralized AI on Bittensor.
-        </p>
-      </div>
+      <StudioHeroBanner />
+
+      {/* ---- Voice Agents spotlight (Logos) ---- */}
+      <StudioVoiceAgentSpotlight />
 
       {/* ================================================================
           1. VOICE DESIGN SHOWCASE
@@ -254,7 +250,7 @@ export function StudioHome() {
       <section>
         <SectionHeading
           title="Voice Design"
-          subtitle="AI-designed voice characters — describe a voice and bring it to life."
+          subtitle="AI-designed voice characters, describe a voice and bring it to life."
           action={{ label: 'Design a voice', to: '/studio/voice-design' }}
         />
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -296,7 +292,7 @@ export function StudioHome() {
       <section>
         <SectionHeading
           title="Text-to-Speech"
-          subtitle="Style-controlled speech — the same model, six very different deliveries."
+          subtitle="Style-controlled speech, the same model, six very different deliveries."
           action={{ label: 'Try TTS', to: '/studio/tts' }}
         />
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -399,7 +395,7 @@ export function StudioHome() {
       <section>
         <SectionHeading
           title="Voice Cloning"
-          subtitle="Clone any voice from a short reference clip — hear the original and the clone side by side."
+          subtitle="Clone any voice from a short reference clip, hear the original and the clone side by side."
           action={{ label: 'Clone a voice', to: '/studio/cloning' }}
         />
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -421,11 +417,11 @@ export function StudioHome() {
                 <h3 className="text-white font-semibold text-sm mb-3 truncate">{c.name}</h3>
                 <div className="space-y-2">
                   <div className="flex items-center gap-3">
-                    <PlayBtn src={c.originalAudio} title={`${c.name} — Original`} subtitle={c.originalLabel} />
+                    <PlayBtn src={c.originalAudio} title={`${c.name}, Original`} subtitle={c.originalLabel} />
                     <span className="text-xs text-[#A7B0B7]">{c.originalLabel}</span>
                   </div>
                   <div className="flex items-center gap-3">
-                    <PlayBtn src={c.clonedAudio} title={`${c.name} — Cloned`} subtitle={c.clonedLabel} />
+                    <PlayBtn src={c.clonedAudio} title={`${c.name}, Cloned`} subtitle={c.clonedLabel} />
                     <span className="text-xs text-[#A7B0B7]">{c.clonedLabel}</span>
                   </div>
                 </div>
@@ -441,46 +437,50 @@ export function StudioHome() {
       <section>
         <SectionHeading
           title="Music Generation"
-          subtitle="Generate original music from text — pick a genre or describe your own."
+          subtitle="Generate original music from text, pick a genre or describe your own."
           action={{ label: 'Create music', to: '/studio/music' }}
         />
         <MusicPresetGrid presets={MUSIC_PRESETS} />
       </section>
 
       {/* ================================================================
-          6. MY VOICES SHOWCASE — real saved voices for logged-in users
+          6. MY VOICES SHOWCASE, real saved voices for logged-in users
           ================================================================ */}
       {user && designedVoices.length > 0 && (
         <section>
           <SectionHeading
             title="My Voices"
-            subtitle="Your saved custom voices — generate speech in any character you've designed."
+            subtitle="Your saved custom voices, generate speech in any character you've designed."
             action={{ label: 'View my voices', to: '/studio/my-voices' }}
           />
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {designedVoices.slice(0, 6).map((v) => (
+          {/* 4-up on lg+ (was 3-up). Image height and inner spacing
+              scaled down ~25% so the card aspect ratio stays roughly
+              constant against the narrower column width. */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+            {designedVoices.slice(0, 8).map((v) => (
               <div
                 key={v.id}
                 className="group flex flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#0f131a] hover:border-white/20 transition-all cursor-pointer"
                 onClick={() => navigate(`/studio/my-voices/${v.id}`)}
               >
-                <div className="relative h-32 w-full shrink-0 overflow-hidden">
+                <div className="relative h-24 w-full shrink-0 overflow-hidden">
                   <MyVoiceCardArt
                     urls={DEFAULT_ABSTRACT_CARD_IMAGES}
                     seed={v.id}
+                    eager
                     className="h-full w-full transition-transform duration-500 group-hover:scale-[1.03]"
                   />
                   <div className="absolute inset-0 bg-gradient-to-t from-[#0f131a]/95 via-[#0f131a]/40 to-black/10 pointer-events-none" />
-                  <div className="absolute bottom-3 left-4 right-4 drop-shadow-[0_2px_8px_rgba(0,0,0,0.85)]">
-                    <h3 className="font-bold text-white text-base leading-tight tracking-tight truncate">
+                  <div className="absolute bottom-2 left-3 right-3 drop-shadow-[0_2px_8px_rgba(0,0,0,0.85)]">
+                    <h3 className="font-bold text-white text-sm leading-tight tracking-tight truncate">
                       {v.display_name || `Voice #${v.id}`}
                     </h3>
                     {v.model_name ? (
-                      <p className="text-[10px] text-white/75 mt-0.5 truncate">{v.model_name}</p>
+                      <p className="text-[9.5px] text-white/75 mt-0.5 truncate">{v.model_name}</p>
                     ) : null}
                   </div>
                 </div>
-                <div className="flex items-center gap-3 p-4">
+                <div className="flex items-center gap-2 p-3">
                   {v.audio_url && !v.expired ? (
                     <PlayBtn src={v.audio_url} title={v.display_name || `My Voice ${v.id}`} subtitle={v.ref_script?.slice(0, 80)} />
                   ) : (
@@ -488,17 +488,17 @@ export function StudioHome() {
                       Sample expired
                     </span>
                   )}
-                  <p className="text-xs text-[#A7B0B7] leading-relaxed line-clamp-2 flex-1">
+                  <p className="text-[11px] text-[#A7B0B7] leading-snug line-clamp-2 flex-1">
                     {v.ref_script ? `“${v.ref_script}”` : 'Click to generate speech in this voice.'}
                   </p>
                 </div>
-                <div className="px-4 pb-4 -mt-1">
+                <div className="px-3 pb-3 -mt-1">
                   <button
                     type="button"
                     onClick={(e) => { e.stopPropagation(); navigate(`/studio/my-voices/${v.id}`); }}
-                    className="w-full inline-flex items-center justify-center gap-1.5 rounded-xl bg-white text-[#07080A] py-2 text-xs font-semibold hover:bg-white/90 transition-all"
+                    className="w-full inline-flex items-center justify-center gap-1.5 rounded-xl bg-white text-[#07080A] py-1.5 text-[11px] font-semibold hover:bg-white/90 transition-all"
                   >
-                    <Play size={12} fill="currentColor" /> Speak with this voice
+                    <Play size={11} fill="currentColor" /> Speak with this voice
                   </button>
                 </div>
               </div>
@@ -572,46 +572,87 @@ export function StudioHome() {
 }
 
 /* ==========================================================================
-   Music preset grid — click card to play
+   Music preset grid, click card to play
    ========================================================================== */
 
 function MusicPresetGrid({ presets }: { presets: MusicPresetItem[] }) {
   const { track, playing, play, pause, resume } = useStudioPlayer();
 
-  return (
-    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-      {presets.map((m) => {
-        const isThis = track?.src === m.audioSrc;
-        const isPlaying = isThis && playing;
-        const handleClick = () => {
-          if (isPlaying) { pause(); return; }
-          if (isThis) { resume(); return; }
-          play({ src: m.audioSrc, title: m.genre, subtitle: m.mood, image: m.image });
-        };
-        return (
-          <div
-            key={m.id}
-            onClick={handleClick}
-            className={`rounded-2xl border overflow-hidden hover:-translate-y-0.5 transition-all group cursor-pointer ${
-              isPlaying ? 'border-[#DFFF00]/50 shadow-[0_0_12px_rgba(223,255,0,0.15)]' : 'border-white/10 hover:border-white/20'
-            }`}
-          >
-            <div className="relative aspect-square overflow-hidden">
-              <img loading="lazy" src={m.image} alt={m.genre} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-300" />
-              <div className={`absolute inset-0 transition-colors ${isPlaying ? 'bg-black/40' : 'bg-gradient-to-t from-black/60 to-transparent'}`} />
-              <div className="absolute bottom-2 left-2 right-2">
-                <h3 className="text-white font-semibold text-sm leading-tight">{m.genre}</h3>
-                <p className="text-[10px] text-white/60">{m.mood}</p>
-              </div>
-              {isPlaying && (
-                <div className="absolute top-2 right-2 w-6 h-6 rounded-full bg-[#DFFF00] flex items-center justify-center">
-                  <Pause size={10} className="text-[#07080A]" />
-                </div>
-              )}
-            </div>
+  // Marquee technique: render the preset list twice back-to-back inside
+  // a track that translates -50%. Once the first copy has fully exited
+  // left, the second copy is in the exact starting position, so the
+  // loop appears seamless. The CSS keyframe pauses on hover so users
+  // can read / click a card mid-flight.
+  const handlePresetClick = (m: MusicPresetItem) => {
+    const isThis = track?.src === m.audioSrc;
+    const isPlaying = isThis && playing;
+    if (isPlaying) { pause(); return; }
+    if (isThis) { resume(); return; }
+    play({ src: m.audioSrc, title: m.genre, subtitle: m.mood, image: m.image });
+  };
+
+  // Two passes of the same list so the loop has no visible seam.
+  const renderCard = (m: MusicPresetItem, copyIndex: number) => {
+    const isThis = track?.src === m.audioSrc;
+    const isPlaying = isThis && playing;
+    return (
+      <div
+        key={`${m.id}-${copyIndex}`}
+        onClick={() => handlePresetClick(m)}
+        className={`shrink-0 w-[180px] sm:w-[200px] rounded-2xl border overflow-hidden hover:-translate-y-0.5 transition-all group cursor-pointer ${
+          isPlaying ? 'border-[#DFFF00]/50 shadow-[0_0_12px_rgba(223,255,0,0.15)]' : 'border-white/10 hover:border-white/20'
+        }`}
+        // Defensive: the second copy is duplicate content; hide from
+        // screen readers so the same card isn't announced twice.
+        aria-hidden={copyIndex === 1}
+      >
+        <div className="relative aspect-square overflow-hidden">
+          <img loading="lazy" src={m.image} alt={m.genre} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-300" />
+          <div className={`absolute inset-0 transition-colors ${isPlaying ? 'bg-black/40' : 'bg-gradient-to-t from-black/60 to-transparent'}`} />
+          <div className="absolute bottom-2 left-2 right-2">
+            <h3 className="text-white font-semibold text-sm leading-tight">{m.genre}</h3>
+            <p className="text-[10px] text-white/60">{m.mood}</p>
           </div>
-        );
-      })}
+          {isPlaying && (
+            <div className="absolute top-2 right-2 w-6 h-6 rounded-full bg-[#DFFF00] flex items-center justify-center">
+              <Pause size={10} className="text-[#07080A]" />
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div
+      className="relative overflow-hidden"
+      // Soft edge fade so cards don't pop in/out at the container boundary.
+      style={{
+        maskImage:
+          'linear-gradient(to right, transparent 0, black 48px, black calc(100% - 48px), transparent 100%)',
+        WebkitMaskImage:
+          'linear-gradient(to right, transparent 0, black 48px, black calc(100% - 48px), transparent 100%)',
+      }}
+    >
+      <div className="flex gap-3 voc-music-marquee w-max">
+        {presets.map((m) => renderCard(m, 0))}
+        {presets.map((m) => renderCard(m, 1))}
+      </div>
+      <style>{`
+        @keyframes voc-music-marquee {
+          from { transform: translateX(0);     }
+          to   { transform: translateX(-50%); }
+        }
+        .voc-music-marquee {
+          animation: voc-music-marquee 36s linear infinite;
+        }
+        .voc-music-marquee:hover {
+          animation-play-state: paused;
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .voc-music-marquee { animation: none; }
+        }
+      `}</style>
     </div>
   );
 }

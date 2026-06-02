@@ -1,11 +1,11 @@
 /**
- * CustomToolEditor — modal for creating / editing a user-defined
+ * CustomToolEditor, modal for creating / editing a user-defined
  * agent tool. Webhook-style: the user gives us a public-internet URL
  * + JSON Schema for the args, and the voice agent will POST that
  * shape mid-conversation when the LLM decides to invoke the tool.
  *
  * The form is intentionally close to the OpenAI/Groq/Anthropic
- * function-calling shape — name, description, parameters (JSON
+ * function-calling shape, name, description, parameters (JSON
  * Schema), plus our own endpoint/auth/timeout fields. Anything you
  * register here works on any modern LLM provider because the schema
  * shape is portable.
@@ -36,7 +36,7 @@ interface Props {
 
 const METHODS: CustomToolMethod[] = ['POST', 'GET', 'PUT', 'PATCH', 'DELETE'];
 
-// Starter JSON Schema — used as the default for new tools so users
+// Starter JSON Schema, used as the default for new tools so users
 // see the shape they're meant to fill in rather than an empty box.
 const STARTER_SCHEMA = {
   type: 'object',
@@ -72,7 +72,7 @@ export function CustomToolEditor({ initial, onClose, onSaved }: Props) {
 
   // Validate the JSON Schema textarea on every change so the save
   // button can be greyed out cleanly. We don't deep-validate JSON
-  // Schema (the backend does on save) — just parseable + an object.
+  // Schema (the backend does on save), just parseable + an object.
   const parametersOk = (() => {
     try {
       const parsed = JSON.parse(parametersJson);
@@ -199,7 +199,7 @@ export function CustomToolEditor({ initial, onClose, onSaved }: Props) {
   }, [requestClose]);
 
   return (
-    // Backdrop click NO LONGER closes the editor — too easy to lose work
+    // Backdrop click NO LONGER closes the editor, too easy to lose work
     // when reaching for a field outside the panel bounds. Use the X
     // button, Cancel, or ESC (all guarded by `requestClose`).
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60">
@@ -212,7 +212,7 @@ export function CustomToolEditor({ initial, onClose, onSaved }: Props) {
               <Wrench size={16} className="text-[#A7B0B7]" />
             </div>
             <h3 className="text-base font-semibold text-white">
-              {isEdit ? `Edit tool — ${initial!.name}` : 'New custom tool'}
+              {isEdit ? `Edit tool, ${initial!.name}` : 'New custom tool'}
             </h3>
           </div>
           <button onClick={requestClose} className="text-[#666] hover:text-white p-1.5 rounded-md hover:bg-white/5">
@@ -234,11 +234,11 @@ export function CustomToolEditor({ initial, onClose, onSaved }: Props) {
               <p className="text-[11px] text-amber-300 mt-1">Must match a–z, A–Z, 0–9, _, - (1–64 chars).</p>
             )}
             {isEdit && (
-              <p className="text-[11px] text-[#666] mt-1">Name can't change after creation — re-create the tool if you need a different name.</p>
+              <p className="text-[11px] text-[#666] mt-1">Name can't change after creation, re-create the tool if you need a different name.</p>
             )}
           </FormField>
 
-          <FormField label="Description" hint="What this tool does. The LLM reads this to decide when to call it — be concrete.">
+          <FormField label="Description" hint="What this tool does. The LLM reads this to decide when to call it, be concrete.">
             <textarea
               value={description}
               onChange={(e) => setDescription(e.target.value)}
@@ -260,7 +260,7 @@ export function CustomToolEditor({ initial, onClose, onSaved }: Props) {
             </FormField>
             <FormField label="Method">
               {/* Fully-custom dropdown so the popup matches the dark
-                  theme — native <select> opens an OS-styled menu that
+                  theme, native <select> opens an OS-styled menu that
                   can't be CSS-overridden. */}
               <Dropdown
                 value={method}
@@ -296,7 +296,7 @@ export function CustomToolEditor({ initial, onClose, onSaved }: Props) {
                     type="password"
                     value={authSecret}
                     onChange={(e) => setAuthSecret(e.target.value)}
-                    placeholder={isEdit && initial?.has_secret ? '[secret set — leave blank to keep]' : authType === 'bearer' ? 'Bearer token value' : 'Header value'}
+                    placeholder={isEdit && initial?.has_secret ? '[secret set, leave blank to keep]' : authType === 'bearer' ? 'Bearer token value' : 'Header value'}
                     className="w-full bg-[#07080A] border border-white/15 rounded-lg px-3 py-2 text-sm text-white placeholder:text-[#666] focus:outline-none focus:border-[#DFFF00]/40 font-mono"
                   />
                   <p className="text-[11px] text-[#666]">Stored server-side; never returned to the browser after save.</p>
@@ -319,7 +319,7 @@ export function CustomToolEditor({ initial, onClose, onSaved }: Props) {
               }`}
             />
             {!parametersOk && (
-              <p className="text-[11px] text-red-300 mt-1">JSON is invalid — fix before saving.</p>
+              <p className="text-[11px] text-red-300 mt-1">JSON is invalid, fix before saving.</p>
             )}
           </FormField>
 
@@ -336,7 +336,7 @@ export function CustomToolEditor({ initial, onClose, onSaved }: Props) {
             />
           </FormField>
 
-          {/* Test panel — only useful after the tool is saved */}
+          {/* Test panel, only useful after the tool is saved */}
           {isEdit && (
             <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4 space-y-3">
               <div className="flex items-center gap-2">
@@ -431,7 +431,7 @@ function FormField({
  * Dark-themed dropdown that replaces the native ``<select>``. Native
  * selects on Chrome / Edge / Firefox open an OS-themed popup (blue
  * highlight, white background, system fonts) that clashes hard with
- * our dark UI — and the popup style can't be overridden via CSS. This
+ * our dark UI, and the popup style can't be overridden via CSS. This
  * is a button + portal-less floating panel that renders inside the
  * modal, so popovers stay on top of the form but disappear cleanly on
  * outside click / ESC. Generic over the option ``value`` string type.

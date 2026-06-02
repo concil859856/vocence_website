@@ -17,10 +17,10 @@
  *     ``aria-label`` reflecting its current state.
  *
  * Caller passes:
- *   • ``entryType`` — must match one of the EntryType literals in the
+ *   • ``entryType``, must match one of the EntryType literals in the
  *     backend (TTS, STT, clone, voice_design, music, noise_remover,
  *     agent_call, agent_message).
- *   • ``entryId`` — the row's primary key (string-encoded so it works
+ *   • ``entryId``, the row's primary key (string-encoded so it works
  *     for both INT history rows and UUID-style ids).
  *   • Optional ``onChange`` to mirror the rating into a parent's state.
  */
@@ -37,7 +37,7 @@ export type FeedbackEntryType =
 interface Props {
   entryType: FeedbackEntryType;
   entryId: string | number;
-  /** Pre-paint a rating without re-fetching — useful when the parent
+  /** Pre-paint a rating without re-fetching, useful when the parent
    *  already knows the user's vote. When omitted, the component fetches
    *  on mount. */
   initialRating?: -1 | 0 | 1;
@@ -75,7 +75,7 @@ export function ThumbsFeedback({
         const v = (r.rating === 1 ? 1 : r.rating === -1 ? -1 : 0) as -1 | 0 | 1;
         setRating(v);
       })
-      .catch(() => { /* silent — no vote yet is not an error */ });
+      .catch(() => { /* silent, no vote yet is not an error */ });
     return () => { cancelled = true; };
   }, [entryType, entryId, initialRating, isAuthenticated]);
 
@@ -102,7 +102,7 @@ export function ThumbsFeedback({
         // Revert on failure so the UI doesn't lie about what's persisted.
         setRating(previous);
         onChange?.(previous);
-        setError((e as Error).message || 'Could not save vote — try again.');
+        setError((e as Error).message || 'Could not save vote, try again.');
       } finally {
         setBusy(false);
       }

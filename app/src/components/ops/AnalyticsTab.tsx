@@ -1,5 +1,5 @@
 /**
- * Analytics tab — fleet tiles + per-pod time series.
+ * Analytics tab, fleet tiles + per-pod time series.
  *
  * Tiles refresh every 10s (matches the backend health-poll cadence).
  * Time-series chart loads on demand when the admin picks a pod.
@@ -112,7 +112,7 @@ export function AnalyticsTab({ token }: Props) {
         </div>
       )}
 
-      {/* Fleet health — composite uptime+success+latency score across the
+      {/* Fleet health, composite uptime+success+latency score across the
           currently-active pods. Dynamic to add/remove. Sits above the
           tiles so the operator's first read is "is the network OK?". */}
       <FleetHealthCard token={token} />

@@ -350,10 +350,25 @@ async def _metrics_poll_once() -> None:
         if not server:
             continue
 
-        url = f"http://{server['host']}:{int(p['port'])}/metrics"
+        base = f"http://{server['host']}:{int(p['port'])}"
         api_key = _decrypt_api_key(p)
 
-        status_code, body, err = await _http_get(url, bearer=api_key, timeout=METRICS_REQUEST_TIMEOUT_S)
+        # Try /metrics.json first (newer pods that expose a JSON-shaped
+        # dashboard snapshot — knowledge_ingestion, turn_detection, the
+        # newer asr_streaming_rt). Fall back to legacy /metrics for
+        # older TTS/STT pods that already returned JSON on the bare
+        # /metrics endpoint. Pods that ONLY expose Prometheus text on
+        # /metrics would otherwise silently report all-zeros because
+        # ``_http_get`` returns an empty dict for non-JSON bodies.
+        status_code, body, err = await _http_get(
+            f"{base}/metrics.json", bearer=api_key, timeout=METRICS_REQUEST_TIMEOUT_S,
+        )
+        if status_code != 200 or not isinstance(body, dict) or not body:
+            # 404 (older pod) / 200 with empty dict (legacy JSON path)
+            # → retry the bare /metrics endpoint.
+            status_code, body, err = await _http_get(
+                f"{base}/metrics", bearer=api_key, timeout=METRICS_REQUEST_TIMEOUT_S,
+            )
         if status_code != 200 or not isinstance(body, dict):
             _log.debug("pod %s: /metrics scrape failed: %s", p["name"], err or f"http {status_code}")
             continue

@@ -8,6 +8,19 @@ python-multipart>=0.0.9
 aiohttp>=3.9.0
 minio>=7.2.0
 Pillow>=10.0.0
+# Used by voice_submissions._measure_audio_duration_ms to read length
+# from uploaded MP3 / WebM / OGG files when ffprobe isn't on PATH.
+# Primary duration probe is ffprobe (a system binary, NOT a pip dep —
+# install with ``apt install ffmpeg`` on Debian/Ubuntu, ``brew install
+# ffmpeg`` on macOS). Mutagen is a Python-only second-tier fallback so
+# the route still works on hosts without ffmpeg.
+mutagen>=1.47.0
+# SYSTEM DEPENDENCY (not pip): ``ffmpeg`` — provides the ``ffprobe``
+# binary used by audio_probe.probe_audio_duration_seconds (and by
+# extension Studio STT + voice_submissions). On any production host
+# you should ``apt install -y ffmpeg`` or equivalent before starting
+# this service. Without it, audio-duration validation falls back to
+# mutagen (above) → WAV-header parse → reject.
 numpy>=1.26.0
 # ops module: SSH wrapper for remote Docker control on rented GPU boxes
 asyncssh>=2.14.0

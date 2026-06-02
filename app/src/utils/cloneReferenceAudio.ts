@@ -1,5 +1,5 @@
 /**
- * Voice clone APIs typically expect WAV (PCM). Browser recording uses WebM/Opus — decode and re-encode as WAV.
+ * Voice clone APIs typically expect WAV (PCM). Browser recording uses WebM/Opus, decode and re-encode as WAV.
  */
 
 function writeString(view: DataView, offset: number, str: string) {

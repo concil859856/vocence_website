@@ -1,5 +1,5 @@
 /**
- * LLM tab — cost, failure, fallback, latency analytics across every
+ * LLM tab, cost, failure, fallback, latency analytics across every
  * provider call (Cerebras / Grok / Groq / OpenAI / Chutes / local).
  *
  * Data source: ``opsApi.llm*`` endpoints, which read ``llm_calls`` rows
@@ -260,7 +260,7 @@ export function LlmTab({ token }: Props) {
           <span className="text-[11px] text-[#A7B0B7]">when one provider failed and another took over</span>
         </div>
         {fallbacks.length === 0 ? (
-          <p className="text-sm text-[#A7B0B7]">No fallback hops in this window — primary providers held up.</p>
+          <p className="text-sm text-[#A7B0B7]">No fallback hops in this window, primary providers held up.</p>
         ) : (
           <div className="border border-white/10 rounded-lg overflow-hidden">
             <table className="w-full text-sm">
@@ -362,7 +362,7 @@ export function LlmTab({ token }: Props) {
 
 
 // ---------------------------------------------------------------------------
-// Small reusable bits — local to this file so the diff stays self-contained
+// Small reusable bits, local to this file so the diff stays self-contained
 // ---------------------------------------------------------------------------
 
 function Tile({

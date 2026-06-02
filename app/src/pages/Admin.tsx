@@ -11,6 +11,9 @@ import {
 import { ADMIN_EMAIL } from '../config';
 import { BlogContent } from '../components/BlogContent';
 import { LlmPricingSection } from '../components/admin/LlmPricingSection';
+import { AdminQualitySection } from '../components/admin/AdminQualitySection';
+import { AdminVoiceSubmissionsSection } from '../components/admin/AdminVoiceSubmissionsSection';
+import { AdminNotificationsSection } from '../components/admin/AdminNotificationsSection';
 const ACCENT = '#D1F840';
 const USERS_PAGE_SIZE = 15;
 
@@ -605,6 +608,19 @@ export function Admin() {
             sits near the rest of the data-management sections. */}
         <LlmPricingSection />
 
+        {/* User-thumbs feedback. Overall satisfaction + per-feature
+            breakdown + actionable list of recent thumbs-down. */}
+        <AdminQualitySection />
+
+        {/* User-submitted voices awaiting review. Pending sorts first;
+            approval grants the submitter 300 bonus credits and fires
+            a notification. */}
+        <AdminVoiceSubmissionsSection />
+
+        {/* Compose + broadcast in-product notifications. Audience
+            choice: all users, paid users, or an explicit id list. */}
+        <AdminNotificationsSection />
+
         {/* Blog posts */}
         <section className="glass-panel rounded-xl p-6">
           <h2 className="text-lg font-semibold text-white flex items-center gap-2 mb-4">
@@ -767,7 +783,7 @@ export function Admin() {
                       {postForm.content.trim() ? (
                         <BlogContent content={postForm.content} />
                       ) : (
-                        <p className="text-sm text-gray-600 italic">Start typing on the left — preview will appear here.</p>
+                        <p className="text-sm text-gray-600 italic">Start typing on the left, preview will appear here.</p>
                       )}
                     </div>
                   )}

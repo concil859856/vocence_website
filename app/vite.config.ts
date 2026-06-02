@@ -47,7 +47,14 @@ function serveVadAssetsInDev(): Plugin {
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "")
-  const apiProxyTarget = env.VITE_DEV_API_PROXY || "http://127.0.0.1:8084"
+  // Proxy target priority:
+  //   1. ``VITE_DEV_API_PROXY`` — explicit override (production-like
+  //      deployments that point dev at staging, etc.).
+  //   2. ``VITE_API_URL`` — the same value the browser uses for direct
+  //      API calls. Reusing it here means a single .env line keeps
+  //      both the proxy AND the browser pointing at the same backend.
+  //   3. Hard-coded localhost fallback.
+  const apiProxyTarget = env.VITE_DEV_API_PROXY || env.VITE_API_URL || "http://127.0.0.1:8084"
   // Developer-API (the OpenAPI service powering the Try-It-Out
   // embedded explorer on the docs page). Defaults to 8031 to match
   // the production nginx config for api.vocence.ai. The subnet
@@ -82,9 +89,14 @@ export default defineConfig(({ mode }) => {
   server: {
     proxy: {
       // When VITE_API_URL is unset, the app calls same-origin `/api/*` and this forwards to the dashboard backend.
+      // ``ws: true`` is REQUIRED for the voicechat WebSocket — without
+      // it, the browser opens ws://localhost:5173/... and Vite returns
+      // 404 instead of forwarding the upgrade, which surfaces as a
+      // generic ``connection error`` on the client side.
       "/api": {
         target: apiProxyTarget,
         changeOrigin: true,
+        ws: true,
       },
       // Public share + embed pages live at the backend's root (not
       // under /api) so the user-facing URLs the share menu generates

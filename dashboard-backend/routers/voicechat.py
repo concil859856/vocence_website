@@ -158,13 +158,28 @@ TOOL_CALL_HYGIENE_RULES = (
     "- Invoke tools through the structured tool-call mechanism only. "
     "NEVER write tool calls as JSON in your message text (no `{\"tool\":...}`, "
     "no `{\"name\":...,\"arguments\":...}`, no `{\"response\":\"pending\"}`).\n"
-    "- Do NOT narrate the tool lifecycle. Don't say \"we need to wait for "
-    "the tool to return\", \"no result yet\", \"calling X now\", \"the response "
-    "is pending\", or any equivalent. The user sees the tool indicator UI on "
-    "their own.\n"
-    "- After a tool result arrives, jump straight into the answer as if you "
-    "always knew it. Don't preface with \"based on the search results\" — "
-    "just answer."
+    "- **NEVER announce what you're ABOUT to do.** Decide internally and "
+    "fire the tool call SILENTLY. The user sees a tool indicator chip "
+    "from the UI on their own — they don't need a sentence about it.\n"
+    "  FORBIDDEN pre-call phrases (and any rewording of these):\n"
+    "    ✗ \"Let me search for that…\"\n"
+    "    ✗ \"I'll look that up.\"\n"
+    "    ✗ \"Attempting web search for…\"\n"
+    "    ✗ \"I'm pulling up the latest…\"\n"
+    "    ✗ \"One moment / one sec / give me a moment…\"\n"
+    "    ✗ \"Hold on while I…\"\n"
+    "    ✗ \"Let me check…\"\n"
+    "    ✗ \"Calling X now…\"\n"
+    "    ✗ \"Searching now…\"\n"
+    "  The correct behaviour: if you need a tool, output ONLY the tool "
+    "call — zero text content tokens before it.\n"
+    "- Do NOT narrate the tool lifecycle mid-call either. Don't say "
+    "\"we need to wait for the tool to return\", \"no result yet\", "
+    "\"the response is pending\", or any equivalent.\n"
+    "- After a tool result arrives, jump straight into the answer as if "
+    "you always knew it. Don't preface with \"based on the search "
+    "results\" / \"according to my search\" / \"I found that\" — just "
+    "answer the question naturally."
 )
 
 
@@ -190,6 +205,8 @@ async def _record_turn(
     ttft_ms: int,
     ttfa_ms: int | None,
     error: str | None,
+    session_id: str | None = None,
+    agent_id: str | None = None,
 ) -> None:
     try:
         conn = await get_connection()
@@ -198,8 +215,8 @@ async def _record_turn(
                 """
                 INSERT INTO studio_voicechat_history
                 (user_id, mode, user_text, bot_text, latency_ms, ttft_ms, ttfa_ms, error,
-                 status, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                 status, session_id, agent_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
                 """,
                 (
                     user_id,
@@ -211,6 +228,8 @@ async def _record_turn(
                     ttfa_ms,
                     error[:500] if error else None,
                     "completed" if not error else "failed",
+                    session_id,
+                    agent_id,
                 ),
             )
             await conn.commit()
@@ -403,7 +422,22 @@ async def voicechat_session(
         await ws.send_json({"type": "error", "code": "llm_not_configured", "message": "assistant offline"})
         await ws.close(code=4503)
         return
-    if not QWEN3_TTS_BASE_URL:
+    # TTS is reachable iff (a) the legacy direct URL is set OR (b) at
+    # least one streaming-TTS ops pod is online. The legacy env-var
+    # path is deprecated (see dashboard-backend/.env) — most deploys
+    # rely entirely on the ops dispatcher now.
+    tts_via_ops = False
+    try:
+        from ops import pool as _gpu_pool
+        tts_via_ops = _gpu_pool.online_pod_count("tts_streaming") > 0
+    except Exception:
+        tts_via_ops = False
+    if not (QWEN3_TTS_BASE_URL or tts_via_ops):
+        _log.warning(
+            "voicechat: closing WS — TTS not configured "
+            "(QWEN3_TTS_BASE_URL set=%s, tts_streaming pod online=%s)",
+            bool(QWEN3_TTS_BASE_URL), tts_via_ops,
+        )
         await ws.send_json({"type": "error", "code": "tts_not_configured", "message": "assistant offline"})
         await ws.close(code=4503)
         return
@@ -537,6 +571,14 @@ async def voicechat_session(
         # into it (PCM frames over WS + server-side ensembler turn-end).
         # Streaming requires a streaming-STT pod to be online; without
         # one, clients should fall back to one-shot ``voice`` uploads.
+        #
+        # KILL SWITCH: set ``VOICECHAT_DISABLE_STREAM=1`` to force every
+        # client onto the segment (WAV upload) path even when the pod
+        # is online. We use this when the live-PCM → /v1/stream path is
+        # returning empty transcripts that the equivalent WAV upload
+        # transcribes correctly — same audio, same pod, different wire
+        # format. Defaults to OFF (set the env var to opt out of stream).
+        force_segment_only = (os.environ.get("VOICECHAT_DISABLE_STREAM") or "").strip() in {"1", "true", "yes"}
         try:
             from ops import pool as _gpu_pool
             streaming_stt_online = _gpu_pool.online_pod_count("asr_streaming_rt") > 0
@@ -545,7 +587,7 @@ async def voicechat_session(
             streaming_stt_online = False
             turn_detection_online = False
         ready_payload["capabilities"] = {
-            "voice_stream": streaming_stt_online,
+            "voice_stream": streaming_stt_online and not force_segment_only,
             "turn_detection": turn_detection_online,
             "frame": {"sample_rate": 16000, "encoding": "pcm_s16le", "frame_ms": 20},
         }
@@ -804,6 +846,16 @@ async def voicechat_session(
     #   • non-empty string
     #       → speak it verbatim
     DEFAULT_FIRST_MESSAGE = "Hello, how may I assist you today?"
+    # Logos (the in-product Vocence Assistant) has no ``agent_ctx`` —
+    # it's not a row in the agents table. Without an explicit greeting
+    # here it would stay mute on connect (the Studio home spotlight
+    # paints a static text bubble for it, but the user expects to
+    # actually HEAR Logos say hello). Match the wording the spotlight
+    # UI shows so what the user reads and what they hear line up.
+    LOGOS_FIRST_MESSAGE = (
+        "Hey, I'm Logos — Vocence's assistant. "
+        "Ask me anything about Studio, agents, or how to ship voice."
+    )
     agent_first_message = ""
     if agent_ctx:
         cfg = agent_ctx.get("config") or {}
@@ -813,6 +865,9 @@ async def voicechat_session(
             fm = cfg.get("first_message")
             if isinstance(fm, str):
                 agent_first_message = fm.strip()
+    else:
+        # No agent → this is the Logos / Vocence Assistant session.
+        agent_first_message = LOGOS_FIRST_MESSAGE
 
     async def _speak_pretext(text: str) -> None:
         """Run a pre-written assistant utterance through the chat
@@ -869,22 +924,46 @@ async def voicechat_session(
         current_turn = asyncio.create_task(
             _speak_pretext(agent_first_message), name="first_message"
         )
-        # First-message playback counts as session activity so the
-        # idle watchdog doesn't fire during a long greeting.
+        # The idle clock starts ticking the moment the greeting ENDS —
+        # not when it begins. ``mark_turn_started`` keeps the watchdog
+        # quiet while the greeting plays; ``mark_turn_ended`` (in the
+        # done-callback) reset _last_activity_at to "now" exactly when
+        # the agent stops talking.
+        billing.mark_turn_started()
         current_turn.add_done_callback(
-            lambda _t, b=billing: b.mark_activity()
+            lambda _t, b=billing: b.mark_turn_ended()
         )
 
     try:
         while True:
             try:
-                raw = await ws.receive_text()
+                # Use receive() (not receive_text()) so the loop tolerates
+                # binary frames arriving outside an active stream session.
+                # Without this, a stray PCM frame from a client whose VAD
+                # started before the server saw ``stream_start`` raises
+                # RuntimeError inside Starlette's receive_text(), the bare
+                # except below kills the WS (code 1006), and the client
+                # sees ``connection error`` for what should be benign.
+                msg = await ws.receive()
             except WebSocketDisconnect:
                 await _cancel_current()
                 return
             except Exception:
                 await _cancel_current()
                 return
+
+            mtype_raw = msg.get("type")
+            if mtype_raw == "websocket.disconnect":
+                await _cancel_current()
+                return
+            # Binary frame arriving at the top-level loop: no stream
+            # session is active, so just drop it. Stream sessions consume
+            # binary frames inside their own ``ws.receive()`` loop.
+            if msg.get("bytes") is not None:
+                continue
+            raw = msg.get("text")
+            if raw is None:
+                continue
 
             try:
                 payload = json.loads(raw)
@@ -900,6 +979,17 @@ async def voicechat_session(
                     await ws.send_json({"type": "cancelled"})
                 except (WebSocketDisconnect, RuntimeError, Exception):
                     return
+                continue
+
+            # ``stream_commit`` belongs INSIDE an active stream session
+            # (consumed by StreamingTurnSession._recv_next_audio). If one
+            # slips through to here it means the session ended early
+            # (e.g. STT pod unavailable) and the client's commit message
+            # raced past the cleanup. Treat as a benign no-op rather
+            # than surfacing ``unknown type: stream_commit`` to the user
+            # — the actual error (stt_empty / stt_unavailable) was
+            # already sent during the stream turn.
+            if mtype == "stream_commit":
                 continue
 
             if mtype not in {"voice", "text", "stream_start"}:
@@ -922,11 +1012,13 @@ async def voicechat_session(
                 })
                 continue
 
-            # Reset the idle watchdog. ``voice`` and ``text`` are the
-            # only message types that count as user activity — a
-            # ``cancel`` is the client interrupting the agent, not the
-            # user actually engaging, so it doesn't extend the timeout.
-            billing.mark_activity()
+            # NOTE: we intentionally do NOT reset the idle watchdog on
+            # the user sending a turn. The idle timer is anchored to
+            # "60 s after the agent stops talking" — the user typing or
+            # speaking is not what makes a session "active", only the
+            # agent actually replying. The turn's done-callback below
+            # calls ``mark_turn_ended`` which resets the clock at the
+            # right moment.
 
             # RAG agent id selection:
             #   • real agent with large knowledge → that agent's id
@@ -935,7 +1027,18 @@ async def voicechat_session(
             #     startup from vocence_assistant_knowledge/*.md
             #   • real agent with small knowledge → no RAG (the body is
             #     already inlined into the system prompt).
-            if agent_ctx and knowledge_uses_rag:
+            # RAG routing: always try retrieval when we have an agent
+            # context. Previously we gated on ``knowledge_uses_rag``,
+            # which only checks the text-knowledge field (the Studio
+            # textarea) — so an agent whose ONLY knowledge was uploaded
+            # via the ingest API (PDF / URL / sitemap) silently got NO
+            # retrieval at runtime. ``search_agent_knowledge`` is safe
+            # to call unconditionally: it queries both FTS5 (text
+            # field) AND the vector pod (uploaded sources) and returns
+            # an empty list if neither has matches, so the cost of
+            # always running it is one cheap SQLite + one cheap LanceDB
+            # query per turn.
+            if agent_ctx:
                 rag_id: str | None = agent_id
             elif not agent_ctx:
                 rag_id = ASSISTANT_AGENT_ID
@@ -982,19 +1085,36 @@ async def voicechat_session(
                     language=agent_language,
                     rag_agent_id=rag_id,
                     agent_id=agent_id,
+                    session_id=session_id,
                     llm_model=agent_llm_model,
                     enabled_tools=enabled_tools_set,
                 )
             )
-            # Reset the idle watchdog when the agent's response
-            # FINISHES — otherwise a long monologue (>60s) would trip
-            # the timeout while the user is quietly listening. Done
-            # callbacks fire on any termination (success, cancel,
-            # exception) which is exactly what we want here: any of
-            # those means activity is occurring in the session.
+            # The idle clock is anchored to "agent stopped talking".
+            # ``mark_turn_started`` keeps the watchdog quiet while the
+            # LLM + TTS run, and the done-callback fires
+            # ``mark_turn_ended`` on any termination (success / cancel /
+            # exception) — at which point _last_activity_at is set to
+            # "now" and the 60-second countdown begins.
+            billing.mark_turn_started()
             current_turn.add_done_callback(
-                lambda _t, b=billing: b.mark_activity()
+                lambda _t, b=billing: b.mark_turn_ended()
             )
+
+            # Stream-mode turns own the WS for their lifetime — their
+            # internal loop calls ``ws.receive()`` to consume PCM frames.
+            # The main loop must NOT iterate back to its own
+            # ``ws.receive()`` in parallel, or Starlette raises
+            # ``cannot call recv while another coroutine is already
+            # waiting for the next message``. Block here until the
+            # stream session ends (its own loop handles ``stream_commit``
+            # / ``cancel`` text messages so cancellation still works).
+            if mtype == "stream_start":
+                try:
+                    await current_turn
+                except asyncio.CancelledError:
+                    pass
+                current_turn = None
     finally:
         await _cancel_current()
         # Stop the watchdog/billing loop. Runs even on
@@ -1016,6 +1136,7 @@ async def _run_turn(
     language: str | None = None,
     rag_agent_id: str | None = None,
     agent_id: str | None = None,
+    session_id: str | None = None,
     llm_model: str | None = None,
     enabled_tools: set[str] | None = None,
 ) -> None:
@@ -1234,15 +1355,39 @@ async def _run_turn(
 
             if chunks:
                 chunks_text = agent_knowledge.format_chunks_for_prompt(chunks)
-                turn_block_parts.append(
-                    "# Knowledge-base excerpts for this turn (your authority)\n"
-                    "These were retrieved from the Vocence knowledge base based on "
-                    "the user's question. Answer ONLY from these excerpts. If they "
-                    "don't cover the question, say so plainly and point the user to "
-                    "vocence.ai/docs or space@vocence.ai — do NOT guess from training "
-                    "data.\n\n"
-                    f"---\n{chunks_text}\n---"
-                )
+                # Two variants of the framing depending on which agent
+                # is talking. The Logos branch stays as-is (it always
+                # talks about Vocence). For user-created agents we put
+                # an EXPLICIT "don't call web_search if these chunks
+                # answer the question" because the LLM otherwise sees
+                # web_search in its tool list and picks it for "general
+                # knowledge" questions even when the agent's PDF /
+                # uploaded docs would have answered.
+                if rag_agent_id == ASSISTANT_AGENT_ID:
+                    turn_block_parts.append(
+                        "# Knowledge-base excerpts for this turn (your authority)\n"
+                        "These were retrieved from the Vocence knowledge base based on "
+                        "the user's question. Answer ONLY from these excerpts. If they "
+                        "don't cover the question, say so plainly and point the user to "
+                        "vocence.ai/docs or space@vocence.ai — do NOT guess from training "
+                        "data.\n\n"
+                        f"---\n{chunks_text}\n---"
+                    )
+                else:
+                    turn_block_parts.append(
+                        "# Knowledge-base excerpts for this turn (your authority)\n"
+                        "These were retrieved from the agent's own knowledge base "
+                        "(uploaded PDFs / pages / text) using the user's question. "
+                        "PREFER answering from these excerpts over any tool call — "
+                        "specifically, DO NOT call ``web_search`` when the answer is "
+                        "already in the excerpts below. Treat the excerpts as the "
+                        "agent's authority on this topic. If they don't cover the "
+                        "question, then you may either fall back to general knowledge "
+                        "(if the topic is within the agent's role) or call a tool — "
+                        "but say so honestly rather than blending guessed info with "
+                        "the excerpts.\n\n"
+                        f"---\n{chunks_text}\n---"
+                    )
             else:
                 # Empty retrieval. The wording depends on which bot is
                 # talking. Logos is the Vocence-only assistant, so
@@ -1825,4 +1970,6 @@ async def _run_turn(
             ttft_ms=ttft_ms or 0,
             ttfa_ms=ttfa_ms,
             error=error_str,
+            session_id=session_id,
+            agent_id=agent_id,
         )

@@ -1,8 +1,8 @@
 /**
- * AgentBuilder — /studio/agents/new
+ * AgentBuilder, /studio/agents/new
  *
  * Single-page editable form. The Agent Architect lives in a side drawer
- * the user opens on demand — closed by default so the form has full focus.
+ * the user opens on demand, closed by default so the form has full focus.
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -31,7 +31,7 @@ export function AgentBuilder() {
   const [type, setType] = useState<AgentType>(seedTemplate?.type ?? 'knowledge');
   const [config, setConfig] = useState<AgentConfig>(() => {
     // Voice templates with a full system_prompt prefill directly (industry-
-    // standard pattern — what Vapi/Retell/ElevenLabs/OpenAI GPTs do). Goal
+    // standard pattern, what Vapi/Retell/ElevenLabs/OpenAI GPTs do). Goal
     // templates carry only a seed_prompt and rely on the Architect drawer
     // to draft a config.
     if (seedTemplate?.system_prompt) {
@@ -57,7 +57,7 @@ export function AgentBuilder() {
   const [error, setError] = useState<string | null>(null);
   const [pendingBindToolIds, setPendingBindToolIds] = useState<Set<string>>(new Set());
   // Architect drawer opens by default for templates that need AI drafting
-  // (i.e. those without a pre-filled system_prompt — typically goal agents).
+  // (i.e. those without a pre-filled system_prompt, typically goal agents).
   // Voice templates already arrive pre-filled, so the form is the focus and
   // the Architect stays collapsed until the user asks for it.
   const [architectOpen, setArchitectOpen] = useState(
@@ -65,7 +65,7 @@ export function AgentBuilder() {
   );
 
   // If we navigated in with a voice template whose system_prompt is already
-  // pre-filled, keep the Architect closed — the user can open it manually.
+  // pre-filled, keep the Architect closed, the user can open it manually.
   // For goal templates (Architect-drafted), keep it open.
   useEffect(() => {
     if (seedTemplate && !seedTemplate.system_prompt) {
@@ -148,7 +148,7 @@ export function AgentBuilder() {
               New Agent
               <span
                 className="inline-flex items-center px-1.5 py-0.5 rounded-md text-[9px] font-semibold uppercase tracking-[0.14em] text-indigo-300 bg-indigo-500/15 border border-indigo-400/30"
-                title="Voice agents are in beta — features and pricing may change."
+                title="Voice agents are in beta, features and pricing may change."
               >
                 Beta
               </span>
@@ -190,7 +190,7 @@ export function AgentBuilder() {
 
         <p className="text-sm text-[#A7B0B7] mb-6 max-w-2xl">
           Fill in the form directly, or click <span className="text-[#DFFF00]">Ask Architect</span> to describe your agent in
-          plain English and have it drafted for you. You can use both — the Architect's drafts land in the form, and you can
+          plain English and have it drafted for you. You can use both, the Architect's drafts land in the form, and you can
           keep editing.
         </p>
 

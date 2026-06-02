@@ -1,12 +1,12 @@
 /**
- * AgentDetail — /studio/agents/:id
+ * AgentDetail, /studio/agents/:id
  *
  *   • Header is one breathing line: gradient avatar, name + status dot,
  *     small type label, kebab menu for pause / delete.
  *   • Tabs: Chat (knowledge) or Runs (goal), and Settings. The old
  *     Activity tab folded into Settings as a small "Stats" card.
  *   • Settings has an explicit Save button. The page guards against
- *     leaving with unsaved changes — confirms on tab switch, on the
+ *     leaving with unsaved changes, confirms on tab switch, on the
  *     Back link, and on browser-level navigation (refresh / close /
  *     external URL) via beforeunload.
  */
@@ -98,7 +98,7 @@ export function AgentDetail() {
     if (!settingsDirty) return;
     const handler = (e: BeforeUnloadEvent) => {
       e.preventDefault();
-      // Modern browsers ignore custom strings — just need to set
+      // Modern browsers ignore custom strings, just need to set
       // returnValue so the native dialog appears.
       e.returnValue = '';
     };
@@ -115,12 +115,12 @@ export function AgentDetail() {
 
   useEffect(() => { setToken(getStoredToken()); }, [user?.id]);
 
-  // Shared session controller — single WS / single ``started`` state
+  // Shared session controller, single WS / single ``started`` state
   // across both the Call tab and the Chat tab. Without this, each tab
   // had its own ``useVoiceChat`` and they couldn't see each other's
   // progress, so switching from Call→Chat showed the Start button on
   // Chat even while the Call tab's session was still active.
-  // Passing an empty agentId while the agent loads is safe — the
+  // Passing an empty agentId while the agent loads is safe, the
   // hook stays inert (enabled=false) until the user clicks Start,
   // which can only happen after the agent has loaded.
   const session = useAgentSession(agent?.id ?? '', token);
@@ -162,7 +162,7 @@ export function AgentDetail() {
   const typeLabel = agent.type === 'goal' ? 'Goal agent' : 'Knowledge agent';
   const tabs: { id: Tab; label: string; show: boolean }[] = [
     // Call mode is the primary voice-product experience (industry
-    // standard — ElevenLabs / Vapi / Retell all lead with it). Chat
+    // standard, ElevenLabs / Vapi / Retell all lead with it). Chat
     // stays as the secondary text-iteration surface.
     { id: 'call', label: 'Call', show: agent.type === 'knowledge' },
     { id: 'chat', label: 'Chat', show: agent.type === 'knowledge' },
@@ -170,7 +170,7 @@ export function AgentDetail() {
     { id: 'settings', label: 'Settings', show: true },
   ];
 
-  // Agent identity gradient — same pair the avatar uses, so the hero
+  // Agent identity gradient, same pair the avatar uses, so the hero
   // backdrop "matches" the avatar without us picking colors manually.
   const grad = avatarGradientPairFor(`agent-${agent.id}`);
   const isActive = agent.status === 'active';
@@ -179,7 +179,7 @@ export function AgentDetail() {
     <div className="min-h-screen bg-[#07080A] pt-20">
     <StudioShell activeView="agents">
       <div className="max-w-6xl">
-        {/* Back link — gated by the unsaved-changes confirm dialog. */}
+        {/* Back link, gated by the unsaved-changes confirm dialog. */}
         <Link
           to="/studio/agents"
           onClick={(e) => {
@@ -215,13 +215,13 @@ export function AgentDetail() {
             </div>
 
             <div className="flex-1 min-w-0">
-              {/* Kicker line — chips on a single row alongside the
+              {/* Kicker line, chips on a single row alongside the
                   status pulse-dot. Compact for the small-hero layout. */}
               <div className="flex items-center gap-1.5 flex-wrap">
                 <span className="text-[9px] font-semibold uppercase tracking-[0.18em] text-white/70">Agent</span>
                 <span
                   className="inline-flex items-center px-1.5 py-0.5 rounded-md text-[9px] font-semibold uppercase tracking-[0.14em] text-indigo-300 bg-indigo-500/15 border border-indigo-400/30"
-                  title="Voice agents are in beta — features and pricing may change."
+                  title="Voice agents are in beta, features and pricing may change."
                 >
                   Beta
                 </span>
@@ -255,7 +255,7 @@ export function AgentDetail() {
                 <p className="text-[#A7B0B7] text-xs mt-0.5 leading-snug truncate">{agent.config.purpose}</p>
               )}
 
-              {/* Footer stats — runs / last-run are GOAL-agent concepts.
+              {/* Footer stats, runs / last-run are GOAL-agent concepts.
                   Knowledge (voice-chat) agents never run in that sense,
                   so 0 runs · never · model_id was pure noise. We now
                   show the goal-agent stats only when relevant; the LLM
@@ -304,7 +304,7 @@ export function AgentDetail() {
           </div>
         </div>
 
-        {/* Tabs — Runs gets a count chip; Settings shows an "unsaved"
+        {/* Tabs, Runs gets a count chip; Settings shows an "unsaved"
             indicator dot when the form is dirty so the user sees they
             have pending edits without leaving the current tab. */}
         <div className="border-b border-white/10 mb-6 flex gap-1">
@@ -347,7 +347,7 @@ export function AgentDetail() {
         </div>
 
         {/* Tab content. We MOUNT the chat / runs panel continuously and
-            only toggle visibility with `hidden` — unmounting <AgentChat>
+            only toggle visibility with `hidden`, unmounting <AgentChat>
             when the user clicks Settings would (a) drop the messages
             state, (b) close the WebSocket, and (c) wipe the server's
             in-memory conversation array. The user would come back to a
@@ -356,7 +356,7 @@ export function AgentDetail() {
             and the agent's session memory intact.
 
             Paused / archived agents see a blocked state in the active
-            tab — backend also enforces this; the frontend check is just
+            tab, backend also enforces this; the frontend check is just
             to avoid a wasted WS attempt. Drafts are NOT blocked so
             users can test an agent before activating.
 
@@ -549,7 +549,7 @@ function SettingsTab({
   // Architect drawer for refining the existing agent in natural
   // language. Same drawer used by AgentBuilder; here it patches the
   // local edit state and flips ``dirty`` so the user reviews the
-  // change in the form and saves explicitly — we never auto-save
+  // change in the form and saves explicitly, we never auto-save
   // architect drafts on top of a live agent.
   const [architectOpen, setArchitectOpen] = useState(false);
 
@@ -557,7 +557,7 @@ function SettingsTab({
   useEffect(() => { onDirtyChange(dirty); }, [dirty, onDirtyChange]);
 
   // If the source agent changes from outside (e.g. status toggle from
-  // the kebab menu), reset our local form state to it — but only when
+  // the kebab menu), reset our local form state to it, but only when
   // we don't have unsaved changes, so we never silently overwrite the
   // user's edits.
   useEffect(() => {
@@ -605,7 +605,7 @@ function SettingsTab({
         architectOpen ? 'lg:ml-auto lg:mr-[420px]' : ''
       }`}
     >
-      {/* Architect launcher — sits above the form so the user sees
+      {/* Architect launcher, sits above the form so the user sees
           "Ask Architect" before scrolling. Disabled while a save is
           in flight to avoid concurrent edits. */}
       <div className="flex items-center justify-end">
@@ -638,16 +638,16 @@ function SettingsTab({
         }}
       />
 
-      {/* External knowledge sources — PDF/URL/sitemap/text uploads
+      {/* External knowledge sources, PDF/URL/sitemap/text uploads
           flowing through the vocence/knowledge-ingestion pod. Hidden
           when the pod isn't deployed (panel renders its own notice). */}
       <AgentKnowledgePanel agentId={agent.id} token={getStoredToken()} />
 
-      {/* Embed tokens — agent owner generates these to drop the agent
+      {/* Embed tokens, agent owner generates these to drop the agent
           into a customer-facing website via the @vocence/widget script. */}
       <AgentEmbedTokensPanel agentId={agent.id} token={getStoredToken()} />
 
-      {/* Stats — folded in from the old Activity tab */}
+      {/* Stats, folded in from the old Activity tab */}
       <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-5">
         <div className="text-[11px] uppercase tracking-wider text-[#A7B0B7] mb-3">Stats</div>
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 text-sm">
@@ -703,7 +703,7 @@ function SaveBar({
   const saving = saveState.kind === 'saving';
   // Hide the bar entirely when there's nothing to communicate. We show
   // it when (a) the form is dirty, (b) a save is in flight, (c) a save
-  // just succeeded (briefly — auto-cleared by SettingsTab after 4s), or
+  // just succeeded (briefly, auto-cleared by SettingsTab after 4s), or
   // (d) the last save errored. Otherwise the bar is just visual noise
   // permanently squatting at the bottom of the page.
   const shouldShow =
@@ -839,7 +839,7 @@ function AgentBlockedCard({
       </h3>
       <p className="text-[#A7B0B7] text-sm max-w-md mx-auto mb-6 leading-relaxed">
         {isPaused
-          ? "Chat and runs are disabled while paused. Resume to start using the agent again — its config and history are kept."
+          ? "Chat and runs are disabled while paused. Resume to start using the agent again, its config and history are kept."
           : "Archived agents can't be chatted with or run. Restore to active to use it again."}
       </p>
       <button

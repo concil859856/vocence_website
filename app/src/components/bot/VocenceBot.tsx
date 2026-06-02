@@ -1,5 +1,5 @@
 /**
- * Floating Vocence assistant bot — only mounted on Studio routes.
+ * Floating Vocence assistant bot, only mounted on Studio routes.
  *
  *   ┌────────────┐
  *   │ chat panel │  (slides up when expanded)
@@ -20,7 +20,7 @@ import { useHasVoiceChatAccess } from '../../lib/voicechatAccess';
 const STORAGE_TOKEN_KEY = 'vocence_token';
 const STORAGE_POS_KEY = 'vocence_bot_launcher_pos';
 
-// 56 was the original; 72 ≈ 1.3× — bumped on user request so her face reads more clearly.
+// 56 was the original; 72 ≈ 1.3×, bumped on user request so her face reads more clearly.
 const LAUNCHER_SIZE = 72;
 const VIEWPORT_PADDING = 16;
 // "Slightly raised" default: sits 88 px above the bottom edge instead of 24 px.
@@ -32,7 +32,7 @@ const DRAG_THRESHOLD_PX = 5;
 
 // Position is persisted as an "anchor": the closest viewport corner plus
 // pixel offsets from that corner. That way the launcher returns to the same
-// visual spot when the window is resized — clamping by absolute (x, y) lets
+// visual spot when the window is resized, clamping by absolute (x, y) lets
 // a temporary squeeze permanently shift the button.
 type AnchorSide = 'tl' | 'tr' | 'bl' | 'br';
 interface Anchor {
@@ -91,7 +91,7 @@ function loadStoredAnchor(): Anchor {
       const valid: AnchorSide[] = ['tl', 'tr', 'bl', 'br'];
       if (valid.includes(parsed.side)) return parsed as Anchor;
     }
-    // Legacy format: { x, y } absolute pixels — convert to anchor against the current viewport.
+    // Legacy format: { x, y } absolute pixels, convert to anchor against the current viewport.
     if (parsed && typeof parsed.x === 'number' && typeof parsed.y === 'number') {
       return anchorFromPos(clampToViewport(parsed));
     }
@@ -114,7 +114,7 @@ export function VocenceBot() {
   const [token, setToken] = useState<string | null>(() => localStorage.getItem(STORAGE_TOKEN_KEY));
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
-  // Launcher position — drag-and-drop with cursor, persisted per-browser.
+  // Launcher position, drag-and-drop with cursor, persisted per-browser.
   // ``anchorRef`` is the source of truth (corner + offsets); ``pos`` is the
   // derived absolute (x, y) used for rendering. On resize we re-derive pos
   // from the anchor so the launcher returns to its original visual spot.
@@ -148,7 +148,7 @@ export function VocenceBot() {
     setToken(localStorage.getItem(STORAGE_TOKEN_KEY));
   }, [user?.id]);
 
-  // Always-on voice: one tap on Speak starts a hands-free session — VAD
+  // Always-on voice: one tap on Speak starts a hands-free session, VAD
   // detects each turn, submits it, plays the reply, and reopens the mic.
   // The user never has to press a "stop talking" button mid-conversation.
   const { state, messages, micLevel, error, listening, startListening, stopListening, sendText, cancel, reset } = useVoiceChat({
@@ -156,6 +156,26 @@ export function VocenceBot() {
     authToken: token,
     alwaysOn: true,
   });
+
+  // External entry-point: any UI on the site can open Logos via
+  // ``window.dispatchEvent(new CustomEvent('vocence:open-logos', { detail: { autoStart?: boolean } }))``.
+  // The Studio home spotlight card uses this to make its "Call" button
+  // feel like a real call, opens the panel AND starts the mic so the
+  // user doesn't have to click twice. Must sit AFTER useVoiceChat so
+  // ``startListening`` is in scope when the effect captures it.
+  useEffect(() => {
+    const onOpen = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ autoStart?: boolean }>).detail;
+      setOpen(true);
+      if (detail?.autoStart) {
+        // Defer one tick so the panel mounts + the useVoiceChat hook
+        // sees ``enabled=true`` before startListening fires.
+        setTimeout(() => { void startListening(); }, 50);
+      }
+    };
+    window.addEventListener('vocence:open-logos', onOpen);
+    return () => window.removeEventListener('vocence:open-logos', onOpen);
+  }, [startListening]);
 
   // Auto-scroll to latest
   useEffect(() => {
@@ -165,7 +185,7 @@ export function VocenceBot() {
 
   // Closing the panel discards the chat history. The backend keeps
   // conversation context only while the WS is connected (in-memory,
-  // per-session) — once the panel closes the WS drops, so showing stale
+  // per-session), once the panel closes the WS drops, so showing stale
   // messages on next open would mislead the user into thinking the bot
   // remembers what they said before.
   const closePanel = () => {
@@ -310,7 +330,7 @@ export function VocenceBot() {
 
   return (
     <>
-      {/* Panel — anchored relative to the launcher's current position */}
+      {/* Panel, anchored relative to the launcher's current position */}
       {open && (
         <div
           className="fixed z-[60] flex flex-col rounded-2xl border border-white/10 bg-[#0B0D10]/95 backdrop-blur-xl shadow-2xl shadow-black/60 overflow-hidden"
@@ -363,7 +383,7 @@ export function VocenceBot() {
           <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
             {messages.length === 0 && (
               <div className="text-center text-sm text-[#A7B0B7] py-8">
-                Hey, I'm Logos — the Vocence Assistant. Ask me about Studio features, pricing, or how to get started.
+                Hey, I'm Logos, the Vocence Assistant. Ask me about Studio features, pricing, or how to get started.
               </div>
             )}
             {messages.map((m) => {
@@ -491,46 +511,14 @@ export function VocenceBot() {
         </div>
       )}
 
-      {/* Launcher — draggable. Frosted lime: backdrop-blur + translucent fill. */}
-      <button
-        type="button"
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={() => { dragRef.current = null; setDragging(false); }}
-        style={{ left: pos.x, top: pos.y, width: LAUNCHER_SIZE, height: LAUNCHER_SIZE, touchAction: 'none' }}
-        className={`fixed z-[59] rounded-full overflow-hidden shadow-2xl shadow-black/40 flex items-center justify-center border backdrop-blur-md transition-[transform,box-shadow,background-color] select-none ${
-          dragging ? 'cursor-grabbing scale-105' : 'cursor-grab'
-        } ${
-          open
-            ? 'bg-white/15 text-white border-white/25'
-            : 'bg-[#DFFF00]/70 text-[#07080A] border-[#DFFF00]/80 hover:scale-105'
-        }`}
-        aria-label={open ? 'Close assistant' : 'Open assistant'}
-        title="Drag to move · Click to open"
-      >
-        {open ? (
-          <img
-            src="/assistant/avatar.webp"
-            alt=""
-            draggable={false}
-            className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-            aria-hidden
-          />
-        ) : (
-          <video
-            src="/avatar.mp4"
-            poster="/assistant/avatar.webp"
-            autoPlay
-            loop
-            muted
-            playsInline
-            preload="auto"
-            className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-            aria-hidden
-          />
-        )}
-      </button>
+      {/*
+        Floating launcher removed, Logos now lives in the Studio home
+        spotlight card (single, prominent entry point). The panel above
+        is opened programmatically via the ``vocence:open-logos`` window
+        event dispatched from that card. Drag handlers and position
+        persistence above are no-ops without the button, but kept in
+        place so reintroducing the launcher is a one-element revert.
+      */}
     </>
   );
 }

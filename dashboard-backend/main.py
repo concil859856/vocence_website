@@ -255,6 +255,24 @@ from routers.voice_likes import (  # noqa: E402
 )
 app.include_router(voice_likes_public_router, prefix="/api/dashboard")
 app.include_router(voice_likes_authed_router, prefix="/api/dashboard")
+# Voice submissions — user-contributed voices reviewed by admin before
+# publication. Two routers: user-facing (submit + mine) + admin-facing
+# (list + approve/reject).
+from routers.voice_submissions import (  # noqa: E402
+    router as voice_submissions_router,
+    admin_router as voice_submissions_admin_router,
+    public_router as voice_submissions_public_router,
+)
+app.include_router(voice_submissions_router, prefix="/api/dashboard")
+app.include_router(voice_submissions_admin_router, prefix="/api/dashboard")
+app.include_router(voice_submissions_public_router, prefix="/api/dashboard")
+# Notifications — in-product bell + admin composer.
+from routers.notifications import (  # noqa: E402
+    router as notifications_router,
+    admin_router as notifications_admin_router,
+)
+app.include_router(notifications_router, prefix="/api/dashboard")
+app.include_router(notifications_admin_router, prefix="/api/dashboard")
 # Admin sudo-mode auth (separate password on top of Google OAuth for
 # /studio/ops + other admin surfaces). Routes live at /api/dashboard/auth/admin/*.
 from routers.admin_auth import router as admin_auth_router  # noqa: E402

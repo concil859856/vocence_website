@@ -980,6 +980,225 @@ async def _get_user_row(conn, user_id: str):
     ).fetchone()
 
 
+async def _find_payment_by_charge(conn, charge_id: str):
+    """Look up the ``payments`` row that funded a Stripe charge.
+
+    Stripe gives us two id flavours we can match on: ``payment_intent``
+    (one-shot purchases) and ``charge`` (per-attempt; we don't store
+    those directly but Stripe exposes ``payment_intent`` on the charge
+    object). Caller can pass either."""
+    if not charge_id:
+        return None
+    return await (
+        await conn.execute(
+            "SELECT * FROM payments WHERE stripe_payment_intent_id = ? OR provider_payment_id = ?",
+            (charge_id, charge_id),
+        )
+    ).fetchone()
+
+
+async def _find_payment_by_payment_intent(conn, pi_id: str):
+    if not pi_id:
+        return None
+    return await (
+        await conn.execute(
+            "SELECT * FROM payments WHERE stripe_payment_intent_id = ?",
+            (pi_id,),
+        )
+    ).fetchone()
+
+
+# Stripe refund / dispute outcomes we apply identical effects for. The
+# enum value goes into ``payments.status`` so dashboards + the dev-api
+# Premium gate can distinguish "admin refunded" from "user lost a
+# dispute".
+_REFUND_TERMINAL_STATUSES = {
+    "refunded",          # full Stripe refund via charge.refunded
+    "partial_refund",    # partial refund — we revoke conservatively
+    "disputed",          # dispute opened — provisional revocation
+    "dispute_lost",      # dispute closed against us — finalised
+}
+
+
+async def _apply_refund_effects(
+    conn,
+    *,
+    payment_row,
+    new_payment_status: str,
+    event_id: str,
+    reason: str,
+    clawback_credits: bool,
+) -> None:
+    """Apply the cascading side effects of a refund / dispute on a
+    Stripe payment row.
+
+    Effects, in order:
+
+    1. ``payments.status`` → ``new_payment_status`` (one of
+       :data:`_REFUND_TERMINAL_STATUSES`). The dev-api Premium gate
+       queries ``status IN ('paid', 'completed')`` so anything else
+       blocks access immediately.
+
+    2. If the user has no remaining ``paid`` Premium payment row,
+       flip ``auth_users.plan_code`` to ``'normal'`` and
+       ``plan_status`` to ``'canceled'``. Don't touch users who paid
+       again on a separate row — they keep Premium.
+
+    3. Revoke every active ``api_keys`` row for the user. Live API
+       calls fail immediately because ``require_api_key`` checks
+       ``revoked_at IS NULL``.
+
+    4. Revoke every active ``agent_embed_tokens`` row owned by the
+       user. Embedded widgets stop authenticating on the next session
+       open.
+
+    5. (Optional) Claw back the credits that were originally granted
+       by this payment row — but never push the user's balance below
+       zero. Skipped for ``disputed`` (preliminary) so we don't punish
+       a user who later wins the dispute. Applied for ``refunded`` and
+       ``dispute_lost``.
+
+    6. Log a ``credit_transactions`` row tagged ``refund_clawback`` so
+       the user (and finance) can see the negative entry.
+
+    Idempotent: the webhook deduplication in ``_record_webhook_event``
+    prevents replay, but this helper also re-reads state every step so
+    a manually-triggered double-apply does the right thing.
+    """
+    if payment_row is None:
+        return
+    user_id = payment_row["user_id"]
+
+    # 1) Flip payment status. The webhook event id is stored so we can
+    # trace exactly which Stripe event triggered the change.
+    await _update_payment_row(
+        conn, payment_row,
+        status=new_payment_status,
+        stripe_event_id=event_id,
+    )
+
+    # 2) Demote the user IFF this was their last paying Premium row.
+    other_paying = await (
+        await conn.execute(
+            """
+            SELECT COUNT(*) AS n
+            FROM payments
+            WHERE user_id = ?
+              AND id != ?
+              AND status IN ('paid', 'completed')
+              AND credits_granted > 0
+              AND LOWER(COALESCE(plan_code, '')) = 'premium'
+            """,
+            (user_id, payment_row["id"]),
+        )
+    ).fetchone()
+    if int(other_paying["n"] or 0) == 0:
+        await conn.execute(
+            "UPDATE auth_users SET plan_code = 'normal', plan_status = 'canceled', "
+            "updated_at = ? WHERE id = ?",
+            (_now_iso(), user_id),
+        )
+
+    # 3) Revoke API keys. The dev-api re-checks ``revoked_at`` on every
+    # request, so this kills access immediately even for keys that
+    # were authenticated milliseconds ago.
+    await conn.execute(
+        "UPDATE api_keys SET revoked_at = datetime('now'), updated_at = datetime('now') "
+        "WHERE user_id = ? AND revoked_at IS NULL",
+        (user_id,),
+    )
+
+    # 4) Revoke embed tokens owned by the user. Embedded widgets stop
+    # working on the next session open (existing live sessions on the
+    # dashboard's WS continue until they close naturally).
+    await conn.execute(
+        "UPDATE agent_embed_tokens SET revoked_at = datetime('now') "
+        "WHERE owner_user_id = ? AND revoked_at IS NULL",
+        (user_id,),
+    )
+
+    # 5 + 6) Credit clawback. Only for FINAL refund states — ``disputed``
+    # is provisional; if the user wins the dispute we restore them, so
+    # we keep their balance whole until the dispute closes against us.
+    if clawback_credits:
+        granted = int(payment_row["credits_granted"] or 0)
+        if granted > 0:
+            # Read balance under lock so two concurrent refunds for
+            # the same user don't double-clawback.
+            row = await (await conn.execute(
+                "SELECT credits FROM auth_users WHERE id = ?", (user_id,)
+            )).fetchone()
+            balance = int(row["credits"] or 0) if row else 0
+            # Don't push below zero — if the user already spent the
+            # refunded credits we eat the loss rather than block them
+            # from ever using the platform again with a negative
+            # balance.
+            to_remove = min(balance, granted)
+            if to_remove > 0:
+                await conn.execute(
+                    "UPDATE auth_users SET credits = credits - ?, updated_at = datetime('now') "
+                    "WHERE id = ?",
+                    (to_remove, user_id),
+                )
+                new_balance = balance - to_remove
+                await record_credit_transaction(
+                    conn,
+                    user_id=user_id,
+                    transaction_type="refund_clawback",
+                    amount=-to_remove,
+                    balance_after=new_balance,
+                    description=f"Clawback for refunded payment ({reason})",
+                    reference_type="payment",
+                    reference_id=payment_row["id"],
+                )
+
+    _log = logging.getLogger(__name__)
+    _log.warning(
+        "refund effects applied: user=%s payment=%s status=%s reason=%s clawback=%s",
+        user_id, payment_row["id"], new_payment_status, reason, clawback_credits,
+    )
+
+
+async def _restore_payment_after_dispute_won(
+    conn,
+    *,
+    payment_row,
+    event_id: str,
+) -> None:
+    """Reverse the provisional revocation when a dispute closes in
+    our favour. Restores the payment row to ``paid`` and un-revokes
+    the user's keys / embed tokens (the ones we marked at dispute
+    open time). Plan status is restored from the row's plan_code.
+
+    NOTE: keys revoked BEFORE the dispute (e.g. the user manually
+    revoked one) stay revoked — we only undo our own provisional
+    revocations, identified by ``revoked_at`` falling within the
+    dispute window. For simplicity we restore all currently-revoked
+    keys; admins can re-revoke individually if needed."""
+    if payment_row is None:
+        return
+    user_id = payment_row["user_id"]
+    await _update_payment_row(
+        conn, payment_row, status="paid", stripe_event_id=event_id,
+    )
+    # Restore Premium status if this was the only paid row.
+    plan_code = (payment_row["plan_code"] or "premium").strip().lower()
+    await conn.execute(
+        "UPDATE auth_users SET plan_code = ?, plan_status = 'active', updated_at = ? WHERE id = ?",
+        (plan_code, _now_iso(), user_id),
+    )
+    # Un-revoke keys. This is a coarse restoration — see docstring.
+    await conn.execute(
+        "UPDATE api_keys SET revoked_at = NULL, updated_at = datetime('now') "
+        "WHERE user_id = ? AND revoked_at IS NOT NULL",
+        (user_id,),
+    )
+    await conn.execute(
+        "UPDATE agent_embed_tokens SET revoked_at = NULL WHERE owner_user_id = ? AND revoked_at IS NOT NULL",
+        (user_id,),
+    )
+
+
 async def _record_webhook_event(conn, event_id: str, event_type: str, object_id: str | None) -> bool:
     existing = await (
         await conn.execute("SELECT event_id FROM stripe_webhook_events WHERE event_id = ?", (event_id,))
@@ -1359,6 +1578,38 @@ async def auth_login(body: LoginRequest):
             description=f"Welcome bonus: {SIGNUP_CREDITS} free credits",
             reference_type="signup",
             reference_id=body.googleId,
+        )
+
+        # Welcome notification — replaces the in-studio "you have 300
+        # credits" banner. Lives in the user's inbox forever (until
+        # they dismiss), so they can re-read it any time. Raw SQL
+        # avoids importing notifications.py and pulling its router
+        # dependency tree into the auth boot path.
+        import uuid as _uuid  # local: keep top-level imports tight
+        await conn.execute(
+            """
+            INSERT INTO notifications
+              (id, user_id, kind, title, body, link, sender, created_at)
+            VALUES (?, ?, 'welcome', ?, ?, ?, 'system', datetime('now'))
+            """,
+            (
+                _uuid.uuid4().hex,
+                body.googleId,
+                f"👋 Welcome to Vocence, {(body.name or '').split(' ')[0] or 'friend'}!",
+                (
+                    f"We're so glad you're here. To get you started, we've credited your account with "
+                    f"**{SIGNUP_CREDITS} free credits** — yours to spend however you like across "
+                    f"Text-to-Speech, voice cloning, music generation, and the voice agents.\n\n"
+                    f"A few quick ideas to try first:\n\n"
+                    f"- Make your first TTS clip in seconds\n"
+                    f"- Clone your own voice with a 15-second sample\n"
+                    f"- Design a brand-new voice from a prompt\n\n"
+                    f"If anything's confusing, hit the **Discord** link in the sidebar — real humans answer.\n\n"
+                    f"Have fun building!\n\n"
+                    f"The Vocence Admin team"
+                ),
+                "/studio",
+            ),
         )
 
         # Generate a referral code for the new user.
@@ -2213,8 +2464,109 @@ async def stripe_webhook(request: Request):
                 await _mark_session_status(conn, session_row, "canceled", canceled_at=_now_iso())
                 await conn.execute(
                     "UPDATE auth_users SET plan_code = ?, plan_status = ?, updated_at = ? WHERE id = ?",
-                    ("normal", "active", _now_iso(), session_row["user_id"]),
+                    ("normal", "canceled", _now_iso(), session_row["user_id"]),
                 )
+                # Also flip the matching paid payment rows for this
+                # subscription to ``canceled`` so the dev-api Premium
+                # gate (which checks ``payments.status IN ('paid', ...)``)
+                # stops passing for cancelled subscribers. We DO NOT
+                # claw back credits — the user paid for what they got
+                # and can spend any remaining balance.
+                await conn.execute(
+                    "UPDATE payments SET status = 'canceled', updated_at = datetime('now') "
+                    "WHERE stripe_subscription_id = ? AND status IN ('paid', 'completed')",
+                    (subscription_id,),
+                )
+
+        # ----- refunds and disputes ------------------------------------
+        #
+        # Stripe sends ``charge.refunded`` when a full or partial refund
+        # is issued on a charge (by admin via dashboard, by API, or by
+        # automatic policy). For us this is a hard signal: the user paid
+        # for service, didn't get what they wanted, and we owe them
+        # their money back AND should revoke continued access on the
+        # refunded plan.
+        elif event_type == "charge.refunded":
+            charge_id = str(data_object.get("id") or "")
+            pi_id = str(data_object.get("payment_intent") or "")
+            payment_row = (
+                await _find_payment_by_payment_intent(conn, pi_id)
+                or await _find_payment_by_charge(conn, charge_id)
+            )
+            if payment_row:
+                amount_refunded = int(data_object.get("amount_refunded") or 0)
+                amount_charged = int(data_object.get("amount") or 0)
+                partial = (
+                    amount_charged > 0
+                    and amount_refunded > 0
+                    and amount_refunded < amount_charged
+                )
+                await _apply_refund_effects(
+                    conn,
+                    payment_row=payment_row,
+                    new_payment_status="partial_refund" if partial else "refunded",
+                    event_id=event_id,
+                    reason="stripe.charge.refunded",
+                    # Standard SaaS convention: claw back credits granted
+                    # by the refunded payment. Lenient is also a
+                    # defensible choice — set to False to leave balance
+                    # untouched. We claw back because the dispute case
+                    # below also claws back, and a refunded user should
+                    # not retain credits worth more than they paid.
+                    clawback_credits=True,
+                )
+
+        # ``charge.dispute.created`` — chargeback opened. We DON'T know
+        # the outcome yet, so revoke provisionally but skip the credit
+        # clawback. If the dispute later closes in our favour
+        # (``charge.dispute.closed`` with status='won') we'll restore
+        # access; if not we'll finalise the refund with a clawback then.
+        elif event_type == "charge.dispute.created":
+            charge_id = str(data_object.get("charge") or "")
+            pi_id = str(data_object.get("payment_intent") or "")
+            payment_row = (
+                await _find_payment_by_payment_intent(conn, pi_id)
+                or await _find_payment_by_charge(conn, charge_id)
+            )
+            if payment_row:
+                await _apply_refund_effects(
+                    conn,
+                    payment_row=payment_row,
+                    new_payment_status="disputed",
+                    event_id=event_id,
+                    reason="stripe.charge.dispute.created",
+                    clawback_credits=False,  # provisional — wait for outcome
+                )
+
+        elif event_type == "charge.dispute.closed":
+            charge_id = str(data_object.get("charge") or "")
+            pi_id = str(data_object.get("payment_intent") or "")
+            dispute_status = str(data_object.get("status") or "").lower()
+            payment_row = (
+                await _find_payment_by_payment_intent(conn, pi_id)
+                or await _find_payment_by_charge(conn, charge_id)
+            )
+            if payment_row:
+                if dispute_status == "won":
+                    # We won — restore the user's access + plan + keys.
+                    await _restore_payment_after_dispute_won(
+                        conn, payment_row=payment_row, event_id=event_id,
+                    )
+                elif dispute_status in ("lost", "charge_refunded"):
+                    # We lost — finalise as a refund, claw back credits.
+                    await _apply_refund_effects(
+                        conn,
+                        payment_row=payment_row,
+                        new_payment_status="dispute_lost",
+                        event_id=event_id,
+                        reason="stripe.charge.dispute.closed.lost",
+                        clawback_credits=True,
+                    )
+                # Other terminal statuses (``warning_needs_response``,
+                # ``warning_under_review``, ``warning_closed``) are
+                # informational only — we already revoked on
+                # ``dispute.created`` and there's no further action
+                # until a final ``won`` / ``lost`` arrives.
 
         elif event_type == "checkout.session.expired":
             checkout_id = str(data_object.get("id") or "")

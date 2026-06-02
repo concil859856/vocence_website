@@ -25,7 +25,7 @@ const SAMPLE_RATE = 24000;
 // during playback. 1500 ms covers the worst-case observed.
 const DEFAULT_PREBUFFER_MS = 1500;
 // Low-latency prebuffer used when the next sentence is a filler ("Hmm,",
-// "Okay,"). The intent of fillers is to mask LLM latency — but if they sit
+// "Okay,"). The intent of fillers is to mask LLM latency, but if they sit
 // inside the 1500 ms cold-start prebuffer, the user hears them AFTER the
 // LLM has already finished, which defeats the point. Dropping to 80 ms
 // makes filler audio start playing as soon as 2 frames are queued. The
@@ -37,7 +37,7 @@ const FILLER_PREBUFFER_MS = 80;
 // of its life near the floor. With any non-zero floor, the player
 // thrashes: drain to floor → pause → refill to RESUME → drain again
 // → pause → ... up to 4-5 times per second. The user hears that
-// thrashing as "broken / glitchy audio" — far worse than the brief
+// thrashing as "broken / glitchy audio", far worse than the brief
 // natural silence that occurs if the queue genuinely empties for a
 // few ms (which the worklet handles by outputting zeros).
 //
@@ -45,14 +45,14 @@ const FILLER_PREBUFFER_MS = 80;
 // silence for that duration. That sounds like a tiny micro-pause —
 // unnoticeable, much better than the rebuffer-thrash pattern.
 //
-// Earlier values tried: 200/400 (too aggressive — fired on every
+// Earlier values tried: 200/400 (too aggressive, fired on every
 // inter-sentence gap), 80/200 (less aggressive but still thrashed
 // continuously once the prebuffer cushion was drained).
 const REBUFFER_FLOOR_MS = 0;
 const REBUFFER_RESUME_MS = 200;
 
 // Fade-out duration applied to TTS output on barge-in. Hard-cutting the
-// audio mid-syllable produces an audible click and feels jarring — every
+// audio mid-syllable produces an audible click and feels jarring, every
 // SOTA voice agent (OpenAI Realtime, ElevenLabs, Pipecat) fades to silence
 // over ~100–200 ms instead. We use 150 ms: fast enough that the agent
 // clearly stops, slow enough that there's no click. Kept short so the user
@@ -83,7 +83,7 @@ class PcmPlayer extends AudioWorkletProcessor {
         this._queuedSamples += d.pcm.length;
         // Transition to 'playing' under either condition:
         //   • normal: prebuffer has filled
-        //   • the stream has ended and we have ANY audio — for very short
+        //   • the stream has ended and we have ANY audio, for very short
         //     replies ("Awesome!", "Hey") the entire reply may be smaller
         //     than the prebuffer threshold, in which case waiting for the
         //     full prebuffer would mean playback NEVER starts.
@@ -95,7 +95,7 @@ class PcmPlayer extends AudioWorkletProcessor {
           this.port.postMessage({ type: 'playing' });
         } else if (this._state === 'rebuffering' && this._queuedSamples >= this._rebufferResumeSamples) {
           // Mid-stream recovery uses a much smaller resume target than the
-          // initial prebuffer — we just need enough to bridge the next
+          // initial prebuffer, we just need enough to bridge the next
           // inter-sentence gap, not the full cold-start cushion.
           this._state = 'playing';
           this.port.postMessage({ type: 'playing' });
@@ -132,7 +132,7 @@ class PcmPlayer extends AudioWorkletProcessor {
         }
       } else if (d.type === 'end') {
         // Caller declares the stream complete. Once the queue drains we
-        // don't try to rebuffer — there are no more frames coming.
+        // don't try to rebuffer, there are no more frames coming.
         this._endSignaled = true;
         // Edge case: the entire reply may have been shorter than the
         // prebuffer threshold (very short audio like "Awesome!"). In
@@ -290,7 +290,7 @@ export class StreamingAudioPlayer {
       try {
         await ctx.resume();
       } catch {
-        // ignore — will auto-resume on next user gesture
+        // ignore, will auto-resume on next user gesture
       }
     }
   }
@@ -331,7 +331,7 @@ export class StreamingAudioPlayer {
    *      normal level. A 5 ms ramp avoids a click on the way back up.
    *
    * If no AudioContext is available (init never ran or already closed),
-   * fall back to the old behaviour — just send the flush. */
+   * fall back to the old behaviour, just send the flush. */
   flush(): void {
     if (this.ctx && this.gainNode) {
       const fadeSec = BARGE_IN_FADE_MS / 1000;
@@ -363,7 +363,7 @@ export class StreamingAudioPlayer {
 
   /** Lower the prebuffer threshold for the next buffering session.
    * Called when the backend announces a filler sentence (is_filler=true in
-   * audio_meta) — the small prebuffer lets the filler start playing
+   * audio_meta), the small prebuffer lets the filler start playing
    * immediately so it actually masks LLM latency. Subsequent non-filler
    * sentences should call ``setPrebufferMs(defaultMs)`` to restore the
    * full cushion, though in practice once playback is in 'playing' state
@@ -375,7 +375,7 @@ export class StreamingAudioPlayer {
   }
 
   /** Tell the player no more frames are coming. After this, when the
-   * queue drains, we *don't* enter rebuffering — the audio just ends. */
+   * queue drains, we *don't* enter rebuffering, the audio just ends. */
   signalEnd(): void {
     this.worklet?.port.postMessage({ type: 'end' });
   }

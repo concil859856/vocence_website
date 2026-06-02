@@ -1,5 +1,5 @@
 /**
- * useAgentSession — single shared session controller for an agent's
+ * useAgentSession, single shared session controller for an agent's
  * Call and Chat tabs.
  *
  * Previously each tab (AgentCall, AgentChat) called ``useVoiceChat``
@@ -13,7 +13,7 @@
  * and there's exactly one WebSocket open across both tabs.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useVoiceChat, type UseVoiceChatResult } from './useVoiceChat';
 
 export interface AgentSession {
@@ -56,7 +56,7 @@ async function checkMicPermission(): Promise<{ ok: boolean; error?: string }> {
   }
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    // Release the probe stream immediately — the real mic open
+    // Release the probe stream immediately, the real mic open
     // happens inside ``useVoiceChat.startListening`` shortly after.
     stream.getTracks().forEach((t) => t.stop());
     return { ok: true };
@@ -107,12 +107,21 @@ export function useAgentSession(
   // to the pre-session state in BOTH tabs simultaneously. The hook
   // emits a system message; we flip ``started`` back to false so the
   // Start button reappears wherever the user lands.
+  //
+  // BUG GUARD: the system message LIVES in ``voice.messages`` after
+  // the session ends. Without ``endedSessionIdRef``, clicking Start
+  // again would mount this effect with ``started=true`` and a stale
+  // system bubble as ``last``, it'd immediately end the new session.
+  // We track which messages array we already handled and only act on
+  // a fresh transition (last message added since we last reacted).
+  const handledSystemMsgRef = useRef<string | null>(null);
   useEffect(() => {
     const last = voice.messages[voice.messages.length - 1];
-    if (last?.role === 'system' && started) {
-      setStarted(false);
-      voice.stopListening();
-    }
+    if (last?.role !== 'system' || !started) return;
+    if (handledSystemMsgRef.current === last.id) return;
+    handledSystemMsgRef.current = last.id;
+    setStarted(false);
+    voice.stopListening();
   }, [voice.messages, started, voice.stopListening]);
 
   // Auto-start the mic once the WS handshake has completed.
@@ -148,6 +157,12 @@ export function useAgentSession(
       setMicError(mic.error || 'Microphone unavailable.');
       return;
     }
+    // Wipe the previous session's transcript (including any "Session
+    // ended" system bubble). Without this, the auto-end watcher would
+    // re-trigger on the stale system message and immediately close
+    // the new session.
+    voice.reset();
+    handledSystemMsgRef.current = null;
     // Just flip ``started``; do NOT call startListening here. The
     // WS-open effect below sees ``started=true``, opens the WS, and
     // a separate auto-start effect watches for the post-connect

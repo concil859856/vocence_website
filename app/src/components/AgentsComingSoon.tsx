@@ -15,7 +15,7 @@ export function AgentsComingSoon() {
           </div>
           <h2 className="text-2xl font-semibold mb-3">Agents</h2>
           <p className="text-sm text-[#A7B0B7]">
-            Build your own voice-chat agents — custom personas, voices, and
+            Build your own voice-chat agents, custom personas, voices, and
             knowledge bases. We're putting the finishing touches on this
             feature. Try Text-to-Speech in the meantime.
           </p>

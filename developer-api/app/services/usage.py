@@ -35,6 +35,26 @@ async def enforce_rate_limit(conn: aiosqlite.Connection, user_id: str, _legacy_o
     if not API_RATE_LIMIT_ENABLED:
         return
 
+    # Per-user exemption: any non-revoked key with rate_limit_rpm = NULL
+    # opts the whole account out of the per-minute cap. Use this for
+    # trusted accounts where the operator has explicitly removed the
+    # limit from the DB rather than picking a numeric ceiling.
+    exempt_row = await (
+        await conn.execute(
+            """
+            SELECT 1
+            FROM api_keys
+            WHERE user_id = ?
+              AND revoked_at IS NULL
+              AND rate_limit_rpm IS NULL
+            LIMIT 1
+            """,
+            (user_id,),
+        )
+    ).fetchone()
+    if exempt_row is not None:
+        return
+
     # Effective cap = max(rate_limit_rpm) across the user's non-revoked
     # keys, falling back to the global default when no key has an
     # explicit override. One short SELECT per call; SQLite eats it.

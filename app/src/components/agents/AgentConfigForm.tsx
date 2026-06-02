@@ -1,8 +1,8 @@
 /**
- * AgentConfigForm — flat, always-editable form for an agent's full config.
+ * AgentConfigForm, flat, always-editable form for an agent's full config.
  *
  * Used in both the Builder (with a side Architect drawer) and the Detail
- * page's Settings tab. Every field is a plain input/textarea — no edit/save
+ * page's Settings tab. Every field is a plain input/textarea, no edit/save
  * toggle. Parent owns state; this is a controlled component.
  */
 
@@ -30,11 +30,11 @@ interface Props {
   config: AgentConfig;
   availableModels: { id: string; label: string }[];
   onChange: (patch: { name?: string; type?: AgentType; config?: Partial<AgentConfig> }) => void;
-  /** Optional architect trigger — shown as a subtle helper next to fields. */
+  /** Optional architect trigger, shown as a subtle helper next to fields. */
   onAskArchitect?: (focusField?: string) => void;
   /** When provided (edit flow), the form shows the custom-tools
    *  subsection with per-agent bind/unbind toggles. AgentBuilder
-   *  (create flow) omits this since there's no agent_id yet — users
+   *  (create flow) omits this since there's no agent_id yet, users
    *  can register custom tools after first save. */
   agentId?: string | null;
   /** Builder-only: tools the user has pre-selected to bind on first save.
@@ -60,10 +60,10 @@ export function AgentConfigForm({ name, type, config, availableModels, onChange,
   const [builtinTools, setBuiltinTools] = useState<BuiltinToolInfo[]>([]);
 
   // Custom (user-defined) tools the LLM can call. Two collections to track:
-  //   • allUserTools — every custom tool the signed-in user owns (across
+  //   • allUserTools, every custom tool the signed-in user owns (across
   //     all their agents). Always loaded so they can bind any of them
   //     to this agent.
-  //   • boundTools — the subset currently bound to *this* agent. Drives
+  //   • boundTools, the subset currently bound to *this* agent. Drives
   //     the checked state of the binding toggles.
   const { confirm, dialog: confirmDialog } = useConfirm();
   const [allUserTools, setAllUserTools] = useState<CustomTool[] | null>(null);
@@ -143,7 +143,7 @@ export function AgentConfigForm({ name, type, config, availableModels, onChange,
   };
 
   // Pull the user's saved "My Voices" so they appear alongside the
-  // sample voices in the picker. Failures are silent — the picker
+  // sample voices in the picker. Failures are silent, the picker
   // simply won't show the My Voices section.
   useEffect(() => {
     const token = getStoredToken();
@@ -152,7 +152,7 @@ export function AgentConfigForm({ name, type, config, availableModels, onChange,
     dashboardApi
       .listStudioDesignedVoices(token)
       .then((r) => { if (!cancelled) setDesignedVoices(r.voices); })
-      .catch(() => { /* ignore — picker will just not show My Voices */ });
+      .catch(() => { /* ignore, picker will just not show My Voices */ });
     return () => { cancelled = true; };
   }, []);
 
@@ -167,13 +167,13 @@ export function AgentConfigForm({ name, type, config, availableModels, onChange,
     agentsApi
       .listBuiltinTools(token)
       .then((r) => { if (!cancelled) setBuiltinTools(r.tools); })
-      .catch(() => { /* ignore — Tools section just renders empty */ });
+      .catch(() => { /* ignore, Tools section just renders empty */ });
     return () => { cancelled = true; };
   }, []);
 
   // Resolve enabled-tool state. When config.enabled_tools is undefined
   // (the default for fresh agents), every available tool is implicitly
-  // enabled — same behaviour as the backend when ``enabled_tools`` is
+  // enabled, same behaviour as the backend when ``enabled_tools`` is
   // absent from the AgentConfig. Once the user toggles anything, the
   // form persists an explicit list and locks that semantic in.
   const enabledToolNames = useMemo<Set<string>>(() => {
@@ -286,7 +286,7 @@ export function AgentConfigForm({ name, type, config, availableModels, onChange,
       </Section>
 
       {/* Knowledge */}
-      <Section title="Knowledge" hint="Reference text injected into context every turn. v1 is text-only — file/URL upload coming soon.">
+      <Section title="Knowledge" hint="Reference text injected into context every turn. v1 is text-only, file/URL upload coming soon.">
         <Field label="">
           <textarea
             value={config.knowledge}
@@ -335,7 +335,7 @@ export function AgentConfigForm({ name, type, config, availableModels, onChange,
       {/* Voice & model */}
       <Section title="Voice & model">
         <div className="grid sm:grid-cols-2 gap-4">
-          <Field label="Voice" hint="Pick from sample voices or your saved My Voices — the agent will speak using this voice.">
+          <Field label="Voice" hint="Pick from sample voices or your saved My Voices, the agent will speak using this voice.">
             <button
               type="button"
               onClick={() => setVoicePickerOpen(true)}
@@ -407,7 +407,7 @@ export function AgentConfigForm({ name, type, config, availableModels, onChange,
         </Field>
       </Section>
 
-      {/* Tools — built-in capabilities the agent can call mid-conversation.
+      {/* Tools, built-in capabilities the agent can call mid-conversation.
           Web search, weather, time, URL fetch, Wikipedia. Tools the
           deployment can't run (missing API key) render disabled with
           a hint so it's clear why. Custom (user-defined) tools land in
@@ -421,21 +421,21 @@ export function AgentConfigForm({ name, type, config, availableModels, onChange,
             {builtinTools.map((tool) => {
               const enabled = enabledToolNames.has(tool.name) && tool.available;
               // When a tool isn't configured server-side, explain the
-              // exact env var that's missing — and for web_search,
+              // exact env var that's missing, and for web_search,
               // point users at the no-key alternative (Groq Compound)
               // so they don't feel stuck. If they're already on a
-              // Compound model, switch to a positive message — the
+              // Compound model, switch to a positive message, the
               // tool registry doesn't see it, but the agent's model
               // has search built in.
               const usingCompound = (config.llm_model || '').includes('compound');
               let disabledReason = '';
               if (!tool.available) {
                 if (tool.name === 'web_search' && usingCompound) {
-                  disabledReason = "Your selected model (Groq Compound) has web search built in — no key needed.";
+                  disabledReason = "Your selected model (Groq Compound) has web search built in, no key needed.";
                 } else {
                   disabledReason = `Not configured on this deployment (needs ${tool.requires_env.join(', ')}).`;
                   if (tool.name === 'web_search') {
-                    disabledReason += ' Or pick the "Groq · Compound" model above — it has web search built in, no key needed.';
+                    disabledReason += ' Or pick the "Groq · Compound" model above, it has web search built in, no key needed.';
                   }
                 }
               }
@@ -478,7 +478,7 @@ export function AgentConfigForm({ name, type, config, availableModels, onChange,
         </Section>
       )}
 
-      {/* Custom tools — user-defined webhook executors the LLM can call.
+      {/* Custom tools, user-defined webhook executors the LLM can call.
           In the builder (no agent_id), tracks selection locally via
           ``pendingBindToolIds`` so AgentBuilder can bind on first save.
           In edit mode (agent_id set), bind/unbind hits the API directly. */}

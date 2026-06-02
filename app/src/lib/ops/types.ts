@@ -1,5 +1,5 @@
 /**
- * Vocence ops fleet-manager — shared types.
+ * Vocence ops fleet-manager, shared types.
  * Mirrors dashboard-backend/ops/db.py + routers/ops.py response shapes.
  */
 
@@ -173,7 +173,7 @@ export const DEFAULT_PORTS: Record<ServiceName, number> = {
   music: 8115,
   noise_remover: 8116,
   // The new STT pod (asr-streaming-rt) ships BOTH a batch /v1/transcribe
-  // endpoint and a streaming WS at /v1/stream — so it supersedes the old
+  // endpoint and a streaming WS at /v1/stream, so it supersedes the old
   // batch ``stt`` pod for new deployments. They run on different ports
   // so existing hosts can keep both during the migration window.
   asr_streaming_rt: 8117,
@@ -228,7 +228,7 @@ export interface PodHealthRow {
 
 export interface FleetHealth {
   window: RuntimeWindow;
-  /** Default p95 target — used only when a service isn't in the map.
+  /** Default p95 target, used only when a service isn't in the map.
    *  Per-pod targets are in ``pods[i].p95_target_ms``. */
   p95_target_ms: number;
   /** Per-service target map so the UI can surface, e.g.,

@@ -1654,8 +1654,40 @@ async def stream_qwen3_tts(
 
     When ``warmer`` is provided, use its pre-opened WS if ready and kick
     off the next chunk's prewarm on first audio — same pattern as the
-    clone path."""
-    ws_url, headers = _qwen3_tts_ws_url_and_headers()
+    clone path.
+
+    Pod selection: if a ``tts_streaming`` pod is registered via the
+    ops dispatcher we ALWAYS go through it (via ``pick_pod`` context
+    manager) so the per-pod in-flight counter ticks and the Ops admin
+    graph shows real traffic during agent speech. Without this the
+    default Qwen3-voice path bypassed the dispatcher entirely —
+    connections went straight to ``QWEN3_TTS_BASE_URL`` and the pod's
+    in-flight stayed at 0 even during sustained speech. Fall back to
+    the env-var URL only when no pods are registered (single-server
+    dev setups)."""
+    # Acquire a dispatcher slot when possible. The slot is held for
+    # the full WS lifetime so in_flight reflects active synthesis.
+    pod_cm = None
+    pod_url_override: str | None = None
+    pod_api_key_override: str | None = None
+    try:
+        from ops import pool as _gpu_pool
+        if _gpu_pool.online_pod_count("tts_streaming") > 0:
+            pod_cm = _gpu_pool.pick_pod("tts_streaming")
+            pod = await pod_cm.__aenter__()
+            pod_url_override = pod.url
+            pod_api_key_override = pod.api_key or None
+    except Exception:
+        pod_cm = None
+
+    if pod_url_override:
+        ws_url = pod_url_override.replace("http://", "ws://").replace("https://", "wss://") + "/v1/tts/stream"
+        headers: dict = {}
+        if pod_api_key_override:
+            headers["Authorization"] = f"Bearer {pod_api_key_override}"
+            headers["X-API-Key"] = pod_api_key_override
+    else:
+        ws_url, headers = _qwen3_tts_ws_url_and_headers()
 
     # Same cancel-safety treatment as _stream_clone_via_service: explicit
     # WS acquire + bounded close so a barge-in mid-synthesis doesn't sit
@@ -1672,6 +1704,11 @@ async def stream_qwen3_tts(
                 await session.close()
             except Exception:
                 pass
+            if pod_cm is not None:
+                try:
+                    await pod_cm.__aexit__(None, None, None)
+                except Exception:
+                    pass
             raise
 
     first_audio_seen = False
@@ -1713,3 +1750,11 @@ async def stream_qwen3_tts(
             await asyncio.wait_for(session.close(), timeout=0.5)
         except (asyncio.TimeoutError, Exception):
             pass
+        # Release the dispatcher slot acquired at the top so the
+        # in_flight counter goes back down. Without this every TTS
+        # turn would permanently consume one pod slot.
+        if pod_cm is not None:
+            try:
+                await pod_cm.__aexit__(None, None, None)
+            except Exception:
+                pass

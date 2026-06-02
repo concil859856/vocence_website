@@ -3,14 +3,14 @@
  *
  * Two layers:
  *   • ``renderInline`` handles bold, italic, strike, inline code, and
- *     explicit ``[text](url)`` links — used inside any line of text.
+ *     explicit ``[text](url)`` links, used inside any line of text.
  *   • ``renderMessage`` is the line-aware wrapper used by chat bubbles
- *     — it recognises block-level markdown (``### headings``, ``-``
+ *    , it recognises block-level markdown (``### headings``, ``-``
  *     bullets, numbered lists) and renders them as proper UI elements,
  *     so a reply like ``### Key Milestones:\n- 1999: Launch`` looks
  *     like a real heading + bullet, not raw text.
  *
- * The backend prompt forbids the LLM from emitting ANY of this — we
+ * The backend prompt forbids the LLM from emitting ANY of this, we
  * keep the renderer defensive (belt-and-suspenders) so the visual
  * never shows raw ``###`` markers if the model slips.
  *
@@ -30,7 +30,7 @@ const PATTERNS: Array<{
   re: RegExp;
   build: (m: RegExpExecArray, key: string) => ReactNode;
 }> = [
-  // Inline code first — its content shouldn't be re-parsed.
+  // Inline code first, its content shouldn't be re-parsed.
   {
     re: /`([^`\n]+)`/g,
     build: (m, key) => (
@@ -68,12 +68,12 @@ const PATTERNS: Array<{
       </a>
     ),
   },
-  // Italic (*text*) — must come AFTER bold to avoid eating its asterisks.
+  // Italic (*text*), must come AFTER bold to avoid eating its asterisks.
   {
     re: /\*([^*\n]+)\*/g,
     build: (m, key) => <em key={key}>{m[1]}</em>,
   },
-  // Italic (_text_) — guard against in-word underscores like snake_case.
+  // Italic (_text_), guard against in-word underscores like snake_case.
   {
     re: /(?<!\w)_([^_\n]+)_(?!\w)/g,
     build: (m, key) => <em key={key}>{m[1]}</em>,
@@ -120,7 +120,7 @@ export function renderInline(text: string): ReactNode[] {
 //
 // LLMs tend to spell numbers out as English words because that's what TTS
 // reads naturally ("six billion nine hundred forty million" sounds right
-// when spoken). But in the chat BUBBLE the user wants to SCAN — a digit
+// when spoken). But in the chat BUBBLE the user wants to SCAN, a digit
 // like "6,940,393,680" is far easier to read at a glance.
 //
 // We only convert runs that include a magnitude word (hundred / thousand /
@@ -214,7 +214,7 @@ export function wordedNumbersToDigits(text: string): string {
       if (NUM_SCALE[t] !== undefined) hasMagnitude = true;
       j++;
     }
-    // Don't trim FILLER on the boundaries — they'd flip non-number runs
+    // Don't trim FILLER on the boundaries, they'd flip non-number runs
     // ("a cat") into number runs. So if the run is just fillers, skip.
     const runTokens = toks.slice(i, j).filter((t) => !NUM_FILLER.has(t.word.toLowerCase()));
     // Require a leading quantity word (small number or "hundred") so
@@ -257,7 +257,7 @@ export function wordedNumbersToDigits(text: string): string {
 
 
 // ---------------------------------------------------------------------------
-// Block-level renderer — used by chat bubbles. Splits on newlines, classifies
+// Block-level renderer, used by chat bubbles. Splits on newlines, classifies
 // each line as a heading / bullet / numbered / blank / paragraph, and runs
 // inline rendering inside each.
 //

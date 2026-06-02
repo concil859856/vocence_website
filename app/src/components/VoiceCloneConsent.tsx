@@ -1,7 +1,7 @@
 /**
  * Voice-cloning consent modal.
  *
- * Shown EVERY time the user kicks off a clone — not once-and-cached.
+ * Shown EVERY time the user kicks off a clone, not once-and-cached.
  * Voice cloning has real abuse potential (impersonation, deepfake fraud)
  * and a single past acceptance shouldn't stand in for fresh attestation
  * on the next clone, possibly of a different voice. The user must

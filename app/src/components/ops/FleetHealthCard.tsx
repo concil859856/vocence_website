@@ -1,5 +1,5 @@
 /**
- * Fleet Health card — appears at the top of AnalyticsTab.
+ * Fleet Health card, appears at the top of AnalyticsTab.
  *
  * Composite per-pod score (0–100) = 40% uptime + 40% success rate
  * + 20% latency efficiency (vs p95 target). The big number is the
@@ -57,7 +57,7 @@ export function FleetHealthCard({ token }: Props) {
           <Heart size={16} className={tone.icon} />
           <h2 className="text-white font-semibold">Fleet health</h2>
           <span className="text-[11px] text-[#A7B0B7]">
-            composite — 40% uptime · 40% success · 20% latency
+            composite, 40% uptime · 40% success · 20% latency
           </span>
         </div>
         <div className="inline-flex rounded-lg border border-white/10 bg-white/[0.02] p-0.5">

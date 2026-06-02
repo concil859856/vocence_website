@@ -134,7 +134,7 @@ export interface LoginRequest {
    *  ``credentialResponse.credential``. The backend verifies this
    *  against Google's tokeninfo endpoint before trusting any claim. */
   credential: string;
-  /** Optional hints — IGNORED by the backend when ``credential`` is
+  /** Optional hints, IGNORED by the backend when ``credential`` is
    *  present (the verified JWT claims always win). Kept so old
    *  callers don't break the type checker while we migrate. */
   email?: string;
@@ -444,7 +444,7 @@ export const localStorageFallback = {
       // Fallback path runs offline / when the API is unreachable. The
       // backend normally derives id/email/name from the verified Google
       // JWT (``credential``); here we accept the caller-supplied hints
-      // but require them to be present — without an id/email/name we
+      // but require them to be present, without an id/email/name we
       // can't construct a usable User.
       if (!userData.googleId || !userData.email || !userData.name) {
         throw new Error('localStorageFallback: googleId, email, and name are required');

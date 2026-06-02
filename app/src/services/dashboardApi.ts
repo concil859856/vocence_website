@@ -1,5 +1,5 @@
 /**
- * Dashboard API client — same backend as auth (VITE_API_URL).
+ * Dashboard API client, same backend as auth (VITE_API_URL).
  */
 import { API_ORIGIN_BASE } from './baseUrl';
 
@@ -9,14 +9,14 @@ const DASHBOARD_BASE = API_ORIGIN_BASE;
  * Build the Authorization + X-Admin-Token headers for admin-only dashboard calls.
  *
  * Backend gates admin routes on TWO layers (see routers/admin_auth.py):
- *   1. `Authorization: Bearer <JWT>` — Google OAuth + email == ADMIN_EMAIL
- *   2. `X-Admin-Token: <admin_token>` — sudo-mode unlock (separate password)
+ *   1. `Authorization: Bearer <JWT>`, Google OAuth + email == ADMIN_EMAIL
+ *   2. `X-Admin-Token: <admin_token>`, sudo-mode unlock (separate password)
  *
  * Both must be sent or the backend rejects with 401 code=admin_unlock_required,
  * which the AdminGate wrapper interprets by popping the AdminUnlockModal.
  *
  * The JWT lives in localStorage (survives browser close). The admin_token
- * lives in sessionStorage (cleared on browser close — by design; admin
+ * lives in sessionStorage (cleared on browser close, by design; admin
  * should re-auth after closing their laptop).
  */
 function adminAuthHeaders(): Record<string, string> {
@@ -1079,7 +1079,7 @@ export const dashboardApi = {
 
   /** Upload the source/reference audio for retake/repaint/edit/extend/audio2audio
    * to the backend bucket. Returns ``{src_audio_bucket, src_audio_key}`` which
-   * the caller passes inside the /jobs/start payload — keeps the job payload
+   * the caller passes inside the /jobs/start payload, keeps the job payload
    * tiny (no base64) so all 6 music tasks behave identically over the wire.
    * @deprecated prefer ``presignUpload`` + direct PUT so the bytes skip the
    * Cloudflare proxy entirely. Kept for backward compat. */
@@ -1101,7 +1101,7 @@ export const dashboardApi = {
   },
 
   /** Ask the backend for a presigned PUT URL pointing directly at R2.
-   *  The browser then PUTs the file straight to R2 — the bytes do NOT
+   *  The browser then PUTs the file straight to R2, the bytes do NOT
    *  traverse the API's Cloudflare proxy, so we sidestep the per-request
    *  body-size limits and large HTTP/2 upload stalls that plague big
    *  multipart POSTs to ``backend.vocence.ai``. The caller passes the
@@ -1204,7 +1204,7 @@ export const dashboardApi = {
   recordPlaybookPlay(id: number, token?: string | null): Promise<{ play_count: number }> {
     // Auth is optional. Anonymous viewers (via shared links) get
     // counted too; private playbooks silently no-op server-side.
-    // Callers should fire-and-forget — the play UI shouldn't wait
+    // Callers should fire-and-forget, the play UI shouldn't wait
     // on the increment to complete.
     const headers: Record<string, string> = {};
     if (token) headers['Authorization'] = `Bearer ${token}`;
@@ -1308,7 +1308,7 @@ export const dashboardApi = {
 
   /** Two-step upload: PUT the file directly to R2 (no Cloudflare in the path)
    * then register the track on the backend with the resulting key. Use this
-   * for any file you want to skip the API proxy for — supports up to the
+   * for any file you want to skip the API proxy for, supports up to the
    * presign endpoint's cap (300 MB by default). */
   async uploadPlaybookTrackDirect(
     playbookId: number,
@@ -1351,7 +1351,7 @@ export const dashboardApi = {
     });
   },
 
-  /** Look up the current user's thumb for one entry — used to pre-paint
+  /** Look up the current user's thumb for one entry, used to pre-paint
    *  the UI on result-page load so a previous vote is reflected. Returns
    *  rating=0 when no vote exists. */
   getMyGenerationFeedback(
@@ -1471,7 +1471,167 @@ export const dashboardApi = {
       method: 'DELETE', headers,
     });
   },
+
+  // -------------------------------------------------------------------
+  // Voice submissions, user-contributed voices for Community Voices.
+  // -------------------------------------------------------------------
+
+  submitVoice(form: FormData, token: string): Promise<VoiceSubmission> {
+    // Multipart upload, DON'T set Content-Type, the browser fills in
+    // the multipart boundary automatically.
+    return fetchJson(`/api/dashboard/voice-submissions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: form,
+    });
+  },
+
+  listMyVoiceSubmissions(token: string): Promise<{ submissions: VoiceSubmission[] }> {
+    return fetchJson(`/api/dashboard/voice-submissions/mine`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+
+  adminListVoiceSubmissions(
+    statusFilter: 'all' | 'pending' | 'approved' | 'rejected' = 'all',
+  ): Promise<{ submissions: AdminVoiceSubmission[]; pending_count: number }> {
+    return fetchJson(
+      `/api/dashboard/admin/voice-submissions?status_filter=${statusFilter}`,
+      { headers: adminAuthHeaders() },
+    );
+  },
+
+  adminApproveVoiceSubmission(
+    submissionId: string,
+  ): Promise<{ ok: true; approved_voice_id: string; credits_granted: number }> {
+    return fetchJson(
+      `/api/dashboard/admin/voice-submissions/${submissionId}/approve`,
+      { method: 'POST', headers: adminAuthHeaders() },
+    );
+  },
+
+  adminRejectVoiceSubmission(
+    submissionId: string, reason: string,
+  ): Promise<{ ok: true }> {
+    return fetchJson(
+      `/api/dashboard/admin/voice-submissions/${submissionId}/reject`,
+      {
+        method: 'POST',
+        headers: { ...adminAuthHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason }),
+      },
+    );
+  },
+
+  // -------------------------------------------------------------------
+  // Notifications, bell + admin composer.
+  // -------------------------------------------------------------------
+
+  listNotifications(
+    limit: number, offset: number, token: string,
+  ): Promise<NotificationListResponse> {
+    return fetchJson(
+      `/api/dashboard/notifications?limit=${limit}&offset=${offset}`,
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+  },
+
+  getUnreadNotificationCount(token: string): Promise<{ unread_count: number }> {
+    return fetchJson(`/api/dashboard/notifications/unread-count`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+
+  markNotificationRead(
+    notificationId: string, token: string,
+  ): Promise<{ ok: true; updated: number }> {
+    return fetchJson(
+      `/api/dashboard/notifications/${notificationId}/read`,
+      { method: 'POST', headers: { Authorization: `Bearer ${token}` } },
+    );
+  },
+
+  markAllNotificationsRead(token: string): Promise<{ ok: true; updated: number }> {
+    return fetchJson(`/api/dashboard/notifications/read-all`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+
+  adminSendNotification(body: AdminSendNotificationBody): Promise<{ sent: number }> {
+    return fetchJson(`/api/dashboard/admin/notifications/send`, {
+      method: 'POST',
+      headers: { ...adminAuthHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  },
+
+  adminUploadNotificationImage(file: File): Promise<{ url: string }> {
+    const form = new FormData();
+    form.append('image', file);
+    // Multipart upload, DON'T set Content-Type, the browser fills in
+    // the multipart boundary automatically. Auth headers stay.
+    return fetchJson(`/api/dashboard/admin/notifications/upload-image`, {
+      method: 'POST',
+      headers: adminAuthHeaders(),
+      body: form,
+    });
+  },
 };
+
+// Voice-submission + notification types match the backend Pydantic
+// models in voice_submissions.py / notifications.py.
+
+export interface VoiceSubmission {
+  id: string;
+  name: string;
+  description: string;
+  ref_text: string;
+  language: string;
+  audio_url: string;
+  audio_duration_ms: number;
+  avatar_url: string;
+  status: 'pending' | 'approved' | 'rejected';
+  reject_reason: string | null;
+  reviewed_at: string | null;
+  approved_voice_id: string | null;
+  created_at: string;
+}
+
+export interface AdminVoiceSubmission extends VoiceSubmission {
+  user_id: string;
+  user_email: string | null;
+  user_name: string | null;
+  reviewed_by: string | null;
+}
+
+export interface NotificationItem {
+  id: string;
+  kind: string;
+  title: string;
+  body: string;
+  link: string | null;
+  image_url: string | null;
+  sender: string | null;
+  read: boolean;
+  created_at: string;
+}
+
+export interface NotificationListResponse {
+  notifications: NotificationItem[];
+  unread_count: number;
+  has_more: boolean;
+}
+
+export interface AdminSendNotificationBody {
+  title: string;
+  body: string;
+  link?: string | null;
+  image_url?: string | null;
+  audience: 'all' | 'user_ids' | 'premium';
+  user_ids?: string[];
+  kind?: string;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers + types for the additions above
@@ -1479,7 +1639,7 @@ export const dashboardApi = {
 
 /** Internal: JSON POST with bearer auth. Inlined here rather than in the
  *  ``dashboardApi`` object because TypeScript would otherwise need an
- *  explicit ``this`` type — simpler to use a free function. */
+ *  explicit ``this`` type, simpler to use a free function. */
 function _postJson<T>(path: string, body: unknown, token: string | null): Promise<T> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (token) headers['Authorization'] = `Bearer ${token}`;

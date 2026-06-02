@@ -1,9 +1,9 @@
 /**
- * ShareButton — reusable share popover for playbooks (and anything else
+ * ShareButton, reusable share popover for playbooks (and anything else
  * with a public URL). Renders a single Share pill that, on click, opens
  * a menu with:
  *
- *   • Native share sheet  (only when navigator.share is available — iOS,
+ *   • Native share sheet  (only when navigator.share is available, iOS,
  *                          Android, macOS Safari, Edge mobile)
  *   • Copy link           (with checkmark feedback)
  *   • X (Twitter)         (twitter.com/intent/tweet)
@@ -15,7 +15,7 @@
  * Brand logos are inlined as SVG paths from simple-icons so we don't pay
  * for an icon library and don't depend on the legacy lucide Twitter bird.
  * The intents/URL formats are the canonical share endpoints each
- * platform documents — no API tokens or app IDs required.
+ * platform documents, no API tokens or app IDs required.
  */
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
@@ -50,7 +50,7 @@ export function ShareButton({ url, title, text, variant = 'pill' }: Props) {
   // tracks its trigger.
   const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
   const MENU_WIDTH = 224; // matches w-56 (Tailwind = 14rem at default scale)
-  const MENU_MAX_HEIGHT_ESTIMATE = 320; // rough — for flip-up decision
+  const MENU_MAX_HEIGHT_ESTIMATE = 320; // rough, for flip-up decision
 
   const computePosition = () => {
     const btn = btnRef.current;
@@ -60,7 +60,7 @@ export function ShareButton({ url, title, text, variant = 'pill' }: Props) {
     // sit just below the button (mt-2 = 8px).
     let left = rect.right - MENU_WIDTH;
     let top = rect.bottom + 8;
-    // Flip up if there isn't room below — common in the dense table
+    // Flip up if there isn't room below, common in the dense table
     // rows at the bottom of the playbook list.
     const spaceBelow = window.innerHeight - rect.bottom;
     if (spaceBelow < MENU_MAX_HEIGHT_ESTIMATE && rect.top > MENU_MAX_HEIGHT_ESTIMATE) {
@@ -72,7 +72,7 @@ export function ShareButton({ url, title, text, variant = 'pill' }: Props) {
     setMenuPos({ top, left });
   };
 
-  // Web Share API is the right default on mobile/Apple — the OS sheet
+  // Web Share API is the right default on mobile/Apple, the OS sheet
   // lists every installed app the user has, including AirDrop and
   // Messages, which always beats hardcoded buttons.
   const canNativeShare = typeof navigator !== 'undefined' && typeof navigator.share === 'function';
@@ -108,7 +108,7 @@ export function ShareButton({ url, title, text, variant = 'pill' }: Props) {
     try {
       await navigator.share({ url, title, text });
       setOpen(false);
-    } catch { /* user dismissed — leave menu open */ }
+    } catch { /* user dismissed, leave menu open */ }
   };
 
   const handleCopy = async () => {
@@ -123,7 +123,7 @@ export function ShareButton({ url, title, text, variant = 'pill' }: Props) {
   const shareText = (text && text.trim()) || title;
   // Intent URLs follow each platform's documented share endpoint. We
   // open them in a new tab; the user's social account session
-  // (if any) handles auth — no OAuth from our side.
+  // (if any) handles auth, no OAuth from our side.
   const targets: Array<{ label: string; href: string; icon: ReactNode }> = [
     {
       label: 'X',
@@ -226,7 +226,7 @@ export function ShareButton({ url, title, text, variant = 'pill' }: Props) {
 }
 
 /* -------------------------------------------------------------------------- */
-/* Brand glyphs — simple-icons paths, rendered with currentColor so they pick
+/* Brand glyphs, simple-icons paths, rendered with currentColor so they pick
    up the menu item's text color. Kept inline (one off site of use). */
 
 function XLogo() {

@@ -49,7 +49,7 @@ export function StudioPlayerBar() {
   if (!track) return null;
 
   const pct = duration > 0 ? (progress / duration) * 100 : 0;
-  // Initials from up to 2 words of the title — "Lofi Jazz Beat" → "LJ"
+  // Initials from up to 2 words of the title, "Lofi Jazz Beat" → "LJ"
   const initials = (track.title || '?')
     .split(/\s+/)
     .filter(Boolean)
@@ -57,12 +57,12 @@ export function StudioPlayerBar() {
     .map((p) => p[0]!.toUpperCase())
     .join('') || '?';
   // Deterministic two-ring gradient seeded from the track title (or src
-  // as fallback) — same palette as agents / designed voices. Used as the
+  // as fallback), same palette as agents / designed voices. Used as the
   // final fallback only if both ``track.image`` and the abstract image
   // pool resolve to nothing.
   const grad = avatarGradientPairFor(track.title || track.src || 'track');
   // When the track has no explicit artwork, pick a stable image from the
-  // pre-generated abstract pool — keyed on title+src so the same track
+  // pre-generated abstract pool, keyed on title+src so the same track
   // always gets the same image across plays / sessions. This replaces
   // the bare gradient tile that was showing on freshly generated music
   // (and any history item without a stored cover).
@@ -85,7 +85,7 @@ export function StudioPlayerBar() {
     <div className={`fixed bottom-5 left-4 lg:left-[calc(256px+16px)] right-4 z-[60] pointer-events-none transition-all duration-500 ease-smooth ${visible ? 'translate-y-0 opacity-100' : 'translate-y-12 opacity-0'}`}>
       <div className="max-w-5xl mx-auto pointer-events-auto rounded-[20px] bg-[#111215]/90 backdrop-blur-2xl border border-white/[0.06] shadow-[0_8px_60px_rgba(0,0,0,0.6),0_0_0_1px_rgba(255,255,255,0.03)] p-3 pr-4">
         <div className="flex items-center gap-3">
-          {/* Artwork — image when present, otherwise a two-ring gradient
+          {/* Artwork, image when present, otherwise a two-ring gradient
               tile with the track's initials. Same palette as the rest of
               Studio (agents, designed voices) for visual consistency. */}
           <div className="relative shrink-0">

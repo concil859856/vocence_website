@@ -189,6 +189,12 @@ async def ingest_sitemap(
         raise HTTPException(status_code=502, detail={"error": str(exc)}) from exc
 
 
+# Hard ceiling on a single PDF upload. The knowledge pod's downstream
+# limits are stricter; this is the dashboard's first line of defense
+# against a signed-in user OOM'ing this process with a multi-GB PDF.
+_MAX_PDF_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
+
+
 @router.post("/ingest/pdf")
 async def ingest_pdf(
     agent_id: str,
@@ -198,11 +204,26 @@ async def ingest_pdf(
 ) -> dict:
     await _require_agent_owner(agent_id, user_id)
     _ensure_kn_available()
-    # The Studio UI typically posts a fresh upload; we don't bother
-    # streaming since 50MB at most lives in memory for a few seconds.
-    content = await file.read()
+    # Cheap pre-check from the multipart header before we buffer
+    # anything. Catches the common case of an oversize upload without
+    # paying the cost of reading it.
+    declared = getattr(file, "size", None)
+    if isinstance(declared, int) and declared > _MAX_PDF_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail={"error": f"PDF exceeds {_MAX_PDF_UPLOAD_BYTES // (1024 * 1024)} MB limit"},
+        )
+    # Bounded read: pull at most cap+1 bytes; if we see cap+1 the file
+    # is definitely too big. This avoids loading a multi-GB upload
+    # entirely into memory when the client lies about Content-Length.
+    content = await file.read(_MAX_PDF_UPLOAD_BYTES + 1)
     if not content:
         raise HTTPException(status_code=400, detail={"error": "empty file"})
+    if len(content) > _MAX_PDF_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail={"error": f"PDF exceeds {_MAX_PDF_UPLOAD_BYTES // (1024 * 1024)} MB limit"},
+        )
     try:
         return await knowledge_client.ingest_pdf(
             agent_id,

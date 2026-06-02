@@ -1,13 +1,13 @@
 /**
- * AgentOrb — animated focal point for voice-call mode.
+ * AgentOrb, animated focal point for voice-call mode.
  *
  * Four states, each visually distinct so a user can tell at a glance
  * who's currently doing what:
  *
  *   idle       slow ambient breath, soft glow
- *   listening  reactive to mic input level — outer ring expands with volume
+ *   listening  reactive to mic input level, outer ring expands with volume
  *   thinking   slow rotation + shimmer (LLM is generating)
- *   speaking   reactive to TTS output amplitude — inner core pulses
+ *   speaking   reactive to TTS output amplitude, inner core pulses
  *
  * Pure SVG + CSS so it stays light (no WebGL, no Three.js dependency).
  * Borrows the visual language ElevenLabs popularized with their open-
@@ -56,7 +56,7 @@ export function AgentOrb({ state, level = 0, size = 280, initials }: Props) {
       style={{ width: size, height: size }}
       aria-label={`Agent is ${state}`}
     >
-      {/* Outer ambient halo — always-on but soft */}
+      {/* Outer ambient halo, always-on but soft */}
       <div
         className="absolute inset-0 rounded-full pointer-events-none transition-all duration-300"
         style={{
@@ -66,7 +66,7 @@ export function AgentOrb({ state, level = 0, size = 280, initials }: Props) {
         }}
       />
 
-      {/* Listening ring — outer pulse reactive to mic level */}
+      {/* Listening ring, outer pulse reactive to mic level */}
       <div
         className="absolute inset-0 rounded-full pointer-events-none transition-transform duration-100"
         style={{
@@ -76,7 +76,7 @@ export function AgentOrb({ state, level = 0, size = 280, initials }: Props) {
         }}
       />
 
-      {/* Idle / thinking breathing ring — slow scale via CSS */}
+      {/* Idle / thinking breathing ring, slow scale via CSS */}
       <div
         className={`absolute inset-2 rounded-full pointer-events-none ${
           state === 'idle' ? 'orb-breathe' : state === 'thinking' ? 'orb-spin' : ''
@@ -87,7 +87,7 @@ export function AgentOrb({ state, level = 0, size = 280, initials }: Props) {
         }}
       />
 
-      {/* Core orb — gradient ball with glow */}
+      {/* Core orb, gradient ball with glow */}
       <div
         className="absolute rounded-full transition-all duration-300"
         style={{
@@ -101,7 +101,7 @@ export function AgentOrb({ state, level = 0, size = 280, initials }: Props) {
         }}
       />
 
-      {/* Speaking shimmer — translucent overlay that pulses with TTS */}
+      {/* Speaking shimmer, translucent overlay that pulses with TTS */}
       {state === 'speaking' && (
         <div
           className="absolute rounded-full pointer-events-none"
@@ -127,7 +127,7 @@ export function AgentOrb({ state, level = 0, size = 280, initials }: Props) {
         </div>
       )}
 
-      {/* Inline keyframes — keeping the orb self-contained so any page
+      {/* Inline keyframes, keeping the orb self-contained so any page
           that imports it just works without a global stylesheet edit. */}
       <style>{`
         @keyframes orb-breathe-kf {
@@ -148,7 +148,7 @@ export function AgentOrb({ state, level = 0, size = 280, initials }: Props) {
 function stateHue(state: OrbState) {
   switch (state) {
     case 'listening':
-      // Cyan — visually obvious "your input matters now"
+      // Cyan, visually obvious "your input matters now"
       return {
         halo: 'rgba(125, 211, 252, 0.5)',
         ringSoft: 'rgba(125, 211, 252, 0.3)',
@@ -159,7 +159,7 @@ function stateHue(state: OrbState) {
         shimmer: 'rgba(186, 230, 253, 0.7)',
       };
     case 'thinking':
-      // Muted violet — "processing, not yours to interrupt"
+      // Muted violet, "processing, not yours to interrupt"
       return {
         halo: 'rgba(196, 181, 253, 0.45)',
         ringSoft: 'rgba(196, 181, 253, 0.3)',
@@ -170,7 +170,7 @@ function stateHue(state: OrbState) {
         shimmer: 'rgba(221, 214, 254, 0.7)',
       };
     case 'speaking':
-      // Brand lime — "the agent is talking"
+      // Brand lime, "the agent is talking"
       return {
         halo: 'rgba(223, 255, 0, 0.5)',
         ringSoft: 'rgba(223, 255, 0, 0.3)',
@@ -182,7 +182,7 @@ function stateHue(state: OrbState) {
       };
     case 'idle':
     default:
-      // Neutral white-grey — quiet, waiting
+      // Neutral white-grey, quiet, waiting
       return {
         halo: 'rgba(255, 255, 255, 0.18)',
         ringSoft: 'rgba(255, 255, 255, 0.15)',

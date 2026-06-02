@@ -1,5 +1,5 @@
 /**
- * Admin sudo-mode modal — pops on first /admin/ops visit (or whenever the
+ * Admin sudo-mode modal, pops on first /admin/ops visit (or whenever the
  * admin_token has expired) and prompts for the separate admin password.
  *
  * Wire-compatible with routers/admin_auth.py:
@@ -72,7 +72,7 @@ export function AdminUnlockModal({ token, onUnlocked, onCancel }: Props) {
 
         <p className="text-xs text-[#A7B0B7] mb-4 leading-relaxed">
           Even as an admin, the Ops surface (servers, pods, fleet analytics)
-          requires a second factor. This unlock is valid for the session — it
+          requires a second factor. This unlock is valid for the session, it
           clears when you close the browser.
         </p>
 

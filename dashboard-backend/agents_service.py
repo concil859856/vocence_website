@@ -59,6 +59,7 @@ async def _chat_complete_json(
     *,
     system: str,
     user: str,
+    history: Optional[list[dict]] = None,
     model: Optional[str] = None,
     temperature: float = 0.4,
     max_tokens: int = 1500,
@@ -69,15 +70,25 @@ async def _chat_complete_json(
     Routes through the unified llm_client (local Qwen3-4B first, Chutes
     fallback). When ``model`` is explicitly provided, the call is forced
     to Chutes since model selection is meaningless on the single-model
-    local endpoint."""
+    local endpoint.
+
+    ``history`` lets the architect's conversational mode pass prior
+    chat turns (last 12-ish messages) so it can answer follow-ups
+    coherently. Each entry: ``{"role": "user"|"assistant", "content": str}``."""
     from llm_client import chat_complete_json as _llm_chat_json, llm_configured as _llm_configured
     if not _llm_configured():
         raise RuntimeError("no LLM configured (set LOCAL_LLM_BASE_URL or AGENTS_LLM_MODEL+CHUTES_AUTH_KEY)")
+    msgs: list[dict] = [{"role": "system", "content": system}]
+    for h in (history or []):
+        # Defensive — only forward well-shaped turns. Skip empty/malformed
+        # so a broken UI state can't poison the LLM context.
+        role = h.get("role")
+        content = h.get("content")
+        if role in ("user", "assistant") and isinstance(content, str) and content.strip():
+            msgs.append({"role": role, "content": content})
+    msgs.append({"role": "user", "content": user})
     return await _llm_chat_json(
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
+        messages=msgs,
         temperature=temperature,
         max_tokens=max_tokens,
         think=think,
@@ -187,6 +198,139 @@ async def draft_agent_config(
         max_tokens=1800,
     )
     return _normalize_draft(obj)
+
+
+# ---------------------------------------------------------------------------
+# Conversational architect
+#
+# Until 2026-06 the architect was strictly a one-shot "describe → get JSON
+# config" endpoint. Any chat-style input ("what can you help with?")
+# silently rewrote the user's agent because every message hit
+# ``draft_agent_config``. The architect now defaults to plain
+# conversation and only emits structured ``proposed_changes`` when the
+# user signals intent (asks for an edit, says "go ahead", etc.).
+# The frontend renders the conversational reply normally and shows
+# an "Apply" button when ``proposed_changes`` is non-null.
+# ---------------------------------------------------------------------------
+
+
+CHAT_SYSTEM = """You are the Vocence Agent Architect — a conversational copilot that
+helps people design and refine their voice-first AI agents.
+
+Vocence Agents come in two flavours:
+  • "knowledge" — answers questions / has conversations, fed by knowledge.
+  • "goal"      — runs autonomously, iterating toward a stated goal.
+
+DEFAULT BEHAVIOUR: have a normal conversation. Ask clarifying questions
+when the user is vague. Make recommendations. Explain trade-offs. Be
+warm and concise. NEVER unilaterally rewrite their agent.
+
+You can READ the user's current draft (handed to you in context). You
+may NOT modify it unless the user clearly asks for a change:
+  ✓ "make the tone more formal"            → modify
+  ✓ "rename it to Atlas"                   → modify
+  ✓ "add a system prompt that says X"      → modify
+  ✓ "draft an agent for customer support"  → modify
+  ✗ "what can you help with?"              → just chat
+  ✗ "tell me what this agent does"         → just chat
+  ✗ "what voice should I use?"             → recommend, don't auto-apply
+  ✗ "can you check my prompt?"             → review + suggest, don't apply
+
+ALWAYS respond as a SINGLE JSON object — but the user only sees
+``reply``. ``proposed_changes`` is the structured edit, present ONLY
+when the user has clearly asked you to make a change AND you have
+enough information to make it. When it's present the UI shows an
+"Apply" button. When it's not, the UI shows only your text reply.
+
+Output shape (no markdown fences, no prose outside the JSON):
+
+{
+  "reply": "Your conversational reply, plain text, 1-4 sentences. End with a question if you need more info.",
+  "proposed_changes": null   OR   {
+    "name": "...",
+    "type": "knowledge" | "goal",
+    "config": {
+      "purpose": "...",
+      "system_prompt": "...",
+      "knowledge": "...",
+      "voice": "<sample voice id, see picker>",
+      "language": "English",
+      "llm_model": "",
+      "temperature": 0.6,
+      "goal": "(only if type=goal)",
+      "success_metric": "(only if type=goal)",
+      "max_iterations": 5
+    },
+    "summary": "1 sentence — what changed vs the current draft, for the Apply button tooltip."
+  }
+}
+
+Rules for ``proposed_changes``:
+  - If the user asked to change one field (e.g. just the name), include
+    THE WHOLE config — copy current values for fields you aren't
+    changing. The Apply button replaces the whole draft at once.
+  - Pick a voice id from the gallery list when proposing a new agent
+    OR when the user explicitly asks for a voice change.
+  - Set proposed_changes to null when in doubt. Better to ask one
+    more question than to silently overwrite their work.
+"""
+
+
+async def chat_with_architect(
+    *,
+    user_message: str,
+    history: Optional[list[dict]] = None,
+    existing: Optional[dict] = None,
+) -> dict:
+    """One conversational turn with the architect.
+
+    Returns ``{reply: str, proposed_changes: dict | None}``. Caller
+    renders ``reply`` as the assistant's chat bubble; if
+    ``proposed_changes`` is non-null, also show an Apply button that
+    POSTs through to the existing draft-apply flow.
+
+    ``history`` is the prior chat as a list of ``{role, content}``
+    pairs — same shape llm_client uses. We cap at the last 12 turns to
+    keep latency tight (architect chat doesn't need long-term memory)."""
+    history = list(history or [])[-12:]
+
+    # Stitch the existing draft into a user-visible system addendum so
+    # the LLM doesn't have to be told about it every turn.
+    user_blocks: list[str] = []
+    if existing:
+        user_blocks.append(
+            "Current agent draft (read-only context):\n"
+            + json.dumps(existing, ensure_ascii=False)[:3500]
+        )
+    user_blocks.append(user_message.strip())
+    final_user = "\n\n".join(user_blocks)
+
+    obj = await _chat_complete_json(
+        system=CHAT_SYSTEM,
+        user=final_user,
+        history=history,
+        temperature=0.5,
+        max_tokens=1400,
+    )
+    reply = str(obj.get("reply") or "").strip()[:2000]
+    proposed = obj.get("proposed_changes")
+    normalized: dict | None = None
+    if isinstance(proposed, dict):
+        # Reuse the existing normalizer so the shape matches the
+        # /draft endpoint — the apply path then works unchanged.
+        try:
+            normalized = _normalize_draft(proposed)
+            # Carry the architect's human summary through to the UI so
+            # the Apply button can show "what will change".
+            summary = str(proposed.get("summary") or "").strip()[:300]
+            if summary:
+                normalized["summary"] = summary
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("architect: proposed_changes normalize failed: %s", exc)
+            normalized = None
+    if not reply:
+        reply = "Got it. Want me to make any specific changes?"
+    return {"reply": reply, "proposed_changes": normalized}
 
 
 def _normalize_draft(obj: dict) -> dict:

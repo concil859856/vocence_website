@@ -59,14 +59,14 @@ export function AdminGate({ children }: Props) {
 
   // Read everything synchronously from storage on first render. The admin
   // token + expiry are signed by the backend (HMAC-sha256) so we can trust
-  // the client-side state — no need to call /status on every mount, which
+  // the client-side state, no need to call /status on every mount, which
   // was the source of the "ask me again after one good unlock" instability
   // (any network blip on /status would clear the local token).
   //
   // Re-pop the modal only when:
   //   (a) client-side expiry passes (60s interval check below), OR
   //   (b) any admin API call returns 401 admin_unlock_required (which fires
-  //       the ADMIN_UNLOCK_EVENT — listener below).
+  //       the ADMIN_UNLOCK_EVENT, listener below).
   const [token, setToken] = useState<string | null>(() => getStoredToken());
   const [adminToken, setAdminToken] = useState<string | null>(() => {
     const t = getStoredAdminToken();
@@ -104,7 +104,7 @@ export function AdminGate({ children }: Props) {
     return () => window.removeEventListener(ADMIN_UNLOCK_EVENT, handler);
   }, []);
 
-  // Client-side expiry watcher — pops the modal when the 4-hour TTL lapses
+  // Client-side expiry watcher, pops the modal when the 4-hour TTL lapses
   // without a server-side check. Cheap and works offline.
   useEffect(() => {
     if (!adminToken || !expiresAt) return;
@@ -155,7 +155,7 @@ export function AdminGate({ children }: Props) {
   }
   return (
     <div className="pt-20">
-      {/* Admin top bar — cross-links + unlock badge + Lock button. Only
+      {/* Admin top bar, cross-links + unlock badge + Lock button. Only
           rendered when the admin is unlocked; the modal handles the locked state. */}
       {adminToken && (
         <div className="sticky top-20 z-30 bg-[#07080A]/95 backdrop-blur border-b border-white/10">
