@@ -55,6 +55,9 @@ os.environ["EMAIL_AUTH_RESET_PER_HOUR"] = "20"
 # itself is tested separately with a dedicated test that uses asyncio
 # clock manipulation. Audit M40.
 os.environ["EMAIL_AUTH_VERIFY_RESEND_COOLDOWN_SEC"] = "0"
+# TestClient uses http:// — Secure cookies would never be sent back.
+# Disable Secure for tests so the cookie round-trips correctly.
+os.environ["COOKIE_SECURE"] = "false"
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -530,6 +533,69 @@ def test_L44_hash_password_rejects_oversize_input():
         assert "exceeds" in str(e).lower() or "limit" in str(e).lower()
         return
     raise AssertionError("hash_password accepted >128-char input")
+
+
+def test_session_cookie_installed_on_successful_login(client):
+    """The login endpoint sets an HttpOnly + SameSite=Lax session
+    cookie so XSS can't read the JWT (audit: localStorage JWT fix)."""
+    token = _signup_and_capture_token(client, "cookie_login@example.com")
+    client.post("/api/auth/email/verify", json={"token": token})
+
+    r = client.post(
+        "/api/auth/email/login",
+        json={"email": "cookie_login@example.com", "password": STRONG_PASSWORD},
+    )
+    assert r.status_code == 200
+    # Body still contains token (transition compat)
+    assert r.json()["token"]
+    # Cookie is also set
+    set_cookie = r.headers.get("set-cookie", "")
+    assert "vocence_session=" in set_cookie
+    assert "HttpOnly" in set_cookie
+    assert "SameSite=lax" in set_cookie.lower() or "samesite=lax" in set_cookie.lower()
+
+
+def test_session_cookie_authenticates_subsequent_request(client):
+    """A request bearing only the cookie (no Bearer header) is
+    accepted by require_auth via the new dual-accept path."""
+    token = _signup_and_capture_token(client, "cookie_auth@example.com")
+    r1 = client.post("/api/auth/email/verify", json={"token": token})
+    assert r1.status_code == 200
+    # TestClient automatically persists cookies between calls. Call
+    # an authed endpoint with NO Authorization header — should succeed
+    # via the cookie.
+    r2 = client.get("/api/auth/referral")
+    assert r2.status_code == 200
+
+
+def test_logout_clears_session_cookie(client):
+    """POST /api/auth/logout returns 200 and includes a Set-Cookie
+    that expires the session cookie immediately."""
+    token = _signup_and_capture_token(client, "cookie_logout@example.com")
+    client.post("/api/auth/email/verify", json={"token": token})
+    r = client.post("/api/auth/logout")
+    assert r.status_code == 200
+    set_cookie = r.headers.get("set-cookie", "")
+    # FastAPI uses Max-Age=0 or an expired date to clear cookies
+    assert "vocence_session=" in set_cookie
+
+
+def test_verify_endpoint_opportunistically_upgrades_localstorage_users(client):
+    """During the migration window, /api/auth/verify accepts a body
+    token (the legacy localStorage path) AND installs the cookie on
+    the response. Old users transparently become XSS-safe on their
+    first /verify call after the deploy."""
+    token = _signup_and_capture_token(client, "migrate@example.com")
+    r1 = client.post("/api/auth/email/verify", json={"token": token})
+    jwt = r1.json()["token"]
+    # TestClient holds the cookie now; clear it to simulate a fresh
+    # browser with only a localStorage token (legacy path)
+    client.cookies.clear()
+    # Call /auth/verify with the JWT in the body (legacy path)
+    r2 = client.post("/api/auth/verify", json={"token": jwt})
+    assert r2.status_code == 200
+    set_cookie = r2.headers.get("set-cookie", "")
+    assert "vocence_session=" in set_cookie, "verify endpoint didn't install cookie on legacy path"
 
 
 def test_M28_verify_password_invalid_hash_burns_argon2_time():

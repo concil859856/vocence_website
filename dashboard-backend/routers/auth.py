@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 
 import jwt
 import aiohttp
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Cookie, Depends, Header, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
 from local_db import (
@@ -312,6 +312,103 @@ def _make_token(user_id: str, email: str) -> str:
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Session cookie (replacing the localStorage JWT exposure)
+# ─────────────────────────────────────────────────────────────────────
+#
+# The session JWT is installed as an HttpOnly + Secure + SameSite=Lax
+# cookie so JavaScript cannot read it. The previous design stored the
+# token in window.localStorage, where any XSS exploited via a
+# vulnerable dependency or future `dangerouslySetInnerHTML` could
+# exfiltrate it in one line. That was the audit's #1 critical finding;
+# this is the fix.
+#
+# Migration strategy: backend dual-issues (cookie AND body) and
+# require_auth dual-accepts (cookie OR Bearer). After the frontend
+# migrates every fetch to ``credentials: 'include'`` and stops
+# writing to localStorage, we drop the body return + Bearer support
+# for browser sessions. The developer-api proxy stays on Bearer
+# (X-Internal-Service-Token) — different system, different trust
+# model, not affected.
+#
+# SameSite=Lax: cookie attached on top-level navigation (so the user
+# clicking a Vocence link from elsewhere works) but NOT on cross-site
+# subresource POSTs (basic CSRF defense). Combined with the existing
+# CORS allowlist (explicit origin list + allow_credentials=True in
+# main.py), state-changing requests need a same-origin context.
+
+SESSION_COOKIE_NAME = "vocence_session"
+SESSION_COOKIE_MAX_AGE = JWT_EXPIRY_DAYS * 24 * 3600
+
+
+def _session_cookie_secure() -> bool:
+    """True in prod (https), False in local dev (http). Reads
+    ``COOKIE_SECURE`` env var with a default that mirrors the
+    backend's general "is this prod?" signal — anything other than
+    explicit "false" is treated as secure."""
+    val = (os.environ.get("COOKIE_SECURE") or "").strip().lower()
+    if val == "false":
+        return False
+    if val == "true":
+        return True
+    # No explicit setting — derive from CORS origins. If the first
+    # CORS origin is http://, we're probably in dev.
+    cors = (os.environ.get("CORS_ORIGIN") or "").strip()
+    first = cors.split(",")[0].strip() if cors else ""
+    return not first.startswith("http://")
+
+
+def _session_cookie_domain() -> str | None:
+    """Optional ``Domain=`` attribute for the session cookie. Set when
+    the frontend and backend are on different subdomains of the same
+    apex (e.g. www.vocence.ai + backend.vocence.ai → Domain=.vocence.ai).
+    Reads ``COOKIE_DOMAIN`` env; if unset, the cookie defaults to
+    host-only which is correct for same-origin deployments."""
+    val = (os.environ.get("COOKIE_DOMAIN") or "").strip()
+    return val or None
+
+
+def _set_session_cookie(response: Response, token: str) -> None:
+    """Install the session JWT as an HttpOnly cookie on ``response``.
+
+    Call this anywhere the previous code did ``return ... token=_make_token(...)``.
+    The token is also still returned in the response body during the
+    migration window so older frontend code keeps working — once every
+    fetch is on ``credentials: 'include'`` we'll stop returning it.
+    """
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=token,
+        max_age=SESSION_COOKIE_MAX_AGE,
+        httponly=True,
+        secure=_session_cookie_secure(),
+        samesite="lax",
+        domain=_session_cookie_domain(),
+        path="/",
+    )
+
+
+def _clear_session_cookie(response: Response) -> None:
+    """Clear the session cookie. Used by /api/auth/logout."""
+    response.delete_cookie(
+        key=SESSION_COOKIE_NAME,
+        domain=_session_cookie_domain(),
+        path="/",
+    )
+
+
+def _install_session(response: Response, user_id: str, email: str) -> str:
+    """One-stop helper: issue a JWT, set the cookie, return the JWT.
+
+    Callers should ``return LoginResponse(user=..., token=_install_session(response, user_id, email))``
+    so the cookie is set AND the body still carries the token for any
+    frontend code that hasn't migrated to ``credentials: 'include'`` yet.
+    """
+    token = _make_token(user_id, email)
+    _set_session_cookie(response, token)
+    return token
+
+
 def _decode_token(token: str) -> dict:
     try:
         return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
@@ -402,15 +499,13 @@ async def require_auth(
     authorization: str | None = Header(None, alias="Authorization"),
     x_internal_service_token: str | None = Header(None, alias="X-Internal-Service-Token"),
     x_internal_user_id: str | None = Header(None, alias="X-Internal-User-Id"),
+    vocence_session: str | None = Cookie(None, alias=SESSION_COOKIE_NAME),
 ) -> str:
     """Returns the authenticated user_id.
 
-    Two accepted auth paths:
+    Three accepted auth paths, checked in this order:
 
-    1. ``Authorization: Bearer <jwt>`` — the standard website session
-       token. This is the only path public callers should ever use.
-
-    2. ``X-Internal-Service-Token`` + ``X-Internal-User-Id`` — a
+    1. ``X-Internal-Service-Token`` + ``X-Internal-User-Id`` — a
        service-to-service trust path used by the developer-api proxy
        (api.vocence.ai). The developer-api validates the caller's
        API key on its side, then forwards the request to us with the
@@ -420,10 +515,21 @@ async def require_auth(
        from public requests — see the voicechat WS handler for the
        full rationale; same threat model applies here.
 
-    Audit H8: when the Bearer path is used, we also check the JWT's
-    ``iat`` against the user's ``password_changed_at`` and reject any
-    token issued BEFORE the most recent password change. This
-    invalidates stolen sessions on password reset.
+    2. ``Cookie: vocence_session=<jwt>`` — the standard website
+       session, set HttpOnly + Secure + SameSite=Lax so JavaScript
+       cannot read it (closes the audit's #1 critical finding about
+       localStorage-XSS-lifts-session). Preferred over Bearer for any
+       browser-originated request.
+
+    3. ``Authorization: Bearer <jwt>`` — backwards-compat fallback
+       for frontend code that hasn't migrated to credentials cookies
+       yet. Will be removed for browser flows once the migration is
+       complete; the developer-api proxy keeps using #1, not this.
+
+    Audit H8: regardless of which path the JWT arrives via, we also
+    check its ``iat`` against the user's ``password_changed_at`` and
+    reject any token issued BEFORE the most recent password change.
+    This invalidates stolen sessions on password reset.
     """
     expected_internal = (os.environ.get("INTERNAL_SERVICE_TOKEN") or "").strip()
     if (
@@ -433,10 +539,16 @@ async def require_auth(
         and x_internal_user_id
     ):
         return x_internal_user_id.strip()
-    if not authorization or not authorization.startswith("Bearer "):
+
+    # Prefer the cookie. JS can't read it (HttpOnly), so any request
+    # bearing it came from a real browser session — not an XSS payload
+    # exfiltrating localStorage.
+    raw_token: str | None = vocence_session
+    if not raw_token and authorization and authorization.startswith("Bearer "):
+        raw_token = authorization.split(" ", 1)[1]
+    if not raw_token:
         raise HTTPException(status_code=401, detail="No token provided")
-    token = authorization.split(" ", 1)[1]
-    decoded = _decode_token(token)
+    decoded = _decode_token(raw_token)
     user_id = decoded["userId"]
     token_iat = decoded.get("iat")
     if await _jwt_invalidated_by_password_change(user_id, token_iat):
@@ -1545,7 +1657,7 @@ async def _verify_google_id_token(credential: str) -> dict:
 
 
 @router.post("/auth/login", response_model=LoginResponse)
-async def auth_login(body: LoginRequest):
+async def auth_login(body: LoginRequest, response: Response):
     # SECURITY: require a verified Google credential. The legacy
     # ``email/name/googleId`` fields the frontend used to send are
     # IGNORED — we use the claims from the verified JWT instead so
@@ -1606,7 +1718,7 @@ async def auth_login(body: LoginRequest):
             user_out = await _get_user_by_id(row["id"])
             if user_out is None:
                 raise HTTPException(status_code=500, detail="Failed to load user")
-            return LoginResponse(user=user_out, token=_make_token(user_out.id, user_out.email))
+            return LoginResponse(user=user_out, token=_install_session(response, user_out.id, user_out.email))
 
         from referral_service import ensure_referral_code, validate_referral, apply_referral_on_signup
 
@@ -1697,20 +1809,61 @@ async def auth_login(body: LoginRequest):
         user_out = await _get_user_by_id(body.googleId)
         if user_out is None:
             raise HTTPException(status_code=500, detail="Failed to create user")
-        return LoginResponse(user=user_out, token=_make_token(user_out.id, user_out.email))
+        return LoginResponse(user=user_out, token=_install_session(response, user_out.id, user_out.email))
     finally:
         await conn.close()
 
 
 @router.post("/auth/verify", response_model=VerifyResponse)
-async def auth_verify(body: VerifyRequest):
-    if not body.token:
+async def auth_verify(
+    response: Response,
+    body: VerifyRequest | None = None,
+    vocence_session: str | None = Cookie(None, alias=SESSION_COOKIE_NAME),
+):
+    """Validate a session.
+
+    Accepts either:
+      * Body with ``{token: <jwt>}`` — the legacy path the frontend
+        uses during the localStorage → cookie migration. Equivalent
+        to a Bearer header for the purpose of this check.
+      * A ``vocence_session`` cookie — the new path, set HttpOnly so
+        JS can't read the JWT to begin with.
+
+    Body takes precedence so the migration path keeps working.
+
+    SIDE EFFECT (migration helper): when called with a valid body
+    token but no cookie, also installs the cookie on the response.
+    That way the existing /auth/verify-on-boot call in AuthContext
+    transparently migrates pre-migration users into cookie-land —
+    they keep their session and become XSS-safe on their first
+    page reload after the deploy.
+    """
+    raw = (body.token if body else None) or vocence_session
+    if not raw:
         raise HTTPException(status_code=400, detail="No token provided")
-    decoded = _decode_token(body.token)
-    user = await _get_user_by_id(decoded["userId"])
+    decoded = _decode_token(raw)
+    user_id = decoded["userId"]
+    token_iat = decoded.get("iat")
+    if await _jwt_invalidated_by_password_change(user_id, token_iat):
+        raise HTTPException(status_code=401, detail="Session expired. Please log in again.")
+    user = await _get_user_by_id(user_id)
     if user is None:
         raise HTTPException(status_code=401, detail="User not found")
+    # Opportunistic upgrade: if the user authenticated via the body
+    # token but doesn't have the cookie yet, install it now.
+    if body and body.token and not vocence_session:
+        _set_session_cookie(response, raw)
     return VerifyResponse(user=user)
+
+
+@router.post("/auth/logout")
+async def auth_logout(response: Response):
+    """Clear the session cookie. Idempotent — safe to call even when
+    no session exists. The frontend should also clear its local user
+    state (which is fine to keep in localStorage; only the JWT was
+    sensitive)."""
+    _clear_session_cookie(response)
+    return {"ok": True}
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -2101,7 +2254,7 @@ async def email_signup(
 
 
 @router.post("/auth/email/verify", response_model=LoginResponse)
-async def email_verify(body: EmailVerifyRequest, request: Request):
+async def email_verify(body: EmailVerifyRequest, request: Request, response: Response):
     """Consume a verification token: mark email verified, grant signup
     bonus, send welcome notification, apply referral if any, and issue
     a JWT so the user is logged in on landing.
@@ -2232,14 +2385,14 @@ async def email_verify(body: EmailVerifyRequest, request: Request):
         user_out = await _get_user_by_id(user_id)
         if user_out is None:
             raise HTTPException(status_code=500, detail="Failed to load user after verification.")
-        return LoginResponse(user=user_out, token=_make_token(user_out.id, user_out.email))
+        return LoginResponse(user=user_out, token=_install_session(response, user_out.id, user_out.email))
     finally:
         await conn.close()
 
 
 @router.post("/auth/email/login", response_model=LoginResponse)
 async def email_login(
-    body: EmailLoginRequest, request: Request, background_tasks: BackgroundTasks,
+    body: EmailLoginRequest, request: Request, response: Response, background_tasks: BackgroundTasks,
 ):
     """Log in with email + password. Returns a JWT on success.
 
@@ -2398,7 +2551,7 @@ async def email_login(
         user_out = await _get_user_by_id(row["id"])
         if user_out is None:
             raise HTTPException(status_code=500, detail="Failed to load user.")
-        return LoginResponse(user=user_out, token=_make_token(user_out.id, user_out.email))
+        return LoginResponse(user=user_out, token=_install_session(response, user_out.id, user_out.email))
     finally:
         await conn.close()
 
