@@ -158,15 +158,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // reference; without useCallback, every AuthProvider render rebuilds
   // the function and triggers the effect to re-run, which would
   // double-POST the single-use verify token and burn it (audit C3).
+  //
+  // M34 polish: mirror login()'s isLoading flag so any consumer gated
+  // on isLoading (route guards, splash screens) sees the brief
+  // installation window. The registration call is still fire-and-
+  // forget on initial attempt — for email-verify users this is the
+  // FIRST time the dashboard backend hears of them, but a transient
+  // failure here doesn't block login. We retry on the next page
+  // load via the normal login path.
   const setSession = useCallback(({ user: nextUser, token }: { user: User; token: string }) => {
-    setUser(nextUser);
-    localStorage.setItem('vocence_user', JSON.stringify(nextUser));
-    localStorage.setItem('vocence_token', token);
-    dashboardApi.registerUser({
-      email: nextUser.email,
-      name: nextUser.name,
-      picture: nextUser.picture ?? undefined,
-    }).catch(() => {});
+    setIsLoading(true);
+    try {
+      setUser(nextUser);
+      localStorage.setItem('vocence_user', JSON.stringify(nextUser));
+      localStorage.setItem('vocence_token', token);
+      dashboardApi.registerUser({
+        email: nextUser.email,
+        name: nextUser.name,
+        picture: nextUser.picture ?? undefined,
+      }).catch((err) => {
+        console.warn('dashboardApi.registerUser failed (will retry on next login):', err);
+      });
+    } finally {
+      setIsLoading(false);
+    }
   }, []);
 
   const logout = () => {

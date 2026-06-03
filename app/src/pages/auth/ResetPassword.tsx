@@ -150,9 +150,17 @@ export function ResetPassword() {
                 maxLength={128}
               />
             </div>
-            <p className="text-xs text-[#666] mt-2">
-              Use at least {PASSWORD_MIN} characters with 3 of: lowercase, uppercase, digit, symbol.
-            </p>
+            {/* L53: inline mismatch indicator. Only shown once the
+             * user has typed something in confirm AND it disagrees
+             * with password — silent otherwise so we don't warn on
+             * a half-typed field. */}
+            {confirm.length > 0 && password !== confirm ? (
+              <p className="text-xs text-red-400 mt-2">Passwords don't match yet.</p>
+            ) : (
+              <p className="text-xs text-[#666] mt-2">
+                Use at least {PASSWORD_MIN} characters with 3 of: lowercase, uppercase, digit, symbol.
+              </p>
+            )}
           </div>
 
           {error && (

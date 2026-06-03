@@ -3,7 +3,7 @@ import { X, Mail, Lock, Eye, EyeOff, ArrowLeft, CheckCircle2 } from 'lucide-reac
 import { useAuth } from '../contexts/AuthContext';
 import { GoogleLogin } from '@react-oauth/google';
 import type { CredentialResponse } from '@react-oauth/google';
-import { api } from '../services/api';
+import { api, EmailAuthError } from '../services/api';
 import { getStoredReferralCode, clearStoredReferralCode, getDeviceFingerprint } from '../lib/referral';
 
 /** Map backend error strings to user-safe UI messages.
@@ -94,6 +94,15 @@ export function AuthModal({ isOpen, onClose, initialMode = 'login' }: AuthModalP
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [emailedTo, setEmailedTo] = useState('');
+  // M38: seconds remaining on a Retry-After cool-down. Decremented
+  // by a 1Hz timer when > 0; while > 0 the submit button is disabled
+  // and shows the countdown so users stop hammering after a 429.
+  const [retryIn, setRetryIn] = useState(0);
+  useEffect(() => {
+    if (retryIn <= 0) return;
+    const t = window.setInterval(() => setRetryIn((s) => Math.max(0, s - 1)), 1000);
+    return () => window.clearInterval(t);
+  }, [retryIn]);
 
   // Audit H12: track open/mounted state so an in-flight request that
   // settles AFTER the modal is closed doesn't (a) trigger setState
@@ -170,16 +179,32 @@ export function AuthModal({ isOpen, onClose, initialMode = 'login' }: AuthModalP
 
   const _shouldCommit = (epoch: number) => mountedRef.current && epoch === requestEpochRef.current;
 
+  /** M38: extract Retry-After from an EmailAuthError and set the
+   *  countdown state so the submit button gates itself for the
+   *  indicated window. Cap at 600s — we never want to indefinitely
+   *  disable the form on a misbehaving backend. */
+  const _applyRetryAfter = (e: unknown) => {
+    if (e instanceof EmailAuthError && e.status === 429 && typeof e.retryAfter === 'number') {
+      setRetryIn(Math.min(600, e.retryAfter));
+    }
+  };
+
   const submitEmailLogin = async () => {
     setError(null); setBusy(true);
     const epoch = requestEpochRef.current;
     try {
       const res = await api.emailLogin(email.trim(), password);
       if (!_shouldCommit(epoch)) return;
+      // M35: clear any stale referral code on login so it can't
+      // accidentally attribute to a future signup with a different
+      // email. Matches what login() in AuthContext does on the
+      // Google path via clearStoredReferralCode().
+      clearStoredReferralCode();
       setSession({ user: res.user, token: res.token });
       closeAll();
     } catch (e) {
       if (!_shouldCommit(epoch)) return;
+      _applyRetryAfter(e);
       setError(mapSignInError(e instanceof Error ? e.message : 'Login failed'));
     } finally {
       if (_shouldCommit(epoch)) setBusy(false);
@@ -196,6 +221,10 @@ export function AuthModal({ isOpen, onClose, initialMode = 'login' }: AuthModalP
         name: name.trim() || undefined,
         referral_code: getStoredReferralCode() ?? undefined,
         device_fingerprint: getDeviceFingerprint() ?? undefined,
+        // L56: forward the ToS-acceptance checkbox state so the
+        // backend can enforce server-side. Without this, signup
+        // 400s with "must accept the Terms of Service".
+        tos_accepted: tosAccepted,
       });
       if (!_shouldCommit(epoch)) return;
       clearStoredReferralCode();
@@ -203,6 +232,7 @@ export function AuthModal({ isOpen, onClose, initialMode = 'login' }: AuthModalP
       setScreen('check-inbox-signup');
     } catch (e) {
       if (!_shouldCommit(epoch)) return;
+      _applyRetryAfter(e);
       setError(mapSignupError(e instanceof Error ? e.message : 'Signup failed'));
     } finally {
       if (_shouldCommit(epoch)) setBusy(false);
@@ -219,6 +249,7 @@ export function AuthModal({ isOpen, onClose, initialMode = 'login' }: AuthModalP
       setScreen('check-inbox-forgot');
     } catch (e) {
       if (!_shouldCommit(epoch)) return;
+      _applyRetryAfter(e);
       setError(mapResetError(e instanceof Error ? e.message : 'Could not send reset email'));
     } finally {
       if (_shouldCommit(epoch)) setBusy(false);
@@ -229,7 +260,7 @@ export function AuthModal({ isOpen, onClose, initialMode = 'login' }: AuthModalP
 
   const passwordTooShort = mode === 'signup' && password.length > 0 && password.length < PASSWORD_MIN;
   const emailFormValid = email.trim().length > 0 && password.length >= (mode === 'signup' ? PASSWORD_MIN : 1);
-  const ctaDisabled = busy || !tosAccepted || !emailFormValid;
+  const ctaDisabled = busy || !tosAccepted || !emailFormValid || retryIn > 0;
 
   // ── Render: header + content per screen ────────────────────────────
 
@@ -363,6 +394,11 @@ export function AuthModal({ isOpen, onClose, initialMode = 'login' }: AuthModalP
                   <div className="bg-[#0a0a0a] border border-white/10 rounded-xl p-3 flex items-center gap-3 focus-within:border-white/30">
                     <Mail size={18} className="text-[#666]" />
                     <input
+                      // L54: autofocus the email field when the modal
+                      // opens. Standard form-modal UX, also helps
+                      // screen-reader users — focus lands on the
+                      // first input instead of the close button.
+                      autoFocus
                       type="email"
                       autoComplete="email"
                       value={email}
@@ -393,7 +429,10 @@ export function AuthModal({ isOpen, onClose, initialMode = 'login' }: AuthModalP
                       type="button"
                       onClick={() => setShowPassword((s) => !s)}
                       className="text-[#666] hover:text-white"
-                      tabIndex={-1}
+                      // L52 fix: removed tabIndex={-1} — keyboard +
+                      // screen-reader users couldn't reach this. The
+                      // natural tab order (password → show → submit)
+                      // is the correct order for assistive tech.
                       aria-label={showPassword ? 'Hide password' : 'Show password'}
                     >
                       {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
@@ -417,13 +456,17 @@ export function AuthModal({ isOpen, onClose, initialMode = 'login' }: AuthModalP
                   disabled={ctaDisabled}
                   className="w-full py-3 px-4 rounded-xl bg-white text-black font-medium hover:bg-[#DFFF00] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 >
-                  {busy ? (mode === 'signup' ? 'Creating account...' : 'Signing in...') : (mode === 'signup' ? 'Create account' : 'Log in')}
+                  {retryIn > 0
+                    ? `Try again in ${retryIn}s`
+                    : busy
+                    ? (mode === 'signup' ? 'Creating account...' : 'Signing in...')
+                    : (mode === 'signup' ? 'Create account' : 'Log in')}
                 </button>
 
                 {mode === 'login' && (
                   <button
                     type="button"
-                    onClick={() => { setError(null); setNeedsVerify(false); setScreen('forgot'); }}
+                    onClick={() => { setError(null); setScreen('forgot'); }}
                     className="block w-full text-center text-xs text-[#A7B0B7] hover:text-white"
                   >
                     Forgot password?
@@ -494,10 +537,10 @@ export function AuthModal({ isOpen, onClose, initialMode = 'login' }: AuthModalP
 
               <button
                 type="submit"
-                disabled={busy || email.trim().length === 0}
+                disabled={busy || email.trim().length === 0 || retryIn > 0}
                 className="w-full py-3 px-4 rounded-xl bg-white text-black font-medium hover:bg-[#DFFF00] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
-                {busy ? 'Sending...' : 'Send reset link'}
+                {retryIn > 0 ? `Try again in ${retryIn}s` : busy ? 'Sending...' : 'Send reset link'}
               </button>
             </form>
           )}

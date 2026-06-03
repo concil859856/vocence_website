@@ -150,6 +150,31 @@ export interface LoginResponse {
   token: string;
 }
 
+/** Error thrown by the emailX() methods on 4xx/5xx. Carries the HTTP
+ *  status + parsed Retry-After header so the UI can react accordingly
+ *  (audit M38). Falls back to a generic Error.message for any
+ *  consumer that just does `e.message`. */
+export class EmailAuthError extends Error {
+  status: number;
+  /** Seconds until the next retry should be allowed. Null when the
+   *  server didn't send a Retry-After header. */
+  retryAfter: number | null;
+  constructor(message: string, status: number, retryAfter: number | null) {
+    super(message);
+    this.name = 'EmailAuthError';
+    this.status = status;
+    this.retryAfter = retryAfter;
+  }
+}
+
+async function emailAuthError(response: Response, fallback: string): Promise<EmailAuthError> {
+  const data = await response.json().catch(() => ({} as { detail?: string }));
+  const detail = (data as { detail?: string })?.detail || fallback;
+  const ra = response.headers.get('Retry-After');
+  const retryAfter = ra ? Math.max(0, parseInt(ra, 10) || 0) : null;
+  return new EmailAuthError(detail, response.status, retryAfter);
+}
+
 // API Functions
 export const api = {
   // Sign up or login user
@@ -248,6 +273,10 @@ export const api = {
   // Mirror the Google login UX: success returns {user, token} so the
   // caller (AuthModal / VerifyEmail page) stores the JWT and updates
   // AuthContext exactly like the Google path.
+  //
+  // M38: 4xx/5xx throw EmailAuthError carrying (status, retryAfter)
+  // so the UI can disable the submit button + show a countdown on
+  // 429 instead of letting the user keep clicking.
 
   /** Sign up with email + password. Always returns 200 (anti-enum). */
   async emailSignup(args: {
@@ -256,16 +285,14 @@ export const api = {
     name?: string;
     referral_code?: string;
     device_fingerprint?: string;
+    tos_accepted?: boolean;
   }): Promise<{ ok: boolean; message: string }> {
     const response = await fetch(`${API_BASE_URL}/auth/email/signup`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(args),
     });
-    if (!response.ok) {
-      const data = await response.json().catch(() => ({}));
-      throw new Error(data?.detail || 'Signup failed');
-    }
+    if (!response.ok) throw await emailAuthError(response, 'Signup failed');
     return response.json();
   },
 
@@ -278,10 +305,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ token: verifyToken }),
     });
-    if (!response.ok) {
-      const data = await response.json().catch(() => ({}));
-      throw new Error(data?.detail || 'Verification failed');
-    }
+    if (!response.ok) throw await emailAuthError(response, 'Verification failed');
     return response.json();
   },
 
@@ -292,10 +316,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email, password }),
     });
-    if (!response.ok) {
-      const data = await response.json().catch(() => ({}));
-      throw new Error(data?.detail || 'Login failed');
-    }
+    if (!response.ok) throw await emailAuthError(response, 'Login failed');
     return response.json();
   },
 
@@ -306,10 +327,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email }),
     });
-    if (!response.ok) {
-      const data = await response.json().catch(() => ({}));
-      throw new Error(data?.detail || 'Could not resend verification');
-    }
+    if (!response.ok) throw await emailAuthError(response, 'Could not resend verification');
     return response.json();
   },
 
@@ -320,10 +338,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email }),
     });
-    if (!response.ok) {
-      const data = await response.json().catch(() => ({}));
-      throw new Error(data?.detail || 'Could not send reset email');
-    }
+    if (!response.ok) throw await emailAuthError(response, 'Could not send reset email');
     return response.json();
   },
 
@@ -334,10 +349,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ token: resetToken, new_password: newPassword }),
     });
-    if (!response.ok) {
-      const data = await response.json().catch(() => ({}));
-      throw new Error(data?.detail || 'Password reset failed');
-    }
+    if (!response.ok) throw await emailAuthError(response, 'Password reset failed');
     return response.json();
   },
 
