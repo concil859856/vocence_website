@@ -7,7 +7,6 @@ import {
   Play,
   Pause,
   Download,
-  Send,
   Square,
   Search,
   Copy,
@@ -208,15 +207,10 @@ function LanguageOption({
   );
 }
 
-// Temporary flag: while launching, only Text-to-Speech is enabled in Studio.
-// Flip back to `true` to re-enable the other Studio views.
-const ENABLE_VOICE_CHAT = false;
-
 const STUDIO_VIEW_LABELS: Record<StudioView, string> = {
   home: 'Studio Home',
   tts: 'Text-to-Speech',
   stt: 'Speech-to-Text',
-  chat: 'Voice Chat',
   cloning: 'Voice Cloning',
   'voice-design': 'Voice Design',
   'my-voices': 'My Voices',
@@ -413,18 +407,6 @@ export function Studio() {
   const [studioHistoryBulkBusy, setStudioHistoryBulkBusy] = useState(false);
   const [studioHistoryAddOpen, setStudioHistoryAddOpen] = useState(false);
   const [studioPlaybooksList, setStudioPlaybooksList] = useState<{ id: number; title: string }[]>([]);
-  const [chatMessages, setChatMessages] = useState([
-    { role: 'ai', content: "Hello! I'm your Vocence voice assistant. How can I help you today?" },
-    { role: 'user', content: 'Tell me about the Bittensor network rewards for this subnet.' },
-    {
-      role: 'ai',
-      content:
-        'Subnet 28 rewards miners based on the quality of their TTS outputs, measured by Mean Opinion Score (MOS) and prompt adherence. Top miners currently earn approx 12-15 TAO daily.',
-    },
-  ]);
-  const [chatInput, setChatInput] = useState('');
-  const [chatCreditsToday, setChatCreditsToday] = useState<number>(0);
-  const [chatCreditsLoading, setChatCreditsLoading] = useState(false);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [ttsText, setTtsText] = useState('');
   const [ttsContentLimitNotice, setTtsContentLimitNotice] = useState(false);
@@ -478,7 +460,6 @@ export function Studio() {
   const [isCloneDragActive, setIsCloneDragActive] = useState(false);
   /** Blob URL for `<audio>` preview of upload or recorded reference. */
   const [cloneReferencePreviewUrl, setCloneReferencePreviewUrl] = useState<string | null>(null);
-  const [isMicRecording, setIsMicRecording] = useState(false);
   const [vdConfig, setVdConfig] = useState<StudioVoiceDesignConfig | null>(null);
   const [vdDescription, setVdDescription] = useState('');
   const [vdLoading, setVdLoading] = useState(false);
@@ -696,20 +677,6 @@ export function Studio() {
     });
   }, []);
 
-  useEffect(() => {
-    if (activeView !== 'chat' || !user) return;
-    const token = localStorage.getItem('vocence_token');
-    if (!token) return;
-    setChatCreditsLoading(true);
-    api
-      .getDailyCreditsUsage(token, 1)
-      .then((res) => {
-        const dayRow = res.days?.[0];
-        setChatCreditsToday(dayRow?.creditsUsed ?? 0);
-      })
-      .catch(() => setChatCreditsToday(0))
-      .finally(() => setChatCreditsLoading(false));
-  }, [activeView, user]);
 
   // Preload only above-the-fold style preset images to speed first paint.
   useEffect(() => {
@@ -1333,51 +1300,6 @@ export function Studio() {
       setSttFile(file);
       setSttStatus(null);
     }
-  };
-
-  const handleSendMessage = () => {
-    if (!chatInput.trim()) return;
-    
-    requireAuth(() => {
-      if (user && user.credits < 0.5) {
-        alert('Insufficient credits. Voice Chat requires 0.5 credits per message.');
-        return;
-      }
-
-      setChatMessages([...chatMessages, { role: 'user', content: chatInput }]);
-      const messageContent = chatInput;
-      setChatInput('');
-      
-      setTimeout(() => {
-        setChatMessages((prev) => [
-          ...prev,
-          {
-            role: 'ai',
-            content:
-              'I understand. The network uses a dual-axis evaluation system focusing on content correctness, audio quality, and prompt adherence.',
-          },
-        ]);
-      }, 1000);
-
-      // Save to history
-      saveToHistory({
-        type: 'chat',
-        content: messageContent,
-        model: 'Voice Chat',
-        meta: 'Real-time',
-        duration: '0:00',
-      });
-
-      // Local-only deduction. We deliberately do NOT call the server
-      // /credits PATCH endpoint here, that endpoint is admin-only (see
-      // routers/auth.py:update_credits) after the 2026-05-14 incident
-      // where a user used it to grant themselves 100k credits. This
-      // chat is a UI demo and not a real LLM call, so deducting in
-      // local state is fine; on refresh the server-side balance wins.
-      if (user) {
-        setLocalCredits(user.credits - 0.5);
-      }
-    });
   };
 
   const vdPreviewCredits = vdConfig?.preview_credits ?? CREDIT_VOICE_DESIGN_PREVIEW;
@@ -2755,91 +2677,6 @@ export function Studio() {
     </div>
   );
 
-  const renderChatView = () => (
-    <div className="space-y-6 relative">
-      <div className="blur-[2px] pointer-events-none select-none">
-        <div>
-          <h2 className="text-2xl font-semibold mb-2">Voice Chat</h2>
-          <p className="text-[#A7B0B7]">
-            Interact with AI using real-time voice synthesis and recognition.
-          </p>
-          <p className="text-xs text-[#666] mt-3">
-            {chatCreditsLoading ? (
-              'Today: Loading credits...'
-            ) : (
-              <>
-                Today: <span className="text-white font-medium">{chatCreditsToday.toLocaleString()}</span> credits consumed
-              </>
-            )}
-          </p>
-        </div>
-
-        <div className="card-vocence p-6">
-        {/* Chat Messages */}
-        <div className="h-96 overflow-y-auto space-y-4 mb-6 pr-2">
-          {chatMessages.map((msg, index) => (
-            <div
-              key={index}
-              className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
-            >
-              <div
-                className={`max-w-[80%] p-4 rounded-2xl text-sm ${
-                  msg.role === 'user'
-                    ? 'bg-[#2E7D32] text-white rounded-br-md'
-                    : 'bg-[#0a0a0a] text-white rounded-bl-md'
-                }`}
-              >
-                {msg.content}
-              </div>
-            </div>
-          ))}
-        </div>
-
-        {/* Input */}
-        <div className="flex gap-3">
-          <div className="flex-1 bg-[#0a0a0a] border border-white/10 rounded-xl px-4 py-3">
-            <input
-              type="text"
-              value={chatInput}
-              onChange={(e) => setChatInput(e.target.value)}
-              onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
-              placeholder="Type a message or click mic to speak..."
-              className="w-full bg-transparent text-white placeholder-[#666] outline-none"
-            />
-          </div>
-          <button
-            onClick={() => {
-              setIsMicRecording(!isMicRecording);
-              // TODO: Implement voice recording
-            }}
-            className={`w-11 h-11 rounded-full flex items-center justify-center transition-colors ${
-              isMicRecording
-                ? 'bg-red-500 text-white hover:bg-red-600'
-                : 'bg-white/10 text-white hover:bg-white/20'
-            }`}
-          >
-            <Mic size={18} />
-          </button>
-          <button
-            onClick={handleSendMessage}
-            className="w-11 h-11 bg-white text-[#07080A] rounded-full flex items-center justify-center hover:bg-[#DFFF00] transition-colors"
-          >
-            <Send size={18} />
-          </button>
-        </div>
-      </div>
-      </div>
-      
-      {/* Coming Soon Overlay */}
-      <div className="absolute inset-0 z-10 flex items-center justify-center pointer-events-none">
-        <div className="rounded-2xl border border-[#DFFF00]/25 bg-[#0b0f14]/70 px-7 py-5 text-center backdrop-blur-sm">
-          <h3 className="text-2xl md:text-3xl font-bold text-[#DFFF00] mb-1">Coming Soon</h3>
-          <p className="text-sm text-[#A7B0B7]">This feature is under development</p>
-        </div>
-      </div>
-    </div>
-  );
-
   const renderCloningView = () => (
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -3179,7 +3016,6 @@ export function Studio() {
     <div ref={studioRef} className="min-h-screen bg-[#07080A] pt-20">
       <StudioShell activeView={activeView}>
         <div className="max-w-6xl mx-auto">
-            {activeView === 'chat' && !ENABLE_VOICE_CHAT && <ComingSoonView view={activeView} />}
             {activeView === 'home' && <StudioHome />}
             {activeView === 'tts' && (
               <div className="space-y-3">
@@ -3212,7 +3048,6 @@ export function Studio() {
               </div>
             )}
             {activeView === 'stt' && renderSTTView()}
-            {ENABLE_VOICE_CHAT && activeView === 'chat' && renderChatView()}
             {activeView === 'cloning' && renderCloningView()}
             {activeView === 'voice-design' && renderVoiceDesignView()}
             {activeView === 'my-voices' && renderMyVoicesView()}

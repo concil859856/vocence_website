@@ -30,10 +30,3 @@ export const NOISE_REMOVER_MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 
 // ── One-time bonuses ──────────────────────────────────────────────────────
 export const CREDIT_SIGNUP_BONUS = 300;
-
-/**
- * Back-compat alias. Kept so any lingering imports don't break during the
- * dubbing → noise_remover rename. New code should import CREDIT_NOISE_REMOVER.
- * TODO: drop once all import sites migrate.
- */
-export const CREDIT_DUBBING = CREDIT_NOISE_REMOVER;

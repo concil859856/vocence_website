@@ -1,14 +1,10 @@
 import type { LucideIcon } from 'lucide-react';
 import { Mic, MessageSquare, Users, History, Sparkles, LayoutGrid, Music, ListMusic, Bot, AudioLines, Home, Film, Code2, Terminal, BookOpen, Library, LifeBuoy } from 'lucide-react';
 
-// 'chat' is intentionally NOT in the sidebar, the assistant lives as a
-// floating widget mounted at the Studio shell. It's kept in the union so
-// the existing (dead) ComingSoon branch in Studio.tsx still compiles.
 export type StudioView =
   | 'home'
   | 'tts'
   | 'stt'
-  | 'chat'
   | 'cloning'
   | 'voice-design'
   | 'my-voices'
