@@ -2,6 +2,7 @@
 // Uses VITE_API_URL + '/api' (same backend as dashboard), with Vite proxy
 // support in dev when the backend target is localhost.
 import { API_BASE_URL, withNetworkHint } from './baseUrl';
+import { authFetch } from './authFetch';
 
 export interface User {
   id: string;
@@ -180,7 +181,7 @@ export const api = {
   // Sign up or login user
   async loginOrSignup(userData: LoginRequest): Promise<LoginResponse> {
     try {
-      const response = await fetch(`${API_BASE_URL}/auth/login`, {
+      const response = await authFetch(`${API_BASE_URL}/auth/login`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -249,7 +250,7 @@ export const api = {
   // Verify token
   async verifyToken(token: string): Promise<User> {
     try {
-      const response = await fetch(`${API_BASE_URL}/auth/verify`, {
+      const response = await authFetch(`${API_BASE_URL}/auth/verify`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -287,7 +288,7 @@ export const api = {
     device_fingerprint?: string;
     tos_accepted?: boolean;
   }): Promise<{ ok: boolean; message: string }> {
-    const response = await fetch(`${API_BASE_URL}/auth/email/signup`, {
+    const response = await authFetch(`${API_BASE_URL}/auth/email/signup`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(args),
@@ -300,7 +301,7 @@ export const api = {
    *  same {user, token} shape as Google login so the frontend can
    *  log the user in immediately. */
   async emailVerify(verifyToken: string): Promise<LoginResponse> {
-    const response = await fetch(`${API_BASE_URL}/auth/email/verify`, {
+    const response = await authFetch(`${API_BASE_URL}/auth/email/verify`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ token: verifyToken }),
@@ -311,7 +312,7 @@ export const api = {
 
   /** Log in with email + password. */
   async emailLogin(email: string, password: string): Promise<LoginResponse> {
-    const response = await fetch(`${API_BASE_URL}/auth/email/login`, {
+    const response = await authFetch(`${API_BASE_URL}/auth/email/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email, password }),
@@ -322,7 +323,7 @@ export const api = {
 
   /** Re-send the verification email. */
   async emailResendVerify(email: string): Promise<{ ok: boolean; message: string }> {
-    const response = await fetch(`${API_BASE_URL}/auth/email/resend-verify`, {
+    const response = await authFetch(`${API_BASE_URL}/auth/email/resend-verify`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email }),
@@ -333,7 +334,7 @@ export const api = {
 
   /** Request a password reset email. */
   async emailForgot(email: string): Promise<{ ok: boolean; message: string }> {
-    const response = await fetch(`${API_BASE_URL}/auth/email/forgot`, {
+    const response = await authFetch(`${API_BASE_URL}/auth/email/forgot`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email }),
@@ -344,13 +345,26 @@ export const api = {
 
   /** Consume a reset token + set a new password. */
   async emailReset(resetToken: string, newPassword: string): Promise<{ ok: boolean; message: string }> {
-    const response = await fetch(`${API_BASE_URL}/auth/email/reset`, {
+    const response = await authFetch(`${API_BASE_URL}/auth/email/reset`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ token: resetToken, new_password: newPassword }),
     });
     if (!response.ok) throw await emailAuthError(response, 'Password reset failed');
     return response.json();
+  },
+
+  /** Clear the HttpOnly session cookie server-side. Always pair this
+   *  with the local-state cleanup in AuthContext.logout() so the user
+   *  is logged out everywhere. Best-effort: if the network call fails
+   *  the local cleanup still runs, but the cookie may persist until
+   *  natural expiry. */
+  async logout(): Promise<void> {
+    try {
+      await authFetch(`${API_BASE_URL}/auth/logout`, { method: 'POST' });
+    } catch {
+      // Network errors here aren't fatal — local logout still proceeds.
+    }
   },
 
   async getPricingPlans(): Promise<{ plans: PricingPlan[] }> {

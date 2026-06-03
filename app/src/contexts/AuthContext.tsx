@@ -184,11 +184,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  const logout = () => {
+  const logout = useCallback(() => {
+    // Fire-and-forget the server-side cookie clear. Don't await — we
+    // want the UI to update immediately even if the backend is slow
+    // or unreachable. Worst case the cookie stays set on the server's
+    // domain until natural expiry (30 days), but the local state is
+    // already gone so this client can't use it.
+    api.logout().catch(() => {});
     setUser(null);
     localStorage.removeItem('vocence_user');
     localStorage.removeItem('vocence_token');
-  };
+  }, []);
 
   const setLocalCredits = (credits: number) => {
     if (!user) return;
