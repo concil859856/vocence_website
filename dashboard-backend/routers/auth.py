@@ -18,7 +18,7 @@ from datetime import datetime, timedelta, timezone
 import jwt
 import aiohttp
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from local_db import (
     ensure_tables,
@@ -1739,34 +1739,44 @@ async def auth_verify(body: VerifyRequest):
 import auth_security as _auth_sec  # local: keep heavy imports out of boot path
 
 
+# Audit M26: every field gets max_length so Pydantic rejects oversized
+# inputs at the body-parse layer, before any hand-coded validation runs.
+# Previously, sending a 10 MB password / email field would parse fully
+# into memory before the endpoint's first line of code. Numbers match
+# the underlying validators (auth_security._MAX_PASSWORD_LEN = 128,
+# _MAX_EMAIL_LEN = 254). ``tos_accepted`` (new) is the server-side
+# version of the ToS checkbox — L56 closes the bypass where DevTools
+# users could click submit without the box checked.
+
 class EmailSignupRequest(BaseModel):
-    email: str
-    password: str
-    name: str | None = None
-    referral_code: str | None = None
-    device_fingerprint: str | None = None
+    email: str = Field(..., max_length=254)
+    password: str = Field(..., max_length=128)
+    name: str | None = Field(default=None, max_length=128)
+    referral_code: str | None = Field(default=None, max_length=64)
+    device_fingerprint: str | None = Field(default=None, max_length=128)
+    tos_accepted: bool = False
 
 
 class EmailLoginRequest(BaseModel):
-    email: str
-    password: str
+    email: str = Field(..., max_length=254)
+    password: str = Field(..., max_length=128)
 
 
 class EmailVerifyRequest(BaseModel):
-    token: str
+    token: str = Field(..., max_length=128)
 
 
 class EmailResendRequest(BaseModel):
-    email: str
+    email: str = Field(..., max_length=254)
 
 
 class EmailForgotRequest(BaseModel):
-    email: str
+    email: str = Field(..., max_length=254)
 
 
 class EmailResetRequest(BaseModel):
-    token: str
-    new_password: str
+    token: str = Field(..., max_length=128)
+    new_password: str = Field(..., max_length=128)
 
 
 class GenericOkResponse(BaseModel):
@@ -1898,15 +1908,53 @@ def _send_password_changed_email_safe(*, to_email: str, user_name: str | None, c
         _np_log.warning("send_password_changed_email failed for %s: %s", to_email, exc)
 
 
+# Per-account cooldown between verification-email resends. The
+# /resend-verify endpoint and the login auto-resend path both check
+# this BEFORE issuing a new token, so a single account can be sent
+# at most one verification email per ``_VERIFY_RESEND_COOLDOWN_SEC``,
+# regardless of how many IPs the requester rotates through.
+# Audit finding M40.
+_VERIFY_RESEND_COOLDOWN_SEC = int(os.environ.get("EMAIL_AUTH_VERIFY_RESEND_COOLDOWN_SEC", "60"))
+
+
+async def _can_resend_verification(conn, user_id: str) -> bool:
+    """True when enough time has elapsed since the last verification
+    email was issued to this account. Fail-open on missing column or
+    unparseable value (treats as "no recent send")."""
+    row = await (
+        await conn.execute(
+            "SELECT last_verification_resend_at FROM auth_users WHERE id = ?",
+            (user_id,),
+        )
+    ).fetchone()
+    if row is None or not row["last_verification_resend_at"]:
+        return True
+    try:
+        last_dt = datetime.fromisoformat(row["last_verification_resend_at"].replace("Z", "+00:00"))
+        if last_dt.tzinfo is None:
+            last_dt = last_dt.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return True
+    return (datetime.now(timezone.utc) - last_dt).total_seconds() >= _VERIFY_RESEND_COOLDOWN_SEC
+
+
 async def _issue_verification_token(conn, user_id: str) -> str:
     """Generate a verification token, persist its hash + expiry on the
     user row, return the raw token to email out. Overwrites any prior
-    unused token (resending invalidates the old link)."""
+    unused token (resending invalidates the old link). Also stamps
+    ``last_verification_resend_at`` for the per-account cooldown."""
     raw, hashed = _auth_sec.generate_token()
     expiry = _auth_sec.token_expiry_iso(_auth_sec.VERIFICATION_TOKEN_TTL)
+    now = _auth_sec.utc_now_iso()
     await conn.execute(
-        "UPDATE auth_users SET verification_token_hash = ?, verification_token_expires_at = ? WHERE id = ?",
-        (hashed, expiry, user_id),
+        """
+        UPDATE auth_users
+        SET verification_token_hash = ?,
+            verification_token_expires_at = ?,
+            last_verification_resend_at = ?
+        WHERE id = ?
+        """,
+        (hashed, expiry, now, user_id),
     )
     return raw
 
@@ -1947,19 +1995,36 @@ async def email_signup(
     silently dropped by the device-fingerprint-required gate.
     """
     if not _email_auth_rate_ok("signup", _client_ip(request), _EMAIL_AUTH_SIGNUP_PER_HOUR):
-        raise HTTPException(status_code=429, detail="Too many signup attempts. Try again later.")
+        # Audit L50: collapse the generic IP rate-limit message so it
+        # doesn't differ between the rate-limit and account-lockout
+        # paths (which both return 429). Same wording everywhere.
+        raise HTTPException(status_code=429, detail="Too many attempts. Please try again later.")
+
+    # Audit L56: ToS acceptance enforced server-side. The frontend
+    # checkbox is a UI gate; without this check a DevTools user could
+    # delete the `pointer-events-none` class and POST without it.
+    if not body.tos_accepted:
+        raise HTTPException(status_code=400, detail="You must accept the Terms of Service to sign up.")
 
     try:
         email = _auth_sec.normalize_and_validate_email(body.email or "")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    pw_err = _auth_sec.check_password_strength(body.password or "")
-    if pw_err:
-        raise HTTPException(status_code=400, detail=pw_err)
 
     clean_name = (body.name or "").strip()[:128] or email.split("@")[0]
     device_fp = (body.device_fingerprint or "").strip()[:128] or None
     referral_code = (body.referral_code or "").strip() or None
+
+    # Audit M30: pass user-context terms (email local-part, display
+    # name, brand) so the strength check rejects e.g. an "alice"
+    # password from alice@example.com.
+    email_local = email.split("@", 1)[0]
+    pw_err = _auth_sec.check_password_strength(
+        body.password or "",
+        user_context=(email_local, clean_name, "vocence"),
+    )
+    if pw_err:
+        raise HTTPException(status_code=400, detail=pw_err)
 
     await ensure_tables()
     conn = await get_connection()
@@ -2198,7 +2263,7 @@ async def email_login(
     from the request cadence that they triggered it.
     """
     if not _email_auth_rate_ok("login", _client_ip(request), _EMAIL_AUTH_LOGIN_PER_HOUR):
-        raise HTTPException(status_code=429, detail="Too many login attempts. Try again later.")
+        raise HTTPException(status_code=429, detail="Too many attempts. Please try again later.")
 
     try:
         email = _auth_sec.normalize_and_validate_email(body.email or "")
@@ -2228,9 +2293,13 @@ async def email_login(
 
         is_locked, retry_after = _auth_sec.is_account_locked(row["locked_until"])
         if is_locked:
+            # Audit L50: same generic 429 message as the IP rate-limit
+            # path so an attacker can't distinguish "this account is
+            # locked" from "this IP is throttled". Retry-After is
+            # still attached so legit clients can back off correctly.
             raise HTTPException(
                 status_code=429,
-                detail=f"Account locked due to too many failed attempts. Try again in {retry_after // 60 + 1} minutes.",
+                detail="Too many attempts. Please try again later.",
                 headers={"Retry-After": str(retry_after)},
             )
 
@@ -2275,18 +2344,24 @@ async def email_login(
         # Response object don't fire on the exception path. The
         # create_task version is fire-and-forget and runs regardless.
         if row["email_verified"] == 0:
-            raw_token = await _issue_verification_token(conn, row["id"])
-            await conn.commit()
-            resend_email = row["email"]
-            resend_name = row["name"] or row["email"].split("@")[0]
-            asyncio.create_task(
-                asyncio.to_thread(
-                    _send_verification_email_safe,
-                    to_email=resend_email,
-                    raw_token=raw_token,
-                    user_name=resend_name,
+            # M40: only auto-resend if the per-account cooldown allows
+            # it. Without this an attacker can spray failed-login
+            # attempts at a known-unverified account to bomb their
+            # inbox with verification emails (each failed login
+            # would otherwise issue a new one).
+            if await _can_resend_verification(conn, row["id"]):
+                raw_token = await _issue_verification_token(conn, row["id"])
+                await conn.commit()
+                resend_email = row["email"]
+                resend_name = row["name"] or row["email"].split("@")[0]
+                asyncio.create_task(
+                    asyncio.to_thread(
+                        _send_verification_email_safe,
+                        to_email=resend_email,
+                        raw_token=raw_token,
+                        user_name=resend_name,
+                    )
                 )
-            )
             raise HTTPException(status_code=401, detail="Invalid email or password.")
 
         # Success — clear counter + lockout, update last_login.
@@ -2336,7 +2411,7 @@ async def email_resend_verify(
     Email send is scheduled via BackgroundTasks so wall-clock latency
     does not differentiate the send vs no-send branch (audit C1)."""
     if not _email_auth_rate_ok("resend", _client_ip(request), _EMAIL_AUTH_RESEND_PER_HOUR):
-        raise HTTPException(status_code=429, detail="Too many resend requests. Try again later.")
+        raise HTTPException(status_code=429, detail="Too many attempts. Please try again later.")
 
     try:
         email = _auth_sec.normalize_and_validate_email(body.email or "")
@@ -2353,13 +2428,18 @@ async def email_resend_verify(
             )
         ).fetchone()
         if row is not None and row["email_verified"] == 0:
-            raw_token = await _issue_verification_token(conn, row["id"])
-            await conn.commit()
-            background_tasks.add_task(
-                _send_verification_email_safe,
-                to_email=email, raw_token=raw_token,
-                user_name=row["name"] or email.split("@")[0],
-            )
+            # M40: per-account cooldown. If we've sent a verification
+            # email to this account in the last ``_VERIFY_RESEND_COOLDOWN_SEC``
+            # seconds, silently drop the new one. Still return 200 so
+            # the cooldown isn't observable to an enumerator.
+            if await _can_resend_verification(conn, row["id"]):
+                raw_token = await _issue_verification_token(conn, row["id"])
+                await conn.commit()
+                background_tasks.add_task(
+                    _send_verification_email_safe,
+                    to_email=email, raw_token=raw_token,
+                    user_name=row["name"] or email.split("@")[0],
+                )
     finally:
         await conn.close()
     return GenericOkResponse()
@@ -2374,7 +2454,7 @@ async def email_forgot(
     Email send dispatched via BackgroundTasks so the send-vs-no-send
     branches are wall-clock indistinguishable (audit C1)."""
     if not _email_auth_rate_ok("forgot", _client_ip(request), _EMAIL_AUTH_FORGOT_PER_HOUR):
-        raise HTTPException(status_code=429, detail="Too many reset requests. Try again later.")
+        raise HTTPException(status_code=429, detail="Too many attempts. Please try again later.")
 
     try:
         email = _auth_sec.normalize_and_validate_email(body.email or "")
@@ -2427,24 +2507,53 @@ async def email_reset(
         by an attacker who stole the reset link.
     """
     if not _email_auth_rate_ok("reset", _client_ip(request), _EMAIL_AUTH_RESET_PER_HOUR):
-        raise HTTPException(status_code=429, detail="Too many reset attempts. Try again later.")
+        raise HTTPException(status_code=429, detail="Too many attempts. Please try again later.")
 
     if not body.token:
         raise HTTPException(status_code=400, detail="Reset token is required.")
-    pw_err = _auth_sec.check_password_strength(body.new_password or "")
-    if pw_err:
-        raise HTTPException(status_code=400, detail=pw_err)
 
+    # Audit L49: validate the TOKEN before the password strength.
+    # The previous order let an attacker probe the password policy
+    # using random tokens (no DB / Argon2 cost) without burning the
+    # token-lookup work. More importantly, a user with a stolen valid
+    # token + a weak password would get a clean 400 confirming the
+    # token shape was accepted by the parser without consuming it.
+    # We now do a cheap pre-check (lookup + expiry) before strength,
+    # AND keep the atomic consume below so the token is not actually
+    # consumed if the password is weak.
     token_hash = _auth_sec.hash_token(body.token)
     client_ip = _client_ip(request)
     await ensure_tables()
     conn = await get_connection()
     try:
+        precheck = await (
+            await conn.execute(
+                """
+                SELECT id, email, name FROM auth_users
+                WHERE password_reset_token_hash = ?
+                  AND password_reset_expires_at > ?
+                """,
+                (token_hash, _auth_sec.utc_now_iso()),
+            )
+        ).fetchone()
+        if precheck is None:
+            raise HTTPException(status_code=400, detail="This reset link is invalid or has expired.")
+
+        # Token is valid → NOW validate the password against policy.
+        # Use the user's email local-part + name as context so an
+        # attacker can't reset to "alice@example.com" → "alice1234!".
+        user_email = precheck["email"]
+        user_name = precheck["name"] or user_email.split("@")[0]
+        pw_err = _auth_sec.check_password_strength(
+            body.new_password or "",
+            user_context=(user_email.split("@", 1)[0], user_name, "vocence"),
+        )
+        if pw_err:
+            raise HTTPException(status_code=400, detail=pw_err)
+
         # Atomic consume: do the time-check AND clear the token in
         # one UPDATE so two concurrent resets with the same token
-        # can't both succeed. We use cursor.rowcount to tell the
-        # success-vs-invalid branches apart, then a follow-up SELECT
-        # for the user's email + name to feed the notification.
+        # can't both succeed.
         new_hash = _auth_sec.hash_password(body.new_password)
         now = _auth_sec.utc_now_iso()
         cursor = await conn.execute(
@@ -2465,6 +2574,7 @@ async def email_reset(
         )
         result = await cursor.fetchone()
         if result is None:
+            # Lost the race (concurrent consume) — treat as already-used.
             raise HTTPException(status_code=400, detail="This reset link is invalid or has expired.")
         await conn.commit()
         user_email = result["email"]

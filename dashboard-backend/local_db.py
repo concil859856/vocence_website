@@ -1063,6 +1063,12 @@ async def ensure_tables() -> None:
         # was silently dropped (the device-fingerprint gate refused
         # None). Audit finding H1.
         await _ensure_column(conn, "auth_users", "signup_device_fingerprint", "signup_device_fingerprint TEXT")
+        # Per-account cooldown on verification-email resends. Without
+        # this an attacker can rotate IPs to bomb a victim's inbox
+        # with verification emails. Audit finding M40 — checked on
+        # /resend-verify and on the login auto-resend path. Updated
+        # every time we successfully issue a new verification token.
+        await _ensure_column(conn, "auth_users", "last_verification_resend_at", "last_verification_resend_at TEXT")
         # Lookups by reset / verification token hash MUST be O(1) — the
         # token is the only thing the request bears, and a table scan
         # leaks timing information about user count under load.

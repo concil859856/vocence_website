@@ -50,6 +50,11 @@ os.environ["EMAIL_AUTH_LOGIN_PER_HOUR"] = "30"
 os.environ["EMAIL_AUTH_RESEND_PER_HOUR"] = "10"
 os.environ["EMAIL_AUTH_FORGOT_PER_HOUR"] = "10"
 os.environ["EMAIL_AUTH_RESET_PER_HOUR"] = "20"
+# Disable per-account verify-resend cooldown for tests so we can drive
+# the login-auto-resend path immediately after signup. The cooldown
+# itself is tested separately with a dedicated test that uses asyncio
+# clock manipulation. Audit M40.
+os.environ["EMAIL_AUTH_VERIFY_RESEND_COOLDOWN_SEC"] = "0"
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -122,9 +127,17 @@ async def _reset_state() -> None:
 
 
 # A password that satisfies the policy: 12+ chars, 3+ char classes,
-# not in the common-passwords blocklist.
-STRONG_PASSWORD = "CorrectHorse9!Battery"
-ALT_STRONG_PASSWORD = "AnotherStr0ng!Pass"
+# not in the common-passwords blocklist, no repeats / sequences /
+# keyboard walks / brand or user-context terms.
+STRONG_PASSWORD = "Tr0ub4dor!Splice"
+ALT_STRONG_PASSWORD = "M!xR3ality$Foxglove"
+
+
+def _signup_body(email, password=STRONG_PASSWORD, **extra):
+    """Build a signup body with ``tos_accepted=True`` baked in. Added
+    after audit L56 enforced ToS acceptance server-side — every test
+    that wants to actually sign up has to opt in."""
+    return {"email": email, "password": password, "tos_accepted": True, **extra}
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -132,10 +145,7 @@ ALT_STRONG_PASSWORD = "AnotherStr0ng!Pass"
 # ─────────────────────────────────────────────────────────────────────
 
 def test_signup_creates_unverified_user_and_emails_token(client):
-    r = client.post(
-        "/api/auth/email/signup",
-        json={"email": "alice@example.com", "password": STRONG_PASSWORD, "name": "Alice"},
-    )
+    r = client.post("/api/auth/email/signup", json=_signup_body("alice@example.com", name="Alice"))
     assert r.status_code == 200
     assert r.json()["ok"] is True
     # Email was queued
@@ -145,16 +155,14 @@ def test_signup_creates_unverified_user_and_emails_token(client):
 
 
 def test_signup_returns_200_for_duplicate_email_anti_enumeration(client):
-    client.post(
-        "/api/auth/email/signup",
-        json={"email": "bob@example.com", "password": STRONG_PASSWORD},
-    )
+    client.post("/api/auth/email/signup", json=_signup_body("bob@example.com"))
     _captured_emails.clear()
-    # Same email, different password → no new account, no email sent
-    # (because the password doesn't match the stored hash → silent).
+    # Same email, different (still-strong) password → no new account,
+    # no email sent. After H2 fix the signup endpoint never re-sends
+    # regardless of password match.
     r = client.post(
         "/api/auth/email/signup",
-        json={"email": "bob@example.com", "password": "DifferentPass1!"},
+        json=_signup_body("bob@example.com", password=ALT_STRONG_PASSWORD),
     )
     assert r.status_code == 200
     assert len(_captured_emails) == 0
@@ -163,7 +171,7 @@ def test_signup_returns_200_for_duplicate_email_anti_enumeration(client):
 def test_signup_rejects_weak_password(client):
     r = client.post(
         "/api/auth/email/signup",
-        json={"email": "carol@example.com", "password": "short"},
+        json=_signup_body("carol@example.com", password="short"),
     )
     assert r.status_code == 400
     assert "12 characters" in r.json()["detail"]
@@ -172,7 +180,7 @@ def test_signup_rejects_weak_password(client):
 def test_signup_rejects_common_password(client):
     r = client.post(
         "/api/auth/email/signup",
-        json={"email": "dan@example.com", "password": "Password1234"},
+        json=_signup_body("dan@example.com", password="Password1234"),
     )
     assert r.status_code == 400
     assert "too common" in r.json()["detail"].lower()
@@ -181,9 +189,21 @@ def test_signup_rejects_common_password(client):
 def test_signup_rejects_invalid_email(client):
     r = client.post(
         "/api/auth/email/signup",
-        json={"email": "not-an-email", "password": STRONG_PASSWORD},
+        json=_signup_body("not-an-email"),
     )
     assert r.status_code == 400
+
+
+def test_L56_signup_requires_tos_acceptance(client):
+    """Audit L56 regression: server must reject signups without
+    tos_accepted=True. Frontend gate is bypassable via DevTools, so
+    backend is authoritative."""
+    r = client.post(
+        "/api/auth/email/signup",
+        json={"email": "tos@example.com", "password": STRONG_PASSWORD},  # no tos_accepted
+    )
+    assert r.status_code == 400
+    assert "terms of service" in r.json()["detail"].lower()
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -191,10 +211,7 @@ def test_signup_rejects_invalid_email(client):
 # ─────────────────────────────────────────────────────────────────────
 
 def _signup_and_capture_token(client, email: str = "eve@example.com") -> str:
-    client.post(
-        "/api/auth/email/signup",
-        json={"email": email, "password": STRONG_PASSWORD},
-    )
+    client.post("/api/auth/email/signup", json=_signup_body(email))
     return _captured_emails[-1]["token"]
 
 
@@ -231,10 +248,7 @@ def test_login_unverified_account_returns_401_same_as_wrong_password(client):
     email" — a credential oracle. Now returns the same 401 + same
     message as wrong-password, and triggers a background re-send of
     the verification email so legit users still get a fresh link."""
-    client.post(
-        "/api/auth/email/signup",
-        json={"email": "grace@example.com", "password": STRONG_PASSWORD},
-    )
+    client.post("/api/auth/email/signup", json=_signup_body("grace@example.com"))
     _captured_emails.clear()
     r = client.post(
         "/api/auth/email/login",
@@ -324,7 +338,7 @@ def test_forgot_sends_email_for_verified_account(client):
 def test_forgot_does_not_send_for_unverified_account(client):
     client.post(
         "/api/auth/email/signup",
-        json={"email": "leo@example.com", "password": STRONG_PASSWORD},
+        json=_signup_body("leo@example.com"),
     )
     _captured_emails.clear()
     r = client.post("/api/auth/email/forgot", json={"email": "leo@example.com"})
@@ -403,14 +417,8 @@ def test_reset_rejects_weak_new_password(client):
 def test_signup_rate_limit_kicks_in(client):
     # Conftest sets EMAIL_AUTH_SIGNUP_PER_HOUR=3. Fourth attempt 429s.
     for i in range(3):
-        client.post(
-            "/api/auth/email/signup",
-            json={"email": f"u{i}@example.com", "password": STRONG_PASSWORD},
-        )
-    r = client.post(
-        "/api/auth/email/signup",
-        json={"email": "over@example.com", "password": STRONG_PASSWORD},
-    )
+        client.post("/api/auth/email/signup", json=_signup_body(f"u{i}@example.com"))
+    r = client.post("/api/auth/email/signup", json=_signup_body("over@example.com"))
     assert r.status_code == 429
 
 
@@ -524,16 +532,10 @@ def test_H2_signup_never_resends_for_duplicate_email_regardless_of_password(clie
     """Audit H2 fix: even when the signup password matches the stored
     hash on a duplicate unverified account, we MUST NOT send another
     verification email — that was a password-correctness oracle."""
-    client.post(
-        "/api/auth/email/signup",
-        json={"email": "h2_user@example.com", "password": STRONG_PASSWORD},
-    )
+    client.post("/api/auth/email/signup", json=_signup_body("h2_user@example.com"))
     _captured_emails.clear()
     # Repeat signup with the EXACT same correct password.
-    r = client.post(
-        "/api/auth/email/signup",
-        json={"email": "h2_user@example.com", "password": STRONG_PASSWORD},
-    )
+    r = client.post("/api/auth/email/signup", json=_signup_body("h2_user@example.com"))
     assert r.status_code == 200
     # No email — the old code would have sent one because password matched.
     assert all(e["type"] != "verify" or e["to"] != "h2_user@example.com" for e in _captured_emails)
@@ -568,6 +570,25 @@ def test_H4_failed_login_counter_is_atomic_under_concurrency(client):
     r6 = client.post("/api/auth/email/login",
                      json={"email": "h4@example.com", "password": "Wrong1!Pass"})
     assert r6.status_code == 429
+
+
+def test_M40_resend_verification_respects_per_account_cooldown(client, monkeypatch):
+    """Audit M40: per-account cooldown gates the verify-email resend
+    paths so an attacker rotating IPs can't bomb a victim's inbox.
+    The test enables a non-zero cooldown only for this case (the
+    default in tests is 0 so other flows aren't slowed down)."""
+    # Re-enable the cooldown just for this test
+    from routers import auth as auth_mod
+    monkeypatch.setattr(auth_mod, "_VERIFY_RESEND_COOLDOWN_SEC", 60)
+    # First signup sends one email (stamps last_verification_resend_at = now)
+    client.post("/api/auth/email/signup", json=_signup_body("m40@example.com"))
+    assert any(e["to"] == "m40@example.com" and e["type"] == "verify" for e in _captured_emails)
+    _captured_emails.clear()
+    # Immediate resend → blocked by cooldown, but endpoint still 200s
+    # (cooldown is silent, anti-enumeration).
+    r = client.post("/api/auth/email/resend-verify", json={"email": "m40@example.com"})
+    assert r.status_code == 200
+    assert all(e["to"] != "m40@example.com" for e in _captured_emails)
 
 
 def test_H10_xff_ignored_from_untrusted_source():
