@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import html
 import json
 import os
 import re
@@ -350,23 +351,49 @@ def is_account_locked(locked_until_iso: str | None) -> tuple[bool, int]:
 
 _RESEND_ENDPOINT = "https://api.resend.com/emails"
 
+# Hosts allowed as ``_public_app_base_url`` output. Verification and
+# password-reset links generated for outbound email MUST resolve to one
+# of these — otherwise we'd be emailing bearer tokens at attacker-
+# controlled URLs whenever PUBLIC_APP_URL / CORS_ORIGIN got misconfigured.
+# Use ``AUTH_LINK_ALLOWED_HOSTS`` (comma-separated) to extend in dev.
+_DEFAULT_ALLOWED_HOSTS = ("vocence.ai", "www.vocence.ai")
+
+
+def _allowed_host_set() -> set[str]:
+    extra = (os.environ.get("AUTH_LINK_ALLOWED_HOSTS") or "").strip()
+    extra_hosts = [h.strip().lower() for h in extra.split(",") if h.strip()]
+    return set(_DEFAULT_ALLOWED_HOSTS) | set(extra_hosts)
+
+
+def _host_of(url: str) -> str:
+    from urllib.parse import urlparse
+    return (urlparse(url).hostname or "").lower()
+
 
 def _public_app_base_url() -> str:
     """The base URL the verification / reset links should point at.
 
-    Reads ``PUBLIC_APP_URL`` (preferred) then falls back to the first
-    entry in ``CORS_ORIGIN`` — that's where the frontend lives, so
-    it's a safe default in dev. Production should set PUBLIC_APP_URL
-    explicitly to avoid emailing links that point at localhost when
-    a dev server is briefly first in the CORS list.
+    Resolution order:
+      1. ``PUBLIC_APP_URL`` if set AND host is in the allowlist.
+      2. First ``CORS_ORIGIN`` entry IF its host is in the allowlist
+         (covers localhost dev when AUTH_LINK_ALLOWED_HOSTS includes
+         ``localhost`` / ``127.0.0.1``).
+      3. Hard-coded ``https://www.vocence.ai``.
+
+    We never silently fall back to an attacker-controllable value. A
+    misconfigured ``CORS_ORIGIN`` (or env-injection bug elsewhere) that
+    starts with ``https://evil.example`` is REFUSED — we use the
+    hard-coded default instead so password-reset links cannot be
+    redirected by env tampering.
     """
+    allowed = _allowed_host_set()
     explicit = (os.environ.get("PUBLIC_APP_URL") or "").strip().rstrip("/")
-    if explicit:
+    if explicit and _host_of(explicit) in allowed:
         return explicit
     cors = (os.environ.get("CORS_ORIGIN") or "").strip()
     if cors:
         first = cors.split(",")[0].strip().rstrip("/")
-        if first:
+        if first and _host_of(first) in allowed:
             return first
     return "https://www.vocence.ai"
 
@@ -375,12 +402,16 @@ def _send_email_via_resend(
     *,
     to_email: str,
     subject: str,
-    html: str,
-    text: str,
+    html_body: str,
+    text_body: str,
 ) -> None:
     """Synchronous Resend send. Raises ``RuntimeError`` on transport /
     HTTP failure so callers can decide whether to surface a 5xx or
     swallow (anti-enumeration endpoints swallow and still return 200).
+
+    NOTE: we strip the Resend response body from any raised exception
+    so a 4xx response containing the raw token (which Resend may echo
+    back in error messages) doesn't get logged to SIEM.
     """
     api_key = (os.environ.get("RESEND_API_KEY") or "").strip()
     if not api_key:
@@ -393,8 +424,8 @@ def _send_email_via_resend(
         "from": from_header,
         "to": [to_email],
         "subject": subject,
-        "html": html,
-        "text": text,
+        "html": html_body,
+        "text": text_body,
     }
     req = urllib.request.Request(
         _RESEND_ENDPOINT,
@@ -407,25 +438,56 @@ def _send_email_via_resend(
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=25) as resp:
+        with urllib.request.urlopen(req, timeout=15) as resp:
             resp.read()
     except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"Resend HTTP {e.code}: {body}") from e
+        # Drop the response body — Resend error responses can echo the
+        # request payload, which contains the raw verify / reset token.
+        # We do NOT want that string in exception messages or logs.
+        raise RuntimeError(f"Resend HTTP {e.code}") from None
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        raise RuntimeError(f"Resend transport error: {type(e).__name__}") from None
+
+
+# Token-bearing URLs put the token in the URL FRAGMENT (``#token=...``)
+# rather than the query string. Fragments are NOT sent to servers and
+# do NOT appear in CDN / proxy access logs, closing one of the major
+# leak vectors for bearer-token email links. The frontend reads
+# window.location.hash to extract the token, then immediately strips
+# it via history.replaceState. Even if someone copies the URL out of
+# their address bar, the token stops appearing in Referer headers as
+# soon as the page is loaded once.
+def _verify_link(base: str, raw_token: str) -> str:
+    from urllib.parse import quote
+    return f"{base}/auth/verify#token={quote(raw_token, safe='')}"
+
+
+def _reset_link(base: str, raw_token: str) -> str:
+    from urllib.parse import quote
+    return f"{base}/auth/reset#token={quote(raw_token, safe='')}"
+
+
+def _esc(s: str) -> str:
+    """Shorthand for HTML-attribute-safe escape. ``quote=True`` ensures
+    `"`, `'`, `<`, `>`, `&` are all encoded so user-controlled values
+    (e.g. ``user_name``) cannot break out of attribute or element
+    context in any HTML-rendering mail client. CRITICAL — without this
+    a name like ``</p><script>...`` runs JS in Outlook/Gmail."""
+    return html.escape(s, quote=True)
 
 
 def send_verification_email(*, to_email: str, raw_token: str, user_name: str | None) -> None:
-    """Email the user a one-click verification link. The link target is
-    a frontend route that POSTs the token to /api/auth/email/verify so
-    we never expose the raw token in server logs / Referer headers.
+    """Email the user a one-click verification link.
 
     Swallows transport errors at the caller level — anti-enumeration.
     """
     base = _public_app_base_url()
-    verify_url = f"{base}/auth/verify?token={raw_token}"
+    verify_url = _verify_link(base, raw_token)
     name = (user_name or "").strip() or "there"
+    safe_name = _esc(name)
+    safe_url = _esc(verify_url)
     subject = "Verify your Vocence email"
-    text = (
+    text_body = (
         f"Hi {name},\n\n"
         f"Welcome to Vocence! Confirm your email by clicking the link below:\n\n"
         f"{verify_url}\n\n"
@@ -433,19 +495,19 @@ def send_verification_email(*, to_email: str, raw_token: str, user_name: str | N
         f"this email.\n\n"
         f"— The Vocence team"
     )
-    html = (
-        f"<div style='font-family:-apple-system,Segoe UI,sans-serif;line-height:1.55;color:#111'>"
-        f"<p>Hi {name},</p>"
+    html_body = (
+        f"<div style=\"font-family:-apple-system,Segoe UI,sans-serif;line-height:1.55;color:#111\">"
+        f"<p>Hi {safe_name},</p>"
         f"<p>Welcome to Vocence! Confirm your email by clicking the button below:</p>"
-        f"<p style='margin:24px 0'>"
-        f"<a href='{verify_url}' style='display:inline-block;padding:12px 24px;background:#0a0a0a;color:#DFFF00;text-decoration:none;border-radius:8px;font-weight:600'>Verify email</a>"
+        f"<p style=\"margin:24px 0\">"
+        f"<a href=\"{safe_url}\" style=\"display:inline-block;padding:12px 24px;background:#0a0a0a;color:#DFFF00;text-decoration:none;border-radius:8px;font-weight:600\">Verify email</a>"
         f"</p>"
-        f"<p style='font-size:13px;color:#666'>Or copy this link into your browser:<br>{verify_url}</p>"
-        f"<p style='font-size:13px;color:#666'>The link expires in 24 hours. If you didn't sign up, you can ignore this email.</p>"
-        f"<p style='font-size:13px;color:#666'>— The Vocence team</p>"
+        f"<p style=\"font-size:13px;color:#666\">Or copy this link into your browser:<br>{safe_url}</p>"
+        f"<p style=\"font-size:13px;color:#666\">The link expires in 24 hours. If you didn't sign up, you can ignore this email.</p>"
+        f"<p style=\"font-size:13px;color:#666\">— The Vocence team</p>"
         f"</div>"
     )
-    _send_email_via_resend(to_email=to_email, subject=subject, html=html, text=text)
+    _send_email_via_resend(to_email=to_email, subject=subject, html_body=html_body, text_body=text_body)
 
 
 def send_password_reset_email(*, to_email: str, raw_token: str, user_name: str | None) -> None:
@@ -453,10 +515,12 @@ def send_password_reset_email(*, to_email: str, raw_token: str, user_name: str |
     treatment as the verification email.
     """
     base = _public_app_base_url()
-    reset_url = f"{base}/auth/reset?token={raw_token}"
+    reset_url = _reset_link(base, raw_token)
     name = (user_name or "").strip() or "there"
+    safe_name = _esc(name)
+    safe_url = _esc(reset_url)
     subject = "Reset your Vocence password"
-    text = (
+    text_body = (
         f"Hi {name},\n\n"
         f"We received a request to reset your Vocence password. Click the link "
         f"below to choose a new one:\n\n"
@@ -465,16 +529,53 @@ def send_password_reset_email(*, to_email: str, raw_token: str, user_name: str |
         f"can safely ignore this email — your password won't change.\n\n"
         f"— The Vocence team"
     )
-    html = (
-        f"<div style='font-family:-apple-system,Segoe UI,sans-serif;line-height:1.55;color:#111'>"
-        f"<p>Hi {name},</p>"
+    html_body = (
+        f"<div style=\"font-family:-apple-system,Segoe UI,sans-serif;line-height:1.55;color:#111\">"
+        f"<p>Hi {safe_name},</p>"
         f"<p>We received a request to reset your Vocence password. Click the button below to choose a new one:</p>"
-        f"<p style='margin:24px 0'>"
-        f"<a href='{reset_url}' style='display:inline-block;padding:12px 24px;background:#0a0a0a;color:#DFFF00;text-decoration:none;border-radius:8px;font-weight:600'>Reset password</a>"
+        f"<p style=\"margin:24px 0\">"
+        f"<a href=\"{safe_url}\" style=\"display:inline-block;padding:12px 24px;background:#0a0a0a;color:#DFFF00;text-decoration:none;border-radius:8px;font-weight:600\">Reset password</a>"
         f"</p>"
-        f"<p style='font-size:13px;color:#666'>Or copy this link into your browser:<br>{reset_url}</p>"
-        f"<p style='font-size:13px;color:#666'>The link expires in 15 minutes. If you didn't request a reset, you can safely ignore this email — your password won't change.</p>"
-        f"<p style='font-size:13px;color:#666'>— The Vocence team</p>"
+        f"<p style=\"font-size:13px;color:#666\">Or copy this link into your browser:<br>{safe_url}</p>"
+        f"<p style=\"font-size:13px;color:#666\">The link expires in 15 minutes. If you didn't request a reset, you can safely ignore this email — your password won't change.</p>"
+        f"<p style=\"font-size:13px;color:#666\">— The Vocence team</p>"
         f"</div>"
     )
-    _send_email_via_resend(to_email=to_email, subject=subject, html=html, text=text)
+    _send_email_via_resend(to_email=to_email, subject=subject, html_body=html_body, text_body=text_body)
+
+
+def send_password_changed_email(*, to_email: str, user_name: str | None, client_ip: str | None = None) -> None:
+    """Out-of-band notification that the user's password was just changed.
+
+    Standard practice — gives the legitimate owner an instant signal
+    if an attacker reset their password via a stolen reset token. If
+    they didn't initiate the change, the email tells them to contact
+    support and reset the password themselves (which will invalidate
+    the attacker's session via the JWT ``iat`` check).
+    """
+    name = (user_name or "").strip() or "there"
+    safe_name = _esc(name)
+    where = f" from {_esc(client_ip)}" if client_ip else ""
+    subject = "Your Vocence password was changed"
+    text_body = (
+        f"Hi {name},\n\n"
+        f"Your Vocence password was just changed{(' from ' + client_ip) if client_ip else ''}. "
+        f"If this was you, you can ignore this email.\n\n"
+        f"If you did NOT change your password, your account may be compromised. "
+        f"Reset your password immediately at https://www.vocence.ai/auth/reset "
+        f"and contact space@vocence.ai with the time and IP above.\n\n"
+        f"— The Vocence team"
+    )
+    html_body = (
+        f"<div style=\"font-family:-apple-system,Segoe UI,sans-serif;line-height:1.55;color:#111\">"
+        f"<p>Hi {safe_name},</p>"
+        f"<p>Your Vocence password was just changed{where}. If this was you, you can ignore this email.</p>"
+        f"<p style=\"padding:12px;background:#fff3cd;border-left:3px solid #f59e0b;font-size:14px\">"
+        f"If you did <strong>not</strong> change your password, your account may be compromised. "
+        f"Reset your password immediately and contact "
+        f"<a href=\"mailto:space@vocence.ai\">space@vocence.ai</a> with the time and details above."
+        f"</p>"
+        f"<p style=\"font-size:13px;color:#666\">— The Vocence team</p>"
+        f"</div>"
+    )
+    _send_email_via_resend(to_email=to_email, subject=subject, html_body=html_body, text_body=text_body)

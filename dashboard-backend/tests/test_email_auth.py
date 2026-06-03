@@ -72,6 +72,12 @@ def _capture_reset(*, to_email: str, raw_token: str, user_name: str | None) -> N
     _captured_emails.append({"type": "reset", "to": to_email, "token": raw_token, "name": user_name})
 
 
+# Save the originals BEFORE we replace the module-level functions so
+# the regression tests (which need to actually call the real templates)
+# can restore them via monkeypatch.setattr.
+_real_send_verification_email = auth_security.send_verification_email
+_real_send_password_reset_email = auth_security.send_password_reset_email
+
 auth_security.send_verification_email = _capture_verification  # type: ignore[assignment]
 auth_security.send_password_reset_email = _capture_reset  # type: ignore[assignment]
 
@@ -426,3 +432,137 @@ def test_lockout_schedule_thresholds():
     assert auth_security.compute_lockout_until(4) is None
     assert auth_security.compute_lockout_until(5) is not None
     assert auth_security.compute_lockout_until(30) is not None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Audit-finding regression tests
+# ─────────────────────────────────────────────────────────────────────
+
+def test_C2_html_escape_in_verification_email(monkeypatch):
+    """Audit C2: user_name interpolated into HTML must be escaped, so a
+    name like '<script>alert(1)</script>' cannot run as JS in any mail
+    client that renders HTML. Regression test against the verification
+    email template."""
+    captured: list[dict] = []
+    monkeypatch.setattr(auth_security, "_send_email_via_resend", lambda **kw: captured.append(kw))
+    _real_send_verification_email(
+        to_email="x@example.com",
+        raw_token="dummy-token",
+        user_name='<script>alert(1)</script>',
+    )
+    assert len(captured) == 1
+    assert "<script>alert(1)</script>" not in captured[0]["html_body"], "HTML escape failed — XSS vector!"
+    assert "&lt;script&gt;" in captured[0]["html_body"]
+
+
+def test_C2_html_escape_in_reset_email(monkeypatch):
+    """Same regression but for the password-reset template."""
+    captured: list[dict] = []
+    monkeypatch.setattr(
+        auth_security, "_send_email_via_resend",
+        lambda **kw: captured.append(kw),
+    )
+    _real_send_password_reset_email(
+        to_email="x@example.com", raw_token="dummy", user_name='" onload="alert(1)',
+    )
+    # The unescaped form would be `onload="alert(1)"` directly in href.
+    # Escaped form has the quote as &quot;.
+    assert '" onload="alert(1)' not in captured[0]["html_body"], \
+        "attribute-context injection possible"
+    assert "&quot;" in captured[0]["html_body"]
+
+
+def test_C5_verification_link_uses_url_fragment_not_query(monkeypatch):
+    """Audit C4+C5: token must be in the URL FRAGMENT (#token=...) so
+    it doesn't appear in CDN access logs or Referer headers. The
+    backend-generated link is the only place we control this."""
+    captured: list[dict] = []
+    monkeypatch.setattr(auth_security, "_send_email_via_resend", lambda **kw: captured.append(kw))
+    _real_send_verification_email(
+        to_email="x@example.com", raw_token="raw-secret-token", user_name="Test",
+    )
+    body = captured[0]["text_body"]
+    assert "#token=raw-secret-token" in body
+    assert "?token=raw-secret-token" not in body
+
+
+def test_H13_public_app_base_url_rejects_unallowed_host(monkeypatch):
+    """Audit H13: an env-injection / misconfig where PUBLIC_APP_URL
+    is set to an attacker-controlled host must NOT cause us to email
+    verify / reset links pointing at attacker. The host allowlist
+    silently falls back to the hard-coded default."""
+    monkeypatch.setenv("PUBLIC_APP_URL", "https://attacker.example.com")
+    monkeypatch.setenv("CORS_ORIGIN", "https://evil.example,https://www.vocence.ai")
+    base = auth_security._public_app_base_url()
+    assert "attacker" not in base
+    assert "evil" not in base
+    assert base == "https://www.vocence.ai"
+
+
+def test_H13_public_app_base_url_accepts_allowlisted_host(monkeypatch):
+    monkeypatch.setenv("PUBLIC_APP_URL", "https://www.vocence.ai")
+    assert auth_security._public_app_base_url() == "https://www.vocence.ai"
+
+
+def test_H13_AUTH_LINK_ALLOWED_HOSTS_extends_allowlist(monkeypatch):
+    monkeypatch.setenv("AUTH_LINK_ALLOWED_HOSTS", "localhost,127.0.0.1")
+    monkeypatch.setenv("PUBLIC_APP_URL", "http://localhost:5173")
+    assert auth_security._public_app_base_url() == "http://localhost:5173"
+
+
+def test_H2_signup_never_resends_for_duplicate_email_regardless_of_password(client):
+    """Audit H2 fix: even when the signup password matches the stored
+    hash on a duplicate unverified account, we MUST NOT send another
+    verification email — that was a password-correctness oracle."""
+    client.post(
+        "/api/auth/email/signup",
+        json={"email": "h2_user@example.com", "password": STRONG_PASSWORD},
+    )
+    _captured_emails.clear()
+    # Repeat signup with the EXACT same correct password.
+    r = client.post(
+        "/api/auth/email/signup",
+        json={"email": "h2_user@example.com", "password": STRONG_PASSWORD},
+    )
+    assert r.status_code == 200
+    # No email — the old code would have sent one because password matched.
+    assert all(e["type"] != "verify" or e["to"] != "h2_user@example.com" for e in _captured_emails)
+
+
+def test_H6_signup_bonus_is_idempotent_against_email_verified_toggle(client):
+    """Audit H6 fix: even if email_verified is flipped back to 0 by a
+    rogue path (admin tool, migration), a subsequent verify must NOT
+    re-grant the signup bonus. We check existence of the signup_bonus
+    credit_transactions row instead of relying on the boolean."""
+    token = _signup_and_capture_token(client, "h6@example.com")
+    r1 = client.post("/api/auth/email/verify", json={"token": token})
+    assert r1.status_code == 200
+    credits_after_first = r1.json()["user"]["credits"]
+
+    # Simulate the rogue toggle + a new verification token.
+    import asyncio
+    async def _rogue_reset():
+        conn = await get_connection()
+        try:
+            await conn.execute(
+                "UPDATE auth_users SET email_verified = 0 WHERE email = ?",
+                ("h6@example.com",),
+            )
+            # Re-issue a token so we can call verify again
+            from auth_security import generate_token, token_expiry_iso, VERIFICATION_TOKEN_TTL
+            raw, hashed = generate_token()
+            await conn.execute(
+                "UPDATE auth_users SET verification_token_hash = ?, verification_token_expires_at = ? WHERE email = ?",
+                (hashed, token_expiry_iso(VERIFICATION_TOKEN_TTL), "h6@example.com"),
+            )
+            await conn.commit()
+            return raw
+        finally:
+            await conn.close()
+    new_raw = asyncio.get_event_loop().run_until_complete(_rogue_reset())
+
+    r2 = client.post("/api/auth/email/verify", json={"token": new_raw})
+    assert r2.status_code == 200
+    credits_after_second = r2.json()["user"]["credits"]
+    # Bonus NOT re-granted — balance stays the same as after first verify.
+    assert credits_after_second == credits_after_first

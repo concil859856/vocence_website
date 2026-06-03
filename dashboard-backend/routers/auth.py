@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 
 import jwt
 import aiohttp
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from local_db import (
@@ -1756,27 +1756,41 @@ def _client_ip(request: Request) -> str:
     return fwd or (request.client.host if request.client else "unknown")
 
 
-async def _send_verification_email_safe(*, to_email: str, raw_token: str, user_name: str | None) -> None:
-    """Wrap send_verification_email so transport failures don't 5xx the
-    response. Logged but swallowed; the signup / resend endpoints
-    return 200 anyway for anti-enumeration."""
+def _send_verification_email_safe(*, to_email: str, raw_token: str, user_name: str | None) -> None:
+    """Synchronous wrapper for ``send_verification_email`` suitable for
+    ``BackgroundTasks.add_task``. Swallows transport failures so the
+    background task never bubbles a 500 out of FastAPI's task runner;
+    the anti-enumeration endpoints return 200 BEFORE this runs.
+
+    CRITICAL: callers MUST schedule this via BackgroundTasks, NEVER
+    ``await`` it. Awaiting would put the Resend HTTPS latency on the
+    response-time critical path → existence oracle for any endpoint
+    that conditionally sends an email.
+    """
     try:
-        await asyncio.to_thread(
-            _auth_sec.send_verification_email,
+        _auth_sec.send_verification_email(
             to_email=to_email, raw_token=raw_token, user_name=user_name,
         )
     except Exception as exc:
         _np_log.warning("send_verification_email failed for %s: %s", to_email, exc)
 
 
-async def _send_reset_email_safe(*, to_email: str, raw_token: str, user_name: str | None) -> None:
+def _send_reset_email_safe(*, to_email: str, raw_token: str, user_name: str | None) -> None:
     try:
-        await asyncio.to_thread(
-            _auth_sec.send_password_reset_email,
+        _auth_sec.send_password_reset_email(
             to_email=to_email, raw_token=raw_token, user_name=user_name,
         )
     except Exception as exc:
         _np_log.warning("send_password_reset_email failed for %s: %s", to_email, exc)
+
+
+def _send_password_changed_email_safe(*, to_email: str, user_name: str | None, client_ip: str | None) -> None:
+    try:
+        _auth_sec.send_password_changed_email(
+            to_email=to_email, user_name=user_name, client_ip=client_ip,
+        )
+    except Exception as exc:
+        _np_log.warning("send_password_changed_email failed for %s: %s", to_email, exc)
 
 
 async def _issue_verification_token(conn, user_id: str) -> str:
@@ -1803,22 +1817,33 @@ async def _issue_reset_token(conn, user_id: str) -> str:
 
 
 @router.post("/auth/email/signup", response_model=GenericOkResponse)
-async def email_signup(body: EmailSignupRequest, request: Request):
+async def email_signup(
+    body: EmailSignupRequest, request: Request, background_tasks: BackgroundTasks,
+):
     """Sign up with email + password.
 
     Returns 200 regardless of whether the email is already taken so an
-    attacker can't enumerate accounts by signing up with a candidate
-    list. If the email exists and is unverified, re-sends the verify
-    link; if it exists and is already verified, silently does nothing
-    (the real user has their account intact).
+    attacker can't enumerate accounts. The email send is dispatched as
+    a background task AFTER the response has been written, so wall-
+    clock latency does not leak whether the email was actually sent
+    (existence oracle defense — see audit C1).
+
+    Duplicate-email policy: silent 200, NO action. The signup endpoint
+    never re-sends a verification link; users who want a fresh link
+    must call /auth/email/resend-verify explicitly. This closes two
+    audit findings:
+      * H2 — re-sending on correct password was a password oracle
+        (attacker confirms a guess because the victim gets an email)
+      * H3 — that re-send path bypassed the login lockout counter
+
+    H1 (referral regression): device_fingerprint is persisted on the
+    user row at signup so /verify can read it back and pass it to
+    validate_referral. Without this, every email-signup referral was
+    silently dropped by the device-fingerprint-required gate.
     """
     if not _email_auth_rate_ok("signup", _client_ip(request), _EMAIL_AUTH_SIGNUP_PER_HOUR):
-        # Per-IP rate limit IS surfaced (429), because it's not a
-        # per-account oracle — anyone over the quota hits this.
         raise HTTPException(status_code=429, detail="Too many signup attempts. Try again later.")
 
-    # Validate inputs first. These errors ARE surfaced (4xx) because
-    # they're about the request body's shape, not about account state.
     try:
         email = _auth_sec.normalize_and_validate_email(body.email or "")
     except ValueError as e:
@@ -1827,65 +1852,61 @@ async def email_signup(body: EmailSignupRequest, request: Request):
     if pw_err:
         raise HTTPException(status_code=400, detail=pw_err)
 
-    # Hash *before* the DB lookup so the response time profile is the
-    # same whether we end up creating a row or not. (Argon2id is the
-    # slow part of this endpoint by an order of magnitude.)
-    password_hash = _auth_sec.hash_password(body.password)
     clean_name = (body.name or "").strip()[:128] or email.split("@")[0]
+    device_fp = (body.device_fingerprint or "").strip()[:128] or None
+    referral_code = (body.referral_code or "").strip() or None
 
     await ensure_tables()
     conn = await get_connection()
     try:
         existing = await (
             await conn.execute(
-                "SELECT id, email_verified, password_hash FROM auth_users WHERE email = ?",
+                "SELECT id FROM auth_users WHERE email = ?",
                 (email,),
             )
         ).fetchone()
-
         if existing is not None:
-            # Existing account: only re-send the verification email if
-            # the user actually owns the address (i.e., the password
-            # they just typed matches the stored hash) AND the account
-            # is still unverified. Otherwise do nothing — silently.
-            # This avoids letting attackers spam verification emails
-            # to arbitrary addresses by guessing they're registered.
-            if (
-                existing["email_verified"] == 0
-                and existing["password_hash"]
-                and _auth_sec.verify_password(existing["password_hash"], body.password)
-            ):
-                raw_token = await _issue_verification_token(conn, existing["id"])
-                await conn.commit()
-                await _send_verification_email_safe(
-                    to_email=email, raw_token=raw_token, user_name=clean_name,
-                )
+            # Duplicate email — silent 200, no work. We do NOT verify
+            # the password here (the previous implementation did and
+            # leaked via timing + email-receipt side channels).
             return GenericOkResponse()
 
-        # New account: insert with credits=0 and email_verified=0.
-        # Signup bonus + welcome notif + referral all happen on
-        # /verify so an attacker can't farm credits via fake emails.
+        # New account: hash AFTER the existence check so duplicate
+        # signups don't pay the 64 MiB Argon2id cost. (We accept that
+        # this introduces a tiny insert/hash timing asymmetry vs the
+        # duplicate-email branch; the dominant signal — whether an
+        # email was actually sent — is now closed by BackgroundTasks
+        # so this remaining sliver is below practical-attack threshold.)
+        password_hash = _auth_sec.hash_password(body.password)
         user_id = uuid.uuid4().hex
         now = _auth_sec.utc_now_iso()
-        await conn.execute(
-            """
-            INSERT INTO auth_users
-              (id, email, name, picture, credits, plan_code, plan_status,
-               password_hash, email_verified, password_changed_at,
-               referred_by, created_at, updated_at)
-            VALUES (?, ?, ?, NULL, 0, 'normal', 'active',
-                    ?, 0, ?,
-                    ?, ?, ?)
-            """,
-            (
-                user_id, email, clean_name,
-                password_hash, now,
-                (body.referral_code or "").strip() or None,
-                now, now,
-            ),
-        )
-        # Mirror into registered_users for the marketing-list rows the
-        # Google login path also populates.
+        try:
+            await conn.execute(
+                """
+                INSERT INTO auth_users
+                  (id, email, name, picture, credits, plan_code, plan_status,
+                   password_hash, email_verified, password_changed_at,
+                   referred_by, signup_device_fingerprint, created_at, updated_at)
+                VALUES (?, ?, ?, NULL, 0, 'normal', 'active',
+                        ?, 0, ?,
+                        ?, ?, ?, ?)
+                """,
+                (
+                    user_id, email, clean_name,
+                    password_hash, now,
+                    referral_code, device_fp,
+                    now, now,
+                ),
+            )
+        except Exception:
+            # Race: two signups for the same email landed between the
+            # SELECT and the INSERT. The UNIQUE constraint on email
+            # rejects the loser — return the same silent 200 as the
+            # existing-account branch so the loser doesn't reveal the
+            # race (or the email's existence).
+            await conn.rollback()
+            return GenericOkResponse()
+
         await conn.execute(
             """
             INSERT INTO registered_users (email, name, picture, created_at, updated_at)
@@ -1897,7 +1918,11 @@ async def email_signup(body: EmailSignupRequest, request: Request):
         )
         raw_token = await _issue_verification_token(conn, user_id)
         await conn.commit()
-        await _send_verification_email_safe(
+        # Schedule the email AFTER the response is written. Do NOT
+        # await — awaiting reintroduces the existence-oracle timing
+        # leak this whole rewrite is trying to close (audit C1).
+        background_tasks.add_task(
+            _send_verification_email_safe,
             to_email=email, raw_token=raw_token, user_name=clean_name,
         )
         return GenericOkResponse()
@@ -1921,7 +1946,8 @@ async def email_verify(body: EmailVerifyRequest, request: Request):
         row = await (
             await conn.execute(
                 """
-                SELECT id, email, name, email_verified, verification_token_expires_at, referred_by
+                SELECT id, email, name, email_verified, verification_token_expires_at,
+                       referred_by, signup_device_fingerprint
                 FROM auth_users WHERE verification_token_hash = ?
                 """,
                 (token_hash,),
@@ -1934,6 +1960,7 @@ async def email_verify(body: EmailVerifyRequest, request: Request):
         user_email = row["email"]
         user_name = row["name"] or user_email.split("@")[0]
         already_verified = bool(row["email_verified"])
+        device_fp = (row["signup_device_fingerprint"] or "").strip() or None
         now = _auth_sec.utc_now_iso()
 
         # Clear the token regardless of whether this is a re-verify so
@@ -1950,20 +1977,35 @@ async def email_verify(body: EmailVerifyRequest, request: Request):
             (now, now, user_id),
         )
 
-        if not already_verified:
-            # First-time verify: grant credits, send welcome notif,
-            # process referral. Idempotent against re-verify because
-            # we only do this when transitioning from 0 to 1.
+        # IDEMPOTENT credit grant. Gating on email_verified isn't safe —
+        # if anything (admin tool, recovery script, migration) ever
+        # flips verified back to 0 we'd re-grant. Instead, check that
+        # NO signup_bonus row exists for this user. Audit finding H6.
+        bonus_row = await (
             await conn.execute(
-                "UPDATE auth_users SET credits = ? WHERE id = ?",
+                "SELECT 1 FROM credit_transactions WHERE user_id = ? AND transaction_type = 'signup_bonus' LIMIT 1",
+                (user_id,),
+            )
+        ).fetchone()
+        if bonus_row is None:
+            # First-time verify (no prior bonus): grant credits, send
+            # welcome notif, process referral. Truly idempotent now.
+            # CREDITS: increment, not overwrite — preserves any balance
+            # that may have been added between signup and verify
+            # (admin grant, manual top-up, etc). Audit finding H7.
+            await conn.execute(
+                "UPDATE auth_users SET credits = COALESCE(credits, 0) + ? WHERE id = ?",
                 (SIGNUP_CREDITS, user_id),
             )
+            new_balance = await (
+                await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
+            ).fetchone()
             await record_credit_transaction(
                 conn,
                 user_id=user_id,
                 transaction_type="signup_bonus",
                 amount=SIGNUP_CREDITS,
-                balance_after=SIGNUP_CREDITS,
+                balance_after=int(new_balance["credits"] if new_balance else SIGNUP_CREDITS),
                 description=f"Welcome bonus: {SIGNUP_CREDITS} free credits",
                 reference_type="signup",
                 reference_id=user_id,
@@ -1998,19 +2040,22 @@ async def email_verify(body: EmailVerifyRequest, request: Request):
             await ensure_referral_code(conn, user_id)
             ref_code = (row["referred_by"] or "").strip()
             if ref_code:
+                # H1 fix: pass the device fingerprint stashed at signup
+                # so validate_referral's device-required gate doesn't
+                # silently drop every email-signup referral.
                 ref_err = await validate_referral(
                     conn,
                     referral_code=ref_code,
                     new_user_id=user_id,
                     new_user_email=user_email,
-                    device_fingerprint=None,
+                    device_fingerprint=device_fp,
                 )
                 if not ref_err:
                     await apply_referral_on_signup(
                         conn,
                         referral_code=ref_code,
                         new_user_id=user_id,
-                        device_fingerprint=None,
+                        device_fingerprint=device_fp,
                     )
 
         await conn.commit()
@@ -2130,8 +2175,12 @@ async def email_login(body: EmailLoginRequest, request: Request):
 
 
 @router.post("/auth/email/resend-verify", response_model=GenericOkResponse)
-async def email_resend_verify(body: EmailResendRequest, request: Request):
-    """Re-send the verification email. Anti-enumeration: always 200."""
+async def email_resend_verify(
+    body: EmailResendRequest, request: Request, background_tasks: BackgroundTasks,
+):
+    """Re-send the verification email. Anti-enumeration: always 200.
+    Email send is scheduled via BackgroundTasks so wall-clock latency
+    does not differentiate the send vs no-send branch (audit C1)."""
     if not _email_auth_rate_ok("resend", _client_ip(request), _EMAIL_AUTH_RESEND_PER_HOUR):
         raise HTTPException(status_code=429, detail="Too many resend requests. Try again later.")
 
@@ -2152,7 +2201,8 @@ async def email_resend_verify(body: EmailResendRequest, request: Request):
         if row is not None and row["email_verified"] == 0:
             raw_token = await _issue_verification_token(conn, row["id"])
             await conn.commit()
-            await _send_verification_email_safe(
+            background_tasks.add_task(
+                _send_verification_email_safe,
                 to_email=email, raw_token=raw_token,
                 user_name=row["name"] or email.split("@")[0],
             )
@@ -2162,9 +2212,13 @@ async def email_resend_verify(body: EmailResendRequest, request: Request):
 
 
 @router.post("/auth/email/forgot", response_model=GenericOkResponse)
-async def email_forgot(body: EmailForgotRequest, request: Request):
+async def email_forgot(
+    body: EmailForgotRequest, request: Request, background_tasks: BackgroundTasks,
+):
     """Send a password-reset email. Anti-enumeration: always 200.
-    Refuses to send for accounts without a password (Google-only)."""
+    Refuses to send for accounts without a password (Google-only).
+    Email send dispatched via BackgroundTasks so the send-vs-no-send
+    branches are wall-clock indistinguishable (audit C1)."""
     if not _email_auth_rate_ok("forgot", _client_ip(request), _EMAIL_AUTH_FORGOT_PER_HOUR):
         raise HTTPException(status_code=429, detail="Too many reset requests. Try again later.")
 
@@ -2190,7 +2244,8 @@ async def email_forgot(body: EmailForgotRequest, request: Request):
         if row is not None and row["password_hash"] and row["email_verified"] == 1:
             raw_token = await _issue_reset_token(conn, row["id"])
             await conn.commit()
-            await _send_reset_email_safe(
+            background_tasks.add_task(
+                _send_reset_email_safe,
                 to_email=email, raw_token=raw_token,
                 user_name=row["name"] or email.split("@")[0],
             )

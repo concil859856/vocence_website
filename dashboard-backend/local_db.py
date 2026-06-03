@@ -1058,6 +1058,11 @@ async def ensure_tables() -> None:
         await _ensure_column(conn, "auth_users", "password_reset_token_hash", "password_reset_token_hash TEXT")
         await _ensure_column(conn, "auth_users", "password_reset_expires_at", "password_reset_expires_at TEXT")
         await _ensure_column(conn, "auth_users", "password_changed_at", "password_changed_at TEXT")
+        # Stashed at signup so the verify endpoint can pass it into
+        # validate_referral. Without this, every email-signup referral
+        # was silently dropped (the device-fingerprint gate refused
+        # None). Audit finding H1.
+        await _ensure_column(conn, "auth_users", "signup_device_fingerprint", "signup_device_fingerprint TEXT")
         # Lookups by reset / verification token hash MUST be O(1) — the
         # token is the only thing the request bears, and a table scan
         # leaks timing information about user count under load.
