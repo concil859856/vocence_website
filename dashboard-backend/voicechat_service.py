@@ -552,7 +552,7 @@ async def stream_llm(
       1. Caller-supplied ``model`` with a provider prefix (e.g.
          ``cerebras:llama-3.3-70b``) — always wins.
       2. **Cerebras default for voicechat** — if no model is supplied
-         and CEREBRAS_API_KEY is configured, we force
+         and CEREBRAS_API_KEYS is configured, we force
          ``cerebras:qwen-3-235b-a22b-instruct-2507`` (Qwen 3 235B MoE,
          22B active params, served on Cerebras WSE at sub-30ms first-
          token latency with reliable tool calling and — crucially — no

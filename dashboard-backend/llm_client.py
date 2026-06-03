@@ -88,13 +88,89 @@ GROQ_API_KEY = (os.environ.get("GROQ_API_KEY") or "").strip()
 GROQ_BASE_URL = (os.environ.get("GROQ_BASE_URL") or "https://api.groq.com/openai/v1").strip().rstrip("/")
 GROQ_MODEL = (os.environ.get("GROQ_MODEL") or "llama-3.3-70b-versatile").strip()
 
-# Cerebras endpoint — primary LLM for voice chat. Same OpenAI-compatible
+# Cerebras endpoint, primary LLM for voice chat. Same OpenAI-compatible
 # wire shape as Groq/OpenAI; we keep it as its own provider so per-agent
 # overrides via ``cerebras:<model>`` and the voice-chat fallback ladder
 # stay explicit (Cerebras → OpenAI on stream failure).
-CEREBRAS_API_KEY = (os.environ.get("CEREBRAS_API_KEY") or "").strip()
+#
+# ``CEREBRAS_API_KEYS`` is a comma-separated list of keys belonging to
+# different Cerebras accounts. The rotation picks the next key per call
+# (round-robin), cycles through the rest on 429/5xx, and falls back to
+# Grok once every key is saturated. Two keys means we tolerate one
+# account being rate-limited before Grok ever sees traffic.
+CEREBRAS_API_KEYS: list[str] = [
+    k.strip() for k in (os.environ.get("CEREBRAS_API_KEYS") or "").split(",") if k.strip()
+]
 CEREBRAS_BASE_URL = (os.environ.get("CEREBRAS_BASE_URL") or "https://api.cerebras.ai/v1").strip().rstrip("/")
 CEREBRAS_MODEL = (os.environ.get("CEREBRAS_MODEL") or "gpt-oss-120b").strip()
+
+
+# Round-robin counter for picking the next Cerebras key. Increment is
+# atomic under asyncio's single-threaded loop (no awaits between read
+# and write), so no asyncio.Lock needed. Under multi-worker uvicorn
+# each worker keeps its own counter — slight skew on tiny pools (2-3
+# keys) but still meaningfully fair compared to random.
+_cerebras_key_rr_counter = 0
+
+
+# Per-key cooldown cache. When a key returns 429 we mark it as
+# cooling-off for ``_CEREBRAS_COOLDOWN_SEC`` seconds; the rotation
+# loop skips it for that window. Most Cerebras rate limits reset on
+# per-minute boundaries, so 30 s sits in the sweet spot: long enough
+# to skip several saturated calls, short enough to recover quickly.
+# Key is the raw API key string; value is the monotonic-time epoch
+# the cooldown expires at. Per-process state (each uvicorn worker has
+# its own dict), which is fine — independent skips don't conflict.
+_CEREBRAS_COOLDOWN_SEC = float(os.environ.get("CEREBRAS_KEY_COOLDOWN_SEC") or "30")
+_cerebras_key_cooldown_until: dict[str, float] = {}
+
+
+def _is_cerebras_key_cooling(key: str) -> bool:
+    """True if this key is currently in its post-429 cooldown window."""
+    if not key:
+        return False
+    expiry = _cerebras_key_cooldown_until.get(key)
+    return expiry is not None and time.monotonic() < expiry
+
+
+def _mark_cerebras_key_cooling(key: str) -> None:
+    """Mark a key as rate-limited; the rotation skips it for
+    ``_CEREBRAS_COOLDOWN_SEC`` seconds. Caller invokes this when a
+    Cerebras attempt errored with a 429-style message."""
+    if not key:
+        return
+    _cerebras_key_cooldown_until[key] = time.monotonic() + _CEREBRAS_COOLDOWN_SEC
+
+
+def _is_rate_limit_error(exc: BaseException) -> bool:
+    """Match the same heuristic the fallback ladder uses to tag
+    ``fallback_reason = cerebras_429`` — keeps cooldown triggers + log
+    tags in lockstep."""
+    msg = str(exc).lower()
+    return "429" in msg or "rate limit" in msg or "rate_limit" in msg
+
+
+def _next_cerebras_key_index() -> int:
+    """Advance the round-robin counter and return the next key's index.
+    Returns 0 if no keys configured (caller checks ``CEREBRAS_API_KEYS``
+    separately before using the index)."""
+    global _cerebras_key_rr_counter
+    if not CEREBRAS_API_KEYS:
+        return 0
+    idx = _cerebras_key_rr_counter % len(CEREBRAS_API_KEYS)
+    _cerebras_key_rr_counter += 1
+    return idx
+
+
+def _pick_cerebras_key() -> str:
+    """Next key in round-robin order. Used by the non-streaming
+    ``_cerebras_chat_complete`` and by callers that just need a single
+    key (no fallback rotation). For the streaming path with rotation,
+    see the loop in ``stream_chat_with_tools`` which uses
+    ``_next_cerebras_key_index`` to build the full attempt order."""
+    if not CEREBRAS_API_KEYS:
+        return ""
+    return CEREBRAS_API_KEYS[_next_cerebras_key_index()]
 
 # Voice-chat fallback: if the primary stream (Cerebras) fails before
 # emitting any tokens, retry once against xAI's Grok. Only kicks in
@@ -219,7 +295,7 @@ def groq_llm_configured() -> bool:
 
 
 def cerebras_llm_configured() -> bool:
-    return bool(CEREBRAS_API_KEY and CEREBRAS_MODEL)
+    return bool(CEREBRAS_API_KEYS and CEREBRAS_MODEL)
 
 
 def llm_configured() -> bool:
@@ -314,10 +390,15 @@ def _groq_headers() -> dict:
     }
 
 
-def _cerebras_headers() -> dict:
+def _cerebras_headers(api_key: str | None = None) -> dict:
+    """Cerebras auth headers. Pass ``api_key`` to use a specific key
+    from the multi-key pool (used by the rotation logic in
+    ``stream_chat_with_tools``); omit to advance the round-robin
+    counter and pick the next key in the pool."""
+    key = api_key or _pick_cerebras_key()
     return {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {CEREBRAS_API_KEY}",
+        "Authorization": f"Bearer {key}",
     }
 
 
@@ -584,12 +665,16 @@ async def _cerebras_chat_complete(
     temperature: float,
     max_tokens: int,
     model: str | None,
+    api_key: str | None = None,
 ) -> str:
     """Non-streaming Cerebras chat completion. OpenAI-compatible wire
     shape; isolated function so error surfaces / headers stay decoupled
-    from the other providers."""
-    if not CEREBRAS_API_KEY:
-        raise RuntimeError("CEREBRAS_API_KEY not set")
+    from the other providers.
+
+    Pass ``api_key`` to pin a specific key from the multi-key pool. Omit
+    to advance the round-robin counter (basic load-balance across accounts)."""
+    if not CEREBRAS_API_KEYS:
+        raise RuntimeError("CEREBRAS_API_KEYS not set")
     use_model = (model or CEREBRAS_MODEL).strip()
     if not use_model:
         raise RuntimeError("No Cerebras model configured")
@@ -608,7 +693,7 @@ async def _cerebras_chat_complete(
     p_tok = c_tok = tot_tok = None
     try:
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(url, headers=_cerebras_headers(), json=body) as resp:
+            async with session.post(url, headers=_cerebras_headers(api_key), json=body) as resp:
                 http_status = resp.status
                 raw = await resp.read()
                 if resp.status != 200:
@@ -1022,9 +1107,10 @@ async def _cerebras_stream_chat(
     temperature: float,
     max_tokens: int,
     model: str | None,
+    api_key: str | None = None,
 ) -> AsyncIterator[str]:
-    if not CEREBRAS_API_KEY:
-        raise RuntimeError("CEREBRAS_API_KEY not set")
+    if not CEREBRAS_API_KEYS:
+        raise RuntimeError("CEREBRAS_API_KEYS not set")
     use_model = (model or CEREBRAS_MODEL).strip()
     if not use_model:
         raise RuntimeError("No Cerebras model configured for streaming")
@@ -1037,7 +1123,7 @@ async def _cerebras_stream_chat(
         "temperature": temperature,
         "max_tokens": max_tokens,
     }
-    headers = {**_cerebras_headers(), "Accept": "text/event-stream"}
+    headers = {**_cerebras_headers(api_key), "Accept": "text/event-stream"}
     timeout = aiohttp.ClientTimeout(total=None, sock_connect=15, sock_read=60)
     t0 = time.monotonic()
     ttft_ms: int | None = None
@@ -1293,8 +1379,8 @@ def _route_for_streaming(model: str | None) -> tuple[str, str, dict, str]:
                 "groq",
             )
         if forced == "cerebras":
-            if not CEREBRAS_API_KEY:
-                raise RuntimeError("CEREBRAS_API_KEY not set")
+            if not CEREBRAS_API_KEYS:
+                raise RuntimeError("CEREBRAS_API_KEYS not set")
             return (
                 f"{CEREBRAS_BASE_URL}/chat/completions",
                 (bare or CEREBRAS_MODEL),
@@ -1393,35 +1479,109 @@ async def stream_chat_with_tools(
     )
     emitted_any = False
     fallback_reason: str | None = None
-    try:
-        async for evt in _stream_chat_with_tools_once(
-            url, model_id, headers, provider, messages,
-            tools=tools, tool_choice=tool_choice,
-            temperature=temperature, max_tokens=max_tokens,
-        ):
-            if evt.get("type") in ("content", "tool_call"):
-                emitted_any = True
-            yield evt
-        return
-    except Exception as exc:  # noqa: BLE001
-        if emitted_any or not primary_eligible_for_fallback:
-            raise
-        # Categorise the failure so the LLM-call log row records a
-        # short, queryable reason. The full error_message is in the
-        # prior llm_calls row written by _stream_chat_with_tools_once.
-        msg = str(exc).lower()
-        if "429" in msg or "rate limit" in msg or "rate_limit" in msg:
-            fallback_reason = "cerebras_429"
-        elif "timeout" in msg or "timed out" in msg:
-            fallback_reason = "cerebras_timeout"
-        elif "5" in msg and "returned 5" in msg:
-            fallback_reason = "cerebras_5xx"
-        else:
-            fallback_reason = "cerebras_error"
-        _log.warning(
-            "cerebras stream failed before first delta (%s); "
-            "falling back to Grok", exc,
-        )
+
+    # Multi-key Cerebras rotation. Walk through every configured key
+    # in ROUND-ROBIN order before falling back to Grok. The starting
+    # key advances by one each call (via ``_next_cerebras_key_index``)
+    # so traffic spreads evenly across accounts over time:
+    #   Call 1: try [A, B, C]   — start at A
+    #   Call 2: try [B, C, A]   — start at B
+    #   Call 3: try [C, A, B]   — start at C
+    #   Call 4: try [A, B, C]   — wraps
+    # Each key attempt is only retried if NO content/tool-call deltas
+    # have been emitted yet — once the user starts seeing tokens,
+    # errors propagate so we don't restart mid-sentence on a different
+    # account.
+    #
+    # Keys currently in their post-429 cooldown window are filtered
+    # out — re-probing a known-saturated key wastes ~100-200 ms per
+    # call. When ALL keys are cooling, the list is empty and we go
+    # straight to Grok (still tagged with ``cerebras_all_keys_429``
+    # so the audit log shows why).
+    cerebras_keys_to_try: list[str] = []
+    all_keys_cooling = False
+    if provider == "cerebras" and CEREBRAS_API_KEYS:
+        start = _next_cerebras_key_index()
+        n = len(CEREBRAS_API_KEYS)
+        rotated = [CEREBRAS_API_KEYS[(start + i) % n] for i in range(n)]
+        cerebras_keys_to_try = [k for k in rotated if not _is_cerebras_key_cooling(k)]
+        if not cerebras_keys_to_try:
+            # Every key in the pool is in cooldown; record the reason
+            # so the Grok fallback below tags the audit log correctly.
+            all_keys_cooling = True
+            fallback_reason = "cerebras_all_keys_cooling"
+            _log.warning(
+                "all %d cerebras key(s) in cooldown; routing this call "
+                "directly to Grok",
+                len(CEREBRAS_API_KEYS),
+            )
+    else:
+        # Non-cerebras provider, single attempt with whatever the
+        # route already resolved (no rotation possible).
+        cerebras_keys_to_try = [""]
+
+    for attempt_idx, attempt_key in enumerate(cerebras_keys_to_try):
+        # Rebuild headers for THIS key if we're on the cerebras path
+        # (first iteration uses the route-resolved headers; subsequent
+        # iterations swap in a fresh key).
+        attempt_headers = headers
+        if provider == "cerebras" and attempt_key:
+            attempt_headers = {**_cerebras_headers(attempt_key), "Accept": "text/event-stream"}
+        try:
+            async for evt in _stream_chat_with_tools_once(
+                url, model_id, attempt_headers, provider, messages,
+                tools=tools, tool_choice=tool_choice,
+                temperature=temperature, max_tokens=max_tokens,
+            ):
+                if evt.get("type") in ("content", "tool_call"):
+                    emitted_any = True
+                yield evt
+            return
+        except Exception as exc:  # noqa: BLE001
+            if emitted_any:
+                # Mid-stream failure: propagate, do NOT restart on a
+                # different key (would mix two different completions).
+                raise
+            if not primary_eligible_for_fallback:
+                raise
+            msg = str(exc).lower()
+            if _is_rate_limit_error(exc):
+                fallback_reason = "cerebras_429"
+                # Mark this key as cooling so subsequent calls within
+                # the cooldown window skip it entirely.
+                if provider == "cerebras" and attempt_key:
+                    _mark_cerebras_key_cooling(attempt_key)
+            elif "timeout" in msg or "timed out" in msg:
+                fallback_reason = "cerebras_timeout"
+            elif "5" in msg and "returned 5" in msg:
+                fallback_reason = "cerebras_5xx"
+            else:
+                fallback_reason = "cerebras_error"
+            # If we have more cerebras keys left, log + loop to next.
+            # The very last failure falls through to the Grok path
+            # below.
+            remaining = len(cerebras_keys_to_try) - attempt_idx - 1
+            if remaining > 0:
+                _log.warning(
+                    "cerebras key %d/%d failed (%s); trying next key",
+                    attempt_idx + 1, len(cerebras_keys_to_try), exc,
+                )
+                continue
+            _log.warning(
+                "all %d cerebras key(s) failed; last error: %s. "
+                "Falling back to Grok",
+                len(cerebras_keys_to_try), exc,
+            )
+            # Tag the reason so the audit log shows which path
+            # exhausted: a single key, or every key in the pool.
+            if len(cerebras_keys_to_try) > 1:
+                fallback_reason = f"cerebras_all_keys_{fallback_reason or 'error'}"
+
+    # Sanity: if every key was already cooling at the top of the call,
+    # ``cerebras_keys_to_try`` was empty and we never entered the loop.
+    # ``all_keys_cooling`` is True, ``fallback_reason`` is already set,
+    # and we drop straight into the Grok path below.
+    _ = all_keys_cooling  # referenced so the variable isn't dead code
 
     # Fallback: route to xAI's Grok. xAI's API is OpenAI-compatible so
     # the same SSE reader handles it. The provider tag is "xai" so the

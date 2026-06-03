@@ -186,7 +186,7 @@ async def list_models(user_id: str = Depends(require_auth)) -> dict:
         snappier turn-taking when raw quality matters less.
 
     Both options only appear when Cerebras is configured server-side
-    (``CEREBRAS_API_KEY`` set). Legacy agents whose ``llm_model`` is
+    (``CEREBRAS_API_KEYS`` set). Legacy agents whose ``llm_model`` is
     something else (Chutes default, Groq, OpenAI) still route correctly
     via llm_client — the picker just doesn't surface those for new
     agents."""
