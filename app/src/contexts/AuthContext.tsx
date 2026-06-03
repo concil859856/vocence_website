@@ -8,6 +8,11 @@ import { getStoredReferralCode, clearStoredReferralCode, getDeviceFingerprint } 
 interface AuthContextType {
   user: User | null;
   login: (userData: { id: string; email: string; name: string; picture?: string; credential: string }) => Promise<void>;
+  /** Install a pre-authenticated session (user + JWT) without going
+   *  through Google. Used by the email/password login flow and the
+   *  email-verification landing page, both of which receive a
+   *  ready-to-use {user, token} from the backend. */
+  setSession: (args: { user: User; token: string }) => void;
   logout: () => void;
   /** Persist a new absolute credit balance to the server (writes a `manual_adjustment` ledger row).
    *  Use ONLY for client-side flows that don't go through a server-side job (e.g. the chat demo).
@@ -149,6 +154,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  const setSession = ({ user: nextUser, token }: { user: User; token: string }) => {
+    setUser(nextUser);
+    localStorage.setItem('vocence_user', JSON.stringify(nextUser));
+    localStorage.setItem('vocence_token', token);
+    // Mirror to dashboardApi.registerUser the same way the Google
+    // login does, best-effort.
+    dashboardApi.registerUser({
+      email: nextUser.email,
+      name: nextUser.name,
+      picture: nextUser.picture ?? undefined,
+    }).catch(() => {});
+  };
+
   const logout = () => {
     setUser(null);
     localStorage.removeItem('vocence_user');
@@ -197,6 +215,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       value={{
         user,
         login,
+        setSession,
         logout,
         updateCredits,
         setLocalCredits,

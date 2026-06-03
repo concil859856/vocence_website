@@ -244,6 +244,103 @@ export const api = {
     }
   },
 
+  // ── Email + password auth ─────────────────────────────────────────
+  // Mirror the Google login UX: success returns {user, token} so the
+  // caller (AuthModal / VerifyEmail page) stores the JWT and updates
+  // AuthContext exactly like the Google path.
+
+  /** Sign up with email + password. Always returns 200 (anti-enum). */
+  async emailSignup(args: {
+    email: string;
+    password: string;
+    name?: string;
+    referral_code?: string;
+    device_fingerprint?: string;
+  }): Promise<{ ok: boolean; message: string }> {
+    const response = await fetch(`${API_BASE_URL}/auth/email/signup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(args),
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data?.detail || 'Signup failed');
+    }
+    return response.json();
+  },
+
+  /** Consume an email-verification token. On success returns the
+   *  same {user, token} shape as Google login so the frontend can
+   *  log the user in immediately. */
+  async emailVerify(verifyToken: string): Promise<LoginResponse> {
+    const response = await fetch(`${API_BASE_URL}/auth/email/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: verifyToken }),
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data?.detail || 'Verification failed');
+    }
+    return response.json();
+  },
+
+  /** Log in with email + password. */
+  async emailLogin(email: string, password: string): Promise<LoginResponse> {
+    const response = await fetch(`${API_BASE_URL}/auth/email/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data?.detail || 'Login failed');
+    }
+    return response.json();
+  },
+
+  /** Re-send the verification email. */
+  async emailResendVerify(email: string): Promise<{ ok: boolean; message: string }> {
+    const response = await fetch(`${API_BASE_URL}/auth/email/resend-verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data?.detail || 'Could not resend verification');
+    }
+    return response.json();
+  },
+
+  /** Request a password reset email. */
+  async emailForgot(email: string): Promise<{ ok: boolean; message: string }> {
+    const response = await fetch(`${API_BASE_URL}/auth/email/forgot`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data?.detail || 'Could not send reset email');
+    }
+    return response.json();
+  },
+
+  /** Consume a reset token + set a new password. */
+  async emailReset(resetToken: string, newPassword: string): Promise<{ ok: boolean; message: string }> {
+    const response = await fetch(`${API_BASE_URL}/auth/email/reset`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: resetToken, new_password: newPassword }),
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data?.detail || 'Password reset failed');
+    }
+    return response.json();
+  },
+
   async getPricingPlans(): Promise<{ plans: PricingPlan[] }> {
     try {
       const response = await fetch(`${API_BASE_URL}/pricing/plans`);

@@ -54,6 +54,8 @@ const AdminWebsiteUsage = lazy(() =>
   import('./pages/AdminWebsiteUsage').then((m) => ({ default: m.AdminWebsiteUsage }))
 );
 const NotFound = lazy(() => import('./pages/NotFound').then((m) => ({ default: m.NotFound })));
+const VerifyEmail = lazy(() => import('./pages/auth/VerifyEmail').then((m) => ({ default: m.VerifyEmail })));
+const ResetPassword = lazy(() => import('./pages/auth/ResetPassword').then((m) => ({ default: m.ResetPassword })));
 
 function PageFallback() {
   return (
@@ -85,6 +87,8 @@ function AppContent() {
           <Suspense fallback={<PageFallback />}>
             <Routes>
               <Route path="/" element={<Overview />} />
+              <Route path="/auth/verify" element={<VerifyEmail />} />
+              <Route path="/auth/reset" element={<ResetPassword />} />
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/dashboard/evaluations" element={<DashboardEvaluations />} />
               <Route path="/studio/result/:id" element={<StudioResult />} />
