@@ -452,6 +452,107 @@ def test_lockout_schedule_thresholds():
     assert auth_security.compute_lockout_until(30) is not None
 
 
+def test_M30_password_policy_rejects_repeats_sequences_walks_context():
+    """Audit M30 regression: the strengthened password policy rejects
+    long repeats, sequential runs, keyboard walks, and user-context
+    substrings — patterns the original policy let slip through."""
+    # Long repeat
+    assert auth_security.check_password_strength("Aaaaaaaaaaaaa1!") is not None
+    # Sequence
+    assert auth_security.check_password_strength("Abcdefghijklm1!") is not None
+    # Keyboard walk
+    assert auth_security.check_password_strength("Qwertyuiop1!A!") is not None
+    # User-context substring
+    err = auth_security.check_password_strength(
+        "Alice2024!Strong", user_context=("alice", "Alice Smith", "vocence"),
+    )
+    assert err is not None and "name or email" in err
+    # Brand-context substring
+    assert auth_security.check_password_strength(
+        "Vocence2026!ZZ", user_context=("foo", "Foo Bar", "vocence"),
+    ) is not None
+    # Strong password with no context overlap passes
+    assert auth_security.check_password_strength(
+        "Tr0ub4dor!Splice", user_context=("alice", "Alice", "vocence"),
+    ) is None
+
+
+def test_M31_is_account_locked_fails_closed_on_malformed_timestamp():
+    """Audit M31 regression: a corrupted/unparseable locked_until value
+    must NOT be treated as unlocked. Previously this fell through to
+    (False, 0), letting a brute-forcer bypass lockout by corrupting
+    the column. Now returns (True, 60) and logs a warning."""
+    is_locked, retry_after = auth_security.is_account_locked("not-a-real-iso-timestamp")
+    assert is_locked is True
+    assert retry_after >= 1
+
+
+def test_M32_email_normalization_handles_unicode_case_consistently():
+    """Audit M32 regression: signup-time and login-time normalization
+    must produce the same string for visually-identical inputs. The
+    casefold + NFKC combination handles full-width Latin and other
+    compatibility-equivalent forms."""
+    # Full-width Latin → canonical Latin
+    fullwidth = "Ａｂｃ@x.com"  # ＡｂｃA-fullwidth + @x.com
+    normalized = auth_security.normalize_and_validate_email(fullwidth)
+    # Both should resolve to lowercase ASCII
+    assert normalized == "abc@x.com"
+    # Mixed case → casefold lowercases
+    assert auth_security.normalize_and_validate_email("FOO@Example.COM") == "foo@example.com"
+
+
+def test_L46_hash_token_is_hmac_not_bare_sha256(monkeypatch):
+    """Audit L46 regression: hash_token uses HMAC with a server-side
+    key, not bare SHA-256. Without the key, an attacker who only has
+    DB write access cannot forge a valid hash by computing
+    sha256(known_token). We verify by showing that the HMAC output
+    differs from what bare SHA-256 would produce."""
+    import hashlib
+    raw = "test-token-value"
+    h = auth_security.hash_token(raw)
+    bare = hashlib.sha256(raw.encode()).hexdigest()
+    assert h != bare, "hash_token still bare SHA-256 — L46 regression"
+    # And a different key produces a different output (so the HMAC is
+    # actually keyed, not just constant-XOR'd).
+    monkeypatch.setenv("AUTH_TOKEN_HMAC_KEY", "wholly-different-key-value")
+    h2 = auth_security.hash_token(raw)
+    assert h != h2
+
+
+def test_L44_hash_password_rejects_oversize_input():
+    """Audit L44 regression: hash_password enforces _MAX_PASSWORD_LEN
+    so callers that bypass check_password_strength can't pin a worker
+    on Argon2id by sending a 10 MB string."""
+    huge = "A1!" + "x" * 200
+    try:
+        auth_security.hash_password(huge)
+    except ValueError as e:
+        assert "exceeds" in str(e).lower() or "limit" in str(e).lower()
+        return
+    raise AssertionError("hash_password accepted >128-char input")
+
+
+def test_M28_verify_password_invalid_hash_burns_argon2_time():
+    """Audit M28 regression: verify_password against a malformed hash
+    must still run an Argon2 verify so timing matches the legit
+    wrong-password path. We can't easily assert exact timing, but we
+    can assert that DUMMY_HASH was touched in the failure path —
+    a quick "did it take some non-trivial time?" check.
+
+    We verify the function returns False (= no leak) and runs in
+    measurable Argon2 wall-time (> 5 ms) rather than the microseconds
+    it took before the fix."""
+    import time as _t
+    # Garbage hash that doesn't parse as Argon2
+    start = _t.monotonic()
+    ok = auth_security.verify_password("not-a-valid-argon2-hash", "anything")
+    elapsed = _t.monotonic() - start
+    assert ok is False
+    # Argon2 at our params is ~50 ms; even on a slow CI it should
+    # take > 5 ms. Pre-fix this was µs (InvalidHash returned immediately).
+    assert elapsed > 0.005, f"verify_password returned in {elapsed*1000:.2f}ms — timing leak"
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Audit-finding regression tests
 # ─────────────────────────────────────────────────────────────────────
