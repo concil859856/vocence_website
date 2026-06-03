@@ -5,6 +5,7 @@
  */
 
 import { API_BASE_URL, withNetworkHint } from '../../services/baseUrl';
+import { authFetch } from '../../services/authFetch';
 import type {
   Agent,
   AgentConfig,
@@ -25,7 +26,7 @@ function authHeaders(token: string | null): HeadersInit {
 async function jsonFetch<T>(url: string, init: RequestInit): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(url, init);
+    res = await authFetch(url, init);
   } catch (err) {
     throw withNetworkHint(err);
   }

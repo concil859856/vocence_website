@@ -362,7 +362,19 @@ async def voicechat_session(
         )
         auth_user_id = None
     else:
-        auth_user_id = _decode_user_from_token(token)
+        # Cookie path (preferred for browser sessions, post-migration).
+        # Starlette parses cookies from the WebSocket handshake the same
+        # way it parses them for HTTP requests. The session cookie is
+        # HttpOnly so JS can't read it, but the browser still sends it
+        # on the WS upgrade. This replaces the ?token=... query param
+        # for browser flows once localStorage is dropped (phase 4).
+        from routers.auth import SESSION_COOKIE_NAME
+        cookie_token = ws.cookies.get(SESSION_COOKIE_NAME)
+        if cookie_token:
+            auth_user_id = _decode_user_from_token(cookie_token)
+        # Query-param fallback for backwards compat during migration.
+        if not auth_user_id:
+            auth_user_id = _decode_user_from_token(token)
         if not auth_user_id:
             auth_header = ws.headers.get("authorization") or ws.headers.get("Authorization")
             if auth_header and auth_header.lower().startswith("bearer "):

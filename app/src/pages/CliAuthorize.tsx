@@ -11,6 +11,7 @@ import { useEffect, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { Check, X, KeyRound } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
+import { authFetch } from '../services/authFetch';
 
 type State = 'idle' | 'approving' | 'approved' | 'denying' | 'denied' | 'error';
 
@@ -37,7 +38,7 @@ export function CliAuthorize() {
     const base =
       (import.meta.env?.VITE_API_URL as string | undefined)?.replace(/\/$/, '') ||
       'https://backend.vocence.ai';
-    const resp = await fetch(`${base}${path}`, {
+    const resp = await authFetch(`${base}${path}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

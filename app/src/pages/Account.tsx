@@ -3,6 +3,7 @@ import { Link, useNavigate, useSearchParams, useParams } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext';
 import { api, type AccountSummary, type CreditTransactionsPage, type DeveloperApiKey, type DailyCreditsUsage } from '../services/api';
 import { API_BASE_URL } from '../services/baseUrl';
+import { authFetch } from '../services/authFetch';
 import {
   User,
   CreditCard,
@@ -683,7 +684,7 @@ function ReferralTab() {
   useEffect(() => {
     const token = localStorage.getItem('vocence_token');
     if (!token) return;
-    fetch(`${API_BASE_URL}/auth/referral`, {
+    authFetch(`${API_BASE_URL}/auth/referral`, {
       headers: { Authorization: `Bearer ${token}` },
     })
       .then((r) => r.json())

@@ -19,6 +19,7 @@ import { useEffect, useRef, useState } from 'react';
 import { CheckCircle2, FileAudio, ImageIcon, Loader2, Mic, Pause, Play, Square, X } from 'lucide-react';
 import { dashboardApi } from '../../services/dashboardApi';
 import { useAuth } from '../../contexts/AuthContext';
+import { authFetch } from '../../services/authFetch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import { toast } from 'sonner';
 
@@ -236,7 +237,7 @@ export function SubmitVoiceModal({ open, onClose, onSubmitted }: Props) {
       // Dedicated lite endpoint, cheaper than /api/dashboard/transcribe
       // because the modal already caps audio at 15 s. Same STT pipeline
       // upstream, just a smaller bill.
-      const res = await fetch('/api/dashboard/voice-submissions/transcribe', {
+      const res = await authFetch('/api/dashboard/voice-submissions/transcribe', {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
         body: form,

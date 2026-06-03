@@ -3,6 +3,7 @@ import { Upload, Download, Loader2, Mic, Square, Play, Pause, RotateCcw, Sparkle
 import WaveSurfer from 'wavesurfer.js';
 import { useAuth } from '../contexts/AuthContext';
 import { API_BASE_URL } from '../services/baseUrl';
+import { authFetch } from '../services/authFetch';
 import { CREDIT_NOISE_REMOVER, NOISE_REMOVER_MAX_DURATION_SEC, NOISE_REMOVER_MAX_UPLOAD_BYTES } from '../studio/creditCosts';
 
 const MAX_DURATION_SEC = NOISE_REMOVER_MAX_DURATION_SEC;
@@ -305,7 +306,7 @@ export function StudioNoiseRemover() {
     form.append('audio_file', file);
 
     try {
-      const res = await fetch(`${API_BASE_URL}/dashboard/studio/noise-remover/enhance`, {
+      const res = await authFetch(`${API_BASE_URL}/dashboard/studio/noise-remover/enhance`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
         body: form,

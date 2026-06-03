@@ -8,6 +8,7 @@
  */
 
 import { API_BASE_URL, withNetworkHint } from '../../services/baseUrl';
+import { authFetch } from '../../services/authFetch';
 
 const STORAGE_KEY = 'vocence.admin_token';
 const EXPIRY_KEY = 'vocence.admin_token_expires_at';
@@ -35,7 +36,7 @@ function authHeaders(token: string | null, adminToken?: string | null): HeadersI
 async function jsonFetch<T>(url: string, init: RequestInit): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(url, init);
+    res = await authFetch(url, init);
   } catch (err) {
     throw withNetworkHint(err);
   }

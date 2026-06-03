@@ -21,6 +21,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ThumbsUp, ThumbsDown, MessageSquare, RefreshCw } from 'lucide-react';
 import { API_BASE_URL } from '../../services/baseUrl';
+import { authFetch } from '../../services/authFetch';
 import { getStoredToken } from '../../lib/agents/api';
 import { getStoredAdminToken } from '../../lib/admin/api';
 
@@ -72,7 +73,7 @@ function adminHeaders(): HeadersInit {
 }
 
 async function fetchJson<T>(path: string): Promise<T> {
-  const res = await fetch(`${FEEDBACK_BASE}${path}`, { headers: adminHeaders() });
+  const res = await authFetch(`${FEEDBACK_BASE}${path}`, { headers: adminHeaders() });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return (await res.json()) as T;
 }

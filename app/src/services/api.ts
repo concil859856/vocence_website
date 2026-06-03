@@ -205,7 +205,7 @@ export const api = {
   // Get user by ID
   async getUser(userId: string, token: string): Promise<User> {
     try {
-      const response = await fetch(`${API_BASE_URL}/users/${userId}`, {
+      const response = await authFetch(`${API_BASE_URL}/users/${userId}`, {
         method: 'GET',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -227,7 +227,7 @@ export const api = {
   // Update user credits
   async updateCredits(userId: string, credits: number, token: string): Promise<User> {
     try {
-      const response = await fetch(`${API_BASE_URL}/users/${userId}/credits`, {
+      const response = await authFetch(`${API_BASE_URL}/users/${userId}/credits`, {
         method: 'PATCH',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -369,7 +369,7 @@ export const api = {
 
   async getPricingPlans(): Promise<{ plans: PricingPlan[] }> {
     try {
-      const response = await fetch(`${API_BASE_URL}/pricing/plans`);
+      const response = await authFetch(`${API_BASE_URL}/pricing/plans`);
       if (!response.ok) {
         throw new Error('Failed to fetch pricing plans');
       }
@@ -382,7 +382,7 @@ export const api = {
   async getNowPaymentsPayCurrencyOptions(planCode: string): Promise<NowPaymentsPayCurrencyOptions> {
     try {
       const q = new URLSearchParams({ planCode });
-      const response = await fetch(
+      const response = await authFetch(
         `${API_BASE_URL}/payments/nowpayments/pay-currency-options?${q.toString()}`
       );
       if (!response.ok) {
@@ -396,7 +396,7 @@ export const api = {
 
   async getAccountSummary(token: string): Promise<AccountSummary> {
     try {
-      const response = await fetch(`${API_BASE_URL}/account/summary`, {
+      const response = await authFetch(`${API_BASE_URL}/account/summary`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!response.ok) {
@@ -414,7 +414,7 @@ export const api = {
   ): Promise<CreditTransactionsPage> {
     const { offset = 0, limit = 25 } = opts;
     try {
-      const response = await fetch(
+      const response = await authFetch(
         `${API_BASE_URL}/account/transactions?limit=${limit}&offset=${offset}`,
         { headers: { Authorization: `Bearer ${token}` } },
       );
@@ -429,7 +429,7 @@ export const api = {
 
   async getDailyCreditsUsage(token: string, days = 14): Promise<DailyCreditsUsage> {
     try {
-      const response = await fetch(`${API_BASE_URL}/account/credits/usage/daily?days=${days}`, {
+      const response = await authFetch(`${API_BASE_URL}/account/credits/usage/daily?days=${days}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!response.ok) {
@@ -446,7 +446,7 @@ export const api = {
     payload: { provider: 'stripe' | 'crypto'; planCode: string; payCurrency?: string }
   ): Promise<CheckoutSessionResponse> {
     try {
-      const response = await fetch(`${API_BASE_URL}/payments/checkout-session`, {
+      const response = await authFetch(`${API_BASE_URL}/payments/checkout-session`, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${token}`,
@@ -480,7 +480,7 @@ export const api = {
 
   async sendSalesInquiry(payload: SalesInquiryRequest): Promise<SalesInquiryResponse> {
     try {
-      const response = await fetch(`${API_BASE_URL}/sales/contact`, {
+      const response = await authFetch(`${API_BASE_URL}/sales/contact`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -507,7 +507,7 @@ export const api = {
   },
 
   async createDeveloperKey(token: string, payload: { name: string }) {
-    const response = await fetch(`${API_BASE_URL}/developer/keys`, {
+    const response = await authFetch(`${API_BASE_URL}/developer/keys`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${token}`,
@@ -523,7 +523,7 @@ export const api = {
   },
 
   async listDeveloperKeys(token: string): Promise<{ keys: DeveloperApiKey[] }> {
-    const response = await fetch(`${API_BASE_URL}/developer/keys`, {
+    const response = await authFetch(`${API_BASE_URL}/developer/keys`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (!response.ok) {
@@ -533,7 +533,7 @@ export const api = {
   },
 
   async revokeDeveloperKey(token: string, keyId: string): Promise<void> {
-    const response = await fetch(`${API_BASE_URL}/developer/keys/${keyId}/revoke`, {
+    const response = await authFetch(`${API_BASE_URL}/developer/keys/${keyId}/revoke`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}` },
     });
@@ -543,7 +543,7 @@ export const api = {
   },
 
   async getDeveloperUsage(token: string, limit = 50): Promise<{ logs: DeveloperApiUsageLog[] }> {
-    const response = await fetch(`${API_BASE_URL}/developer/usage?limit=${limit}`, {
+    const response = await authFetch(`${API_BASE_URL}/developer/usage?limit=${limit}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (!response.ok) {

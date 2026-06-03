@@ -23,6 +23,7 @@ import { SAMPLE_VOICES, type SampleVoice } from '../../data/sampleVoices';
 import { SampleVoiceAvatar } from './SampleVoiceAvatar';
 import { useStudioPlayer } from '../../contexts/StudioPlayerContext';
 import { useAuth } from '../../contexts/AuthContext';
+import { authFetch } from '../../services/authFetch';
 import { asset } from '../../data/assets';
 import { SubmitVoiceModal } from './SubmitVoiceModal';
 
@@ -65,14 +66,14 @@ export function StudioCommunityVoices() {
   useEffect(() => {
     let cancelled = false;
     setCountsReady(false);
-    fetch('/api/dashboard/public/voices/likes')
+    authFetch('/api/dashboard/public/voices/likes')
       .then((r) => (r.ok ? r.json() : { counts: {} }))
       .then((data) => { if (!cancelled) setCounts(data?.counts ?? {}); })
       .catch(() => { /* leave counts empty */ })
       .finally(() => { if (!cancelled) setCountsReady(true); });
     // Community-submitted approved voices. Soft-fail to an empty list
     // so the curated grid still renders if the endpoint is down.
-    fetch('/api/dashboard/public/voices/community')
+    authFetch('/api/dashboard/public/voices/community')
       .then((r) => (r.ok ? r.json() : { voices: [] }))
       .then((data: { voices?: Array<{
         id: string; name: string; description: string; language: string;
@@ -95,7 +96,7 @@ export function StudioCommunityVoices() {
       })
       .catch(() => { /* leave community list empty */ });
     if (user) {
-      fetch('/api/dashboard/voices/likes/mine', { headers: authHeaders() })
+      authFetch('/api/dashboard/voices/likes/mine', { headers: authHeaders() })
         .then((r) => (r.ok ? r.json() : { voice_ids: [] }))
         .then((data) => {
           if (cancelled) return;
@@ -151,7 +152,7 @@ export function StudioCommunityVoices() {
       [voiceId]: Math.max(0, (prev[voiceId] ?? 0) + (wasLiked ? -1 : 1)),
     }));
     try {
-      const res = await fetch(
+      const res = await authFetch(
         `/api/dashboard/voices/${encodeURIComponent(voiceId)}/like`,
         { method: 'POST', headers: authHeaders() },
       );

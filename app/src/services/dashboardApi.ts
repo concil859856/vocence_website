@@ -2,6 +2,7 @@
  * Dashboard API client, same backend as auth (VITE_API_URL).
  */
 import { API_ORIGIN_BASE } from './baseUrl';
+import { authFetch } from './authFetch';
 
 const DASHBOARD_BASE = API_ORIGIN_BASE;
 
@@ -90,7 +91,11 @@ async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
   const url = `${DASHBOARD_BASE}${path}`;
   let res: Response;
   try {
-    res = await fetch(url, {
+    // authFetch routes via the central wrapper so every authenticated
+    // dashboard call sends ``credentials: 'include'`` (cookie travels)
+    // AND keeps the legacy Bearer fallback from localStorage. Backend
+    // dual-accepts either; phase 4 drops Bearer entirely.
+    res = await authFetch(url, {
       ...options,
       headers: { Accept: 'application/json', ...options?.headers },
     });
@@ -747,7 +752,7 @@ export const dashboardApi = {
   uploadBlogImage(file: File, _adminEmail: string): Promise<{ url: string }> {
     const form = new FormData();
     form.append('file', file);
-    return fetch(`${DASHBOARD_BASE}/api/dashboard/blog/upload`, {
+    return authFetch(`${DASHBOARD_BASE}/api/dashboard/blog/upload`, {
       method: 'POST',
       headers: adminAuthHeaders(),
       body: form,
@@ -1131,6 +1136,9 @@ export const dashboardApi = {
       { kind, filename: file.name, content_type: file.type || 'application/octet-stream', size: file.size },
       token,
     );
+    // Third-party object storage (R2/S3 presigned URL). MUST NOT send
+    // credentials — presigned URLs are pre-signed; cookies would be
+    // ignored at best, rejected at worst. Use bare fetch.
     const putRes = await fetch(presigned.put_url, {
       method: 'PUT',
       body: file,
