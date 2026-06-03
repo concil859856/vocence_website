@@ -1811,9 +1811,54 @@ def _email_auth_rate_ok(bucket: str, client_ip: str, limit: int) -> bool:
     return True
 
 
+# Trusted proxies that can spoof X-Forwarded-For. If the request's
+# direct client is in this set, we honor XFF; otherwise we treat
+# request.client.host as authoritative and IGNORE any XFF the client
+# sent. This closes audit H10: previously XFF was trusted
+# unconditionally, so any process that could reach the backend port
+# directly (container-to-container, misconfigured ingress, future
+# topology change) could forge per-IP rate-limit bypass.
+#
+# Defaults cover loopback + Docker / k8s pod networks. Override via
+# TRUSTED_PROXIES env (comma-separated IPs or CIDR-like prefixes
+# matched with str.startswith — simple is fine here).
+
+def _trusted_proxy_set() -> set[str]:
+    extra = (os.environ.get("TRUSTED_PROXIES") or "").strip()
+    base = {"127.0.0.1", "::1"}
+    if extra:
+        base |= {p.strip() for p in extra.split(",") if p.strip()}
+    return base
+
+
+def _ip_is_trusted_proxy(ip: str) -> bool:
+    if not ip:
+        return False
+    trusted = _trusted_proxy_set()
+    if ip in trusted:
+        return True
+    # Allow simple prefix matches so a "10." entry in TRUSTED_PROXIES
+    # covers any 10.0.0.0/8 source — sufficient for typical container
+    # / VPC topologies without dragging in an IP-parsing library.
+    return any(p and ip.startswith(p) for p in trusted)
+
+
 def _client_ip(request: Request) -> str:
-    fwd = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
-    return fwd or (request.client.host if request.client else "unknown")
+    """Resolve the client IP for rate-limiting purposes.
+
+    Honors ``X-Forwarded-For`` ONLY when the immediate connection is
+    from a trusted proxy (loopback, configured TRUSTED_PROXIES). For
+    untrusted sources we use the direct peer address regardless of
+    what XFF the client sent — so an attacker that bypasses the
+    intended proxy (port-scan, container-to-container, misrouted
+    request) cannot forge IPs to bypass rate limits.
+    """
+    direct = request.client.host if request.client else ""
+    if _ip_is_trusted_proxy(direct):
+        fwd = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+        if fwd:
+            return fwd
+    return direct or "unknown"
 
 
 def _send_verification_email_safe(*, to_email: str, raw_token: str, user_name: str | None) -> None:

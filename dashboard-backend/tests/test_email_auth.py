@@ -570,6 +570,27 @@ def test_H4_failed_login_counter_is_atomic_under_concurrency(client):
     assert r6.status_code == 429
 
 
+def test_H10_xff_ignored_from_untrusted_source():
+    """Audit H10 fix: X-Forwarded-For is only honored when the
+    immediate connection is from a trusted proxy. Direct attacker
+    connections that forge XFF should resolve to request.client.host
+    (NOT the spoofed XFF value), so per-IP rate limits hold."""
+    from routers.auth import _client_ip
+    from unittest.mock import Mock
+
+    # Simulate an untrusted source forging XFF
+    req = Mock()
+    req.client.host = "203.0.113.5"  # not in TRUSTED_PROXIES default
+    req.headers = {"x-forwarded-for": "1.2.3.4, 5.6.7.8"}
+    assert _client_ip(req) == "203.0.113.5", "XFF was honored from untrusted source!"
+
+    # Trusted source — XFF should win
+    req2 = Mock()
+    req2.client.host = "127.0.0.1"
+    req2.headers = {"x-forwarded-for": "1.2.3.4"}
+    assert _client_ip(req2) == "1.2.3.4"
+
+
 def test_H8_jwt_invalidated_after_password_reset(client):
     """Audit H8 fix: a JWT issued BEFORE the password was reset must
     be rejected on subsequent require_auth checks. Otherwise an

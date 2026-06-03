@@ -1,10 +1,70 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { X, Mail, Lock, Eye, EyeOff, ArrowLeft, CheckCircle2 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { GoogleLogin } from '@react-oauth/google';
 import type { CredentialResponse } from '@react-oauth/google';
 import { api } from '../services/api';
 import { getStoredReferralCode, clearStoredReferralCode, getDeviceFingerprint } from '../lib/referral';
+
+/** Map backend error strings to user-safe UI messages.
+ *
+ *  Audit H11: previously the modal surfaced backend ``detail`` verbatim
+ *  via setError(e.message). That leaked:
+ *    - account existence ("Account locked..." confirms account is real)
+ *    - credential validity (post-H5 fix the backend no longer does this,
+ *      but defense-in-depth — never reflect backend strings without filter)
+ *    - submitted passwords ("This password is too common: ..." would
+ *      echo the candidate to a shoulder-surfer if backend ever did so)
+ *
+ *  Strategy: a small allowlist of GENERIC strings UI is allowed to show.
+ *  Anything else → fall back to a per-flow generic.
+ */
+function mapSignInError(rawMsg: string): string {
+  const m = rawMsg.toLowerCase();
+  // Password-policy hints during signup — useful, no info leak.
+  if (m.includes('characters or fewer') || m.includes('at least') || m.includes('character classes') || m.includes('uppercase, digit')) {
+    return rawMsg;
+  }
+  // Rate limit — surface generic; never confirm account existence.
+  if (m.includes('too many') || m.includes('locked') || m.includes('try again later')) {
+    return 'Too many attempts. Please try again later.';
+  }
+  // Generic invalid-credential — surface as-is, it's already generic.
+  if (m === 'invalid email or password.') {
+    return rawMsg;
+  }
+  // Catch-all — don't surface backend text we don't explicitly allow.
+  return 'Sign-in failed. Please try again.';
+}
+
+function mapSignupError(rawMsg: string): string {
+  const m = rawMsg.toLowerCase();
+  // Password-rule hints are fine to show.
+  if (m.includes('at least') || m.includes('characters or fewer') || m.includes('character classes') || m.includes('uppercase, digit')) {
+    return rawMsg;
+  }
+  // Common-password warning: surface a generic phrasing that doesn't
+  // echo the candidate to a shoulder-surfer.
+  if (m.includes('too common')) {
+    return 'Please choose a stronger password.';
+  }
+  // Email validity hints are fine.
+  if (m.includes('email')) {
+    return rawMsg;
+  }
+  if (m.includes('too many') || m.includes('try again later')) {
+    return 'Too many attempts. Please try again later.';
+  }
+  return 'Could not create account. Please try again.';
+}
+
+function mapResetError(rawMsg: string): string {
+  const m = rawMsg.toLowerCase();
+  if (m.includes('too many') || m.includes('try again later')) {
+    return 'Too many attempts. Please try again later.';
+  }
+  return 'Could not send reset email. Please try again.';
+}
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -34,14 +94,31 @@ export function AuthModal({ isOpen, onClose, initialMode = 'login' }: AuthModalP
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [emailedTo, setEmailedTo] = useState('');
-  // Login-only: server signalled the email isn't verified yet.
-  const [needsVerify, setNeedsVerify] = useState(false);
+
+  // Audit H12: track open/mounted state so an in-flight request that
+  // settles AFTER the modal is closed doesn't (a) trigger setState
+  // on an unmounted-but-still-around component, or (b) silently log
+  // the user in when they intentionally cancelled. We can't abort
+  // the fetch mid-flight (api.ts uses bare fetch without signals),
+  // but we can ignore its result.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+  // Bumps every time the modal opens. Each request snapshots the
+  // current value; if it doesn't match at completion time, the user
+  // closed the modal between submit and response → discard the result.
+  const requestEpochRef = useRef(0);
+  useEffect(() => {
+    if (isOpen) requestEpochRef.current += 1;
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
   const resetForm = () => {
     setEmail(''); setPassword(''); setName('');
-    setError(null); setNeedsVerify(false); setBusy(false);
+    setError(null); setBusy(false);
     setShowPassword(false); setEmailedTo('');
   };
 
@@ -51,7 +128,6 @@ export function AuthModal({ isOpen, onClose, initialMode = 'login' }: AuthModalP
     setMode(next);
     setScreen('form');
     setError(null);
-    setNeedsVerify(false);
   };
 
   const handleGoogleSuccess = async (credentialResponse: CredentialResponse) => {
@@ -85,28 +161,34 @@ export function AuthModal({ isOpen, onClose, initialMode = 'login' }: AuthModalP
   };
 
   // ── Email form actions ─────────────────────────────────────────────
+  //
+  // Audit H12: each submit captures the current request epoch into
+  // ``epoch`` and only commits state to the component if the epoch
+  // still matches at completion time. If the user closed/reopened
+  // the modal between submit and response, we discard the result.
+  // ``mountedRef`` is a final safety belt.
+
+  const _shouldCommit = (epoch: number) => mountedRef.current && epoch === requestEpochRef.current;
 
   const submitEmailLogin = async () => {
-    setError(null); setNeedsVerify(false); setBusy(true);
+    setError(null); setBusy(true);
+    const epoch = requestEpochRef.current;
     try {
       const res = await api.emailLogin(email.trim(), password);
+      if (!_shouldCommit(epoch)) return;
       setSession({ user: res.user, token: res.token });
       closeAll();
     } catch (e) {
-      const msg = e instanceof Error ? e.message : 'Login failed';
-      if (msg.toLowerCase().includes('verify your email')) {
-        setNeedsVerify(true);
-        setError('Please verify your email first. Check your inbox for the verification link.');
-      } else {
-        setError(msg);
-      }
+      if (!_shouldCommit(epoch)) return;
+      setError(mapSignInError(e instanceof Error ? e.message : 'Login failed'));
     } finally {
-      setBusy(false);
+      if (_shouldCommit(epoch)) setBusy(false);
     }
   };
 
   const submitEmailSignup = async () => {
     setError(null); setBusy(true);
+    const epoch = requestEpochRef.current;
     try {
       await api.emailSignup({
         email: email.trim(),
@@ -115,39 +197,31 @@ export function AuthModal({ isOpen, onClose, initialMode = 'login' }: AuthModalP
         referral_code: getStoredReferralCode() ?? undefined,
         device_fingerprint: getDeviceFingerprint() ?? undefined,
       });
+      if (!_shouldCommit(epoch)) return;
       clearStoredReferralCode();
       setEmailedTo(email.trim());
       setScreen('check-inbox-signup');
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Signup failed');
+      if (!_shouldCommit(epoch)) return;
+      setError(mapSignupError(e instanceof Error ? e.message : 'Signup failed'));
     } finally {
-      setBusy(false);
+      if (_shouldCommit(epoch)) setBusy(false);
     }
   };
 
   const submitForgot = async () => {
     setError(null); setBusy(true);
+    const epoch = requestEpochRef.current;
     try {
       await api.emailForgot(email.trim());
+      if (!_shouldCommit(epoch)) return;
       setEmailedTo(email.trim());
       setScreen('check-inbox-forgot');
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not send reset email');
+      if (!_shouldCommit(epoch)) return;
+      setError(mapResetError(e instanceof Error ? e.message : 'Could not send reset email'));
     } finally {
-      setBusy(false);
-    }
-  };
-
-  const resendVerify = async () => {
-    setError(null); setBusy(true);
-    try {
-      await api.emailResendVerify(email.trim());
-      setEmailedTo(email.trim());
-      setScreen('check-inbox-signup');
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not resend');
-    } finally {
-      setBusy(false);
+      if (_shouldCommit(epoch)) setBusy(false);
     }
   };
 
@@ -306,6 +380,9 @@ export function AuthModal({ isOpen, onClose, initialMode = 'login' }: AuthModalP
                     <input
                       type={showPassword ? 'text' : 'password'}
                       autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
+                      autoCapitalize="off"
+                      autoCorrect="off"
+                      spellCheck={false}
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
                       placeholder={mode === 'signup' ? `At least ${PASSWORD_MIN} characters` : 'Your password'}
@@ -332,16 +409,6 @@ export function AuthModal({ isOpen, onClose, initialMode = 'login' }: AuthModalP
                 {error && (
                   <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
                     {error}
-                    {needsVerify && (
-                      <button
-                        type="button"
-                        onClick={resendVerify}
-                        disabled={busy}
-                        className="ml-2 underline hover:no-underline"
-                      >
-                        Resend
-                      </button>
-                    )}
                   </div>
                 )}
 
