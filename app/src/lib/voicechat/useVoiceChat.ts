@@ -24,7 +24,6 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { StreamingAudioPlayer } from './audioPlayer';
 import { MicRecorder } from './recorder';
 import { VadController, arrayBufferToBase64 } from './vadController';
-import { API_ORIGIN_BASE } from '../../services/baseUrl';
 
 export type BotState = 'idle' | 'connecting' | 'listening' | 'recording' | 'uploading' | 'transcribing' | 'thinking' | 'speaking' | 'error';
 
@@ -681,7 +680,7 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
         ws.addEventListener('error', () => { window.clearTimeout(t); resolve(false); }, { once: true });
         ws.addEventListener('close', () => { window.clearTimeout(t); resolve(false); }, { once: true });
       });
-      if (!ok || ws.readyState !== 1) {
+      if (!ok || (ws.readyState as number) !== 1) {
         vadStartingRef.current = false;
         setError('not connected');
         setState('error');

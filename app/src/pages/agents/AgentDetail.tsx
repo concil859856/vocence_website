@@ -406,6 +406,7 @@ export function AgentDetail() {
         )}
       </div>
     </StudioShell>
+    {confirmDialog}
     </div>
   );
 }
@@ -936,7 +937,6 @@ function RunsTab({ agent, token }: { agent: Agent; token: string | null }) {
           ))}
         </div>
       )}
-      {confirmDialog}
     </div>
   );
 }

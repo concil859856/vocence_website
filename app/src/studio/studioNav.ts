@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-react';
-import { Mic, MessageSquare, Users, History, Sparkles, LayoutGrid, Music, ListMusic, Bot, AudioLines, Home, Film, Code2, Terminal, BookOpen, Library, LifeBuoy } from 'lucide-react';
+import { Mic, MessageSquare, Users, History, Sparkles, LayoutGrid, Music, ListMusic, Bot, AudioLines, Film, Code2, Terminal, BookOpen, Library, LifeBuoy } from 'lucide-react';
 
 export type StudioView =
   | 'home'
@@ -97,4 +97,4 @@ export const STUDIO_HELP_ITEM: StudioNavItem = {
  *  bar and the route-views audit. */
 export const studioSidebarItems: StudioNavItem[] = studioNavSections.flatMap((s) => s.items);
 
-export const STUDIO_VIEWS: StudioView[] = ['home', ...studioSidebarItems.filter((i) => i.id !== 'home').map((i) => i.id)];
+export const STUDIO_VIEWS: StudioView[] = ['home', ...studioSidebarItems.filter((i) => i.id !== 'home').map((i) => i.id as StudioView)];

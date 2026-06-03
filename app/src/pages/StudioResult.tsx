@@ -33,6 +33,9 @@ function typeBadgeClass(et: StudioHistoryItem['entry_type']): string {
       return 'bg-violet-500/15 text-violet-300';
     case 'music':
       return 'bg-indigo-500/15 text-indigo-300';
+    case 'noise_remover':
+    case 'dubbing':
+      return 'bg-amber-500/15 text-amber-300';
   }
 }
 
@@ -48,6 +51,10 @@ function typeBadgeLabel(et: StudioHistoryItem['entry_type']): string {
       return 'MY VOICE';
     case 'music':
       return 'MUSIC';
+    case 'noise_remover':
+      return 'NOISE REMOVER';
+    case 'dubbing':
+      return 'DUBBING';
   }
 }
 

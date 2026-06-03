@@ -24,13 +24,6 @@ const SAMPLE_RATE = 24000;
 // enough that *any* expected gap fits inside the cushion at any moment
 // during playback. 1500 ms covers the worst-case observed.
 const DEFAULT_PREBUFFER_MS = 1500;
-// Low-latency prebuffer used when the next sentence is a filler ("Hmm,",
-// "Okay,"). The intent of fillers is to mask LLM latency, but if they sit
-// inside the 1500 ms cold-start prebuffer, the user hears them AFTER the
-// LLM has already finished, which defeats the point. Dropping to 80 ms
-// makes filler audio start playing as soon as 2 frames are queued. The
-// real-reply audio queues behind it and plays seamlessly once filler ends.
-const FILLER_PREBUFFER_MS = 80;
 // Mid-stream rebuffering is DISABLED (FLOOR=0). Reason: the server
 // delivers frames at near-real-time pace (Qwen3 TTS doesn't run faster
 // than realtime on the streaming endpoint), so the queue spends most

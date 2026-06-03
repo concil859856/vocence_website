@@ -104,7 +104,7 @@ export function AgentKnowledgePanel({ agentId, token }: Props) {
               // The pod returns a structured ``error`` field with the
               // root cause (HTTP status, parse error, etc.). Surface
               // whatever it gave us, fall back to a generic string.
-              reason: status.error || status.message || 'Ingestion failed',
+              reason: status.error || 'Ingestion failed',
             });
           } else {
             // Still running; keep polling.

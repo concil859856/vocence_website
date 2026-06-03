@@ -27,9 +27,6 @@ const VIEWPORT_PADDING = 16;
 // "Slightly raised" default: sits 88 px above the bottom edge instead of 24 px.
 const DEFAULT_BOTTOM_OFFSET = 88;
 const DEFAULT_RIGHT_OFFSET = 24;
-// How many pixels the cursor must move during a press before it's a drag,
-// not a click. Anything under this threshold is treated as a tap.
-const DRAG_THRESHOLD_PX = 5;
 
 // Position is persisted as an "anchor": the closest viewport corner plus
 // pixel offsets from that corner. That way the launcher returns to the same
@@ -121,19 +118,6 @@ export function VocenceBot() {
   // from the anchor so the launcher returns to its original visual spot.
   const anchorRef = useRef<Anchor>(loadStoredAnchor());
   const [pos, setPos] = useState<{ x: number; y: number }>(() => posFromAnchor(anchorRef.current));
-  const [dragging, setDragging] = useState(false);
-
-  // Drag state lives in a ref so handlers don't recreate on every render.
-  // `moved` flips true once the cursor crosses the drag threshold; we use it
-  // in onPointerUp to decide between "click → toggle" and "drag → save pos".
-  const dragRef = useRef<{
-    startX: number;
-    startY: number;
-    origX: number;
-    origY: number;
-    moved: boolean;
-    pointerId: number;
-  } | null>(null);
 
   // Recompute pos from the persisted anchor on every resize. This keeps the
   // launcher pinned to the same visual corner-offset rather than drifting
@@ -193,60 +177,6 @@ export function VocenceBot() {
     setOpen(false);
     cancel();
     reset();
-  };
-  const handleLauncherClick = () => {
-    if (open) {
-      closePanel();
-    } else {
-      setOpen(true);
-    }
-  };
-
-  // ----- Drag handlers ----------------------------------------------------
-  const onPointerDown = (e: React.PointerEvent<HTMLButtonElement>) => {
-    // Right-click and modifier-drags are reserved for the browser
-    if (e.button !== 0) return;
-    e.currentTarget.setPointerCapture(e.pointerId);
-    dragRef.current = {
-      startX: e.clientX,
-      startY: e.clientY,
-      origX: pos.x,
-      origY: pos.y,
-      moved: false,
-      pointerId: e.pointerId,
-    };
-  };
-
-  const onPointerMove = (e: React.PointerEvent<HTMLButtonElement>) => {
-    const d = dragRef.current;
-    if (!d || e.pointerId !== d.pointerId) return;
-    const dx = e.clientX - d.startX;
-    const dy = e.clientY - d.startY;
-    if (!d.moved && Math.hypot(dx, dy) > DRAG_THRESHOLD_PX) {
-      d.moved = true;
-      setDragging(true);
-    }
-    if (d.moved) {
-      setPos(clampToViewport({ x: d.origX + dx, y: d.origY + dy }));
-    }
-  };
-
-  const onPointerUp = (e: React.PointerEvent<HTMLButtonElement>) => {
-    const d = dragRef.current;
-    if (!d || e.pointerId !== d.pointerId) return;
-    try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
-    dragRef.current = null;
-    if (d.moved) {
-      setDragging(false);
-      // Re-anchor against the corner the user dropped near, so future
-      // resizes restore the launcher to this same visual spot.
-      const nextAnchor = anchorFromPos(pos);
-      anchorRef.current = nextAnchor;
-      try { localStorage.setItem(STORAGE_POS_KEY, JSON.stringify(nextAnchor)); } catch { /* ignore */ }
-      return;
-    }
-    // Below threshold → it's a tap, not a drag → toggle the panel
-    handleLauncherClick();
   };
 
   // Always-on toggle: one click starts a hands-free session (mic stays

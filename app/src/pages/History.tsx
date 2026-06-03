@@ -138,7 +138,7 @@ export function History() {
                   ? 'voice_design'
                   : item.entry_type === 'music'
                     ? 'music'
-                    : item.entry_type === 'noise_remover' || item.entry_type === 'noise_remover'
+                    : item.entry_type === 'noise_remover' || item.entry_type === 'dubbing'
                       ? 'noise_remover'
                       : 'tts';
           const isCloneLike = item.entry_type === 'clone' || item.entry_type === 'voice_design';

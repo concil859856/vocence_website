@@ -912,7 +912,7 @@ export const dashboardApi = {
   },
 
   deleteStudioHistory(
-    items: Array<{ id: number; type: 'tts' | 'stt' | 'clone' | 'voice_design' | 'music' }>,
+    items: Array<{ id: number; type: 'tts' | 'stt' | 'clone' | 'voice_design' | 'music' | 'noise_remover' }>,
     token: string | null,
   ): Promise<{ deleted: number }> {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -1753,7 +1753,7 @@ export interface StudioMusicHistoryItem {
 
 export interface StudioHistoryItem {
   id: number;
-  entry_type: 'tts' | 'stt' | 'clone' | 'voice_design' | 'music';
+  entry_type: 'tts' | 'stt' | 'clone' | 'voice_design' | 'music' | 'noise_remover' | 'dubbing';
   miner_hotkey: string;
   model_name: string;
   display_name: string;

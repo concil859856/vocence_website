@@ -24,7 +24,7 @@ import {
   Check,
 } from 'lucide-react';
 import gsap from 'gsap';
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { AuthModal } from '../components/AuthModal';
 import { ConfirmDialog } from '../components/ConfirmDialog';
@@ -61,7 +61,6 @@ import { StudioPlaybooks } from './StudioPlaybooks';
 import { StudioTtsGeneral } from '../components/studio/StudioTtsGeneral';
 import { StudioCommunityVoices } from '../components/studio/StudioCommunityVoices';
 import { useStudioPlayer } from '../contexts/StudioPlayerContext';
-import { api } from '../services/api';
 import {
   Select,
   SelectContent,
@@ -207,54 +206,8 @@ function LanguageOption({
   );
 }
 
-const STUDIO_VIEW_LABELS: Record<StudioView, string> = {
-  home: 'Studio Home',
-  tts: 'Text-to-Speech',
-  stt: 'Speech-to-Text',
-  cloning: 'Voice Cloning',
-  'voice-design': 'Voice Design',
-  'my-voices': 'My Voices',
-  music: 'Text-to-Music',
-  playbooks: 'Playbooks',
-  history: 'History',
-  agents: 'Agents',
-};
-
-function ComingSoonView({ view }: { view: StudioView }) {
-  const label = STUDIO_VIEW_LABELS[view] ?? 'This feature';
-  return (
-    <div className="flex min-h-[60vh] items-center justify-center">
-      <div className="card-vocence max-w-md w-full p-10 text-center">
-        <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-[#DFFF00]/30 bg-[#DFFF00]/10 text-[#DFFF00] text-xs font-medium tracking-wide mb-5">
-          Coming soon
-        </div>
-        <h2 className="text-2xl font-semibold mb-3">{label}</h2>
-        <p className="text-sm text-[#A7B0B7]">
-          We're putting the finishing touches on this feature. In the meantime,
-          try out Text-to-Speech, it's live now.
-        </p>
-        <Link to="/studio/tts" className="btn-primary inline-flex mt-6">
-          Go to Text-to-Speech
-        </Link>
-      </div>
-    </div>
-  );
-}
-
 function userFacingApiError(_e: unknown): string {
   return USER_FACING_TRY_AGAIN;
-}
-
-interface HistoryItem {
-  id: string;
-  type: 'tts' | 'stt' | 'chat' | 'cloning';
-  timestamp: string;
-  date: string;
-  content: string;
-  stylePrompt?: string;
-  model: string;
-  meta: string;
-  duration: string;
 }
 
 const TTS_STYLE_PRESETS = [
@@ -1028,29 +981,6 @@ export function Studio() {
       // Fallback: open in new tab if fetch or download fails
       window.open(url, '_blank', 'noopener,noreferrer');
     }
-  };
-
-  const saveToHistory = (item: Omit<HistoryItem, 'id' | 'timestamp' | 'date'>) => {
-    if (!user) return;
-    
-    const historyItem: HistoryItem = {
-      ...item,
-      id: Date.now().toString(),
-      timestamp: new Date().toLocaleTimeString('en-US', { 
-        hour: '2-digit', 
-        minute: '2-digit' 
-      }),
-      date: new Date().toLocaleDateString(),
-    };
-
-    const existingHistory = JSON.parse(
-      localStorage.getItem(`vocence_history_${user.id}`) || '[]'
-    );
-    existingHistory.unshift(historyItem);
-    localStorage.setItem(
-      `vocence_history_${user.id}`,
-      JSON.stringify(existingHistory.slice(0, 100)) // Keep last 100 items
-    );
   };
 
   const handleTtsContentChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
