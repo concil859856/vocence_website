@@ -226,17 +226,27 @@ def test_verify_replay_fails_single_use(client):
 # Login
 # ─────────────────────────────────────────────────────────────────────
 
-def test_login_unverified_account_returns_403(client):
+def test_login_unverified_account_returns_401_same_as_wrong_password(client):
+    """Audit H5 fix: previously returned 403 with "Please verify your
+    email" — a credential oracle. Now returns the same 401 + same
+    message as wrong-password, and triggers a background re-send of
+    the verification email so legit users still get a fresh link."""
     client.post(
         "/api/auth/email/signup",
         json={"email": "grace@example.com", "password": STRONG_PASSWORD},
     )
+    _captured_emails.clear()
     r = client.post(
         "/api/auth/email/login",
         json={"email": "grace@example.com", "password": STRONG_PASSWORD},
     )
-    assert r.status_code == 403
-    assert "verify" in r.json()["detail"].lower()
+    # Indistinguishable from wrong-password
+    assert r.status_code == 401
+    assert "verify" not in r.json()["detail"].lower()
+    assert r.json()["detail"] == "Invalid email or password."
+    # But the user got a fresh verification email in the background
+    fresh_verify = [e for e in _captured_emails if e["type"] == "verify" and e["to"] == "grace@example.com"]
+    assert len(fresh_verify) >= 1, "Background re-send didn't fire"
 
 
 def test_login_correct_credentials_returns_jwt(client):
@@ -527,6 +537,37 @@ def test_H2_signup_never_resends_for_duplicate_email_regardless_of_password(clie
     assert r.status_code == 200
     # No email — the old code would have sent one because password matched.
     assert all(e["type"] != "verify" or e["to"] != "h2_user@example.com" for e in _captured_emails)
+
+
+def test_H4_failed_login_counter_is_atomic_under_concurrency(client):
+    """Audit H4 fix: failed-login counter is now incremented via a
+    single UPDATE ... RETURNING statement, so concurrent failed
+    logins can't lose updates (the previous read-modify-write at the
+    Python level was lossy under contention).
+
+    We can't truly parallelize requests via the sync TestClient, but
+    we can drive enough sequential bad logins to assert the counter
+    increments by 1 per call, and that the lockout fires at exactly
+    threshold-5 — proving each attempt was counted."""
+    token = _signup_and_capture_token(client, "h4@example.com")
+    client.post("/api/auth/email/verify", json={"token": token})
+
+    # Four bad attempts: no lockout yet (threshold is 5).
+    for i in range(4):
+        r = client.post("/api/auth/email/login",
+                        json={"email": "h4@example.com", "password": "Wrong1!Pass"})
+        assert r.status_code == 401, f"attempt {i+1} returned {r.status_code}"
+
+    # Fifth bad attempt: still 401 (this attempt IS the threshold).
+    r5 = client.post("/api/auth/email/login",
+                     json={"email": "h4@example.com", "password": "Wrong1!Pass"})
+    assert r5.status_code == 401
+
+    # Sixth attempt: locked. If the counter had been losing updates
+    # we'd see a 401 here instead of 429.
+    r6 = client.post("/api/auth/email/login",
+                     json={"email": "h4@example.com", "password": "Wrong1!Pass"})
+    assert r6.status_code == 429
 
 
 def test_H6_signup_bonus_is_idempotent_against_email_verified_toggle(client):

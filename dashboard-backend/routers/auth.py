@@ -2068,26 +2068,36 @@ async def email_verify(body: EmailVerifyRequest, request: Request):
 
 
 @router.post("/auth/email/login", response_model=LoginResponse)
-async def email_login(body: EmailLoginRequest, request: Request):
+async def email_login(
+    body: EmailLoginRequest, request: Request, background_tasks: BackgroundTasks,
+):
     """Log in with email + password. Returns a JWT on success.
 
-    All failure modes (wrong password, no such user, account locked,
-    email unverified) collapse to a single 401 with the same message,
-    so an attacker can't distinguish them by response. Lockout is
-    the one exception: the 429 with Retry-After lets a real user know
-    why they're stuck, and an attacker already knows from the
-    failed-attempt cadence.
+    Failure modes that MUST be indistinguishable to an attacker:
+      * email doesn't exist                  → 401 generic
+      * Google-only account (no password)    → 401 generic
+      * email exists, wrong password         → 401 generic
+      * email exists, password right, but
+        email not yet verified               → 401 generic
+                                               (audit H5 — was 403)
+    All four return the same 401 + same string. The 403 the previous
+    revision used was a credential oracle: an attacker who knew the
+    password could distinguish "wrong" (401) from "right but unverified"
+    (403). To still help legitimate users who really have an unverified
+    account, we trigger a background-task verification re-send when the
+    credentials check out but verification is pending. The user sees a
+    fresh email in their inbox without us telling them why.
+
+    Lockout (429 with Retry-After) is the one exception to the
+    generic-error rule — accepted, because an attacker already knows
+    from the request cadence that they triggered it.
     """
     if not _email_auth_rate_ok("login", _client_ip(request), _EMAIL_AUTH_LOGIN_PER_HOUR):
         raise HTTPException(status_code=429, detail="Too many login attempts. Try again later.")
 
-    # Loose input checks. We deliberately don't run check_password_strength
-    # on login — a user who used a weak password to sign up under the
-    # old policy must still be able to log in to change it.
     try:
         email = _auth_sec.normalize_and_validate_email(body.email or "")
     except ValueError:
-        # Run a dummy verify so timing matches the "user exists" path.
         _auth_sec.verify_password(_auth_sec.DUMMY_HASH, body.password or "x")
         raise HTTPException(status_code=401, detail="Invalid email or password.")
     if not body.password:
@@ -2100,7 +2110,7 @@ async def email_login(body: EmailLoginRequest, request: Request):
         row = await (
             await conn.execute(
                 """
-                SELECT id, email, password_hash, email_verified, failed_login_attempts, locked_until
+                SELECT id, name, email, password_hash, email_verified, failed_login_attempts, locked_until
                 FROM auth_users WHERE email = ?
                 """,
                 (email,),
@@ -2108,13 +2118,9 @@ async def email_login(body: EmailLoginRequest, request: Request):
         ).fetchone()
 
         if row is None or not row["password_hash"]:
-            # No such user OR Google-only user with no password set.
-            # Spend the verify time anyway.
             _auth_sec.verify_password(_auth_sec.DUMMY_HASH, body.password)
             raise HTTPException(status_code=401, detail="Invalid email or password.")
 
-        # Lockout check happens BEFORE password verify so we don't burn
-        # CPU on an account that's already locked.
         is_locked, retry_after = _auth_sec.is_account_locked(row["locked_until"])
         if is_locked:
             raise HTTPException(
@@ -2125,25 +2131,64 @@ async def email_login(body: EmailLoginRequest, request: Request):
 
         ok = _auth_sec.verify_password(row["password_hash"], body.password)
         if not ok:
-            # Bump counter, recompute lockout. Same generic error.
-            new_attempts = (row["failed_login_attempts"] or 0) + 1
+            # ATOMIC counter bump (audit H4). The previous read-modify-
+            # write at the Python level was lossy under concurrent
+            # failures — two parallel bad logins both read N, both
+            # wrote N+1, undercounting. RETURNING gives us the new
+            # value in one statement so concurrent failures both see
+            # the post-increment count and compute the correct
+            # lockout. Requires SQLite 3.35+ (we're on 3.37).
+            cursor = await conn.execute(
+                """
+                UPDATE auth_users
+                SET failed_login_attempts = COALESCE(failed_login_attempts, 0) + 1
+                WHERE id = ?
+                RETURNING failed_login_attempts
+                """,
+                (row["id"],),
+            )
+            result = await cursor.fetchone()
+            new_attempts = int(result[0]) if result else 1
             new_lock = _auth_sec.compute_lockout_until(new_attempts)
             await conn.execute(
-                "UPDATE auth_users SET failed_login_attempts = ?, locked_until = ? WHERE id = ?",
-                (new_attempts, new_lock, row["id"]),
+                "UPDATE auth_users SET locked_until = ? WHERE id = ?",
+                (new_lock, row["id"]),
             )
             await conn.commit()
             raise HTTPException(status_code=401, detail="Invalid email or password.")
 
-        # Password OK. But block login if email isn't verified yet —
-        # this is the verify-then-activate gate.
+        # Password OK. If email isn't verified yet, COLLAPSE to the
+        # same 401 the wrong-password branch returns (audit H5). The
+        # previous 403 was a credential oracle. Trigger a re-send so
+        # a legitimate user with the right password still gets a
+        # fresh verify email in their inbox without us telling them
+        # why login was rejected.
+        #
+        # NOTE: we use asyncio.to_thread(...) wrapped in create_task
+        # rather than FastAPI's BackgroundTasks because we're about to
+        # raise HTTPException, and BackgroundTasks attached to a
+        # Response object don't fire on the exception path. The
+        # create_task version is fire-and-forget and runs regardless.
         if row["email_verified"] == 0:
-            raise HTTPException(
-                status_code=403,
-                detail="Please verify your email first. Check your inbox for the verification link.",
+            raw_token = await _issue_verification_token(conn, row["id"])
+            await conn.commit()
+            resend_email = row["email"]
+            resend_name = row["name"] or row["email"].split("@")[0]
+            asyncio.create_task(
+                asyncio.to_thread(
+                    _send_verification_email_safe,
+                    to_email=resend_email,
+                    raw_token=raw_token,
+                    user_name=resend_name,
+                )
             )
+            raise HTTPException(status_code=401, detail="Invalid email or password.")
 
-        # Success. Clear failed-attempt counter and lockout.
+        # Success — clear counter + lockout, update last_login.
+        # Commit BEFORE the opportunistic rehash so a rehash failure
+        # can't roll back the lockout reset (audit; previously a
+        # rehash failure mid-transaction left the counter elevated
+        # despite a successful login).
         now = _auth_sec.utc_now_iso()
         await conn.execute(
             """
@@ -2154,18 +2199,22 @@ async def email_login(body: EmailLoginRequest, request: Request):
             """,
             (now, now, row["id"]),
         )
-
-        # Opportunistic rehash if our Argon2id parameters have been
-        # bumped since the password was last hashed. Costs ~50 ms but
-        # only on the first login after a parameter change.
-        if _auth_sec.password_needs_rehash(row["password_hash"]):
-            new_hash = _auth_sec.hash_password(body.password)
-            await conn.execute(
-                "UPDATE auth_users SET password_hash = ? WHERE id = ?",
-                (new_hash, row["id"]),
-            )
-
         await conn.commit()
+
+        # Opportunistic rehash if Argon2id params have been bumped.
+        # Best-effort, never raises — if it fails we just keep the
+        # old-params hash; the user will still be logged in.
+        if _auth_sec.password_needs_rehash(row["password_hash"]):
+            try:
+                new_hash = _auth_sec.hash_password(body.password)
+                await conn.execute(
+                    "UPDATE auth_users SET password_hash = ? WHERE id = ?",
+                    (new_hash, row["id"]),
+                )
+                await conn.commit()
+            except Exception as exc:
+                _np_log.warning("opportunistic rehash failed for %s: %s", row["id"], exc)
+
         user_out = await _get_user_by_id(row["id"])
         if user_out is None:
             raise HTTPException(status_code=500, detail="Failed to load user.")
