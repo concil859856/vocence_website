@@ -83,23 +83,76 @@ def hash_password(password: str) -> str:
     that encodes the algorithm, version, parameters, salt, and digest.
     Store it directly in ``auth_users.password_hash``; no separate
     salt column needed.
+
+    Audit L44: enforce ``_MAX_PASSWORD_LEN`` here too (not just in the
+    strength checker) so any code path that hashes a password without
+    going through ``check_password_strength`` first — admin tools,
+    migration scripts, future endpoints — can't be tricked into
+    hashing a 10 MB string and pinning a worker on Argon2id for it.
     """
     if not password:
         raise ValueError("Password must not be empty")
+    if len(password) > _MAX_PASSWORD_LEN:
+        raise ValueError(f"Password exceeds {_MAX_PASSWORD_LEN}-character limit")
     return _HASHER.hash(password)
 
 
 def verify_password(stored_hash: str, password: str) -> bool:
     """Verify ``password`` against ``stored_hash``. Returns False on
     mismatch, missing input, malformed hash, or any internal error —
-    never raises. The caller cannot tell *why* verification failed,
-    which is what we want for a login endpoint.
+    never raises.
+
+    Audit M28: equalize timing on the ``InvalidHash`` path. Without
+    this, a malformed ``stored_hash`` (corrupted column, legacy data,
+    or a Google-only account whose ``password_hash`` slot was
+    accidentally written as a non-Argon2 string) returns in
+    microseconds while a real wrong-password takes ~50 ms — a timing
+    oracle distinguishing "this row exists with a valid hash format"
+    from other failure modes. We re-run verify against ``DUMMY_HASH``
+    so the false branch always pays the full Argon2id cost.
+
+    Audit L44: defense-in-depth length cap, same reasoning as
+    ``hash_password``. An attacker can't tie up a worker on Argon2id
+    verify by sending a huge "password" field.
     """
     if not stored_hash or not password:
+        # Match the DUMMY_HASH timing for the "empty input" branch too,
+        # so the existence of the row (vs missing input) can't be
+        # distinguished by a fast vs slow no-op.
+        try:
+            _HASHER.verify(DUMMY_HASH, password or "x")
+        except Exception:
+            pass
+        return False
+    if len(password) > _MAX_PASSWORD_LEN:
+        # Reject oversize input WITHOUT hashing it. The caller-supplied
+        # value would never match anyway (since hash_password rejected
+        # it at signup); short-circuiting here is safe and the timing
+        # asymmetry against the verify path is acceptable — an attacker
+        # who can detect "too long" learns only the max-length policy,
+        # which is documented anyway.
         return False
     try:
         return _HASHER.verify(stored_hash, password)
-    except (VerifyMismatchError, InvalidHash, Exception):
+    except VerifyMismatchError:
+        return False
+    except InvalidHash:
+        # Hash is malformed — run a dummy verify to equalize timing
+        # with the VerifyMismatchError branch above. Otherwise this
+        # path returns in µs vs ~50 ms, leaking format-validity.
+        try:
+            _HASHER.verify(DUMMY_HASH, password)
+        except Exception:
+            pass
+        return False
+    except Exception:
+        # Unexpected error (memory pressure, argon2 native crash, etc).
+        # Best-effort timing equalization, then return False so the
+        # endpoint doesn't surface infra problems as auth state.
+        try:
+            _HASHER.verify(DUMMY_HASH, password)
+        except Exception:
+            pass
         return False
 
 
@@ -129,34 +182,94 @@ _MAX_PASSWORD_LEN = 128  # argon2 inputs longer than this are silently
 
 # Subset of the top-N most common breached passwords (HIBP / RockYou).
 # Kept small + hard-coded so we don't ship a 1 MB wordlist. The full
-# k-anonymity HIBP API check can be added later; this catches the
+# k-anonymity HIBP API check is a future addition; this catches the
 # obvious lazy choices that no real user should be picking anyway.
+#
+# Audit M30: expanded to cover year-suffixed brand variants
+# (vocence2024 etc) and a wider set of common-password roots. The
+# previous list let "Vocence2026!" pass, which is exactly the kind
+# of password a quick-thinking attacker tries first against a
+# Vocence employee or partner.
 _COMMON_PASSWORD_BLOCKLIST = frozenset(
     p.lower()
     for p in (
         "password", "password1", "password12", "password123", "password1234",
-        "passw0rd", "qwerty", "qwerty123", "qwertyuiop",
-        "abc123", "abcd1234", "abcdef123",
+        "passw0rd", "p@ssw0rd", "p@ssword",
+        "qwerty", "qwerty123", "qwertyuiop", "asdfgh", "asdfghjkl", "zxcvbn", "zxcvbnm",
+        "abc123", "abcd1234", "abcdef123", "abcdefg",
         "letmein", "letmein123",
         "welcome", "welcome1", "welcome123",
-        "admin", "admin123", "administrator",
+        "admin", "admin123", "administrator", "root", "root123",
         "iloveyou", "iloveyou1", "iloveyou123",
         "monkey", "monkey123",
         "111111", "1111111", "11111111",
         "123123", "1234567", "12345678", "123456789", "1234567890",
-        "vocence", "vocence123", "vocence1",
-        "voicechat", "voiceai", "voiceaiapp",
+        "vocence", "vocence1", "vocence12", "vocence123", "vocence1234",
+        "vocence2023", "vocence2024", "vocence2025", "vocence2026", "vocence2027",
+        "vocenceai", "voicechat", "voiceai", "voiceaiapp",
         "changeme", "changeme123",
         "default", "default123",
+        "summer2024", "summer2025", "summer2026", "winter2024", "winter2025", "winter2026",
+        "spring2024", "spring2025", "spring2026", "fall2024", "fall2025", "fall2026",
+        "trustno1", "sunshine", "princess", "dragon", "shadow",
     )
 )
 
 
-def check_password_strength(password: str) -> str | None:
+# Keyboard-walk patterns we reject when they appear as a contiguous
+# substring of the password (case-insensitive). Distinct from the
+# blocklist because we want to catch e.g. "MyQwerty123!" too.
+_KEYBOARD_WALKS = (
+    "qwerty", "qwertyuiop", "asdfgh", "asdfghjkl", "zxcvbn", "zxcvbnm",
+    "azerty", "qwertz",
+    "1qaz2wsx", "1q2w3e4r", "1q2w3e",
+)
+
+
+def _has_long_repeat(password: str, run: int = 4) -> bool:
+    """True when the same character appears ``run`` or more times in a row
+    (case-insensitive). Catches ``aaaaaaaaaaaa`` and ``Llllllllllll1!``."""
+    return re.search(r"(.)\1{" + str(run - 1) + r",}", password.lower()) is not None
+
+
+def _has_long_sequence(password: str, run: int = 5) -> bool:
+    """True when the password contains a monotonic run of ``run`` or more
+    consecutive code points (case-insensitive). Catches ``abcdef``,
+    ``123456``, ``zyxwv`` (reverse), and ``ABCDEFGHIJ1!``.
+    """
+    s = password.lower()
+    for i in range(len(s) - run + 1):
+        window = s[i : i + run]
+        deltas = {ord(window[j + 1]) - ord(window[j]) for j in range(run - 1)}
+        if deltas == {1} or deltas == {-1}:
+            return True
+    return False
+
+
+def check_password_strength(
+    password: str,
+    *,
+    user_context: tuple[str, ...] = (),
+) -> str | None:
     """Validate ``password`` against the policy. Returns ``None`` if OK
-    or a user-facing error string. The caller should pass the returned
-    message to the user verbatim — it's worded as a single sentence
-    that fits a form-validation toast.
+    or a user-facing error string.
+
+    ``user_context`` should contain identifiers the password MUST NOT
+    contain — typically the email local-part and the user's display
+    name at signup, plus the brand name. Each entry that's >= 4 chars
+    is matched case-insensitively as a substring (audit M30:
+    NIST 800-63B explicitly requires rejecting passwords that contain
+    user-context terms; e.g. "alice" must not pass for alice@x.com).
+
+    Audit M30 additions over the previous policy:
+      * Long repeats (``aaaaaaaaaaa``) rejected via _has_long_repeat
+      * Monotonic sequences (``abcdefgh``, ``876543``) rejected via
+        _has_long_sequence
+      * Keyboard walks (``qwerty``, ``asdfgh``, etc) rejected as
+        substrings, not just exact matches
+      * User-context substrings (email local-part, display name)
+      * Expanded common-password blocklist with year-suffixed brand
+        variants and season+year combos
     """
     if not password:
         return "Password is required."
@@ -176,8 +289,24 @@ def check_password_strength(password: str) -> str | None:
             "digit, special character."
         )
 
-    if password.lower() in _COMMON_PASSWORD_BLOCKLIST:
+    p_low = password.lower()
+    if p_low in _COMMON_PASSWORD_BLOCKLIST:
         return "This password is too common. Please choose another."
+
+    if _has_long_repeat(password):
+        return "Password contains too many repeated characters."
+
+    if _has_long_sequence(password):
+        return "Password contains a sequential pattern. Please mix it up more."
+
+    for walk in _KEYBOARD_WALKS:
+        if walk in p_low:
+            return "Password contains a common keyboard pattern. Please choose another."
+
+    for ctx in user_context:
+        ctx_low = (ctx or "").strip().lower()
+        if len(ctx_low) >= 4 and ctx_low in p_low:
+            return "Password must not contain your name or email."
 
     return None
 
@@ -192,13 +321,23 @@ _MAX_EMAIL_LEN = 254
 
 
 def normalize_and_validate_email(raw_email: str, *, check_deliverability: bool = False) -> str:
-    """Return a normalised lowercase email or raise ``ValueError``.
+    """Return a normalised email or raise ``ValueError``.
+
+    Audit M32: normalization uses ``casefold()`` + Unicode NFKC. The
+    previous ``.lower()`` was locale-independent but not safe for
+    full Unicode case folding (Turkish dotless ı vs i, German ß,
+    full-width Latin). Two RFC-valid addresses that should be
+    treated as the same identity must hash to the same string at
+    BOTH signup and login — inconsistency here is an account-takeover
+    primitive. We apply the same transform everywhere by routing
+    every email through this single function.
 
     ``check_deliverability=True`` does a DNS MX lookup, which adds
     latency and can fail in CI / offline environments. Default off;
     enable per-route when you want the extra verification (signup
     only, never login).
     """
+    import unicodedata
     if not raw_email:
         raise ValueError("Email is required.")
     raw = raw_email.strip()
@@ -208,8 +347,12 @@ def normalize_and_validate_email(raw_email: str, *, check_deliverability: bool =
         result = validate_email(raw, check_deliverability=check_deliverability)
     except EmailNotValidError as e:
         raise ValueError(str(e)) from e
-    # ``normalized`` is the canonical lowercase IDNA-encoded form.
-    return result.normalized.lower()
+    normalized = result.normalized
+    # NFKC folds compatibility-equivalent characters (full-width 'A' →
+    # 'A', etc) so visually-identical inputs hash to the same string.
+    # casefold() is Unicode-aware lower-casing (treats e.g. 'ß' as
+    # 'ss', Turkish 'İ' as 'i̇') — more aggressive than .lower().
+    return unicodedata.normalize("NFKC", normalized).casefold()
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -232,19 +375,55 @@ def generate_token() -> tuple[str, str]:
     return raw, hash_token(raw)
 
 
-def hash_token(raw_token: str) -> str:
-    """Hash an incoming token for storage / lookup. Uses SHA-256, not
-    Argon2id, because tokens are already 256 bits of entropy — there's
-    no value in slowing down the verify path. The hash is hex-encoded
-    so it's safe to store in a TEXT column and use as a SQL index key.
+def _token_hmac_key() -> bytes:
+    """Server-side secret keying for the verify / reset token HMAC.
+
+    Reuses ``JWT_SECRET`` so we don't add another secret to manage;
+    both have the same security envelope (server-side, never to a
+    client) so this is fine. If ``AUTH_TOKEN_HMAC_KEY`` is set
+    explicitly, that wins — useful when rotating JWT_SECRET without
+    invalidating every outstanding verify / reset token at once.
+
+    Audit L46: storing bare SHA-256(token) means anyone with WRITE
+    access to ``verification_token_hash`` / ``password_reset_token_hash``
+    (DB compromise, SQL-injection bug, rogue admin) can compute
+    sha256(any_token) and inject a valid hash to forge a token.
+    HMAC with a server-only key defeats this — write access alone
+    is insufficient; the attacker also needs the HMAC key.
     """
-    return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+    explicit = (os.environ.get("AUTH_TOKEN_HMAC_KEY") or "").strip()
+    if explicit:
+        return explicit.encode("utf-8")
+    jwt_secret = (os.environ.get("JWT_SECRET") or "").strip()
+    if not jwt_secret:
+        # Fail-loud rather than fall back to no-HMAC — the whole point
+        # is that the key must exist. Mirrors routers/auth.py's
+        # JWT_SECRET refusal-to-boot.
+        raise RuntimeError(
+            "AUTH_TOKEN_HMAC_KEY or JWT_SECRET must be set for token hashing"
+        )
+    return jwt_secret.encode("utf-8")
+
+
+def hash_token(raw_token: str) -> str:
+    """Hash an incoming token for storage / lookup.
+
+    Uses HMAC-SHA-256 with a server-side secret (``_token_hmac_key``)
+    rather than bare SHA-256 — see audit L46. The result is 64-char
+    hex, safe to store in a TEXT column and to use as a SQL index key.
+    """
+    return hmac.new(_token_hmac_key(), raw_token.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 def constant_time_compare(a: str, b: str) -> bool:
-    """``hmac.compare_digest`` over two strings. Use this anywhere you
-    compare a user-supplied secret to a stored value, even when the
-    stored value is a hash — short-circuit comparison leaks length.
+    """``hmac.compare_digest`` over two strings.
+
+    NOTE: ``.encode("utf-8")`` allocation time scales with input
+    length, so callers MUST pass fixed-length inputs (e.g. 64-char
+    hex hashes). Short-circuiting on length is fine, since
+    compare_digest itself does so for unequal lengths — the leak
+    here is purely the encode-allocation cost, which only matters
+    if you're comparing variable-length user-supplied strings.
     """
     return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
 
@@ -324,6 +503,15 @@ def is_account_locked(locked_until_iso: str | None) -> tuple[bool, int]:
     The integer is suitable for a ``Retry-After`` response header so
     well-behaved clients (and our own UI) can stop hammering the
     endpoint until the lock clears.
+
+    Audit M31: this used to fail OPEN on a malformed timestamp (=
+    treat as not-locked) — inconsistent with ``is_iso_in_past``
+    which fails CLOSED, and the wrong direction for a security
+    primitive. A corrupted ``locked_until`` column would silently
+    let a brute-forcer bypass lockout. Now fails CLOSED: any
+    unparseable value returns ``(True, 60)`` so the request is
+    rejected, a 60-second cool-down is suggested, and operators get
+    a server-side log line to investigate.
     """
     if not locked_until_iso:
         return False, 0
@@ -332,7 +520,11 @@ def is_account_locked(locked_until_iso: str | None) -> tuple[bool, int]:
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
     except (ValueError, TypeError):
-        return False, 0
+        import logging
+        logging.getLogger(__name__).warning(
+            "is_account_locked: unparseable locked_until value %r — failing closed", locked_until_iso,
+        )
+        return True, 60
     now = datetime.now(timezone.utc)
     if dt <= now:
         return False, 0
