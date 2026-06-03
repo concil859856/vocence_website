@@ -105,7 +105,12 @@ SCHEMA_SQL: list[str] = [
         last_metrics_at TEXT,
         last_metrics_json TEXT,
         deployed_at TEXT NOT NULL DEFAULT (datetime('now')),
-        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        -- Index of the physical GPU this pod is pinned to. NULL means
+        -- ``--gpus all`` (legacy / single-GPU hosts). Required when
+        -- co-locating multiple pods on a multi-GPU server so each one
+        -- gets its own device instead of all piling onto cuda:0.
+        gpu_index INTEGER
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_ops_pods_service_status ON ops_pods (service, status)",
@@ -183,12 +188,24 @@ SCHEMA_SQL: list[str] = [
 ]
 
 
+async def _ensure_column(conn, table: str, column: str, ddl: str) -> None:
+    """Idempotently add a column if missing. Mirrors local_db._ensure_column."""
+    cur = await conn.execute(f"PRAGMA table_info({table})")
+    cols = {row[1] for row in await cur.fetchall()}
+    if column not in cols:
+        await conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+
+
 async def ensure_ops_tables() -> None:
     """Create all ops_* tables idempotently. Safe to call at every startup."""
     conn = await get_connection()
     try:
         for stmt in SCHEMA_SQL:
             await conn.execute(stmt)
+        # Back-compat migrations for columns added after the initial schema.
+        # Existing pre-multi-GPU pods have gpu_index = NULL which the
+        # docker_run helper treats as ``--gpus all`` (the previous behaviour).
+        await _ensure_column(conn, "ops_pods", "gpu_index", "gpu_index INTEGER")
         await conn.commit()
     finally:
         await conn.close()
@@ -354,6 +371,7 @@ async def insert_pod(
     port: int,
     api_key_enc: str,
     extra_env_enc: str,
+    gpu_index: int | None = None,
 ) -> int:
     if service not in SERVICE_NAMES:
         raise ValueError(f"unknown service {service!r}; valid: {SERVICE_NAMES}")
@@ -362,10 +380,10 @@ async def insert_pod(
         cursor = await conn.execute(
             """
             INSERT INTO ops_pods
-                (server_id, name, service, image, port, api_key_enc, extra_env_enc, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'deploying')
+                (server_id, name, service, image, port, api_key_enc, extra_env_enc, gpu_index, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'deploying')
             """,
-            (server_id, name, service, image, port, api_key_enc, extra_env_enc),
+            (server_id, name, service, image, port, api_key_enc, extra_env_enc, gpu_index),
         )
         await conn.commit()
         return cursor.lastrowid

@@ -26,6 +26,14 @@ export type PodStatus =
   | 'stopped'
   | 'removed';
 
+export interface ServerGpu {
+  index: number;
+  name: string;
+  memory_total_mib?: number | null;
+  memory_used_mib?: number | null;
+  driver_version?: string | null;
+}
+
 export interface ServerRow {
   id: number;
   name: string;
@@ -37,11 +45,25 @@ export interface ServerRow {
   last_seen_at: string | null;
   docker_version: string | null;
   gpu_info_json: string | null;          // JSON-encoded list<{index,name,memory_total_mib,...}>
+  /** Parsed gpu_info_json — server-side decoded so the UI can render
+   *  the "pick a GPU" picker without re-parsing. Same shape as what
+   *  nvidia-smi --query-gpu emits. Empty array when probe hasn't run. */
+  gpus: ServerGpu[];
   notes: string | null;
   created_at: string;
   updated_at: string;
   pod_count: number;
-  pods_summary: { id: number; name: string; service: ServiceName; port: number; status: PodStatus }[];
+  pods_summary: {
+    id: number;
+    name: string;
+    service: ServiceName;
+    port: number;
+    status: PodStatus;
+    /** Which physical GPU this pod is pinned to. NULL = --gpus all
+     *  (legacy / single-GPU host). The deploy modal uses this to
+     *  show "GPU N — used by pod X" hints so admins avoid collisions. */
+    gpu_index: number | null;
+  }[];
 }
 
 export interface PodRow {
@@ -53,6 +75,9 @@ export interface PodRow {
   image_digest: string | null;
   container_id: string | null;
   port: number;
+  /** Physical GPU index this pod is pinned to. NULL = --gpus all
+   *  (legacy / single-GPU host). */
+  gpu_index: number | null;
   status: PodStatus;
   consecutive_failures: number;
   drain_requested: number;
@@ -133,6 +158,11 @@ export interface PodDeployRequest {
   port: number;
   api_key?: string | null;
   extra_env?: Record<string, string>;
+  /** Physical GPU to pin this pod to. NULL/undefined = --gpus all
+   *  (single-GPU hosts). Must be set when co-locating multiple pods
+   *  on the same multi-GPU server — otherwise they all default to
+   *  cuda:0 and immediately OOM. */
+  gpu_index?: number | null;
 }
 
 export const SERVICE_LABELS: Record<ServiceName, string> = {

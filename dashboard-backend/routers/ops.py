@@ -104,6 +104,16 @@ class PodDeployIn(BaseModel):
                     "and its main endpoint. Auto-generated if omitted.",
     )
     extra_env: dict[str, str] = Field(default_factory=dict)
+    gpu_index: int | None = Field(
+        None,
+        description="Physical GPU index to pin this pod to (0..N-1 where N "
+                    "is the count from the server's nvidia-smi probe). NULL "
+                    "= --gpus all (legacy / single-GPU hosts). Required when "
+                    "co-locating multiple pods on the same multi-GPU server "
+                    "so each one gets its own device.",
+        ge=0,
+        le=15,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +132,14 @@ async def list_servers_endpoint(_: str = Depends(require_admin_unlocked)) -> dic
         # Don't leak the encrypted private key to the UI.
         sd.pop("ssh_private_key_enc", None)
         sd["pod_count"] = len(pods)
+        # Parse the nvidia-smi probe blob into structured GPU rows so the
+        # admin UI can render a "pick a GPU" picker without re-parsing
+        # the JSON string client-side. Keep gpu_info_json for back-compat
+        # with anything else reading the raw field.
+        try:
+            sd["gpus"] = json.loads(s.get("gpu_info_json") or "[]") or []
+        except (ValueError, TypeError):
+            sd["gpus"] = []
         sd["pods_summary"] = [
             {
                 "id": p["id"],
@@ -129,6 +147,9 @@ async def list_servers_endpoint(_: str = Depends(require_admin_unlocked)) -> dic
                 "service": p["service"],
                 "port": p["port"],
                 "status": p["status"],
+                # gpu_index lets the UI show "GPU N — used by pod X"
+                # in the deploy modal so admins can avoid collisions.
+                "gpu_index": p.get("gpu_index"),
             }
             for p in pods
         ]
@@ -282,6 +303,26 @@ async def deploy_pod(body: PodDeployIn, _: str = Depends(require_admin_unlocked)
     if server is None or server.get("status") == "removed":
         raise HTTPException(status_code=404, detail="server not found")
 
+    # Validate the GPU pin against the server's probed gpu_info, if any.
+    # If the server has been probed we know how many GPUs it has and
+    # whether the requested index exists. We do NOT block a deploy when
+    # gpu_info_json is missing — the admin may have just added the
+    # server and the probe is still running. The docker_run call will
+    # surface "gpu device not found" at deploy time in that case.
+    if body.gpu_index is not None and server.get("gpu_info_json"):
+        try:
+            available = json.loads(server["gpu_info_json"]) or []
+            valid_indexes = {int(g.get("index")) for g in available if g.get("index") is not None}
+            if body.gpu_index not in valid_indexes:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"GPU {body.gpu_index} not found on server (available: {sorted(valid_indexes)})",
+                )
+        except (ValueError, TypeError, KeyError):
+            # Malformed gpu_info_json — fall through. docker_run will
+            # surface the error at deploy time.
+            pass
+
     api_key = (body.api_key or "").strip() or secrets.token_urlsafe(32)
 
     # Insert the pod row up-front so the admin sees it as 'deploying'
@@ -294,6 +335,7 @@ async def deploy_pod(body: PodDeployIn, _: str = Depends(require_admin_unlocked)
         port=body.port,
         api_key_enc=ops_crypto.encrypt(api_key),
         extra_env_enc=ops_crypto.encrypt(json.dumps(body.extra_env)),
+        gpu_index=body.gpu_index,
     )
     await ops_db.log_pod_event(pod_id, "deploy_started", f"{body.image} on {server['name']}")
 
@@ -359,6 +401,7 @@ async def deploy_pod(body: PodDeployIn, _: str = Depends(require_admin_unlocked)
             host_port=body.port,
             container_port=container_port,
             env=env,
+            gpu_index=body.gpu_index,
         )
 
         await ops_db.update_pod(
@@ -480,6 +523,10 @@ async def update_pod_endpoint(pod_id: int, _: str = Depends(require_admin_unlock
         }.get(pod["service"], int(pod["port"]))
 
         container_name = f"vocence-{pod['service']}-{pod_id}"
+        # Preserve the pod's original GPU pin when redeploying — without
+        # this an update would silently re-fall-back to --gpus all and
+        # collide with other pods on the same multi-GPU host.
+        existing_gpu_index = pod.get("gpu_index")
         new_cid = await ops_ssh.docker_run(
             server,
             container_name=container_name,
@@ -487,6 +534,7 @@ async def update_pod_endpoint(pod_id: int, _: str = Depends(require_admin_unlock
             host_port=int(pod["port"]),
             container_port=container_port,
             env=env,
+            gpu_index=int(existing_gpu_index) if existing_gpu_index is not None else None,
         )
         await ops_db.update_pod(pod_id, container_id=new_cid, image_digest=new_digest, status="deploying")
         await ops_db.log_pod_event(pod_id, "update_applied", f"pulled digest {new_digest}")

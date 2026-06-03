@@ -395,14 +395,27 @@ async def docker_run(
     host_port: int,
     container_port: int,
     env: dict[str, str],
+    gpu_index: int | None = None,
     extra_args: list[str] | None = None,
     timeout: float = 60.0,
 ) -> str:
     """Start a container detached. Returns the container ID (full sha256).
 
     Always passes ``--restart=unless-stopped`` so a host reboot brings the
-    pod back automatically without needing systemd or compose. Always
-    enables ``--gpus all`` (these are GPU services by definition)."""
+    pod back automatically without needing systemd or compose.
+
+    GPU isolation:
+      * ``gpu_index=None``  → ``--gpus all`` (legacy / single-GPU hosts).
+        Container sees every GPU; framework picks cuda:0 by default.
+      * ``gpu_index=N``     → ``--gpus '"device=N"'``. Container sees only
+        physical GPU N (which appears as cuda:0 inside the container).
+        Use this when co-locating multiple pods on a multi-GPU server —
+        otherwise they all pile onto cuda:0 and immediately OOM.
+
+    nvidia-container-toolkit handles the device-handle reference
+    counting; multiple containers can pin different GPUs on the same
+    host without fighting over /dev/nvidia*.
+    """
     # Build env flags. Each value is shell-quoted; keys are restricted to
     # [A-Z_][A-Z0-9_]+ at the caller (validated in routers/ops.py) so we
     # don't need to quote them here.
@@ -412,9 +425,16 @@ async def docker_run(
 
     extras = " ".join(extra_args or [])
 
+    if gpu_index is None:
+        gpu_flag = "--gpus all"
+    else:
+        # Outer single-quotes for the shell, inner double-quotes required
+        # by Docker's CLI parser for the device= form.
+        gpu_flag = f"--gpus '\"device={int(gpu_index)}\"'"
+
     cmd = (
         "docker run -d "
-        "--gpus all "
+        f"{gpu_flag} "
         "--restart=unless-stopped "
         f"--name {shlex.quote(container_name)} "
         f"-p {host_port}:{container_port} "

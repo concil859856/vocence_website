@@ -308,6 +308,7 @@ function DeployPodModal({
     port: DEFAULT_PORTS.tts_streaming,
     api_key: '',
     extra_env: {},
+    gpu_index: null,
   });
   const [extraEnvText, setExtraEnvText] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -416,6 +417,24 @@ function DeployPodModal({
             />
           </Field>
 
+          <GpuPicker
+            server={servers.find((s) => s.id === form.server_id)}
+            value={form.gpu_index ?? null}
+            onChange={(v) => setForm({ ...form, gpu_index: v })}
+            onProbe={async () => {
+              try {
+                await opsApi.reprobeServer(token, form.server_id);
+                // Probe is async server-side (~20-30s for SSH +
+                // nvidia-smi). Caller polls servers via PodsTab's
+                // own refresh tick; surfacing onDeployed() here is
+                // overkill, just toast.
+                setError('GPU probe queued — refresh in a moment.');
+              } catch (e) {
+                setError((e as Error).message);
+              }
+            }}
+          />
+
           <Field
             label="API key (bearer)"
             hint="Leave blank to auto-generate. Stored encrypted at rest."
@@ -494,6 +513,134 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
 
 // ---------------------------------------------------------------------------
 // Logs modal
+// ---------------------------------------------------------------------------
+
+/** GPU picker for the deploy modal. Renders one option per physical
+ *  GPU detected by the server's nvidia-smi probe, plus an "all GPUs"
+ *  default for single-GPU hosts. Shows which GPUs are already taken
+ *  by other pods on the same server so the admin doesn't accidentally
+ *  pile two pods on the same card.
+ *
+ *  When the server has no probed gpu_info (just-added, or probe
+ *  failed), shows a "no GPU info yet — probe?" prompt with a refresh
+ *  button. Picker is disabled in that state. */
+function GpuPicker({
+  server,
+  value,
+  onChange,
+  onProbe,
+}: {
+  server: ServerRow | undefined;
+  value: number | null;
+  onChange: (v: number | null) => void;
+  onProbe: () => Promise<void>;
+}) {
+  const [probing, setProbing] = useState(false);
+
+  if (!server) {
+    return null;
+  }
+
+  const gpus = server.gpus || [];
+
+  // Map gpu_index → array of pod names already running on it, for the
+  // collision hint. Pods with gpu_index=NULL ("--gpus all") are listed
+  // separately because they conflict with EVERYTHING.
+  const usage = new Map<number, string[]>();
+  const podsOnAll: string[] = [];
+  for (const p of server.pods_summary || []) {
+    if (p.status === 'removed' || p.status === 'stopped') continue;
+    if (p.gpu_index == null) {
+      podsOnAll.push(p.name);
+    } else {
+      const arr = usage.get(p.gpu_index) || [];
+      arr.push(p.name);
+      usage.set(p.gpu_index, arr);
+    }
+  }
+
+  const handleProbe = async () => {
+    setProbing(true);
+    try {
+      await onProbe();
+    } finally {
+      setProbing(false);
+    }
+  };
+
+  return (
+    <Field
+      label="GPU"
+      hint={
+        gpus.length === 0
+          ? 'Server hasn\'t been probed yet — click Probe to detect GPUs.'
+          : `Pin this pod to one of the ${gpus.length} GPU(s) on ${server.name}. Required when multiple pods share the same server.`
+      }
+    >
+      <div className="space-y-2">
+        {gpus.length === 0 ? (
+          <button
+            type="button"
+            onClick={handleProbe}
+            disabled={probing}
+            className="rounded-lg border border-white/15 bg-white/[0.04] px-3 py-2 text-sm text-white hover:bg-white/[0.08] disabled:opacity-50"
+          >
+            {probing ? 'Probing...' : 'Probe GPUs'}
+          </button>
+        ) : (
+          <>
+            <div className="flex gap-2">
+              <select
+                value={value === null ? '' : String(value)}
+                onChange={(e) => onChange(e.target.value === '' ? null : Number(e.target.value))}
+                className="input flex-1"
+              >
+                <option value="">All GPUs (single-pod hosts only)</option>
+                {gpus.map((g) => {
+                  const taken = usage.get(g.index) || [];
+                  const memGB = g.memory_total_mib ? Math.round(g.memory_total_mib / 1024) : null;
+                  const label =
+                    `GPU ${g.index} — ${g.name}` +
+                    (memGB ? ` (${memGB} GB)` : '') +
+                    (taken.length ? ` — taken by ${taken.join(', ')}` : ' — free');
+                  return (
+                    <option key={g.index} value={g.index}>
+                      {label}
+                    </option>
+                  );
+                })}
+              </select>
+              <button
+                type="button"
+                onClick={handleProbe}
+                disabled={probing}
+                title="Re-probe nvidia-smi on the server"
+                className="rounded-lg border border-white/15 bg-white/[0.04] px-3 text-sm text-[#A7B0B7] hover:text-white hover:bg-white/[0.08] disabled:opacity-50"
+              >
+                {probing ? '...' : '↻'}
+              </button>
+            </div>
+            {podsOnAll.length > 0 && (
+              <p className="text-xs text-yellow-300/90">
+                Warning: {podsOnAll.length} pod{podsOnAll.length === 1 ? '' : 's'}{' '}
+                ({podsOnAll.join(', ')}) on this server use --gpus all and will
+                contend with whichever GPU you pick.
+              </p>
+            )}
+            {value != null && (usage.get(value) || []).length > 0 && (
+              <p className="text-xs text-yellow-300/90">
+                Warning: GPU {value} is already in use by{' '}
+                {(usage.get(value) || []).join(', ')}. Two pods on the same
+                GPU will fight for VRAM.
+              </p>
+            )}
+          </>
+        )}
+      </div>
+    </Field>
+  );
+}
+
 // ---------------------------------------------------------------------------
 
 function LogsModal({ token, podId, onClose }: { token: string; podId: number; onClose: () => void }) {
