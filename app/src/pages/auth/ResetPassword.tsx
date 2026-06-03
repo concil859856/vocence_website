@@ -1,17 +1,35 @@
-import { useState } from 'react';
-import { useSearchParams, useNavigate, Link } from 'react-router-dom';
+import { useEffect, useRef, useState } from 'react';
+import { useNavigate, Link } from 'react-router-dom';
 import { Lock, Eye, EyeOff, CheckCircle2, XCircle } from 'lucide-react';
 import { api } from '../../services/api';
 
 const PASSWORD_MIN = 12;
 
-/** Landing page for the password-reset link emailed by /auth/email/forgot.
- *  Reads ?token=... from the URL, asks for a new password, POSTs both
- *  to /auth/email/reset, then redirects to the login modal. */
+/** Read the reset token from the URL.
+ *
+ *  Same strategy as VerifyEmail: prefer fragment, accept query for
+ *  backwards compat, strip from URL on mount to keep the token out
+ *  of Referer / history / address bar. See VerifyEmail.tsx for the
+ *  full rationale and audit-finding cross-reference. */
+function readTokenFromUrl(): string {
+  const hash = window.location.hash || '';
+  if (hash.startsWith('#token=')) {
+    return decodeURIComponent(hash.slice('#token='.length));
+  }
+  const params = new URLSearchParams(window.location.search);
+  return params.get('token') || '';
+}
+
+function stripTokenFromUrl(): void {
+  window.history.replaceState({}, '', window.location.pathname);
+}
+
 export function ResetPassword() {
-  const [params] = useSearchParams();
   const navigate = useNavigate();
-  const token = params.get('token') || '';
+
+  // Captured ONCE on mount, then immediately stripped from the URL.
+  const tokenRef = useRef<string>('');
+  const [hasToken, setHasToken] = useState<boolean | null>(null);
 
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
@@ -20,14 +38,26 @@ export function ResetPassword() {
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
 
-  if (!token) {
+  useEffect(() => {
+    const token = readTokenFromUrl();
+    stripTokenFromUrl();
+    tokenRef.current = token;
+    setHasToken(!!token);
+  }, []);
+
+  if (hasToken === null) {
+    // Brief flash until we read the URL — render nothing.
+    return null;
+  }
+
+  if (!hasToken) {
     return (
       <div className="min-h-screen pt-24 bg-[#07080A] flex items-center justify-center px-4">
         <div className="card-vocence p-8 max-w-md w-full text-center">
           <XCircle size={36} className="mx-auto mb-4 text-red-400" />
           <h1 className="text-xl font-semibold mb-2">Invalid reset link</h1>
           <p className="text-sm text-[#A7B0B7] mb-6">No token found in the URL.</p>
-          <Link to="/" className="btn-primary inline-flex">Go home</Link>
+          <Link to="/" className="btn-primary inline-flex" rel="noreferrer">Go home</Link>
         </div>
       </div>
     );
@@ -46,7 +76,7 @@ export function ResetPassword() {
     }
     setBusy(true);
     try {
-      await api.emailReset(token, password);
+      await api.emailReset(tokenRef.current, password);
       setDone(true);
       window.setTimeout(() => navigate('/?login=1', { replace: true }), 2000);
     } catch (e) {
@@ -88,13 +118,15 @@ export function ResetPassword() {
                 placeholder={`At least ${PASSWORD_MIN} characters`}
                 className="flex-1 bg-transparent text-white placeholder-[#666] outline-none"
                 autoComplete="new-password"
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
                 maxLength={128}
               />
               <button
                 type="button"
                 onClick={() => setShow((s) => !s)}
                 className="text-[#666] hover:text-white"
-                tabIndex={-1}
                 aria-label={show ? 'Hide password' : 'Show password'}
               >
                 {show ? <EyeOff size={16} /> : <Eye size={16} />}
@@ -112,6 +144,9 @@ export function ResetPassword() {
                 placeholder="Type it again"
                 className="flex-1 bg-transparent text-white placeholder-[#666] outline-none"
                 autoComplete="new-password"
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
                 maxLength={128}
               />
             </div>

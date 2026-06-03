@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect } from 'react';
+import { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
 import type { ReactNode } from 'react';
 import { api, localStorageFallback } from '../services/api';
 import type { User } from '../services/api';
@@ -154,18 +154,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  const setSession = ({ user: nextUser, token }: { user: User; token: string }) => {
+  // MUST be useCallback. The verify page's effect depends on this
+  // reference; without useCallback, every AuthProvider render rebuilds
+  // the function and triggers the effect to re-run, which would
+  // double-POST the single-use verify token and burn it (audit C3).
+  const setSession = useCallback(({ user: nextUser, token }: { user: User; token: string }) => {
     setUser(nextUser);
     localStorage.setItem('vocence_user', JSON.stringify(nextUser));
     localStorage.setItem('vocence_token', token);
-    // Mirror to dashboardApi.registerUser the same way the Google
-    // login does, best-effort.
     dashboardApi.registerUser({
       email: nextUser.email,
       name: nextUser.name,
       picture: nextUser.picture ?? undefined,
     }).catch(() => {});
-  };
+  }, []);
 
   const logout = () => {
     setUser(null);
@@ -210,19 +212,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  // Memoize the context value so consumers whose effects depend on
+  // any field don't re-run every AuthProvider render. Pairs with the
+  // useCallback on setSession above; both are required to prevent
+  // VerifyEmail.tsx from double-consuming the verification token.
+  const ctxValue = useMemo(
+    () => ({
+      user,
+      login,
+      setSession,
+      logout,
+      updateCredits,
+      setLocalCredits,
+      isAuthenticated: !!user,
+      isLoading,
+    }),
+    [user, login, setSession, logout, updateCredits, setLocalCredits, isLoading],
+  );
+
   return (
-    <AuthContext.Provider
-      value={{
-        user,
-        login,
-        setSession,
-        logout,
-        updateCredits,
-        setLocalCredits,
-        isAuthenticated: !!user,
-        isLoading,
-      }}
-    >
+    <AuthContext.Provider value={ctxValue}>
       {children}
     </AuthContext.Provider>
   );

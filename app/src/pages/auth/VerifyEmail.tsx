@@ -1,27 +1,64 @@
-import { useEffect, useState } from 'react';
-import { useSearchParams, useNavigate, Link } from 'react-router-dom';
+import { useEffect, useRef, useState } from 'react';
+import { useNavigate, Link } from 'react-router-dom';
 import { CheckCircle2, XCircle, Loader2 } from 'lucide-react';
 import { api } from '../../services/api';
 import { useAuth } from '../../contexts/AuthContext';
 
-/** Landing page for the verification link emailed during signup.
- *  Reads ?token=... from the URL, POSTs it to the verify endpoint,
- *  and on success installs the JWT and redirects to /studio. */
+/** Read the verification token from the URL.
+ *
+ *  We prefer the URL fragment (`#token=...`) over query string
+ *  (`?token=...`) for the same reason every modern OAuth flow does:
+ *  fragments are NEVER sent to servers, so they don't end up in CDN /
+ *  proxy / load-balancer access logs. We also accept `?token=` for
+ *  backwards compatibility with any older email links still in transit.
+ *
+ *  Audit findings closed:
+ *    C4 — Referer leak when user clicks a link on this page
+ *    C5 — CDN/proxy access logs capturing the bearer token
+ *
+ *  After we read the token we immediately strip it from the URL with
+ *  history.replaceState so even browser-history sync / bystanders /
+ *  same-origin Referer headers stop seeing it. */
+function readTokenFromUrl(): string {
+  const hash = window.location.hash || '';
+  if (hash.startsWith('#token=')) {
+    return decodeURIComponent(hash.slice('#token='.length));
+  }
+  const params = new URLSearchParams(window.location.search);
+  return params.get('token') || '';
+}
+
+function stripTokenFromUrl(): void {
+  window.history.replaceState({}, '', window.location.pathname);
+}
+
 export function VerifyEmail() {
-  const [params] = useSearchParams();
   const navigate = useNavigate();
   const { setSession } = useAuth();
 
   const [state, setState] = useState<'pending' | 'success' | 'error'>('pending');
   const [error, setError] = useState<string | null>(null);
 
+  // Ref-based consume guard so the same token is never POSTed twice.
+  // Audit C3: React StrictMode double-mounts effects in dev, and any
+  // future provider re-render that changes the deps would refire the
+  // effect, double-consuming the single-use token and showing the
+  // user an "expired" error AFTER they actually verified.
+  const consumedRef = useRef(false);
+
   useEffect(() => {
-    const token = params.get('token') || '';
+    if (consumedRef.current) return;
+    consumedRef.current = true;
+
+    const token = readTokenFromUrl();
+    stripTokenFromUrl();
+
     if (!token) {
       setState('error');
       setError('No verification token in the link.');
       return;
     }
+
     let cancelled = false;
     (async () => {
       try {
@@ -29,7 +66,6 @@ export function VerifyEmail() {
         if (cancelled) return;
         setSession({ user: res.user, token: res.token });
         setState('success');
-        // Quick celebration, then send them into the product.
         window.setTimeout(() => {
           if (!cancelled) navigate('/studio', { replace: true });
         }, 1600);
@@ -40,7 +76,10 @@ export function VerifyEmail() {
       }
     })();
     return () => { cancelled = true; };
-  }, [params, setSession, navigate]);
+    // setSession is now stable (useCallback). navigate from
+    // react-router is stable. So this effect runs exactly once per
+    // mount — and the ref guard catches the StrictMode double-mount.
+  }, [setSession, navigate]);
 
   return (
     <div className="min-h-screen pt-24 bg-[#07080A] flex items-center justify-center px-4">
@@ -66,7 +105,7 @@ export function VerifyEmail() {
             <XCircle size={36} className="mx-auto mb-4 text-red-400" />
             <h1 className="text-xl font-semibold mb-2">We couldn't verify your email</h1>
             <p className="text-sm text-[#A7B0B7] mb-6">{error}</p>
-            <Link to="/" className="btn-primary inline-flex">
+            <Link to="/" className="btn-primary inline-flex" rel="noreferrer">
               Go home
             </Link>
             <p className="text-xs text-[#666] mt-4">
