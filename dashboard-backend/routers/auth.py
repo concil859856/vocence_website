@@ -294,10 +294,20 @@ def _user_row_to_out(row) -> UserOut:
 
 
 def _make_token(user_id: str, email: str) -> str:
+    """Issue a session JWT.
+
+    Includes ``iat`` (issued-at) so the auth-check path can compare it
+    against the user's ``password_changed_at`` and invalidate sessions
+    issued before the most recent password change (audit H8). Without
+    this claim, an attacker who stole a JWT keeps full access for up
+    to JWT_EXPIRY_DAYS even after the legit user resets their password.
+    """
+    now = datetime.now(timezone.utc)
     payload = {
         "userId": user_id,
         "email": email,
-        "exp": datetime.now(timezone.utc) + timedelta(days=JWT_EXPIRY_DAYS),
+        "iat": now,
+        "exp": now + timedelta(days=JWT_EXPIRY_DAYS),
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
@@ -307,6 +317,47 @@ def _decode_token(token: str) -> dict:
         return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
     except jwt.InvalidTokenError as exc:
         raise HTTPException(status_code=401, detail="Invalid token") from exc
+
+
+async def _jwt_invalidated_by_password_change(user_id: str, token_iat: int | None) -> bool:
+    """True when the user has changed their password AFTER ``token_iat``,
+    meaning this JWT was issued in a prior session and should be rejected.
+
+    Audit finding H8: without this check, password reset doesn't
+    actually invalidate stolen sessions — an attacker with a captured
+    JWT keeps full access for up to JWT_EXPIRY_DAYS even after the
+    legitimate user resets their password.
+
+    Returns False on missing iat (old tokens issued before this check
+    landed) or unparseable timestamp — fail-OPEN for backwards
+    compatibility. Once existing tokens have rolled over (30 days)
+    we can tighten this to fail-CLOSED on missing iat.
+    """
+    if token_iat is None:
+        return False
+    conn = await get_connection()
+    try:
+        row = await (
+            await conn.execute(
+                "SELECT password_changed_at FROM auth_users WHERE id = ?",
+                (user_id,),
+            )
+        ).fetchone()
+    finally:
+        await conn.close()
+    if row is None:
+        return False
+    pwd_changed_at = row["password_changed_at"]
+    if not pwd_changed_at:
+        return False
+    try:
+        pwd_dt = datetime.fromisoformat(pwd_changed_at.replace("Z", "+00:00"))
+        if pwd_dt.tzinfo is None:
+            pwd_dt = pwd_dt.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return False
+    pwd_iat = int(pwd_dt.timestamp())
+    return token_iat < pwd_iat
 
 
 async def _get_user_by_id(user_id: str) -> UserOut | None:
@@ -347,7 +398,7 @@ def is_internal_proxy(
     return hmac.compare_digest(x_internal_service_token, expected)
 
 
-def require_auth(
+async def require_auth(
     authorization: str | None = Header(None, alias="Authorization"),
     x_internal_service_token: str | None = Header(None, alias="X-Internal-Service-Token"),
     x_internal_user_id: str | None = Header(None, alias="X-Internal-User-Id"),
@@ -368,6 +419,11 @@ def require_auth(
        MUST strip ``X-Internal-Service-Token`` and ``X-Internal-User-Id``
        from public requests — see the voicechat WS handler for the
        full rationale; same threat model applies here.
+
+    Audit H8: when the Bearer path is used, we also check the JWT's
+    ``iat`` against the user's ``password_changed_at`` and reject any
+    token issued BEFORE the most recent password change. This
+    invalidates stolen sessions on password reset.
     """
     expected_internal = (os.environ.get("INTERNAL_SERVICE_TOKEN") or "").strip()
     if (
@@ -381,7 +437,11 @@ def require_auth(
         raise HTTPException(status_code=401, detail="No token provided")
     token = authorization.split(" ", 1)[1]
     decoded = _decode_token(token)
-    return decoded["userId"]
+    user_id = decoded["userId"]
+    token_iat = decoded.get("iat")
+    if await _jwt_invalidated_by_password_change(user_id, token_iat):
+        raise HTTPException(status_code=401, detail="Session expired. Please log in again.")
+    return user_id
 
 
 def optional_auth(authorization: str | None = Header(None, alias="Authorization")) -> str | None:
@@ -2304,9 +2364,23 @@ async def email_forgot(
 
 
 @router.post("/auth/email/reset", response_model=GenericOkResponse)
-async def email_reset(body: EmailResetRequest, request: Request):
-    """Consume a reset token + set a new password. Clears failed-login
-    attempts and lockout so the user can log in immediately."""
+async def email_reset(
+    body: EmailResetRequest, request: Request, background_tasks: BackgroundTasks,
+):
+    """Consume a reset token + set a new password.
+
+    Side effects on success:
+      * Updates ``password_hash`` and ``password_changed_at``. The
+        latter invalidates every JWT issued before this moment via
+        ``_jwt_invalidated_by_password_change`` in require_auth
+        (audit H8 fix).
+      * Clears ``failed_login_attempts`` + ``locked_until`` so the
+        user can log in immediately with the new password.
+      * Emails the user a "your password was changed" notification
+        from the request IP (audit H9). Standard practice — gives
+        the legitimate owner an instant signal if the reset was done
+        by an attacker who stole the reset link.
+    """
     if not _email_auth_rate_ok("reset", _client_ip(request), _EMAIL_AUTH_RESET_PER_HOUR):
         raise HTTPException(status_code=429, detail="Too many reset attempts. Try again later.")
 
@@ -2317,24 +2391,18 @@ async def email_reset(body: EmailResetRequest, request: Request):
         raise HTTPException(status_code=400, detail=pw_err)
 
     token_hash = _auth_sec.hash_token(body.token)
+    client_ip = _client_ip(request)
     await ensure_tables()
     conn = await get_connection()
     try:
-        row = await (
-            await conn.execute(
-                """
-                SELECT id, password_reset_expires_at FROM auth_users
-                WHERE password_reset_token_hash = ?
-                """,
-                (token_hash,),
-            )
-        ).fetchone()
-        if row is None or _auth_sec.is_iso_in_past(row["password_reset_expires_at"]):
-            raise HTTPException(status_code=400, detail="This reset link is invalid or has expired.")
-
+        # Atomic consume: do the time-check AND clear the token in
+        # one UPDATE so two concurrent resets with the same token
+        # can't both succeed. We use cursor.rowcount to tell the
+        # success-vs-invalid branches apart, then a follow-up SELECT
+        # for the user's email + name to feed the notification.
         new_hash = _auth_sec.hash_password(body.new_password)
         now = _auth_sec.utc_now_iso()
-        await conn.execute(
+        cursor = await conn.execute(
             """
             UPDATE auth_users
             SET password_hash = ?,
@@ -2344,13 +2412,30 @@ async def email_reset(body: EmailResetRequest, request: Request):
                 locked_until = NULL,
                 password_changed_at = ?,
                 updated_at = ?
-            WHERE id = ?
+            WHERE password_reset_token_hash = ?
+              AND password_reset_expires_at > ?
+            RETURNING id, email, name
             """,
-            (new_hash, now, now, row["id"]),
+            (new_hash, now, now, token_hash, now, ),
         )
+        result = await cursor.fetchone()
+        if result is None:
+            raise HTTPException(status_code=400, detail="This reset link is invalid or has expired.")
         await conn.commit()
+        user_email = result["email"]
+        user_name = result["name"] or user_email.split("@")[0]
     finally:
         await conn.close()
+
+    # H9: out-of-band notification. Fire-and-forget via asyncio so the
+    # response doesn't block on Resend latency, and so a Resend outage
+    # doesn't 5xx the reset itself.
+    asyncio.create_task(
+        asyncio.to_thread(
+            _send_password_changed_email_safe,
+            to_email=user_email, user_name=user_name, client_ip=client_ip,
+        )
+    )
     return GenericOkResponse(message="Password updated. You can now log in.")
 
 

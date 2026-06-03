@@ -570,6 +570,75 @@ def test_H4_failed_login_counter_is_atomic_under_concurrency(client):
     assert r6.status_code == 429
 
 
+def test_H8_jwt_invalidated_after_password_reset(client):
+    """Audit H8 fix: a JWT issued BEFORE the password was reset must
+    be rejected on subsequent require_auth checks. Otherwise an
+    attacker who stole an old session keeps access for up to
+    JWT_EXPIRY_DAYS even after the legitimate user resets.
+
+    We can verify this by calling /api/auth/verify (the JWT decode
+    helper) with the old token after a reset — it should 401."""
+    import time as _time
+    # Set up verified user with a JWT
+    token = _signup_and_capture_token(client, "h8@example.com")
+    r1 = client.post("/api/auth/email/verify", json={"token": token})
+    old_jwt = r1.json()["token"]
+    user_email = r1.json()["user"]["email"]
+
+    # Forgot → reset
+    _captured_emails.clear()
+    client.post("/api/auth/email/forgot", json={"email": user_email})
+    reset_token = [e for e in _captured_emails if e["type"] == "reset"][0]["token"]
+
+    # password_changed_at is sub-second precision; wait 1.1s to ensure
+    # the new value is strictly greater than the JWT's iat (whole-second
+    # epoch precision).
+    _time.sleep(1.1)
+    client.post("/api/auth/email/reset",
+                json={"token": reset_token, "new_password": ALT_STRONG_PASSWORD})
+
+    # Old JWT — try to use it to call /api/auth/verify (which uses
+    # _decode_token but also goes through the JWT verify path). Use
+    # an authenticated endpoint instead: /api/auth/referral.
+    r = client.get(
+        "/api/auth/referral",
+        headers={"Authorization": f"Bearer {old_jwt}"},
+    )
+    assert r.status_code == 401
+    assert "session expired" in r.json()["detail"].lower() or "log in" in r.json()["detail"].lower()
+
+
+def test_H9_password_change_sends_notification_email(client, monkeypatch):
+    """Audit H9 fix: a successful password reset must email the user
+    'your password was changed', so a stolen-reset-token takeover
+    has an out-of-band signal."""
+    notif_emails: list[dict] = []
+    monkeypatch.setattr(
+        auth_security, "send_password_changed_email",
+        lambda **kw: notif_emails.append(kw),
+    )
+
+    token = _signup_and_capture_token(client, "h9@example.com")
+    client.post("/api/auth/email/verify", json={"token": token})
+    _captured_emails.clear()
+    client.post("/api/auth/email/forgot", json={"email": "h9@example.com"})
+    reset_token = [e for e in _captured_emails if e["type"] == "reset"][0]["token"]
+
+    r = client.post("/api/auth/email/reset",
+                    json={"token": reset_token, "new_password": ALT_STRONG_PASSWORD})
+    assert r.status_code == 200
+
+    # Background task fires-and-forgets via asyncio.create_task; give
+    # the loop a beat to pick it up.
+    import asyncio as _aio, time as _t
+    for _ in range(20):
+        if notif_emails:
+            break
+        _t.sleep(0.05)
+    assert len(notif_emails) >= 1, "Password-changed notification did not fire"
+    assert notif_emails[0]["to_email"] == "h9@example.com"
+
+
 def test_H6_signup_bonus_is_idempotent_against_email_verified_toggle(client):
     """Audit H6 fix: even if email_verified is flipped back to 0 by a
     rogue path (admin tool, migration), a subsequent verify must NOT
