@@ -19,6 +19,7 @@ import {
   type AgentConfig,
   type AgentType,
 } from '../../lib/agents/types';
+import { blockIfVoiceAgentsComingSoon } from '../../lib/voiceAgentsComingSoon';
 
 export function AgentBuilder() {
   const { user } = useAuth();
@@ -92,6 +93,9 @@ export function AgentBuilder() {
   };
 
   const handleSave = async (status: 'draft' | 'active') => {
+    // Coming-soon gate. Even if the user lands on this page via a
+    // bookmarked URL, the save attempt is short-circuited.
+    if (blockIfVoiceAgentsComingSoon()) return;
     if (!name.trim() || !config.purpose.trim()) {
       setError('Name and Purpose are required.');
       return;

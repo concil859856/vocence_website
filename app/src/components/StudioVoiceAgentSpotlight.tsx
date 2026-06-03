@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { Zap, Brain, Phone, PhoneOff, Wrench, Wand2, Play, Send } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useVoiceChat } from '../lib/voicechat/useVoiceChat';
+import { blockIfVoiceAgentsComingSoon } from '../lib/voiceAgentsComingSoon';
 
 /**
  * Voice Agents spotlight card for the Studio home page.
@@ -147,6 +148,10 @@ export function StudioVoiceAgentSpotlight() {
       reset();
       setLive(false);
     } else {
+      // Coming-soon gate. Blocks the actual Logos call but the rest
+      // of the panel UI (scripted idle transcript + waveform) keeps
+      // playing so the card still feels alive.
+      if (blockIfVoiceAgentsComingSoon()) return;
       if (!user) {
         // Not signed in, UI tooltips will explain.
         return;

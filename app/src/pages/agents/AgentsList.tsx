@@ -17,6 +17,7 @@ import { AgentCard } from '../../components/agents/AgentCard';
 import { useAuth } from '../../contexts/AuthContext';
 import { agentsApi, getStoredToken } from '../../lib/agents/api';
 import { AGENT_TEMPLATES, type Agent, type AgentTemplate } from '../../lib/agents/types';
+import { blockIfVoiceAgentsComingSoon } from '../../lib/voiceAgentsComingSoon';
 
 export function AgentsList() {
   const { user } = useAuth();
@@ -46,6 +47,9 @@ export function AgentsList() {
   }, [agents, search]);
 
   const handleTemplateClick = async (tpl: AgentTemplate) => {
+    // Voice agents are still launching, all template clicks land on
+    // the placeholder for now. See lib/voiceAgentsComingSoon.ts.
+    if (blockIfVoiceAgentsComingSoon()) return;
     if (tpl.type === 'goal') {
       await confirm({
         title: 'Coming Soon',
@@ -92,12 +96,20 @@ export function AgentsList() {
               >
                 <BookOpen size={14} /> Guide
               </Link>
-              <Link
-                to="/studio/agents/new"
+              {/* Coming-soon gate: stays as a button (not Link) so the
+                  click goes through ``blockIfVoiceAgentsComingSoon``
+                  before we navigate. When voice agents go live, swap
+                  back to ``<Link to="/studio/agents/new">``. */}
+              <button
+                type="button"
+                onClick={() => {
+                  if (blockIfVoiceAgentsComingSoon()) return;
+                  navigate('/studio/agents/new');
+                }}
                 className="inline-flex items-center gap-2 rounded-xl bg-[#DFFF00] text-[#07080A] px-4 py-2 text-sm font-semibold hover:brightness-110"
               >
                 <Plus size={16} /> New agent
-              </Link>
+              </button>
             </div>
           </div>
 

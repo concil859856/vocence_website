@@ -12,6 +12,7 @@ import { useLocation } from 'react-router-dom';
 import { Mic, Send, Square, X } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useVoiceChat } from '../../lib/voicechat/useVoiceChat';
+import { blockIfVoiceAgentsComingSoon } from '../../lib/voiceAgentsComingSoon';
 import { renderMessage } from '../../lib/voicechat/renderInline';
 import { ToolCallChip } from '../../lib/voicechat/ToolCallChip';
 import { useArchitectOpen } from '../../lib/uiOverlay';
@@ -253,16 +254,23 @@ export function VocenceBot() {
   // conversation the user never needs to touch this button.
   const handleMicClick = async () => {
     if (listening) {
+      // Stop is always allowed (lets user kill a stuck mic session).
       cancel();
       stopListening();
-    } else {
-      await startListening();
+      return;
     }
+    // Coming-soon gate. Blocks starting a new Logos session; UI panel
+    // still opens, user can read prior messages.
+    if (blockIfVoiceAgentsComingSoon()) return;
+    await startListening();
   };
 
   const handleSendText = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!textInput.trim()) return;
+    // Coming-soon gate. Keeps the user's text in the input so they
+    // don't lose it when the toast fires.
+    if (blockIfVoiceAgentsComingSoon()) return;
     const t = textInput;
     setTextInput('');
     await sendText(t);
@@ -483,6 +491,9 @@ export function VocenceBot() {
                       if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
                         e.preventDefault();
                         if (textInput.trim()) {
+                          // Coming-soon gate. Keep textarea content so
+                          // the user doesn't lose it on the toast.
+                          if (blockIfVoiceAgentsComingSoon()) return;
                           const t = textInput;
                           setTextInput('');
                           // Reset the textarea's height after sending.
