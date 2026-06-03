@@ -695,6 +695,102 @@ export function Docs() {
                 <td className="px-4 py-3">40 credits / min · 6-sec billing, 30-sec min</td>
                 <td className="px-4 py-3">$0.10 / min</td>
               </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">WS /v1/voices/{`{id}`}/stream</code></td>
+                <td className="px-4 py-3">4,000 credits per 1M chars (per speak turn)</td>
+                <td className="px-4 py-3">$10 / 1M chars</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">WS /v1/stt/stream</code></td>
+                <td className="px-4 py-3">20 credits / min · per-second billing</td>
+                <td className="px-4 py-3">$0.05 / min</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      {/* ─────────────────── FULL ENDPOINT REFERENCE ─────────────────── */}
+      <section>
+        <h2 className="text-lg font-semibold mb-3">All API endpoints</h2>
+        <p className="text-sm text-zinc-400 mb-4 leading-relaxed">
+          Complete list of every dev-API route. The Python SDK (<code className="text-white/90">pip install vocence</code>)
+          wraps every one of these — most user code never needs raw HTTP.
+        </p>
+        <div className="overflow-x-auto border border-white/[0.06] rounded-xl">
+          <table className="w-full text-sm">
+            <thead className="bg-white/5 text-[#A7B0B7]">
+              <tr>
+                <th className="text-left px-4 py-3 w-1/2">Endpoint</th>
+                <th className="text-left px-4 py-3">Description</th>
+              </tr>
+            </thead>
+            <tbody className="text-zinc-300">
+              {[
+                ['GET /health', 'Uptime probe. Always 200.'],
+                ['GET /v1/account', 'Account snapshot: credits, plan, key count.'],
+                ['GET /v1/account/keys', 'List your developer API keys (metadata only).'],
+                ['POST /v1/account/keys', 'Create a new API key (plaintext returned ONCE).'],
+                ['POST /v1/account/keys/{id}/revoke', 'Revoke an API key immediately.'],
+                ['GET /v1/account/usage', 'Recent API requests with credits + latency.'],
+                ['POST /v1/tts/generate', 'PromptTTS: speak text in a voice described in prose.'],
+                ['POST /v1/tts/speak', 'Speak text using a pre-defined speaker id.'],
+                ['POST /v1/stt/transcribe', 'Transcribe a clip (up to 5 min, 50 MB).'],
+                ['POST /v1/voice/clone', 'One-shot clone: reference clip → target text.'],
+                ['POST /v1/voice/clone/save', 'Save a clone reference for reuse via id.'],
+                ['POST /v1/voice/design/preview', 'Generate a voice from a text description.'],
+                ['POST /v1/voice/design/save', 'Save a designed voice as reusable.'],
+                ['POST /v1/audio/noise-remover', 'Remove background noise from an audio clip.'],
+                ['GET /v1/voices/builtin', 'List built-in sample voices.'],
+                ['GET /v1/voices', 'List your saved voices (designed + cloned).'],
+                ['GET /v1/voices/{id}', 'Get a saved voice by id.'],
+                ['DELETE /v1/voices/{id}', 'Delete a saved voice.'],
+                ['POST /v1/voices/{id}/speak', 'Synthesize with a saved voice id.'],
+                ['GET /v1/agents', 'List your agents (compact: id + name).'],
+                ['GET /v1/agents/{id}', 'Full agent spec including bound tools.'],
+                ['POST /v1/agents', 'Create a new agent (knowledge or goal type).'],
+                ['PATCH /v1/agents/{id}', 'Update agent fields (name, status, voice, tools, etc.).'],
+                ['DELETE /v1/agents/{id}', 'Delete an agent (cascades to bound tools).'],
+                ['GET /v1/agents/templates', 'List starter agent templates.'],
+                ['GET /v1/agents/templates/{id}', 'Get a template body (system prompt + knowledge starter).'],
+                ['GET /v1/agents/models', 'List LLM models available for voice agents.'],
+                ['GET /v1/agents/tools/builtin', 'List built-in tools (web search, weather, etc.).'],
+                ['POST /v1/agents/draft', 'One-shot: generate a complete agent spec from a description.'],
+                ['POST /v1/agents/architect/chat', 'Conversational agent architect — one turn at a time.'],
+                ['GET /v1/agents/{id}/runs', 'List recent goal-agent runs (most recent first).'],
+                ['POST /v1/agents/{id}/runs', 'Start a new goal-agent run.'],
+                ['GET /v1/agents/{id}/runs/{run_id}', 'Get a run\'s status + transcript.'],
+                ['POST /v1/agents/{id}/runs/{run_id}/cancel', 'Cancel a pending or running run.'],
+                ['GET /v1/agents/{id}/tools', 'List custom tools bound to an agent.'],
+                ['POST /v1/agents/{id}/tools/{tool_id}', 'Bind a custom tool to an agent (idempotent).'],
+                ['DELETE /v1/agents/{id}/tools/{tool_id}', 'Unbind a custom tool from an agent.'],
+                ['GET /v1/agent-tools', 'List your custom webhook tools.'],
+                ['GET /v1/agent-tools/{id}', 'Get a custom tool by id.'],
+                ['POST /v1/agent-tools', 'Register a custom webhook tool.'],
+                ['PATCH /v1/agent-tools/{id}', 'Update a custom tool (URL, schema, auth).'],
+                ['DELETE /v1/agent-tools/{id}', 'Delete a custom tool.'],
+                ['GET /v1/agents/{id}/knowledge/sources', 'List ingested knowledge sources for an agent.'],
+                ['GET /v1/agents/{id}/knowledge/jobs/{job_id}', 'Check an ingest job\'s status.'],
+                ['DELETE /v1/agents/{id}/knowledge/sources/{source_id}', 'Remove an ingested source.'],
+                ['POST /v1/agents/{id}/knowledge/ingest/text', 'Ingest a raw text document.'],
+                ['POST /v1/agents/{id}/knowledge/ingest/markdown', 'Ingest a markdown document.'],
+                ['POST /v1/agents/{id}/knowledge/ingest/url', 'Ingest a single web page by URL.'],
+                ['POST /v1/agents/{id}/knowledge/ingest/sitemap', 'Crawl an entire site via its sitemap.'],
+                ['POST /v1/agents/{id}/knowledge/ingest/pdf', 'Upload + parse a PDF.'],
+                ['GET /v1/agents/{id}/embed-tokens', 'List embed tokens for a public-website widget.'],
+                ['POST /v1/agents/{id}/embed-tokens', 'Create an embed token (allowed origins + rate limits).'],
+                ['DELETE /v1/agents/{id}/embed-tokens/{id}', 'Revoke an embed token.'],
+                ['POST /v1/feedback', 'Submit or update thumbs feedback on a generation.'],
+                ['GET /v1/feedback', 'Fetch your current rating for a single generation.'],
+                ['WS /v1/agents/{id}/session', 'Bidirectional voice-agent WebSocket (PCM in, PCM out).'],
+                ['WS /v1/voices/{id}/stream', 'Streaming TTS WebSocket with a pre-registered voice.'],
+                ['WS /v1/stt/stream', 'Streaming STT WebSocket — PCM in, transcripts out.'],
+              ].map(([path, desc]) => (
+                <tr key={path} className="border-t border-white/[0.06]">
+                  <td className="px-4 py-3"><code className="text-white/90 text-[12.5px]">{path}</code></td>
+                  <td className="px-4 py-3 text-zinc-400">{desc}</td>
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>

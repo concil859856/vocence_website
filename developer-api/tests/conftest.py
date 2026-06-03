@@ -35,27 +35,44 @@ def override_auth(fake_user_id: str):
 @pytest.fixture
 def mock_dashboard(monkeypatch) -> Callable[..., AsyncMock]:
     """Replace ``app.services.dashboard_proxy.call_dashboard`` with an
-    ``AsyncMock``; tests stub the return value per-call. Returns the
-    mock so tests can assert on the recorded args.
+    ``AsyncMock`` in every route module that imports it. Tests stub
+    the return value per-call. Returns the mock so tests can assert
+    on the recorded args.
 
-    Also stubs out :func:`gate_request` and :func:`log_audit` so tests
-    don't need a real DB. They're tested separately."""
+    Also stubs out :func:`gate_request`, :func:`log_audit`, and
+    :func:`charge_credits` / :func:`refund_credits` so tests don't
+    need a real DB or credit balance. Those services are exercised
+    by their own focused tests (test_gating.py, test_pdf_credits.py).
+    """
     mock = AsyncMock()
     no_op = AsyncMock(return_value=None)
-    # ``charge_credits`` returns the new balance — 9_980 mirrors a
+    # ``charge_credits`` returns the new balance, 9_980 mirrors a
     # 10_000 starting balance minus the 20 cr PDF charge so any test
     # that doesn't override this still sees a sensible value.
     fake_charge = AsyncMock(return_value=9_980)
+
+    # Patch every route module that imports call_dashboard. Each
+    # module gets its own reference via ``from ... import call_dashboard``,
+    # so patching the source isn't enough.
+    import app.api.routes.account as account_mod
     import app.api.routes.agent_knowledge as ak_mod
+    import app.api.routes.agent_mgmt as am_mod
+    import app.api.routes.agents_extra as ax_mod
     import app.api.routes.embed_tokens as et_mod
-    monkeypatch.setattr(ak_mod, "call_dashboard", mock)
-    monkeypatch.setattr(et_mod, "call_dashboard", mock)
-    monkeypatch.setattr(ak_mod, "gate_request", no_op)
-    monkeypatch.setattr(ak_mod, "log_audit", no_op)
+    import app.api.routes.feedback as fb_mod
+    import app.api.routes.v1 as v1_mod
+    for mod in (account_mod, ak_mod, am_mod, ax_mod, et_mod, fb_mod, v1_mod):
+        monkeypatch.setattr(mod, "call_dashboard", mock, raising=False)
+
+    # Gate / log / credits stubs for modules that use them. agents_extra
+    # gates draft + architect-chat + runs on premium too; stub here so
+    # tests don't need to seed a premium row.
+    for mod in (ak_mod, et_mod, ax_mod):
+        monkeypatch.setattr(mod, "gate_request", no_op, raising=False)
+    for mod in (ak_mod, et_mod):
+        monkeypatch.setattr(mod, "log_audit", no_op, raising=False)
     monkeypatch.setattr(ak_mod, "charge_credits", fake_charge)
     monkeypatch.setattr(ak_mod, "refund_credits", no_op)
-    monkeypatch.setattr(et_mod, "gate_request", no_op)
-    monkeypatch.setattr(et_mod, "log_audit", no_op)
     return mock
 
 

@@ -15,8 +15,13 @@ from app.api.routes.v1 import router as v1_router
 router = APIRouter()
 router.include_router(v1_router)
 router.include_router(agents_router)
-router.include_router(agent_mgmt_router)
+# agents_extra MUST mount before agent_mgmt — agent_mgmt registers
+# ``/v1/agents/{agent_id}`` which would otherwise shadow the literal
+# paths in agents_extra (``/v1/agents/templates``, ``/models``,
+# ``/tools/builtin``, ``/draft``, ``/architect/chat``). FastAPI matches
+# in registration order, so the specific paths must come first.
 router.include_router(agents_extra_router)
+router.include_router(agent_mgmt_router)
 router.include_router(agent_knowledge_router)
 router.include_router(embed_tokens_router)
 router.include_router(feedback_router)
