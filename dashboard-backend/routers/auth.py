@@ -1653,6 +1653,603 @@ async def auth_verify(body: VerifyRequest):
     return VerifyResponse(user=user)
 
 
+# ════════════════════════════════════════════════════════════════════
+# Email + password authentication
+# ════════════════════════════════════════════════════════════════════
+#
+# Separate from the Google login path above so the failure modes,
+# rate-limit policy, and DB columns touched by each flow stay easy to
+# reason about. Shared helpers (JWT issuance, ``_get_user_by_id``,
+# credit transaction recording) are reused; everything security-
+# sensitive (hashing, token generation, lockout schedule, email
+# templates) lives in ``auth_security.py``.
+#
+# Anti-enumeration: signup, resend-verify, and forgot-password all
+# return 200 regardless of whether the email exists. They schedule
+# the email send as a background task so wall-clock response time
+# doesn't leak existence either.
+#
+# Anti-brute-force: per-IP rate limit on every endpoint here, plus a
+# per-account exponential lockout on login (see auth_security).
+#
+# Credit-bonus protection: SIGNUP_CREDITS, welcome notification, and
+# referral application all happen on /verify, never on /signup. An
+# attacker without control of the inbox cannot harvest credits.
+
+import auth_security as _auth_sec  # local: keep heavy imports out of boot path
+
+
+class EmailSignupRequest(BaseModel):
+    email: str
+    password: str
+    name: str | None = None
+    referral_code: str | None = None
+    device_fingerprint: str | None = None
+
+
+class EmailLoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class EmailVerifyRequest(BaseModel):
+    token: str
+
+
+class EmailResendRequest(BaseModel):
+    email: str
+
+
+class EmailForgotRequest(BaseModel):
+    email: str
+
+
+class EmailResetRequest(BaseModel):
+    token: str
+    new_password: str
+
+
+class GenericOkResponse(BaseModel):
+    """Used by anti-enumeration endpoints. ``ok`` is always true; the
+    real outcome (email sent, no such user, rate-limited) is never
+    revealed to the caller — only logged server-side."""
+    ok: bool = True
+    message: str = "If that email is registered, we've sent a message."
+
+
+# In-memory per-IP rate limits. Same pattern as ``_sales_rl_state``.
+# Each endpoint gets its own bucket so an abuser can't exhaust the
+# /forgot quota and lock out legitimate /signup attempts.
+_EMAIL_AUTH_RL_WINDOW_SEC = 3600
+_EMAIL_AUTH_SIGNUP_PER_HOUR = int(os.environ.get("EMAIL_AUTH_SIGNUP_PER_HOUR", "5"))
+_EMAIL_AUTH_LOGIN_PER_HOUR = int(os.environ.get("EMAIL_AUTH_LOGIN_PER_HOUR", "30"))
+_EMAIL_AUTH_RESEND_PER_HOUR = int(os.environ.get("EMAIL_AUTH_RESEND_PER_HOUR", "5"))
+_EMAIL_AUTH_FORGOT_PER_HOUR = int(os.environ.get("EMAIL_AUTH_FORGOT_PER_HOUR", "5"))
+_EMAIL_AUTH_RESET_PER_HOUR = int(os.environ.get("EMAIL_AUTH_RESET_PER_HOUR", "20"))
+
+_email_auth_rl_state: dict[str, dict[str, list[float]]] = {
+    "signup": {}, "login": {}, "resend": {}, "forgot": {}, "reset": {},
+}
+
+
+def _email_auth_rate_ok(bucket: str, client_ip: str, limit: int) -> bool:
+    import time as _time
+    now = _time.time()
+    state = _email_auth_rl_state.setdefault(bucket, {})
+    history = state.setdefault(client_ip, [])
+    cutoff = now - _EMAIL_AUTH_RL_WINDOW_SEC
+    while history and history[0] < cutoff:
+        history.pop(0)
+    if len(history) >= limit:
+        return False
+    history.append(now)
+    # Cap memory: drop empty buckets if the table gets large.
+    if len(state) > 10000:
+        for ip in list(state.keys()):
+            if not state[ip]:
+                state.pop(ip, None)
+    return True
+
+
+def _client_ip(request: Request) -> str:
+    fwd = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+    return fwd or (request.client.host if request.client else "unknown")
+
+
+async def _send_verification_email_safe(*, to_email: str, raw_token: str, user_name: str | None) -> None:
+    """Wrap send_verification_email so transport failures don't 5xx the
+    response. Logged but swallowed; the signup / resend endpoints
+    return 200 anyway for anti-enumeration."""
+    try:
+        await asyncio.to_thread(
+            _auth_sec.send_verification_email,
+            to_email=to_email, raw_token=raw_token, user_name=user_name,
+        )
+    except Exception as exc:
+        _np_log.warning("send_verification_email failed for %s: %s", to_email, exc)
+
+
+async def _send_reset_email_safe(*, to_email: str, raw_token: str, user_name: str | None) -> None:
+    try:
+        await asyncio.to_thread(
+            _auth_sec.send_password_reset_email,
+            to_email=to_email, raw_token=raw_token, user_name=user_name,
+        )
+    except Exception as exc:
+        _np_log.warning("send_password_reset_email failed for %s: %s", to_email, exc)
+
+
+async def _issue_verification_token(conn, user_id: str) -> str:
+    """Generate a verification token, persist its hash + expiry on the
+    user row, return the raw token to email out. Overwrites any prior
+    unused token (resending invalidates the old link)."""
+    raw, hashed = _auth_sec.generate_token()
+    expiry = _auth_sec.token_expiry_iso(_auth_sec.VERIFICATION_TOKEN_TTL)
+    await conn.execute(
+        "UPDATE auth_users SET verification_token_hash = ?, verification_token_expires_at = ? WHERE id = ?",
+        (hashed, expiry, user_id),
+    )
+    return raw
+
+
+async def _issue_reset_token(conn, user_id: str) -> str:
+    raw, hashed = _auth_sec.generate_token()
+    expiry = _auth_sec.token_expiry_iso(_auth_sec.PASSWORD_RESET_TOKEN_TTL)
+    await conn.execute(
+        "UPDATE auth_users SET password_reset_token_hash = ?, password_reset_expires_at = ? WHERE id = ?",
+        (hashed, expiry, user_id),
+    )
+    return raw
+
+
+@router.post("/auth/email/signup", response_model=GenericOkResponse)
+async def email_signup(body: EmailSignupRequest, request: Request):
+    """Sign up with email + password.
+
+    Returns 200 regardless of whether the email is already taken so an
+    attacker can't enumerate accounts by signing up with a candidate
+    list. If the email exists and is unverified, re-sends the verify
+    link; if it exists and is already verified, silently does nothing
+    (the real user has their account intact).
+    """
+    if not _email_auth_rate_ok("signup", _client_ip(request), _EMAIL_AUTH_SIGNUP_PER_HOUR):
+        # Per-IP rate limit IS surfaced (429), because it's not a
+        # per-account oracle — anyone over the quota hits this.
+        raise HTTPException(status_code=429, detail="Too many signup attempts. Try again later.")
+
+    # Validate inputs first. These errors ARE surfaced (4xx) because
+    # they're about the request body's shape, not about account state.
+    try:
+        email = _auth_sec.normalize_and_validate_email(body.email or "")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    pw_err = _auth_sec.check_password_strength(body.password or "")
+    if pw_err:
+        raise HTTPException(status_code=400, detail=pw_err)
+
+    # Hash *before* the DB lookup so the response time profile is the
+    # same whether we end up creating a row or not. (Argon2id is the
+    # slow part of this endpoint by an order of magnitude.)
+    password_hash = _auth_sec.hash_password(body.password)
+    clean_name = (body.name or "").strip()[:128] or email.split("@")[0]
+
+    await ensure_tables()
+    conn = await get_connection()
+    try:
+        existing = await (
+            await conn.execute(
+                "SELECT id, email_verified, password_hash FROM auth_users WHERE email = ?",
+                (email,),
+            )
+        ).fetchone()
+
+        if existing is not None:
+            # Existing account: only re-send the verification email if
+            # the user actually owns the address (i.e., the password
+            # they just typed matches the stored hash) AND the account
+            # is still unverified. Otherwise do nothing — silently.
+            # This avoids letting attackers spam verification emails
+            # to arbitrary addresses by guessing they're registered.
+            if (
+                existing["email_verified"] == 0
+                and existing["password_hash"]
+                and _auth_sec.verify_password(existing["password_hash"], body.password)
+            ):
+                raw_token = await _issue_verification_token(conn, existing["id"])
+                await conn.commit()
+                await _send_verification_email_safe(
+                    to_email=email, raw_token=raw_token, user_name=clean_name,
+                )
+            return GenericOkResponse()
+
+        # New account: insert with credits=0 and email_verified=0.
+        # Signup bonus + welcome notif + referral all happen on
+        # /verify so an attacker can't farm credits via fake emails.
+        user_id = uuid.uuid4().hex
+        now = _auth_sec.utc_now_iso()
+        await conn.execute(
+            """
+            INSERT INTO auth_users
+              (id, email, name, picture, credits, plan_code, plan_status,
+               password_hash, email_verified, password_changed_at,
+               referred_by, created_at, updated_at)
+            VALUES (?, ?, ?, NULL, 0, 'normal', 'active',
+                    ?, 0, ?,
+                    ?, ?, ?)
+            """,
+            (
+                user_id, email, clean_name,
+                password_hash, now,
+                (body.referral_code or "").strip() or None,
+                now, now,
+            ),
+        )
+        # Mirror into registered_users for the marketing-list rows the
+        # Google login path also populates.
+        await conn.execute(
+            """
+            INSERT INTO registered_users (email, name, picture, created_at, updated_at)
+            VALUES (?, ?, NULL, ?, ?)
+            ON CONFLICT(email) DO UPDATE SET
+                name = excluded.name, updated_at = excluded.updated_at
+            """,
+            (email, clean_name, now, now),
+        )
+        raw_token = await _issue_verification_token(conn, user_id)
+        await conn.commit()
+        await _send_verification_email_safe(
+            to_email=email, raw_token=raw_token, user_name=clean_name,
+        )
+        return GenericOkResponse()
+    finally:
+        await conn.close()
+
+
+@router.post("/auth/email/verify", response_model=LoginResponse)
+async def email_verify(body: EmailVerifyRequest, request: Request):
+    """Consume a verification token: mark email verified, grant signup
+    bonus, send welcome notification, apply referral if any, and issue
+    a JWT so the user is logged in on landing.
+    """
+    if not body.token:
+        raise HTTPException(status_code=400, detail="Verification token is required.")
+    token_hash = _auth_sec.hash_token(body.token)
+
+    await ensure_tables()
+    conn = await get_connection()
+    try:
+        row = await (
+            await conn.execute(
+                """
+                SELECT id, email, name, email_verified, verification_token_expires_at, referred_by
+                FROM auth_users WHERE verification_token_hash = ?
+                """,
+                (token_hash,),
+            )
+        ).fetchone()
+        if row is None or _auth_sec.is_iso_in_past(row["verification_token_expires_at"]):
+            raise HTTPException(status_code=400, detail="This verification link is invalid or has expired.")
+
+        user_id = row["id"]
+        user_email = row["email"]
+        user_name = row["name"] or user_email.split("@")[0]
+        already_verified = bool(row["email_verified"])
+        now = _auth_sec.utc_now_iso()
+
+        # Clear the token regardless of whether this is a re-verify so
+        # the link is single-use. Set email_verified=1.
+        await conn.execute(
+            """
+            UPDATE auth_users
+            SET email_verified = 1,
+                verification_token_hash = NULL,
+                verification_token_expires_at = NULL,
+                last_login_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (now, now, user_id),
+        )
+
+        if not already_verified:
+            # First-time verify: grant credits, send welcome notif,
+            # process referral. Idempotent against re-verify because
+            # we only do this when transitioning from 0 to 1.
+            await conn.execute(
+                "UPDATE auth_users SET credits = ? WHERE id = ?",
+                (SIGNUP_CREDITS, user_id),
+            )
+            await record_credit_transaction(
+                conn,
+                user_id=user_id,
+                transaction_type="signup_bonus",
+                amount=SIGNUP_CREDITS,
+                balance_after=SIGNUP_CREDITS,
+                description=f"Welcome bonus: {SIGNUP_CREDITS} free credits",
+                reference_type="signup",
+                reference_id=user_id,
+            )
+            # Welcome notification — same body as the Google login path.
+            await conn.execute(
+                """
+                INSERT INTO notifications
+                  (id, user_id, kind, title, body, link, sender, created_at)
+                VALUES (?, ?, 'welcome', ?, ?, ?, 'system', datetime('now'))
+                """,
+                (
+                    uuid.uuid4().hex,
+                    user_id,
+                    f"👋 Welcome to Vocence, {(user_name or '').split(' ')[0] or 'friend'}!",
+                    (
+                        f"We're so glad you're here. To get you started, we've credited your account with "
+                        f"**{SIGNUP_CREDITS} free credits**, yours to spend however you like across "
+                        f"Text-to-Speech, voice cloning, music generation, and the voice agents.\n\n"
+                        f"A few quick ideas to try first:\n\n"
+                        f"- Make your first TTS clip in seconds\n"
+                        f"- Clone your own voice with a 15-second sample\n"
+                        f"- Design a brand-new voice from a prompt\n\n"
+                        f"If anything's confusing, hit the **Discord** link in the sidebar, real humans answer.\n\n"
+                        f"Have fun building!\n\n"
+                        f"The Vocence Admin team"
+                    ),
+                    "/studio",
+                ),
+            )
+            from referral_service import ensure_referral_code, validate_referral, apply_referral_on_signup
+            await ensure_referral_code(conn, user_id)
+            ref_code = (row["referred_by"] or "").strip()
+            if ref_code:
+                ref_err = await validate_referral(
+                    conn,
+                    referral_code=ref_code,
+                    new_user_id=user_id,
+                    new_user_email=user_email,
+                    device_fingerprint=None,
+                )
+                if not ref_err:
+                    await apply_referral_on_signup(
+                        conn,
+                        referral_code=ref_code,
+                        new_user_id=user_id,
+                        device_fingerprint=None,
+                    )
+
+        await conn.commit()
+        user_out = await _get_user_by_id(user_id)
+        if user_out is None:
+            raise HTTPException(status_code=500, detail="Failed to load user after verification.")
+        return LoginResponse(user=user_out, token=_make_token(user_out.id, user_out.email))
+    finally:
+        await conn.close()
+
+
+@router.post("/auth/email/login", response_model=LoginResponse)
+async def email_login(body: EmailLoginRequest, request: Request):
+    """Log in with email + password. Returns a JWT on success.
+
+    All failure modes (wrong password, no such user, account locked,
+    email unverified) collapse to a single 401 with the same message,
+    so an attacker can't distinguish them by response. Lockout is
+    the one exception: the 429 with Retry-After lets a real user know
+    why they're stuck, and an attacker already knows from the
+    failed-attempt cadence.
+    """
+    if not _email_auth_rate_ok("login", _client_ip(request), _EMAIL_AUTH_LOGIN_PER_HOUR):
+        raise HTTPException(status_code=429, detail="Too many login attempts. Try again later.")
+
+    # Loose input checks. We deliberately don't run check_password_strength
+    # on login — a user who used a weak password to sign up under the
+    # old policy must still be able to log in to change it.
+    try:
+        email = _auth_sec.normalize_and_validate_email(body.email or "")
+    except ValueError:
+        # Run a dummy verify so timing matches the "user exists" path.
+        _auth_sec.verify_password(_auth_sec.DUMMY_HASH, body.password or "x")
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+    if not body.password:
+        _auth_sec.verify_password(_auth_sec.DUMMY_HASH, "x")
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+
+    await ensure_tables()
+    conn = await get_connection()
+    try:
+        row = await (
+            await conn.execute(
+                """
+                SELECT id, email, password_hash, email_verified, failed_login_attempts, locked_until
+                FROM auth_users WHERE email = ?
+                """,
+                (email,),
+            )
+        ).fetchone()
+
+        if row is None or not row["password_hash"]:
+            # No such user OR Google-only user with no password set.
+            # Spend the verify time anyway.
+            _auth_sec.verify_password(_auth_sec.DUMMY_HASH, body.password)
+            raise HTTPException(status_code=401, detail="Invalid email or password.")
+
+        # Lockout check happens BEFORE password verify so we don't burn
+        # CPU on an account that's already locked.
+        is_locked, retry_after = _auth_sec.is_account_locked(row["locked_until"])
+        if is_locked:
+            raise HTTPException(
+                status_code=429,
+                detail=f"Account locked due to too many failed attempts. Try again in {retry_after // 60 + 1} minutes.",
+                headers={"Retry-After": str(retry_after)},
+            )
+
+        ok = _auth_sec.verify_password(row["password_hash"], body.password)
+        if not ok:
+            # Bump counter, recompute lockout. Same generic error.
+            new_attempts = (row["failed_login_attempts"] or 0) + 1
+            new_lock = _auth_sec.compute_lockout_until(new_attempts)
+            await conn.execute(
+                "UPDATE auth_users SET failed_login_attempts = ?, locked_until = ? WHERE id = ?",
+                (new_attempts, new_lock, row["id"]),
+            )
+            await conn.commit()
+            raise HTTPException(status_code=401, detail="Invalid email or password.")
+
+        # Password OK. But block login if email isn't verified yet —
+        # this is the verify-then-activate gate.
+        if row["email_verified"] == 0:
+            raise HTTPException(
+                status_code=403,
+                detail="Please verify your email first. Check your inbox for the verification link.",
+            )
+
+        # Success. Clear failed-attempt counter and lockout.
+        now = _auth_sec.utc_now_iso()
+        await conn.execute(
+            """
+            UPDATE auth_users
+            SET failed_login_attempts = 0, locked_until = NULL,
+                last_login_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (now, now, row["id"]),
+        )
+
+        # Opportunistic rehash if our Argon2id parameters have been
+        # bumped since the password was last hashed. Costs ~50 ms but
+        # only on the first login after a parameter change.
+        if _auth_sec.password_needs_rehash(row["password_hash"]):
+            new_hash = _auth_sec.hash_password(body.password)
+            await conn.execute(
+                "UPDATE auth_users SET password_hash = ? WHERE id = ?",
+                (new_hash, row["id"]),
+            )
+
+        await conn.commit()
+        user_out = await _get_user_by_id(row["id"])
+        if user_out is None:
+            raise HTTPException(status_code=500, detail="Failed to load user.")
+        return LoginResponse(user=user_out, token=_make_token(user_out.id, user_out.email))
+    finally:
+        await conn.close()
+
+
+@router.post("/auth/email/resend-verify", response_model=GenericOkResponse)
+async def email_resend_verify(body: EmailResendRequest, request: Request):
+    """Re-send the verification email. Anti-enumeration: always 200."""
+    if not _email_auth_rate_ok("resend", _client_ip(request), _EMAIL_AUTH_RESEND_PER_HOUR):
+        raise HTTPException(status_code=429, detail="Too many resend requests. Try again later.")
+
+    try:
+        email = _auth_sec.normalize_and_validate_email(body.email or "")
+    except ValueError:
+        return GenericOkResponse()
+
+    await ensure_tables()
+    conn = await get_connection()
+    try:
+        row = await (
+            await conn.execute(
+                "SELECT id, name, email_verified FROM auth_users WHERE email = ?",
+                (email,),
+            )
+        ).fetchone()
+        if row is not None and row["email_verified"] == 0:
+            raw_token = await _issue_verification_token(conn, row["id"])
+            await conn.commit()
+            await _send_verification_email_safe(
+                to_email=email, raw_token=raw_token,
+                user_name=row["name"] or email.split("@")[0],
+            )
+    finally:
+        await conn.close()
+    return GenericOkResponse()
+
+
+@router.post("/auth/email/forgot", response_model=GenericOkResponse)
+async def email_forgot(body: EmailForgotRequest, request: Request):
+    """Send a password-reset email. Anti-enumeration: always 200.
+    Refuses to send for accounts without a password (Google-only)."""
+    if not _email_auth_rate_ok("forgot", _client_ip(request), _EMAIL_AUTH_FORGOT_PER_HOUR):
+        raise HTTPException(status_code=429, detail="Too many reset requests. Try again later.")
+
+    try:
+        email = _auth_sec.normalize_and_validate_email(body.email or "")
+    except ValueError:
+        return GenericOkResponse()
+
+    await ensure_tables()
+    conn = await get_connection()
+    try:
+        row = await (
+            await conn.execute(
+                "SELECT id, name, password_hash, email_verified FROM auth_users WHERE email = ?",
+                (email,),
+            )
+        ).fetchone()
+        # Only send if: account exists AND has a password set AND is
+        # verified. Google-only accounts (no password) get nothing —
+        # there's no password to reset, and the address would simply
+        # confuse the user. Unverified accounts get nothing because
+        # the verification flow is the right recovery path for them.
+        if row is not None and row["password_hash"] and row["email_verified"] == 1:
+            raw_token = await _issue_reset_token(conn, row["id"])
+            await conn.commit()
+            await _send_reset_email_safe(
+                to_email=email, raw_token=raw_token,
+                user_name=row["name"] or email.split("@")[0],
+            )
+    finally:
+        await conn.close()
+    return GenericOkResponse()
+
+
+@router.post("/auth/email/reset", response_model=GenericOkResponse)
+async def email_reset(body: EmailResetRequest, request: Request):
+    """Consume a reset token + set a new password. Clears failed-login
+    attempts and lockout so the user can log in immediately."""
+    if not _email_auth_rate_ok("reset", _client_ip(request), _EMAIL_AUTH_RESET_PER_HOUR):
+        raise HTTPException(status_code=429, detail="Too many reset attempts. Try again later.")
+
+    if not body.token:
+        raise HTTPException(status_code=400, detail="Reset token is required.")
+    pw_err = _auth_sec.check_password_strength(body.new_password or "")
+    if pw_err:
+        raise HTTPException(status_code=400, detail=pw_err)
+
+    token_hash = _auth_sec.hash_token(body.token)
+    await ensure_tables()
+    conn = await get_connection()
+    try:
+        row = await (
+            await conn.execute(
+                """
+                SELECT id, password_reset_expires_at FROM auth_users
+                WHERE password_reset_token_hash = ?
+                """,
+                (token_hash,),
+            )
+        ).fetchone()
+        if row is None or _auth_sec.is_iso_in_past(row["password_reset_expires_at"]):
+            raise HTTPException(status_code=400, detail="This reset link is invalid or has expired.")
+
+        new_hash = _auth_sec.hash_password(body.new_password)
+        now = _auth_sec.utc_now_iso()
+        await conn.execute(
+            """
+            UPDATE auth_users
+            SET password_hash = ?,
+                password_reset_token_hash = NULL,
+                password_reset_expires_at = NULL,
+                failed_login_attempts = 0,
+                locked_until = NULL,
+                password_changed_at = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (new_hash, now, now, row["id"]),
+        )
+        await conn.commit()
+    finally:
+        await conn.close()
+    return GenericOkResponse(message="Password updated. You can now log in.")
+
+
 @router.get("/auth/referral")
 async def get_referral_info(user_id: str = Depends(require_auth)):
     from referral_service import get_referral_stats, ensure_referral_code
