@@ -26,5 +26,10 @@ numpy>=1.26.0
 asyncssh>=2.14.0
 # ops module: Fernet at-rest encryption of SSH keys + per-pod API keys
 cryptography>=42.0.0
-# admin sudo-mode password hashing
+# Password hashing — used by admin sudo-mode and email-auth signup/login.
+# Argon2id parameters (OWASP 2024 baseline) are chosen in auth_security.py.
 argon2-cffi>=23.1.0
+# RFC-5322 email validation + DNS-MX deliverability check for the
+# email-auth signup endpoint. Rejects malformed addresses and (optional)
+# domains with no mail records before we even hash a password.
+email-validator>=2.1.0

@@ -1042,6 +1042,34 @@ async def ensure_tables() -> None:
             "source_language TEXT",
         )
 
+        # Email + password auth columns on auth_users. Google-signup users
+        # have password_hash=NULL and email_verified=1 (Google asserts the
+        # email is verified). Email-signup users have password_hash set
+        # and email_verified=0 until they click the verification link.
+        # All timestamps are ISO-8601 strings to match existing columns;
+        # the lockout / token-expiry helpers in auth_security.py compare
+        # them via datetime.fromisoformat for monotonic correctness.
+        await _ensure_column(conn, "auth_users", "password_hash", "password_hash TEXT")
+        await _ensure_column(conn, "auth_users", "email_verified", "email_verified INTEGER NOT NULL DEFAULT 1")
+        await _ensure_column(conn, "auth_users", "verification_token_hash", "verification_token_hash TEXT")
+        await _ensure_column(conn, "auth_users", "verification_token_expires_at", "verification_token_expires_at TEXT")
+        await _ensure_column(conn, "auth_users", "failed_login_attempts", "failed_login_attempts INTEGER NOT NULL DEFAULT 0")
+        await _ensure_column(conn, "auth_users", "locked_until", "locked_until TEXT")
+        await _ensure_column(conn, "auth_users", "password_reset_token_hash", "password_reset_token_hash TEXT")
+        await _ensure_column(conn, "auth_users", "password_reset_expires_at", "password_reset_expires_at TEXT")
+        await _ensure_column(conn, "auth_users", "password_changed_at", "password_changed_at TEXT")
+        # Lookups by reset / verification token hash MUST be O(1) — the
+        # token is the only thing the request bears, and a table scan
+        # leaks timing information about user count under load.
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_auth_users_verification_token "
+            "ON auth_users(verification_token_hash) WHERE verification_token_hash IS NOT NULL"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_auth_users_reset_token "
+            "ON auth_users(password_reset_token_hash) WHERE password_reset_token_hash IS NOT NULL"
+        )
+
         # Referral system columns on auth_users.
         await _ensure_column(conn, "auth_users", "referral_code", "referral_code TEXT")
         await conn.execute(
