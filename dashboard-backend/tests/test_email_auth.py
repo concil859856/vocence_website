@@ -580,6 +580,19 @@ def test_logout_clears_session_cookie(client):
     assert "vocence_session=" in set_cookie
 
 
+def test_verify_endpoint_accepts_empty_body_for_cookie_only_clients(client):
+    """Phase 4: post-migration the frontend boots by POSTing {} to
+    /auth/verify and relies purely on the cookie. The endpoint must
+    accept a body with no token field."""
+    token = _signup_and_capture_token(client, "cookie_boot@example.com")
+    client.post("/api/auth/email/verify", json={"token": token})
+    # TestClient holds the cookie. Verify with empty body — must work.
+    r = client.post("/api/auth/verify", json={})
+    assert r.status_code == 200
+    # Same user we just verified
+    assert r.json()["user"]["email"] == "cookie_boot@example.com"
+
+
 def test_verify_endpoint_opportunistically_upgrades_localstorage_users(client):
     """During the migration window, /api/auth/verify accepts a body
     token (the legacy localStorage path) AND installs the cookie on

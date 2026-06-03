@@ -33,59 +33,53 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    // Check for existing session on mount
+    // Check for existing session on mount.
+    //
+    // Post-phase-4 behaviour: the JWT lives ONLY in the HttpOnly
+    // ``vocence_session`` cookie. We hit /api/auth/verify with no
+    // body — the cookie travels via authFetch's
+    // ``credentials: 'include'`` — and the backend tells us who we
+    // are if the cookie is valid.
+    //
+    // Legacy compat: a pre-migration user might still have a JWT in
+    // localStorage but no cookie yet. We present that JWT to the
+    // verify endpoint via the body so the backend can install the
+    // cookie (the opportunistic-upgrade behaviour we added in
+    // backend phase 1). Then we ALWAYS clear the localStorage JWT —
+    // the cookie is the only sanctioned storage from here on.
     const checkSession = async () => {
       try {
-        const storedToken = localStorage.getItem('vocence_token');
+        const legacyToken = localStorage.getItem('vocence_token');
         const storedUser = localStorage.getItem('vocence_user');
+        // Always remove the legacy JWT from localStorage. Even if
+        // the verify call fails, we never want the JWT sitting where
+        // an XSS could read it.
+        if (legacyToken) localStorage.removeItem('vocence_token');
 
-        if (storedToken && storedUser) {
-          try {
-            // Check if API is configured (not using default fallback)
-            const hasApiConfigured = Boolean(import.meta.env.VITE_API_URL);
-            
-            if (hasApiConfigured) {
-              // Try to verify with API
-              try {
-                const userData = await api.verifyToken(storedToken);
-                setUser(userData);
-                localStorage.setItem('vocence_user', JSON.stringify(userData));
-              } catch (apiError) {
-                // API failed, fallback to localStorage
-                console.warn('API not available, using localStorage fallback');
-                const userData = JSON.parse(storedUser);
-                setUser(userData);
-              }
-            } else {
-              // No API configured, use localStorage directly
-              const userData = JSON.parse(storedUser);
-              setUser(userData);
-            }
-          } catch (error) {
-            // If API fails, fallback to localStorage
-            console.warn('API not available, using localStorage fallback:', error);
+        try {
+          // If we have a legacy token, present it so the backend
+          // installs the cookie. Otherwise just rely on whatever
+          // cookie the browser already has.
+          const userData = legacyToken
+            ? await api.verifyToken(legacyToken)
+            : await api.verifyCurrentSession();
+          setUser(userData);
+          localStorage.setItem('vocence_user', JSON.stringify(userData));
+        } catch (apiError) {
+          // No valid session, either token expired / cleared or
+          // server unreachable. Fall back to whatever local user
+          // we've cached (purely for offline-display purposes — they
+          // can't make authed calls without a session anyway).
+          if (storedUser) {
             try {
-              const userData = JSON.parse(storedUser);
-              setUser(userData);
-            } catch (parseError) {
-              console.error('Failed to parse stored user:', parseError);
-              localStorage.removeItem('vocence_token');
+              setUser(JSON.parse(storedUser));
+            } catch {
               localStorage.removeItem('vocence_user');
             }
-          }
-        } else if (storedUser) {
-          // Fallback: use stored user if no token
-          try {
-            const userData = JSON.parse(storedUser);
-            setUser(userData);
-          } catch (parseError) {
-            console.error('Failed to parse stored user:', parseError);
-            localStorage.removeItem('vocence_user');
           }
         }
       } catch (error) {
         console.error('Failed to restore session:', error);
-        // Clear invalid session
         localStorage.removeItem('vocence_token');
         localStorage.removeItem('vocence_user');
       } finally {
@@ -115,22 +109,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       });
       clearStoredReferralCode();
 
-      // Save user and token
+      // Phase 4: session JWT now lives in the HttpOnly vocence_session
+      // cookie set by the backend. We persist only the user object
+      // (display name, avatar, plan etc.) in localStorage — those
+      // aren't credentials, just metadata for instant first-paint.
       setUser(response.user);
       localStorage.setItem('vocence_user', JSON.stringify(response.user));
-      localStorage.setItem('vocence_token', response.token);
-      // Register user in dashboard backend (local SQLite) for admin user list
       dashboardApi.registerUser({
         email: userData.email,
         name: userData.name,
         picture: userData.picture,
       }).catch(() => {});
     } catch (error) {
-      // Fallback to localStorage if API is not available. The
-      // ``credential`` arg the new ``loginOrSignup`` type requires
-      // isn't useful here, the offline path can't verify with
-      // Google anyway, but we satisfy the type to keep callers
-      // strict-typed.
+      // Fallback path runs when the API is unreachable (e.g. true
+      // localhost-only dev). It can't actually authenticate — there's
+      // no real session cookie — but it lets the UI render the user's
+      // cached identity so they don't see a blank "please log in"
+      // screen during a backend outage.
       console.warn('API not available, using localStorage fallback');
       const response = localStorageFallback.loginOrSignup({
         credential: userData.credential,
@@ -142,8 +137,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       setUser(response.user);
       localStorage.setItem('vocence_user', JSON.stringify(response.user));
-      localStorage.setItem('vocence_token', response.token);
-      // Register user in dashboard backend (local SQLite)
       dashboardApi.registerUser({
         email: userData.email,
         name: userData.name,
@@ -166,12 +159,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // FIRST time the dashboard backend hears of them, but a transient
   // failure here doesn't block login. We retry on the next page
   // load via the normal login path.
-  const setSession = useCallback(({ user: nextUser, token }: { user: User; token: string }) => {
+  // The ``token`` parameter is now ignored — the JWT travels via
+  // the HttpOnly cookie the backend set on the response that
+  // produced this call (email login/verify endpoints). We keep the
+  // parameter on the signature so callers don't need to change in
+  // lockstep; it can be dropped in a future cleanup pass.
+  const setSession = useCallback(({ user: nextUser, token: _ignored }: { user: User; token: string }) => {
     setIsLoading(true);
     try {
       setUser(nextUser);
       localStorage.setItem('vocence_user', JSON.stringify(nextUser));
-      localStorage.setItem('vocence_token', token);
       dashboardApi.registerUser({
         email: nextUser.email,
         name: nextUser.name,

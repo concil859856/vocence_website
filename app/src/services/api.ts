@@ -247,7 +247,10 @@ export const api = {
     }
   },
 
-  // Verify token
+  // Verify a localStorage-stored legacy JWT. Used only during the
+  // pre-cookie → cookie migration: AuthContext presents the legacy
+  // token so the backend installs a fresh session cookie. After this
+  // call the localStorage token should be discarded.
   async verifyToken(token: string): Promise<User> {
     try {
       const response = await authFetch(`${API_BASE_URL}/auth/verify`, {
@@ -257,15 +260,35 @@ export const api = {
         },
         body: JSON.stringify({ token }),
       });
-
       if (!response.ok) {
         throw new Error('Token verification failed');
       }
-
       const data = await response.json();
       return data.user;
     } catch (error) {
       console.error('API Error:', error);
+      throw withNetworkHint(error);
+    }
+  },
+
+  // Verify whatever session the browser currently has via the
+  // ``vocence_session`` cookie. No body needed — the cookie travels
+  // automatically via authFetch's ``credentials: 'include'``. This
+  // is the post-migration boot path; the legacy verifyToken above
+  // sticks around for the one-time upgrade of pre-cookie users.
+  async verifyCurrentSession(): Promise<User> {
+    try {
+      const response = await authFetch(`${API_BASE_URL}/auth/verify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      if (!response.ok) {
+        throw new Error('Session verification failed');
+      }
+      const data = await response.json();
+      return data.user;
+    } catch (error) {
       throw withNetworkHint(error);
     }
   },

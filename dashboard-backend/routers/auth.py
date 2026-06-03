@@ -108,7 +108,10 @@ class LoginResponse(BaseModel):
 
 
 class VerifyRequest(BaseModel):
-    token: str
+    # Optional now that /auth/verify accepts a cookie. Frontend posts
+    # {} when relying purely on the cookie; legacy localStorage path
+    # posts {token: <jwt>} until phase 4 fully removes the storage.
+    token: str | None = None
 
 
 class VerifyResponse(BaseModel):
