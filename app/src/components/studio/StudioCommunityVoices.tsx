@@ -24,6 +24,7 @@ import { SampleVoiceAvatar } from './SampleVoiceAvatar';
 import { useStudioPlayer } from '../../contexts/StudioPlayerContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { authFetch } from '../../services/authFetch';
+import { API_ORIGIN_BASE } from '../../services/baseUrl';
 import { asset } from '../../data/assets';
 import { SubmitVoiceModal } from './SubmitVoiceModal';
 
@@ -32,7 +33,7 @@ function audioSrcFor(v: SampleVoice): string | null {
   // Direct URL wins for community-contributed voices (they live in
   // object storage, not in the curated CDN catalog).
   if (v.audioDirectUrl) return v.audioDirectUrl;
-  if (v.audioStaticPath) return `/api/dashboard/sample-voices/${v.audioStaticPath}`;
+  if (v.audioStaticPath) return `${API_ORIGIN_BASE}/api/dashboard/sample-voices/${v.audioStaticPath}`;
   if (v.audioAssetKey) return asset(v.audioAssetKey);
   return null;
 }
@@ -66,14 +67,14 @@ export function StudioCommunityVoices() {
   useEffect(() => {
     let cancelled = false;
     setCountsReady(false);
-    authFetch('/api/dashboard/public/voices/likes')
+    authFetch(`${API_ORIGIN_BASE}/api/dashboard/public/voices/likes`)
       .then((r) => (r.ok ? r.json() : { counts: {} }))
       .then((data) => { if (!cancelled) setCounts(data?.counts ?? {}); })
       .catch(() => { /* leave counts empty */ })
       .finally(() => { if (!cancelled) setCountsReady(true); });
     // Community-submitted approved voices. Soft-fail to an empty list
     // so the curated grid still renders if the endpoint is down.
-    authFetch('/api/dashboard/public/voices/community')
+    authFetch(`${API_ORIGIN_BASE}/api/dashboard/public/voices/community`)
       .then((r) => (r.ok ? r.json() : { voices: [] }))
       .then((data: { voices?: Array<{
         id: string; name: string; description: string; language: string;
@@ -96,7 +97,7 @@ export function StudioCommunityVoices() {
       })
       .catch(() => { /* leave community list empty */ });
     if (user) {
-      authFetch('/api/dashboard/voices/likes/mine', { headers: authHeaders() })
+      authFetch(`${API_ORIGIN_BASE}/api/dashboard/voices/likes/mine`, { headers: authHeaders() })
         .then((r) => (r.ok ? r.json() : { voice_ids: [] }))
         .then((data) => {
           if (cancelled) return;
@@ -153,7 +154,7 @@ export function StudioCommunityVoices() {
     }));
     try {
       const res = await authFetch(
-        `/api/dashboard/voices/${encodeURIComponent(voiceId)}/like`,
+        `${API_ORIGIN_BASE}/api/dashboard/voices/${encodeURIComponent(voiceId)}/like`,
         { method: 'POST', headers: authHeaders() },
       );
       if (!res.ok) throw new Error(`http ${res.status}`);

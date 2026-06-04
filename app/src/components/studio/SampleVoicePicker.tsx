@@ -14,7 +14,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { Pause, Play } from 'lucide-react';
+import { Pause, Play, Search } from 'lucide-react';
 import { asset } from '../../data/assets';
 import { API_BASE_URL } from '../../services/baseUrl';
 import {
@@ -37,6 +37,9 @@ interface Props {
   /** Selection callback for a designed voice. The encoded id ``dv:<n>``
    * is what gets stored on the agent config. */
   onSelectDesigned?: (encodedId: string, item: StudioDesignedVoiceItem) => void;
+  /** Approved, community-contributed voices (id ``community-<...>``). Rendered
+   * as their own section and selectable just like sample voices. */
+  communityVoices?: SampleVoice[];
 }
 
 function fmt(t: number): string {
@@ -51,10 +54,28 @@ export function SampleVoicePicker({
   onSelect,
   designedVoices,
   onSelectDesigned,
+  communityVoices,
 }: Props) {
   // Order is fixed (already hand-shuffled in sampleVoices.ts).
   const voices = SAMPLE_VOICES;
   const liveDesigned = (designedVoices ?? []).filter((v) => !v.expired && !!v.audio_url);
+
+  // ----- Search filter -------------------------------------------------------
+  const [query, setQuery] = useState('');
+  const q = query.trim().toLowerCase();
+  const matches = (name: string, desc: string) =>
+    !q || name.toLowerCase().includes(q) || desc.toLowerCase().includes(q);
+  const filteredVoices = voices.filter((v) => matches(v.name, v.description || ''));
+  const filteredDesigned = liveDesigned.filter((v) =>
+    matches(v.display_name || '', v.voice_description || ''),
+  );
+  const filteredCommunity = (communityVoices ?? []).filter((v) =>
+    matches(v.name, v.description || ''),
+  );
+  const noResults =
+    filteredVoices.length === 0 &&
+    filteredDesigned.length === 0 &&
+    filteredCommunity.length === 0;
 
   // ----- Single shared audio engine ----------------------------------------
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -104,11 +125,30 @@ export function SampleVoicePicker({
   };
 
   return (
-    <div className="space-y-6">
-      {liveDesigned.length > 0 && (
+    <div className="space-y-4">
+      {/* Search — filters My Voices + Sample voices by name/description. */}
+      <div className="sticky top-0 z-10 -mx-1 px-1 pb-2 bg-[#0B0D10]">
+        <div className="relative">
+          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#666]" />
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search voices by name or description…"
+            aria-label="Search voices"
+            className="w-full rounded-lg bg-white/[0.04] border border-white/10 pl-9 pr-3 py-2 text-sm text-white placeholder:text-[#666] focus:outline-none focus:border-[#DFFF00]/40"
+          />
+        </div>
+      </div>
+
+      {noResults && (
+        <p className="text-center text-sm text-[#A7B0B7] py-8">No voices match “{query}”.</p>
+      )}
+
+      {filteredDesigned.length > 0 && (
         <section className="space-y-2">
           <h3 className="text-[11px] uppercase tracking-wider text-[#A7B0B7] px-1">My Voices</h3>
-          {liveDesigned.map((dv) => {
+          {filteredDesigned.map((dv) => {
             const encodedId = `dv:${dv.id}`;
             const isPlaying = playingId === encodedId;
             const pct = isPlaying && dur > 0 ? Math.min(100, (pos / dur) * 100) : 0;
@@ -143,11 +183,35 @@ export function SampleVoicePicker({
           })}
         </section>
       )}
+      {filteredCommunity.length > 0 && (
+        <section className="space-y-2">
+          <h3 className="text-[11px] uppercase tracking-wider text-[#A7B0B7] px-1">Community voices</h3>
+          {filteredCommunity.map((voice) => {
+            const url = resolveSampleVoiceAudioUrl(voice, asset, API_BASE_URL);
+            const isPlaying = playingId === voice.id;
+            const pct = isPlaying && dur > 0 ? Math.min(100, (pos / dur) * 100) : 0;
+            return (
+              <VoiceRow
+                key={voice.id}
+                voice={voice}
+                selected={selectedId === voice.id}
+                isPlaying={isPlaying}
+                playPct={pct}
+                playPos={isPlaying ? pos : 0}
+                playDur={isPlaying ? dur : 0}
+                onSelect={() => onSelect(voice)}
+                onTogglePlay={() => togglePlay(voice, url)}
+              />
+            );
+          })}
+        </section>
+      )}
+      {filteredVoices.length > 0 && (
       <section className="space-y-2">
-        {liveDesigned.length > 0 && (
+        {(filteredDesigned.length > 0 || filteredCommunity.length > 0) && (
           <h3 className="text-[11px] uppercase tracking-wider text-[#A7B0B7] px-1">Sample voices</h3>
         )}
-        {voices.map((voice) => {
+        {filteredVoices.map((voice) => {
           const url = resolveSampleVoiceAudioUrl(voice, asset, API_BASE_URL);
           const isPlaying = playingId === voice.id;
           const pct = isPlaying && dur > 0 ? Math.min(100, (pos / dur) * 100) : 0;
@@ -166,6 +230,7 @@ export function SampleVoicePicker({
           );
         })}
       </section>
+      )}
     </div>
   );
 }

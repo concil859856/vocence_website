@@ -62,6 +62,7 @@ from studio_tts_service import (
     download_object_bytes,
     fetch_chute_slug,
     get_presigned_url,
+    load_community_voice,
     synthesize_speak,
     transcribe_audio,
     upload_audio_bytes_to_bucket,
@@ -724,6 +725,10 @@ async def _fetch_sample_audio(url: str) -> bytes:
 
 async def _load_sample_voice(voice_id: str) -> tuple[bytes, str]:
     """Return (audio_bytes, reference_text) for a sample voice, with a per-process cache."""
+    # Approved community-contributed voices live in voice_submissions, not the
+    # static CDN catalog — delegate to the community loader (its own cache).
+    if voice_id.startswith("community-"):
+        return await load_community_voice(voice_id)
     cached = _SAMPLE_VOICE_CACHE.get(voice_id)
     if cached:
         return cached
@@ -763,7 +768,7 @@ async def tts_voice_clone_sample(
     """
     if not _clone_available():
         raise HTTPException(status_code=503, detail="Voice cloning is not available (no ops pods online, STUDIO_VOICE_CLONE_URL not set).")
-    if not is_known_sample(body.sample_voice_id):
+    if not body.sample_voice_id.startswith("community-") and not is_known_sample(body.sample_voice_id):
         raise HTTPException(status_code=404, detail=f"unknown sample voice: {body.sample_voice_id}")
     target = (body.target_text or "").strip()
     if not target:

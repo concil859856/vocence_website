@@ -25,6 +25,7 @@ from studio_tts_service import (
     download_object_bytes,
     download_object_bytes_capped,
     get_presigned_url,
+    load_community_voice,
     transcribe_audio,
     upload_wav_to_hippius,
     voice_clone_synthesize,
@@ -78,12 +79,18 @@ async def process_clone(job: state.Job) -> dict:
     audio_b64 = payload.get("audio_b64") or ""
 
     if sample_voice_id:
-        if not is_known_sample(sample_voice_id):
+        if sample_voice_id.startswith("community-"):
+            # Approved community-contributed voice: reference audio + transcript
+            # come from the voice_submissions row, not the static CDN catalog.
+            await state.update_status(job.id, phase="loading community voice")
+            raw_ref, cached_ref_text = await load_community_voice(sample_voice_id)
+        elif is_known_sample(sample_voice_id):
+            await state.update_status(job.id, phase="loading sample voice")
+            raw_ref, cached_ref_text = await load_sample_voice(
+                sample_voice_id, language=language,
+            )
+        else:
             raise RuntimeError(f"unknown sample voice: {sample_voice_id}")
-        await state.update_status(job.id, phase="loading sample voice")
-        raw_ref, cached_ref_text = await load_sample_voice(
-            sample_voice_id, language=language,
-        )
         user_ref_text = cached_ref_text
         source_mode = "sample"
         source_filename = sample_voice_id[:120]

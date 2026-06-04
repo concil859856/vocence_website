@@ -19,6 +19,8 @@ interface Props {
    * shown as a separate section above the sample voices. */
   designedVoices?: StudioDesignedVoiceItem[];
   onSelectDesigned?: (encodedId: string, item: StudioDesignedVoiceItem) => void;
+  /** Forwarded to the picker — approved community-contributed voices. */
+  communityVoices?: SampleVoice[];
 }
 
 export function SampleVoicePickerModal({
@@ -28,6 +30,7 @@ export function SampleVoicePickerModal({
   onClose,
   designedVoices,
   onSelectDesigned,
+  communityVoices,
 }: Props) {
   // ESC key + scroll lock while open
   useEffect(() => {
@@ -77,6 +80,7 @@ export function SampleVoicePickerModal({
             selectedId={selectedId}
             onSelect={(v) => { onSelect(v); onClose(); }}
             designedVoices={designedVoices}
+            communityVoices={communityVoices}
             onSelectDesigned={
               onSelectDesigned
                 ? (id, item) => { onSelectDesigned(id, item); onClose(); }

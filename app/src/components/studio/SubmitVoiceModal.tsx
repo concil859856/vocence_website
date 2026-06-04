@@ -20,6 +20,7 @@ import { CheckCircle2, FileAudio, ImageIcon, Loader2, Mic, Pause, Play, Square, 
 import { dashboardApi } from '../../services/dashboardApi';
 import { useAuth } from '../../contexts/AuthContext';
 import { authFetch } from '../../services/authFetch';
+import { API_ORIGIN_BASE } from '../../services/baseUrl';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import { toast } from 'sonner';
 
@@ -237,7 +238,7 @@ export function SubmitVoiceModal({ open, onClose, onSubmitted }: Props) {
       // Dedicated lite endpoint, cheaper than /api/dashboard/transcribe
       // because the modal already caps audio at 15 s. Same STT pipeline
       // upstream, just a smaller bill.
-      const res = await authFetch('/api/dashboard/voice-submissions/transcribe', {
+      const res = await authFetch(`${API_ORIGIN_BASE}/api/dashboard/voice-submissions/transcribe`, {
         method: 'POST',
         body: form,
       });

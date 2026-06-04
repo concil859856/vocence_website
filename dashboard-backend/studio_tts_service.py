@@ -608,6 +608,58 @@ async def transcribe_audio_streaming(
             pass
 
 
+_COMMUNITY_VOICE_CACHE: dict[str, tuple[bytes, str]] = {}
+
+
+async def load_community_voice(voice_id: str) -> tuple[bytes, str]:
+    """Return (audio_bytes, reference_text) for an approved community-contributed
+    voice (``approved_voice_id`` = ``community-<...>`` in ``voice_submissions``).
+
+    Unlike static sample voices, the submission already carries a human-provided
+    ``ref_text``, so no STT round-trip is needed. Cached per process. Raises
+    RuntimeError if the voice isn't an approved submission.
+    """
+    cached = _COMMUNITY_VOICE_CACHE.get(voice_id)
+    if cached:
+        return cached
+
+    from local_db import get_connection
+    conn = await get_connection()
+    try:
+        row = await (await conn.execute(
+            "SELECT audio_url, ref_text FROM voice_submissions "
+            "WHERE approved_voice_id = ? AND status = 'approved'",
+            (voice_id,),
+        )).fetchone()
+    finally:
+        await conn.close()
+    if row is None:
+        raise RuntimeError(f"unknown community voice: {voice_id}")
+
+    audio_url = (row["audio_url"] or "").strip()
+    ref_text = (row["ref_text"] or "").strip()
+    if not audio_url:
+        raise RuntimeError(f"community voice {voice_id} has no audio")
+
+    import aiohttp
+    timeout = aiohttp.ClientTimeout(total=30)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.get(audio_url) as resp:
+            if resp.status != 200:
+                raise RuntimeError(f"community voice audio fetch failed ({resp.status})")
+            audio = await resp.read()
+
+    if not ref_text:
+        # Fallback: transcribe if a legacy row somehow lacks ref_text.
+        stt_result, stt_err = await transcribe_audio(audio_bytes=audio)
+        ref_text = (stt_result or {}).get("text", "").strip() if stt_result else ""
+        if not ref_text:
+            raise RuntimeError(f"community voice {voice_id}: no reference text ({stt_err})")
+
+    _COMMUNITY_VOICE_CACHE[voice_id] = (audio, ref_text)
+    return audio, ref_text
+
+
 def voice_clone_chute_configured() -> bool:
     """True if clone is usable: STUDIO_VOICE_CLONE_URL and/or legacy Chutes slug."""
     return bool(STUDIO_VOICE_CLONE_URL or STUDIO_VOICE_CLONE_CHUTE_SLUG)

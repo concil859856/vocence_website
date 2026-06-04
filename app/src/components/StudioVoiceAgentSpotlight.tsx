@@ -4,6 +4,7 @@ import { Zap, Brain, Phone, PhoneOff, Wrench, Wand2, Play, Send } from 'lucide-r
 import { useAuth } from '../contexts/AuthContext';
 import { useVoiceChat } from '../lib/voicechat/useVoiceChat';
 import { blockIfVoiceAgentsComingSoon } from '../lib/voiceAgentsComingSoon';
+import { API_ORIGIN_BASE } from '../services/baseUrl';
 
 /**
  * Voice Agents spotlight card for the Studio home page.
@@ -398,7 +399,7 @@ function VoiceStatsRow() {
   }>({ calls: null, languages: 24, agents: null });
   useEffect(() => {
     let cancelled = false;
-    fetch('/api/dashboard/public/stats/voice')
+    fetch(`${API_ORIGIN_BASE}/api/dashboard/public/stats/voice`)
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`http ${r.status}`))))
       .then((data) => {
         if (cancelled) return;

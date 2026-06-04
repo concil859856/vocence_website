@@ -15,6 +15,8 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useGenerations } from '../../contexts/GenerationsContext';
 import { useStudioPlayer } from '../../contexts/StudioPlayerContext';
 import { dashboardApi } from '../../services/dashboardApi';
+import { authFetch } from '../../services/authFetch';
+import { API_ORIGIN_BASE } from '../../services/baseUrl';
 import { CREDIT_TTS } from '../../studio/creditCosts';
 import { SAMPLE_VOICE_INDEX, SAMPLE_VOICES, type SampleVoice } from '../../data/sampleVoices';
 import { SampleVoiceAvatar } from './SampleVoiceAvatar';
@@ -32,20 +34,59 @@ export function StudioTtsGeneral() {
   // otherwise default to the first Voice Design voice so the page
   // never lands in a "no voice picked" state.
   const [searchParams] = useSearchParams();
+  // Approved community-contributed voices, fetched once on mount. Merged with
+  // the static catalog so "Use this voice" deep-links (?voice=community-…) and
+  // the picker can resolve + select them.
+  const [communityVoices, setCommunityVoices] = useState<SampleVoice[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    authFetch(`${API_ORIGIN_BASE}/api/dashboard/public/voices/community`)
+      .then((r) => (r.ok ? r.json() : { voices: [] }))
+      .then((data: { voices?: Array<{
+        id: string; name: string; description: string;
+        audio_url: string; avatar_url: string;
+        submitter_name: string | null; submitter_picture: string | null;
+      }> }) => {
+        if (cancelled) return;
+        setCommunityVoices((data.voices ?? []).map((v) => ({
+          id: v.id,
+          name: v.name,
+          description: v.description,
+          audioDirectUrl: v.audio_url,
+          imageDirectUrl: v.avatar_url,
+          submitter: { name: v.submitter_name, picture: v.submitter_picture },
+        })));
+      })
+      .catch(() => { /* leave empty — static voices still work */ });
+    return () => { cancelled = true; };
+  }, []);
+
+  // Static catalog + community voices, keyed by id, for resolution + lookup.
+  const voiceIndex = useMemo(() => {
+    const idx: Record<string, SampleVoice> = { ...SAMPLE_VOICE_INDEX };
+    for (const v of communityVoices) idx[v.id] = v;
+    return idx;
+  }, [communityVoices]);
+
+  // ``?voice=<id>`` from Community Voices preselects a specific entry;
+  // otherwise default to the first voice so the page never lands in a
+  // "no voice picked" state. Community ids are kept pending until the
+  // fetch above resolves them.
   const initialVoiceId = (() => {
     const param = searchParams.get('voice');
     if (param && SAMPLE_VOICE_INDEX[param]) return param;
+    if (param && param.startsWith('community-')) return param;
     return SAMPLE_VOICES[0]?.id ?? null;
   })();
   const [selectedId, setSelectedId] = useState<string | null>(initialVoiceId);
-  // If the user navigates from Community Voices while this page is
-  // already mounted, swap to the requested voice without remount.
+  // If the user navigates from Community Voices while this page is already
+  // mounted — or the community list finishes loading — resolve the param.
   useEffect(() => {
     const param = searchParams.get('voice');
-    if (param && SAMPLE_VOICE_INDEX[param]) {
+    if (param && voiceIndex[param]) {
       setSelectedId(param);
     }
-  }, [searchParams]);
+  }, [searchParams, voiceIndex]);
   const [pickerOpen, setPickerOpen] = useState(false);
 
   const [text, setText] = useState('');
@@ -57,7 +98,7 @@ export function StudioTtsGeneral() {
   // generation the user just heard.
   const [lastResultId, setLastResultId] = useState<string | null>(null);
 
-  const selected: SampleVoice | null = selectedId ? SAMPLE_VOICE_INDEX[selectedId] ?? null : null;
+  const selected: SampleVoice | null = selectedId ? voiceIndex[selectedId] ?? null : null;
   const charCount = text.length;
   const charPct = Math.min(100, (charCount / TTS_CONTENT_MAX_CHARS) * 100);
   const overLimit = charCount > TTS_CONTENT_MAX_CHARS;
@@ -259,6 +300,7 @@ export function StudioTtsGeneral() {
         selectedId={selectedId}
         onSelect={(v) => setSelectedId(v.id)}
         onClose={() => setPickerOpen(false)}
+        communityVoices={communityVoices}
       />
     </div>
   );
