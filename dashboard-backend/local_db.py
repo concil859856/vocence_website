@@ -26,6 +26,15 @@ async def get_connection() -> aiosqlite.Connection:
     conn = await aiosqlite.connect(DB_PATH)
     conn.row_factory = aiosqlite.Row
     await conn.execute("PRAGMA foreign_keys = ON")
+    # WAL lets readers and a single writer proceed concurrently without
+    # blocking each other — essential because this DB is shared by two
+    # processes (dashboard-backend + developer-api) plus this backend's own
+    # concurrent async connections. busy_timeout makes a writer wait for a
+    # lock instead of failing instantly with "database is locked" (default
+    # busy_timeout is 0). journal_mode is a persistent DB-level setting;
+    # busy_timeout is per-connection so must be set on every connection.
+    await conn.execute("PRAGMA journal_mode = WAL")
+    await conn.execute("PRAGMA busy_timeout = 5000")
     return conn
 
 

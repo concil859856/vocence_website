@@ -220,8 +220,8 @@ export function SubmitVoiceModal({ open, onClose, onSubmitted }: Props) {
       toast.error('Record or upload audio first');
       return;
     }
-    const token = localStorage.getItem('vocence_token');
-    if (!token) { toast.error('Sign in to use auto-transcribe'); return; }
+    // Cookie-only auth: the session cookie travels via authFetch's
+    // credentials:'include'; no localStorage JWT to gate on.
     // Fast UX gate. Backend re-checks atomically.
     if (user && (user.credits ?? 0) < SUBMISSION_TRANSCRIBE_COST) {
       toast.error('Insufficient credits', {
@@ -239,7 +239,6 @@ export function SubmitVoiceModal({ open, onClose, onSubmitted }: Props) {
       // upstream, just a smaller bill.
       const res = await authFetch('/api/dashboard/voice-submissions/transcribe', {
         method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
         body: form,
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -273,8 +272,7 @@ export function SubmitVoiceModal({ open, onClose, onSubmitted }: Props) {
 
   const submit = async () => {
     if (!canSubmit || !audioFile || !avatarFile) return;
-    const token = localStorage.getItem('vocence_token');
-    if (!token) { toast.error('Sign in to submit'); return; }
+    // Cookie-only auth: session cookie carries identity (credentials:'include').
     setSubmitting(true);
     try {
       const form = new FormData();
@@ -284,7 +282,7 @@ export function SubmitVoiceModal({ open, onClose, onSubmitted }: Props) {
       form.append('language', language);
       form.append('audio', audioFile);
       form.append('avatar', avatarFile);
-      await dashboardApi.submitVoice(form, token);
+      await dashboardApi.submitVoice(form, '');
       toast.success('Submitted for review', {
         description: 'You\'ll get a notification once an admin approves or rejects it.',
       });

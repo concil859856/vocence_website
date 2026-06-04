@@ -151,7 +151,10 @@ function PlaybookListView() {
   const [creating, setCreating] = useState(false);
   const [communityView, setCommunityView] = useState<CommunityViewMode>(loadStoredViewMode);
 
-  const token = localStorage.getItem('vocence_token');
+  // Cookie-only auth: presence sentinel (real auth is the HttpOnly session
+  // cookie sent via authFetch). Keeps existing `if (!token)` / `token ?` gates
+  // working; the value is ignored by the backend (cookie wins over Bearer).
+  const token = localStorage.getItem('vocence_user') ? 'cookie-session' : null;
 
   // Persist the view-mode toggle so the user's preference survives a
   // page refresh / cross-session navigation.
@@ -726,7 +729,10 @@ function PlaybookDetailView({ playbookId }: { playbookId: number }) {
   const { confirm, dialog: confirmDialog } = useConfirm();
   const [showCoverPicker, setShowCoverPicker] = useState(false);
 
-  const token = localStorage.getItem('vocence_token');
+  // Cookie-only auth: presence sentinel (real auth is the HttpOnly session
+  // cookie sent via authFetch). Keeps existing `if (!token)` / `token ?` gates
+  // working; the value is ignored by the backend (cookie wins over Bearer).
+  const token = localStorage.getItem('vocence_user') ? 'cookie-session' : null;
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
   // Owner-only collapsed actions menu (Change cover / Visibility /
@@ -1328,7 +1334,10 @@ function AddTracksModal({ playbookId, onClose, onAdded }: { playbookId: number; 
   const [adding, setAdding] = useState(false);
   const [uploading, setUploading] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
-  const token = localStorage.getItem('vocence_token');
+  // Cookie-only auth: presence sentinel (real auth is the HttpOnly session
+  // cookie sent via authFetch). Keeps existing `if (!token)` / `token ?` gates
+  // working; the value is ignored by the backend (cookie wins over Bearer).
+  const token = localStorage.getItem('vocence_user') ? 'cookie-session' : null;
 
   useEffect(() => {
     if (tab === 'history' && user && history.length === 0) {

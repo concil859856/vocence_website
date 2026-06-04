@@ -67,11 +67,11 @@ export function NotificationBell() {
   const triggerRef = useRef<HTMLButtonElement | null>(null);
 
   const loadList = useCallback(async () => {
-    const token = localStorage.getItem('vocence_token');
-    if (!token) return;
+    // Cookie-only auth: don't gate on a localStorage JWT (always null post-
+    // migration). The session cookie travels via credentials:'include'.
     setLoading(true);
     try {
-      const res = await dashboardApi.listNotifications(30, 0, token);
+      const res = await dashboardApi.listNotifications(30, 0, '');
       setItems(res.notifications);
     } catch {
       /* leave previous list visible */
@@ -116,10 +116,9 @@ export function NotificationBell() {
     setOpen(false);
     // Mark read at modal-open time, not row-hover/scroll, so the
     // unread counter only ticks down on real engagement.
-    const token = localStorage.getItem('vocence_token');
-    if (!n.read && token) {
+    if (!n.read) {
       try {
-        await dashboardApi.markNotificationRead(n.id, token);
+        await dashboardApi.markNotificationRead(n.id, '');
         setItems((prev) => prev.map((x) => x.id === n.id ? { ...x, read: true } : x));
         refreshCount();
       } catch { /* swallow */ }
@@ -127,10 +126,8 @@ export function NotificationBell() {
   };
 
   const handleMarkAllRead = async () => {
-    const token = localStorage.getItem('vocence_token');
-    if (!token) return;
     try {
-      await dashboardApi.markAllNotificationsRead(token);
+      await dashboardApi.markAllNotificationsRead('');
       setItems((prev) => prev.map((x) => ({ ...x, read: true })));
       refreshCount();
     } catch { /* swallow */ }

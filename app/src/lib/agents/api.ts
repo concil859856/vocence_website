@@ -284,5 +284,13 @@ export const agentCustomToolsApi = {
 };
 
 export function getStoredToken(): string | null {
+  // Cookie-only auth: the session JWT no longer lives in localStorage (it's in
+  // the HttpOnly ``vocence_session`` cookie, sent automatically by authFetch's
+  // credentials:'include'). Components still gate on this helper with
+  // ``if (!token) return``, so return a non-sensitive presence sentinel when a
+  // session exists — ``vocence_user`` is set by AuthContext on login/verify and
+  // cleared on logout. The sentinel is sent as a Bearer header but the backend
+  // ignores it (the cookie takes precedence in require_auth/require_admin_session).
+  if (localStorage.getItem('vocence_user')) return 'cookie-session';
   return localStorage.getItem('vocence_token');
 }

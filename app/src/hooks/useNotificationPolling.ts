@@ -35,13 +35,12 @@ export function useNotificationPolling(intervalMs: number = DEFAULT_POLL_INTERVA
       setUnreadCount(0);
       return;
     }
-    const token = localStorage.getItem('vocence_token');
-    if (!token) {
-      setUnreadCount(0);
-      return;
-    }
+    // Cookie-only auth: the session lives in the HttpOnly ``vocence_session``
+    // cookie (sent automatically via credentials:'include'), NOT localStorage.
+    // We must NOT gate on a localStorage JWT here — it's always null post-
+    // migration, which previously pinned the badge at 0 for every user.
     try {
-      const res = await dashboardApi.getUnreadNotificationCount(token);
+      const res = await dashboardApi.getUnreadNotificationCount('');
       setUnreadCount(res.unread_count);
     } catch {
       // Soft-fail: leave the previous count visible. The next tick

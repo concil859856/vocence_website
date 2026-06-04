@@ -39,15 +39,14 @@ export function Pricing() {
   const premiumPlan = plans.find((p) => p.code === 'premium');
 
   const startStripeCheckout = async (planCode: string) => {
-    const token = localStorage.getItem('vocence_token');
-    if (!token) {
+    if (!isAuthenticated) {
       setMessage('Please sign in first to continue with plan checkout.');
       return;
     }
     setCheckoutLoading(`stripe:${planCode}`);
     setMessage(null);
     try {
-      const res = await api.createCheckoutSession(token, { provider: 'stripe', planCode });
+      const res = await api.createCheckoutSession('', { provider: 'stripe', planCode });
       if (res.checkoutUrl) {
         window.location.href = res.checkoutUrl;
         return;
@@ -61,15 +60,14 @@ export function Pricing() {
   };
 
   const startCryptoCheckout = async (planCode: string, payCurrency?: string) => {
-    const token = localStorage.getItem('vocence_token');
-    if (!token) {
+    if (!isAuthenticated) {
       setMessage('Please sign in first to continue with plan checkout.');
       return;
     }
     setCheckoutLoading(`crypto:${planCode}`);
     setMessage(null);
     try {
-      const res = await api.createCheckoutSession(token, {
+      const res = await api.createCheckoutSession('', {
         provider: 'crypto',
         planCode,
         ...(payCurrency ? { payCurrency } : {}),
@@ -90,8 +88,7 @@ export function Pricing() {
   };
 
   const openCryptoPicker = async (planCode: string) => {
-    const token = localStorage.getItem('vocence_token');
-    if (!token) {
+    if (!isAuthenticated) {
       setMessage('Please sign in first to continue with plan checkout.');
       return;
     }

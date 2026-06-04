@@ -90,11 +90,10 @@ export function Account() {
   }, [navigate, params.tab, pathTab, queryTab]);
 
   useEffect(() => {
-    const token = localStorage.getItem('vocence_token');
-    if (!user || !token) return;
+    if (!user) return;
     const load = () =>
       api
-        .getAccountSummary(token)
+        .getAccountSummary('')
         .then(setSummary)
         .catch(() => setSummary(null));
     void load();
@@ -105,37 +104,33 @@ export function Account() {
   }, [user, checkoutStatus]);
 
   useEffect(() => {
-    const token = localStorage.getItem('vocence_token');
-    if (!user || !token) return;
-    api.listDeveloperKeys(token)
+    // Cookie-only auth: session travels via authFetch credentials:'include'.
+    // Gate on the user being loaded, NOT a (now-null) localStorage JWT.
+    if (!user) return;
+    api.listDeveloperKeys('')
       .then((res) => setApiKeys(res.keys))
       .catch(() => setApiKeys([]));
   }, [user]);
 
   useEffect(() => {
-    const token = localStorage.getItem('vocence_token');
-    if (!user || !token) return;
+    if (!user) return;
     setDailyCreditsLoading(true);
     api
-      .getDailyCreditsUsage(token, 14)
+      .getDailyCreditsUsage('', 14)
       .then((res) => setDailyCredits(res))
       .catch(() => setDailyCredits(null))
       .finally(() => setDailyCreditsLoading(false));
   }, [user, checkoutStatus]);
 
   const refreshDeveloperData = async () => {
-    const token = localStorage.getItem('vocence_token');
-    if (!token) return;
-    const keys = await api.listDeveloperKeys(token);
+    const keys = await api.listDeveloperKeys('');
     setApiKeys(keys.keys);
   };
 
   const onCreateApiKey = async () => {
-    const token = localStorage.getItem('vocence_token');
-    if (!token) return;
     try {
       setDeveloperMessage(null);
-      const res = await api.createDeveloperKey(token, { name: newKeyName });
+      const res = await api.createDeveloperKey('', { name: newKeyName });
       setNewPlainKey(res.plainKey);
       setDeveloperMessage('API key created. Copy it now: it will not be shown again.');
       await refreshDeveloperData();
@@ -155,11 +150,9 @@ export function Account() {
   };
 
   const onRevokeApiKey = async (keyId: string) => {
-    const token = localStorage.getItem('vocence_token');
-    if (!token) return;
     try {
       setDeveloperMessage(null);
-      await api.revokeDeveloperKey(token, keyId);
+      await api.revokeDeveloperKey('', keyId);
       setDeveloperMessage('API key revoked.');
       await refreshDeveloperData();
     } catch (error) {
@@ -469,11 +462,9 @@ function CreditsTabContent({ credits, dailyCredits, dailyCreditsLoading }: Credi
   // state would mislead more than it'd help.
   useEffect(() => {
     if (!showDetails) return;
-    const token = localStorage.getItem('vocence_token');
-    if (!token) return;
     setTxLoading(true);
     api
-      .getCreditTransactions(token, {
+      .getCreditTransactions('', {
         offset: page * TRANSACTIONS_PAGE_SIZE,
         limit: TRANSACTIONS_PAGE_SIZE,
       })
@@ -682,11 +673,8 @@ function ReferralTab() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const token = localStorage.getItem('vocence_token');
-    if (!token) return;
-    authFetch(`${API_BASE_URL}/auth/referral`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
+    // Cookie-only auth: session cookie carries identity via credentials:'include'.
+    authFetch(`${API_BASE_URL}/auth/referral`)
       .then((r) => r.json())
       .then(setStats)
       .catch(() => {})
