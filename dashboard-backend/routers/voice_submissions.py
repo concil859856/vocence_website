@@ -52,7 +52,12 @@ _log = logging.getLogger(__name__)
 MIN_AUDIO_DURATION_MS = 8_000
 MAX_AUDIO_DURATION_MS = 15_000
 MAX_AUDIO_BYTES = 5 * 1024 * 1024  # 5 MB hard cap on the upload
-ALLOWED_AUDIO_MIMES = {"audio/wav", "audio/x-wav", "audio/wave", "audio/mpeg", "audio/mp3", "audio/webm", "audio/ogg"}
+ALLOWED_AUDIO_MIMES = {
+    "audio/wav", "audio/x-wav", "audio/wave",
+    "audio/mpeg", "audio/mp3",
+    "audio/webm", "audio/ogg",
+    "audio/mp4", "audio/x-m4a", "audio/m4a",  # Safari MediaRecorder records to mp4/m4a
+}
 
 # Avatar, re-encoded to a canonical 512×512 WebP server-side regardless
 # of what the user uploads. Generous accept set, strict canonical store.
@@ -361,9 +366,11 @@ async def submit_voice(
         raise HTTPException(status_code=400, detail="empty audio file")
     if len(audio_raw) > MAX_AUDIO_BYTES:
         raise HTTPException(status_code=413, detail=f"audio exceeds {MAX_AUDIO_BYTES // (1024*1024)}MB")
-    audio_mime = (audio.content_type or "").lower()
+    # Strip any codecs parameter: MediaRecorder reports e.g.
+    # "audio/webm;codecs=opus", which an exact-set check would reject.
+    audio_mime = (audio.content_type or "").split(";")[0].strip().lower()
     if audio_mime not in ALLOWED_AUDIO_MIMES:
-        raise HTTPException(status_code=415, detail="audio must be WAV, MP3, WebM, or OGG")
+        raise HTTPException(status_code=415, detail="audio must be WAV, MP3, WebM, OGG, or M4A")
     duration_ms = _measure_audio_duration_ms(audio_raw, audio_mime)
     if duration_ms == 0:
         raise HTTPException(status_code=400, detail="could not read audio duration")
@@ -475,9 +482,11 @@ async def submission_lite_transcribe(
         raise HTTPException(status_code=400, detail="empty audio")
     if len(raw) > MAX_AUDIO_BYTES:
         raise HTTPException(status_code=413, detail=f"audio exceeds {MAX_AUDIO_BYTES // (1024*1024)}MB")
-    mime = (audio.content_type or "").lower()
+    # Strip any codecs parameter (e.g. "audio/webm;codecs=opus" from
+    # MediaRecorder) so the exact-set membership check matches.
+    mime = (audio.content_type or "").split(";")[0].strip().lower()
     if mime not in ALLOWED_AUDIO_MIMES:
-        raise HTTPException(status_code=415, detail="audio must be WAV, MP3, WebM, or OGG")
+        raise HTTPException(status_code=415, detail="audio must be WAV, MP3, WebM, OGG, or M4A")
     # Server re-checks duration so a client that calls this endpoint
     # outside the modal can't bypass the cap.
     duration_ms = _measure_audio_duration_ms(raw, mime)

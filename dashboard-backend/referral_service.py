@@ -3,7 +3,7 @@
 Rules:
   - Each user gets a unique 8-char referral code on signup.
   - New user signs up with a referral code → linked via ``referred_by``.
-  - Referrer gets 500 credits when the invited user is "activated"
+  - Referrer gets 200 credits when the invited user is "activated"
     (completes at least one generation on any feature).
   - Referrer gets 10% of credits from every purchase the invited user makes.
   - 3 activated referrals → referrer upgraded to premium + 1,000 bonus credits.
@@ -24,7 +24,7 @@ from local_db import get_connection, record_credit_transaction
 
 _log = logging.getLogger(__name__)
 
-REFERRAL_SIGNUP_BONUS = 500
+REFERRAL_SIGNUP_BONUS = 200
 REFERRAL_COMMISSION_PCT = 0.10
 MILESTONE_COUNT = 3
 MILESTONE_PLAN = "premium"

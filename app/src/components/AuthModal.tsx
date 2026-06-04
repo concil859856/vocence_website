@@ -123,6 +123,14 @@ export function AuthModal({ isOpen, onClose, initialMode = 'login' }: AuthModalP
     if (isOpen) requestEpochRef.current += 1;
   }, [isOpen]);
 
+  // The modal stays mounted (just returns null when closed), so `mode` is
+  // only seeded once from initialMode. Re-apply initialMode each time it
+  // opens so a caller that opens it in a specific mode (e.g. referral links
+  // open signup) is honored rather than showing the last-used mode.
+  useEffect(() => {
+    if (isOpen) setMode(initialMode);
+  }, [isOpen, initialMode]);
+
   if (!isOpen) return null;
 
   const resetForm = () => {

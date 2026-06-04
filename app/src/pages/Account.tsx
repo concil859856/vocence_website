@@ -713,7 +713,7 @@ function ReferralTab() {
           Invite Friends, Earn Credits
         </h3>
         <p className="text-sm text-[#A7B0B7] mb-4">
-          Share your referral link. When they sign up and use any feature, you get <strong className="text-white">500 credits</strong>.
+          Share your referral link. When they sign up and use any feature, you get <strong className="text-white">200 credits</strong>.
           Plus <strong className="text-white">10%</strong> of every purchase they make.
         </p>
         <div className="flex items-center gap-2">
@@ -786,7 +786,7 @@ function ReferralTab() {
           </li>
           <li className="flex items-start gap-2">
             <span className="text-[#DFFF00] font-bold shrink-0">3.</span>
-            You get <strong className="text-white">500 credits</strong> instantly
+            You get <strong className="text-white">200 credits</strong> instantly
           </li>
           <li className="flex items-start gap-2">
             <span className="text-[#DFFF00] font-bold shrink-0">4.</span>

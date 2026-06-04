@@ -586,16 +586,19 @@ def require_admin_session(
 
     Accepts the JWT from either the ``vocence_session`` HttpOnly cookie (the
     standard website path after the cookie-only migration) or a legacy
-    ``Authorization: Bearer`` header. Returns the verified admin email.
+    ``Authorization: Bearer`` header. The COOKIE is preferred — mirroring
+    ``require_auth`` — because browser admin clients may send a non-JWT Bearer
+    placeholder (the frontend's ``getStoredToken()`` returns a 'cookie-session'
+    sentinel under cookie-only auth); decoding that bogus Bearer first would
+    fail with "Invalid token". Returns the verified admin email.
     """
     admin_email = (os.environ.get("ADMIN_EMAIL") or "").strip().lower()
     if not admin_email:
         raise HTTPException(status_code=503, detail="Admin email not configured")
-    if authorization and authorization.startswith("Bearer "):
+    token = vocence_session
+    if not token and authorization and authorization.startswith("Bearer "):
         token = authorization.split(" ", 1)[1]
-    elif vocence_session:
-        token = vocence_session
-    else:
+    if not token:
         raise HTTPException(status_code=401, detail="No token provided")
     decoded = _decode_token(token)
     email = (decoded.get("email") or "").strip().lower()

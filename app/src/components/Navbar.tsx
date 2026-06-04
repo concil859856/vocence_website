@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Link, useLocation } from 'react-router-dom';
+import { Link, useLocation, useSearchParams } from 'react-router-dom';
 import { Menu, X } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { AuthModal } from './AuthModal';
@@ -9,9 +9,11 @@ import { ADMIN_EMAIL } from '../config';
 
 export function Navbar() {
   const location = useLocation();
+  const [searchParams] = useSearchParams();
   const [isScrolled, setIsScrolled] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
   const { user, isAuthenticated } = useAuth();
   const isAdmin = isAuthenticated && !!ADMIN_EMAIL && user?.email === ADMIN_EMAIL;
 
@@ -22,6 +24,21 @@ export function Navbar() {
     window.addEventListener('scroll', handleScroll);
     return () => window.removeEventListener('scroll', handleScroll);
   }, []);
+
+  // Auto-open the auth modal from URL intent — but never for an already
+  // signed-in user. A referral link (?ref=) means the visitor wants to join,
+  // so default to signup; ?login=1 (CLI-authorize / password-reset redirects)
+  // opens login. The referral code itself is captured separately in App.tsx.
+  useEffect(() => {
+    if (isAuthenticated) return;
+    if (searchParams.get('ref')) {
+      setAuthMode('signup');
+      setIsAuthModalOpen(true);
+    } else if (searchParams.get('login') === '1') {
+      setAuthMode('login');
+      setIsAuthModalOpen(true);
+    }
+  }, [searchParams, isAuthenticated]);
 
   const navLinks = [
     { path: '/', label: 'Overview' },
@@ -144,6 +161,7 @@ export function Navbar() {
       <AuthModal
         isOpen={isAuthModalOpen}
         onClose={() => setIsAuthModalOpen(false)}
+        initialMode={authMode}
       />
     </nav>
   );
