@@ -66,7 +66,7 @@ const base = `${API_BASE_URL}/dashboard/auth/admin`;
 export const adminAuthApi = {
   /** POST the admin password to mint an admin_token. Server rate-limits
    * to 5 attempts per 5 min per IP. */
-  unlock: (token: string, password: string) =>
+  unlock: (token: string | null, password: string) =>
     jsonFetch<UnlockResponse>(`${base}/unlock`, {
       method: 'POST',
       headers: authHeaders(token),
@@ -74,7 +74,7 @@ export const adminAuthApi = {
     }),
 
   /** Check whether the current admin_token is still valid. Cheap. */
-  status: (token: string, adminToken: string | null) =>
+  status: (token: string | null, adminToken: string | null) =>
     jsonFetch<AdminStatus>(`${base}/status`, {
       method: 'GET',
       headers: authHeaders(token, adminToken),
@@ -82,7 +82,7 @@ export const adminAuthApi = {
 
   /** Server-side signal that we're done. Stateless tokens so this is
    * just for the audit log; the real "lock" is wiping sessionStorage. */
-  lock: (token: string) =>
+  lock: (token: string | null) =>
     jsonFetch<{ ok: true }>(`${base}/lock`, {
       method: 'POST',
       headers: authHeaders(token),

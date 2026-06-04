@@ -47,7 +47,12 @@ from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Request
+
+# Mirrors routers.auth.SESSION_COOKIE_NAME. Defined locally so this module's
+# CLI helper (python -m routers.admin_auth --hash) doesn't trigger the
+# import-time JWT_SECRET check in routers.auth.
+SESSION_COOKIE_NAME = "vocence_session"
 from pydantic import BaseModel
 
 # NOTE: `from routers.auth import require_admin_session` is deferred to
@@ -220,6 +225,7 @@ class UnlockRequest(BaseModel):
 
 def _require_admin_session_dep(
     authorization: Optional[str] = Header(None, alias="Authorization"),
+    vocence_session: Optional[str] = Cookie(None, alias=SESSION_COOKIE_NAME),
 ) -> str:
     """Lazy-import shim around routers.auth.require_admin_session.
 
@@ -228,9 +234,12 @@ def _require_admin_session_dep(
     routers.auth raises at import time if JWT_SECRET is missing/weak, which
     is correct for the running server but blocks the CLI from prompting for
     a password. Importing inside the request-time body sidesteps that.
+
+    Forwards both the ``Authorization`` header and the ``vocence_session``
+    cookie so admin endpoints work under the cookie-only auth scheme.
     """
     from routers.auth import require_admin_session
-    return require_admin_session(authorization=authorization)
+    return require_admin_session(authorization=authorization, vocence_session=vocence_session)
 
 
 @router.post("/unlock")

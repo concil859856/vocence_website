@@ -150,7 +150,13 @@ export function AdminGate({ children }: Props) {
   }
   // Non-admins (anonymous or signed in as the wrong user) get silently
   // bounced to /. No splash, no hint that admin pages exist.
-  if (!isAuthenticated || !user || user.email !== ADMIN_EMAIL || !token) {
+  //
+  // NOTE: we intentionally do NOT gate on a localStorage JWT here. After the
+  // cookie-only migration the session lives in the HttpOnly ``vocence_session``
+  // cookie, so ``token`` (getStoredToken()) is always null and gating on it
+  // would bounce every legitimate admin before the unlock modal could render.
+  // Identity is established by the cookie-backed ``isAuthenticated``/``user``.
+  if (!isAuthenticated || !user || user.email !== ADMIN_EMAIL) {
     return <Navigate to="/" replace />;
   }
   return (

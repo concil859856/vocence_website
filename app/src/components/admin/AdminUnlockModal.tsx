@@ -11,7 +11,8 @@ import { Lock, ShieldAlert } from 'lucide-react';
 import { adminAuthApi, setStoredAdminToken } from '../../lib/admin/api';
 
 interface Props {
-  token: string;                       // user's JWT (Google OAuth)
+  token: string | null;                // legacy JWT; null under cookie-only auth
+                                       // (the session cookie carries identity)
   onUnlocked: () => void;              // parent re-renders with adminToken
   onCancel?: () => void;               // optional: navigate away
 }
