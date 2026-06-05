@@ -17,7 +17,14 @@ from ranking import (
     get_ranked_miner_stats_for_validator,
     sort_miners_for_display,
 )
-from routers.auth import require_admin_session
+from routers.auth import _get_user_by_id, require_auth
+# require_admin_unlocked layers the sudo-mode password gate on top of the
+# Google-OAuth admin check (require_admin_session). Every endpoint in this
+# file that touches blocklist / users / validators / posts / overview /
+# website-usage requires it: even an admin who's logged in via Google
+# must enter the separate ADMIN_PASSWORD_HASH password to mint an
+# X-Admin-Token before these routes accept the request.
+from routers.admin_auth import require_admin_unlocked as require_admin_session
 from schemas import (
     ADMIN_EMAIL,
     ActivityBucketResponse,
@@ -537,7 +544,7 @@ async def get_validation_status(
 
 @router.get("/evaluations/recent", response_model=RecentEvaluationsResponse)
 async def get_recent_evaluations(
-    limit: int = Query(50, ge=1, le=50000),
+    limit: int = Query(50, ge=1, le=500),
     validator_hotkey: str | None = Query(None, description="Filter by validator hotkey"),
     miner_hotkey: str | None = Query(None, description="Filter by miner hotkey"),
 ):
@@ -584,7 +591,7 @@ async def get_recent_evaluations(
 
 @router.get("/evaluations", response_model=RecentEvaluationsResponse)
 async def get_all_evaluations(
-    limit: int = Query(100, ge=1, le=50000),
+    limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
     validator_hotkey: str | None = Query(None),
     miner_hotkey: str | None = Query(None),
@@ -672,11 +679,27 @@ async def get_activity(range_param: str = Query("24h", alias="range")):
 
 
 @router.post("/users/register", response_model=RegisteredUserResponse)
-async def register_user(body: RegisteredUserRegisterRequest):
-    """Register or update a website user (called after login). Stored in local SQLite only."""
-    email = (body.email or "").strip()
+async def register_user(
+    body: RegisteredUserRegisterRequest,
+    user_id: str = Depends(require_auth),
+):
+    """Register or update a website user (called after login). Stored in local SQLite only.
+
+    SECURITY: prior to 2026-05-14 this endpoint had no auth — anyone
+    could POST to spam fake rows or overwrite a real user's name/picture
+    via the ON CONFLICT update. Now requires a valid Bearer JWT, and the
+    submitted email/name/picture are IGNORED in favor of the values on
+    the authenticated ``auth_users`` row (so a logged-in attacker still
+    can't forge or overwrite a different account)."""
+    me = await _get_user_by_id(user_id)
+    if me is None:
+        raise HTTPException(status_code=401, detail="Unknown user")
+    email = (me.email or "").strip().lower()
     if not email:
-        raise HTTPException(status_code=400, detail="email required")
+        raise HTTPException(status_code=400, detail="Authenticated user has no email")
+    name = me.name or ""
+    picture = me.picture
+    _ = body  # body fields ignored — preserved for backwards compatibility with old clients
     await ensure_tables()
     conn = await get_connection()
     try:
@@ -689,7 +712,7 @@ async def register_user(body: RegisteredUserRegisterRequest):
                 picture = excluded.picture,
                 updated_at = datetime('now')
             """,
-            (email, body.name or "", body.picture),
+            (email, name, picture),
         )
         await conn.commit()
         cursor = await conn.execute(

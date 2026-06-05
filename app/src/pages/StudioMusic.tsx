@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect } from 'react';
+import { useConfirm } from '../hooks/useConfirm';
 import {
   AlertCircle, CheckCircle2, ChevronDown, ChevronUp, Loader2, Music,
   Upload, X, Download, Clock, Disc3, Wand2, Repeat, Paintbrush, Scissors, ArrowRightFromLine,
-  Play, Pause, Check,
+  Play, Pause, Check, BookOpen, Sparkles,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useStudioPlayer } from '../contexts/StudioPlayerContext';
@@ -10,25 +11,358 @@ import { dashboardApi, humanizeApiError } from '../services/dashboardApi';
 import { useGenerations } from '../contexts/GenerationsContext';
 import { CREDIT_MUSIC } from '../studio/creditCosts';
 import { asset } from '../data/assets';
+// Inline the 8 genre tile images as base64 in the JS bundle. They're
+// each ~3-5KB (~30KB total) and the page is unusable until they show,
+// so trading a one-time bundle bump for instant render with no
+// post-mount HTTP fetches is the right call. Plain `?url` imports
+// (Vite default) would still cost separate HTTP requests fired after
+// React mounts, exactly the staggered fade-in we're trying to kill.
+import genre1Img from '../assets/genre/genre_1.webp?inline';
+import genre2Img from '../assets/genre/genre_2.webp?inline';
+import genre3Img from '../assets/genre/genre_3.webp?inline';
+import genre4Img from '../assets/genre/genre_4.webp?inline';
+import genre5Img from '../assets/genre/genre_5.webp?inline';
+import genre6Img from '../assets/genre/genre_6.webp?inline';
+import genre7Img from '../assets/genre/genre_7.webp?inline';
+import genre8Img from '../assets/genre/genre_8.webp?inline';
 
 type MusicTask = 'text2music' | 'audio2audio' | 'retake' | 'repaint' | 'edit' | 'extend';
 
 interface GenrePreset {
   label: string;
+  /** Tag string for the prompt field. */
   value: string;
+  /** Lyric template that matches the genre's vibe, full song structure
+   * with proper [verse]/[chorus]/[bridge] tags. Instrumental presets
+   * use [inst]. Loaded into the lyrics textarea when the genre tile is
+   * picked. */
+  lyrics: string;
   emoji: string;
   image: string;
 }
 
 const GENRE_PRESETS: GenrePreset[] = [
-  { label: 'Upbeat Pop', value: 'pop, synth, drums, guitar, 120 bpm, upbeat, catchy, vibrant, female vocals, polished vocals', emoji: '🎤', image: '/samples/images/genre_1.webp' },
-  { label: 'Hard Rock', value: 'rock, electric guitar, drums, bass, 130 bpm, energetic, rebellious, gritty, male vocals, raw vocals', emoji: '🎸', image: '/samples/images/genre_2.webp' },
-  { label: 'Street Rap', value: 'hip hop, 808 bass, hi-hats, synth, 90 bpm, bold, urban, intense, male vocals, rhythmic vocals', emoji: '🎧', image: '/samples/images/genre_3.webp' },
-  { label: 'Club EDM', value: 'edm, synth, bass, kick drum, 128 bpm, euphoric, pulsating, energetic, instrumental', emoji: '⚡', image: '/samples/images/genre_4.webp' },
-  { label: 'Smooth Jazz', value: 'jazz, saxophone, piano, double bass, 110 bpm, smooth, improvisational, soulful, instrumental', emoji: '🎷', image: '/samples/images/genre_5.webp' },
-  { label: 'Orchestral', value: 'classical, orchestral, strings, piano, 60 bpm, elegant, emotive, timeless, instrumental', emoji: '🎻', image: '/samples/images/genre_6.webp' },
-  { label: 'Chill Lo-fi', value: 'lo-fi, piano, soft drums, vinyl crackle, 75 bpm, chill, mellow, warm, instrumental', emoji: '☕', image: '/samples/images/genre_7.webp' },
-  { label: 'Soulful R&B', value: 'r&b, synth, bass, drums, 85 bpm, sultry, groovy, romantic, female vocals, silky vocals', emoji: '💜', image: '/samples/images/genre_8.webp' },
+  {
+    label: 'Upbeat Pop',
+    // Curated: Disco, danceable, glamorous, female vocals.
+    value: 'disco, four-on-the-floor drums, slap bass, strings, hi-hats, 120 bpm, danceable, glamorous, female vocals',
+    emoji: '🎤',
+    image: genre1Img,
+    lyrics: `[verse]
+Streetlights paint the city wide
+Got my heart out for the ride
+Every spark turns into gold
+Tell me everything you hold
+
+[chorus]
+Light it up, light it up tonight
+Feel it flicker in the strobe light
+Light it up, light it up tonight
+Bring it back, bring it back to life
+
+[verse]
+Echoes calling down the line
+Yours and mine and intertwined
+Every moment hits the floor
+Tell me what we're waiting for
+
+[bridge]
+Don't you let it slip away
+Hold the rhythm, find the way
+This is everything we made
+Promise me it doesn't fade
+
+[chorus]
+Light it up, light it up tonight
+Feel it flicker in the strobe light
+Light it up, light it up tonight
+Bring it back, bring it back to life
+
+[outro]
+Light it up, light it up
+Light it up tonight`,
+  },
+  {
+    label: 'Hard Rock',
+    value: 'rock, electric guitar, drums, bass, 130 bpm, energetic, rebellious, gritty, male vocals, raw vocals',
+    emoji: '🎸',
+    image: genre2Img,
+    lyrics: `[verse]
+Burned the bridges I walked across
+Counted every gain and loss
+Loud guitars and borrowed pride
+Nothing left for me to hide
+
+[chorus]
+Tear it down, tear it down to the bone
+We're the noise that won't go home
+Tear it down, tear it down all night
+Standing in the strobe-light fight
+
+[verse]
+Asphalt cracked beneath the heat
+Drumbeats pounding to my feet
+Black leather and a borrowed flame
+Nothing's ever gonna be the same
+
+[bridge]
+We don't quit, we don't ask why
+Cut the wire, take the sky
+Burn the page, write our name
+This is bigger than the game
+
+[chorus]
+Tear it down, tear it down to the bone
+We're the noise that won't go home
+Tear it down, tear it down all night
+Standing in the strobe-light fight
+
+[outro]
+Tear it down, tear it down
+Tear it down tonight`,
+  },
+  {
+    label: 'Street Rap',
+    // Curated: Drill, aggressive, sliding 808s, sparse hats, rapid flow.
+    value: 'drill, dark trap, sliding 808s, sparse hi-hats, 140 bpm, aggressive, menacing, male vocals, rapid flow',
+    emoji: '🎧',
+    image: genre3Img,
+    lyrics: `[verse]
+Came from the ground with the dirt on my shoes
+Wrote my own page from the cracks in the news
+Every block knows the way that I move
+Voice on the speaker, you know that I do
+
+[chorus]
+Run it back, run it back, that's the wave
+Built the whole thing from the moves that I made
+Run it back, run it back, count the days
+Living in color in a black-and-white maze
+
+[verse]
+808s bouncing off the walls of the room
+Echoes of every kid that I knew
+Hard work soaking through the cuffs of my shoes
+City still spinning in a different view
+
+[bridge]
+No, I never sleep when the deal on the line
+Pen to the paper, getting one of a kind
+Stack 'em up high till the sky goes blind
+Anything they say, leave it all behind
+
+[chorus]
+Run it back, run it back, that's the wave
+Built the whole thing from the moves that I made
+Run it back, run it back, count the days
+Living in color in a black-and-white maze`,
+  },
+  {
+    label: 'Club EDM',
+    // Curated: House / Electro House, peak-time club energy with a
+    // catchy female hook (the model handles four-on-the-floor + 808s
+    // cleanly when you ask for vocals over them).
+    value: 'electronic, house, electro house, synthesizer, drums, bass, percussion, 128 bpm, energetic, uplifting, exciting, female vocals, catchy hook',
+    emoji: '⚡',
+    image: genre4Img,
+    lyrics: `[verse]
+Counting down the seconds till the lights go red
+Every move you make is playing in my head
+Floor is moving, can't stand still
+Take me higher, give me the thrill
+
+[chorus]
+Take me up, take me up, where the night never ends
+Hands above, hands above with my closest friends
+Take me up, take me up, let the bassline fly
+We don't stop till the morning sky
+
+[verse]
+Strobes are flashing as the speakers roar
+Every drop is making me crave more
+City pulses like a beating heart
+This is where the night will start
+
+[bridge]
+Lose yourself, find yourself
+Nothing else, no one else
+Feel the rhythm in your spine
+This whole moment is mine
+
+[chorus]
+Take me up, take me up, where the night never ends
+Hands above, hands above with my closest friends
+Take me up, take me up, let the bassline fly
+We don't stop till the morning sky
+
+[outro]
+Take me up, take me up
+We don't stop tonight`,
+  },
+  {
+    label: 'Smooth Jazz',
+    // Curated: Lounge / Cocktail Jazz, late-night, intimate, sultry
+    // vocals over piano-trio backing.
+    value: 'lounge jazz, soft piano, brushed drums, double bass, vibraphone, 90 bpm, smooth, relaxing, sophisticated, smoky female vocals',
+    emoji: '🎷',
+    image: genre5Img,
+    lyrics: `[verse]
+Velvet hush of a quarter past nine
+Candle on the table, glass of wine
+Piano spilling like a secret you keep
+This is where the city falls asleep
+
+[chorus]
+Stay a while, the night is kind
+Leave the rest of the world behind
+Stay a while, stay with me
+Let the music set us free
+
+[verse]
+Smoke curls slow above the silver tray
+Every note has something soft to say
+Saxophone breathing in the corner room
+Painting hours in the lamp-light bloom
+
+[bridge]
+We don't need a single word tonight
+Just the way the rhythm holds us tight
+Time forgets the way that hours run
+Here with you is where the song's begun
+
+[chorus]
+Stay a while, the night is kind
+Leave the rest of the world behind
+Stay a while, stay with me
+Let the music set us free
+
+[outro]
+Stay a while, stay with me
+Let it be, let it be`,
+  },
+  {
+    label: 'Orchestral',
+    // Curated: Cinematic / Film Score, epic, dramatic, with choir
+    // singing in English over swelling strings and brass. The model
+    // does long-vowel choral parts well when you say "choir vocals".
+    value: 'cinematic, orchestral, full strings, brass swells, choir, percussion, 80 bpm, epic, dramatic, choir vocals, soaring vocals',
+    emoji: '🎻',
+    image: genre6Img,
+    lyrics: `[verse]
+Dawn breaks open on the longest road
+Carry every name we ever owed
+Stones that watched us count the years
+Hold the weight of all our fears
+
+[chorus]
+Rise, rise into the open sky
+Brave the storm and never wonder why
+Rise, rise, we'll carry on
+Till the dark of night is gone
+
+[verse]
+Banners moving in the rising wind
+Every promise we have ever pinned
+Voices joined into a single sound
+This is where the brave are found
+
+[bridge]
+We were forged inside the flame
+None of us will be the same
+Hand in hand, we hold the line
+Yours and mine, yours and mine
+
+[chorus]
+Rise, rise into the open sky
+Brave the storm and never wonder why
+Rise, rise, we'll carry on
+Till the dark of night is gone
+
+[outro]
+Rise, rise, carry on
+Till the dawn, till the dawn`,
+  },
+  {
+    label: 'Chill Lo-fi',
+    // Curated: Lo-Fi Hip-Hop, soft, half-whispered female vocal sits
+    // above the canonical "lofi beats to study/relax to" backing.
+    value: 'lofi hip hop, mellow piano, jazz drums, vinyl crackle, soft bass, 80 bpm, chill, nostalgic, soft female vocals, intimate',
+    emoji: '☕',
+    image: genre7Img,
+    lyrics: `[verse]
+Rain is talking on the windowpane
+Coffee cooling in my hand again
+Pages turning at a quiet pace
+Soft light falling on your face
+
+[chorus]
+Slow it down, slow it down with me
+Nothing here we really need to be
+Slow it down, slow it down inside
+Hold the moment, let it ride
+
+[verse]
+Old cassettes are humming in the corner
+Yellow lamp light on the calendar
+Every minute drifting like a song
+Nothing right and nothing wrong
+
+[bridge]
+Empty streets and quiet doors
+Stories told in winter floors
+Take a breath and breathe it in
+Let the simple things begin
+
+[chorus]
+Slow it down, slow it down with me
+Nothing here we really need to be
+Slow it down, slow it down inside
+Hold the moment, let it ride
+
+[outro]
+Slow it down, slow it down
+Just stay around`,
+  },
+  {
+    label: 'Soulful R&B',
+    // Curated: Neo-Soul, electric piano, jazz chords, soulful vocals.
+    value: 'neo-soul, electric piano, bass, drums, jazz chords, 85 bpm, smooth, warm, female vocals, soulful vocals',
+    emoji: '💜',
+    image: genre8Img,
+    lyrics: `[verse]
+Slow down, baby, take your time
+Got the city humming on a dime
+Every word you say, I'm caught inside
+Nowhere I would rather hide
+
+[chorus]
+Tell me how it feels, oh, oh
+Tell me what is real, oh, oh
+Got me right where I should be
+Falling in your gravity
+
+[verse]
+Soft light spilling through the blinds
+Memories that wouldn't leave my mind
+Every kiss a melody I've found
+Every silence has a sound
+
+[bridge]
+Stay a little longer, please don't go
+Got a thousand things I've yet to know
+You're the only place I rest my head
+Everything you said
+
+[chorus]
+Tell me how it feels, oh, oh
+Tell me what is real, oh, oh
+Got me right where I should be
+Falling in your gravity
+
+[outro]
+Falling in your gravity
+Falling in your gravity`,
+  },
 ];
 
 function slugify(s: string): string {
@@ -46,6 +380,110 @@ const TASK_TABS: { id: MusicTask; label: string; icon: typeof Music; desc: strin
 
 interface StatusMsg { type: 'success' | 'error' | 'info'; message: string; }
 
+/**
+ * Compact inline guide that explains the current music task, what the
+ * prompt/lyrics fields mean *in this mode*, what audio file to upload,
+ * and the one or two knobs that actually matter. Sits right above the
+ * form so users learn by doing instead of bouncing to the docs page.
+ *
+ * One source of truth for the inline copy. The fuller version lives at
+ * /docs/guide-music.
+ */
+function ModeGuide({ task }: { task: MusicTask }) {
+  const guide = MODE_GUIDES[task];
+  return (
+    <div className="rounded-xl border border-[#2e2f33] bg-[#0f131a] px-4 py-3 -mt-2 text-xs leading-relaxed text-[#A7B0B7]">
+      <div className="flex items-start gap-2.5">
+        <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-[#DFFF00]/10 text-[#DFFF00] border border-[#DFFF00]/30 shrink-0 mt-0.5">
+          {guide.tag}
+        </span>
+        <div className="min-w-0 flex-1 space-y-1.5">
+          <p className="text-white">{guide.summary}</p>
+          <ul className="space-y-0.5 text-[#9ca3af]">
+            {guide.bullets.map((b, i) => (
+              <li key={i}>
+                <span className="text-[#A7B0B7]">{b.label}:</span> {b.text}
+              </li>
+            ))}
+          </ul>
+          <a
+            href="/docs/guide-music"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 text-[#DFFF00] hover:underline text-[11px]"
+          >
+            Full music guide →
+          </a>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const MODE_GUIDES: Record<MusicTask, { tag: string; summary: string; bullets: { label: string; text: string }[] }> = {
+  text2music: {
+    tag: 'New track',
+    summary: 'Generate a full track from a text description plus optional lyrics.',
+    bullets: [
+      { label: 'Prompt', text: 'genre, instruments, tempo, mood, e.g. "upbeat synth-pop, 128 bpm, female vocals".' },
+      { label: 'Lyrics', text: 'use [verse] / [chorus] / [bridge] markers. For an instrumental, set this to [inst].' },
+      { label: 'Duration', text: 'pick the song length. Higher Quality modes cap shorter to stay inside the engine timeout.' },
+    ],
+  },
+  audio2audio: {
+    tag: 'Style transfer',
+    summary: 'Generate a new track that has the vibe of your reference audio but follows your prompt for genre and instruments.',
+    bullets: [
+      { label: 'Reference audio', text: 'upload any clip, your own recording, an existing track. Notes/melody aren\'t copied; only the energy and feel influence the output.' },
+      { label: 'Prompt', text: 'describe what you want the OUTPUT to be (genre, instruments). Not the reference.' },
+      { label: 'Lyrics', text: 'optional, use [inst] for an instrumental result.' },
+      { label: 'Reference Strength', text: '0 = mostly text, 0.5 (default) = balanced, 1 = reference dominates.' },
+    ],
+  },
+  retake: {
+    tag: 'Variation',
+    summary: 'Reroll the dice on the same prompt and lyrics, get a different take of the same idea. The source audio is only used to copy its duration.',
+    bullets: [
+      { label: 'Source audio', text: 'upload the original (only its duration is used; the audio itself does NOT influence the new generation).' },
+      { label: 'Prompt + Lyrics', text: 'use the same prompt and lyrics that produced the original, that\'s the whole point.' },
+      { label: 'Variance', text: '0.2 (default) = small variations, 0.5 = different feel, 1.0 = essentially a fresh text2music.' },
+      { label: 'Seeds', text: 'leave empty for random; pin a number if you want a specific roll to recur.' },
+    ],
+  },
+  repaint: {
+    tag: 'Inpaint',
+    summary: 'Replace a specific time window of an existing track while keeping everything outside that window byte-identical. Surgical fix for a bad section.',
+    bullets: [
+      { label: 'Source audio', text: 'upload the track you want to fix. The audio outside your window is preserved exactly.' },
+      { label: 'Start / End', text: 'seconds defining the window to regenerate, e.g. start=60, end=90 to redo a bridge.' },
+      { label: 'Prompt + Lyrics', text: 'describe what should be in the NEW content (the replacement). [inst] for instrumental.' },
+      { label: 'Variance', text: '0.2 keeps the new content close in feel; 0.8+ makes it dramatically different.' },
+    ],
+  },
+  edit: {
+    tag: 'Restyle',
+    summary: 'Change a track\'s style and/or lyrics while preserving its structural shape, verses fall in the same places, drums hit at the same times, but the genre or words change.',
+    bullets: [
+      { label: 'Source audio', text: 'upload the track you want to restyle.' },
+      { label: 'Prompt', text: 'describe the ORIGINAL track (what it currently is).' },
+      { label: 'Lyrics', text: 'paste the original lyrics, used to anchor the structure.' },
+      { label: 'Target Prompt', text: 'describe what you WANT it to become (e.g. "country, acoustic guitar"). Required.' },
+      { label: 'Target Lyrics', text: 'new lyrics you want sung. Same structure tags ([verse], [chorus]) as the original.' },
+      { label: 'Type', text: '"Lyrics only" preserves more of the original sound; "Remix" allows aggressive style change.' },
+    ],
+  },
+  extend: {
+    tag: 'Lengthen',
+    summary: 'Add new content before and/or after an existing track. Used to add an intro, an outro, or both. The original audio is preserved byte-for-byte.',
+    bullets: [
+      { label: 'Source audio', text: 'upload the track to extend.' },
+      { label: 'Left (sec)', text: 'seconds to add BEFORE the original. Use for intros / build-ups.' },
+      { label: 'Right (sec)', text: 'seconds to add AFTER the original. Use for outros / fade-outs.' },
+      { label: 'Prompt + Lyrics', text: 'describe what the FULL track should be, including the new sections. Helps the model continue naturally.' },
+    ],
+  },
+};
+
 export function StudioMusic() {
   const { user, isAuthenticated, setLocalCredits } = useAuth();
   const { play: playAudio } = useStudioPlayer();
@@ -54,6 +492,7 @@ export function StudioMusic() {
   const [activeTask, setActiveTask] = useState<MusicTask>('text2music');
   const [loading, setLoading] = useState(false);
   const [elapsed, setElapsed] = useState(0);
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [status, setStatus] = useState<StatusMsg | null>(null);
   const [resultAudioUrl, setResultAudioUrl] = useState<string | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -62,36 +501,10 @@ export function StudioMusic() {
   const [title, setTitle] = useState('');
   const [titleInvalid, setTitleInvalid] = useState(false);
   const [prompt, setPrompt] = useState(GENRE_PRESETS[0].value);
-  const [lyrics, setLyrics] = useState(`[verse]
-Neon lights they flicker bright
-City hums in dead of night
-Rhythms pulse through concrete veins
-Lost in echoes of refrains
-
-[chorus]
-Turn it up and let it flow
-Feel the fire let it grow
-In this rhythm we belong
-Hear the night sing out our song
-
-[verse]
-Shadows dance on broken walls
-Whispered secrets down the halls
-Every heartbeat tells a tale
-Chasing thunder through the gale
-
-[bridge]
-We are the sound that never fades
-Burning through the barricades
-Electric souls and midnight dreams
-Nothing's ever what it seems
-
-[chorus]
-Turn it up and let it flow
-Feel the fire let it grow
-In this rhythm we belong
-Hear the night sing out our song`);
-  const [duration, setDuration] = useState(90);
+  // Initial lyrics match the first preset so the page loads in a
+  // self-consistent state. Switching genre tiles overwrites this.
+  const [lyrics, setLyrics] = useState(GENRE_PRESETS[0].lyrics);
+  const [duration, setDuration] = useState(140);
   const [format, setFormat] = useState('wav');
   const [selectedGenre, setSelectedGenre] = useState<string | null>(GENRE_PRESETS[0].label);
 
@@ -99,6 +512,10 @@ Hear the night sing out our song`);
   const [showSettings, setShowSettings] = useState(false);
   const [inferStep, setInferStep] = useState(60);
   const [guidanceScale, setGuidanceScale] = useState(15);
+  // Quality mode is a preset for inferStep + guidanceScale. ``custom``
+  // means the user touched the Advanced panel directly so we don't
+  // overwrite their numbers.
+  const [qualityMode, setQualityMode] = useState<'fast' | 'balanced' | 'max' | 'custom'>('balanced');
   const [schedulerType, setSchedulerType] = useState('euler');
   const [cfgType, setCfgType] = useState('apg');
   const [manualSeeds, setManualSeeds] = useState('');
@@ -132,62 +549,308 @@ Hear the night sing out our song`);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [audioFile, setAudioFile] = useState<File | null>(null);
+  const [isDragActive, setIsDragActive] = useState(false);
   const needsAudioFile = activeTask !== 'text2music';
+
+  // Accept dropped audio. ``dataTransfer.files`` is the standard source;
+  // we read only the first file and only accept ``audio/*`` MIME types
+  // (matches the file input's ``accept`` attribute). Empty drops are
+  // ignored. The drag-counter pattern using ``relatedTarget`` would be
+  // cleaner but is brittle in nested elements; ``dragenter``/``leave``
+  // on the root suffices for a single dropzone.
+  const handleAudioDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragActive(false);
+    const file = e.dataTransfer.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('audio/') && !/\.(wav|mp3|m4a|ogg|flac|webm)$/i.test(file.name)) {
+      setStatus({ type: 'error', message: `“${file.name}” doesn't look like an audio file.` });
+      return;
+    }
+    setAudioFile(file);
+    setStatus(null);
+  };
+  const handleAudioDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    // ``copy`` shows the user a "+" cursor, the standard signal that
+    // a drop will create something here rather than move.
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+    if (!isDragActive) setIsDragActive(true);
+  };
+  const handleAudioDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragActive(false);
+  };
+
+  // Lyric textarea ref so the structure-tag helper buttons can insert
+  // tags at the user's cursor position rather than always appending.
+  const lyricsRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // ``userEditedLyrics`` flips true the moment the user types into the
+  // lyric box. Programmatic writes (genre tile, AI generator, instrumental
+  // toggle) reset it. Switching genre while this is true triggers a
+  // confirm so we never silently throw away the user's own lyrics.
+  const [userEditedLyrics, setUserEditedLyrics] = useState(false);
+
+  // ``Instrumental only`` toggle, when on, locks the lyric box to the
+  // sentinel ``[inst]`` tag. Required by the music engine: empty lyrics
+  // is an error; ``[inst]`` is the official "no vocals" signal.
+  const [instrumentalOnly, setInstrumentalOnly] = useState(false);
+  useEffect(() => {
+    if (instrumentalOnly && lyrics !== '[inst]') setLyrics('[inst]');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [instrumentalOnly]);
+
+  // Insert a structure tag at the cursor with proper blank-line padding,
+  // collapsing extra blank lines so repeated clicks don't pile up.
+  const insertStructureTag = (tag: string) => {
+    if (instrumentalOnly) return;
+    const ta = lyricsRef.current;
+    const cur = lyrics;
+    const start = ta?.selectionStart ?? cur.length;
+    const end = ta?.selectionEnd ?? cur.length;
+    const before = cur.slice(0, start).replace(/\n*$/, '');
+    const after = cur.slice(end).replace(/^\n*/, '');
+    const insert = `${before ? '\n\n' : ''}${tag}\n${after ? '\n' + after : ''}`;
+    const next = before + insert;
+    setLyrics(next);
+    setUserEditedLyrics(true);
+    // Move cursor to the line right after the tag
+    requestAnimationFrame(() => {
+      if (!lyricsRef.current) return;
+      const pos = before.length + insert.indexOf('\n', tag.length + (before ? 2 : 0)) + 1;
+      lyricsRef.current.focus();
+      try { lyricsRef.current.setSelectionRange(pos, pos); } catch { /* ignore */ }
+    });
+  };
+
+  const STRUCTURE_TAGS = ['[verse]', '[chorus]', '[bridge]', '[inst]', '[solo]', '[outro]'];
+
+  // ---- AI lyric generation modal ---------------------------------------
+  const [lyricGenOpen, setLyricGenOpen] = useState(false);
+  const [lyricGenTopic, setLyricGenTopic] = useState('');
+  const [lyricGenBusy, setLyricGenBusy] = useState(false);
+  const [lyricGenError, setLyricGenError] = useState<string | null>(null);
+
+  const runLyricGeneration = async () => {
+    const topic = lyricGenTopic.trim();
+    if (!topic) {
+      setLyricGenError('Tell me what the song should be about.');
+      return;
+    }
+    setLyricGenBusy(true);
+    setLyricGenError(null);
+    try {
+      const token = localStorage.getItem('vocence_token');
+      const res = await dashboardApi.generateStudioMusicLyrics(
+        { topic, prompt },
+        token,
+      );
+      const out = (res.lyrics || '').trim();
+      if (!out) throw new Error('Empty lyrics returned.');
+      setLyrics(out);
+      setInstrumentalOnly(false);
+      // AI-generated lyrics are user intent (they typed the topic and
+      // asked for them), so treat them as "user content", don't let a
+      // subsequent genre tile click silently overwrite them.
+      setUserEditedLyrics(true);
+      setLyricGenOpen(false);
+      setLyricGenTopic('');
+    } catch (e: unknown) {
+      setLyricGenError(humanizeApiError(e, 'Lyric generation failed.'));
+    } finally {
+      setLyricGenBusy(false);
+    }
+  };
+  const ALLOWED_STRUCTURE_RE = /\[(intro|verse|chorus|bridge|outro|end|inst|solo|hook|pre-chorus|break)\]/i;
+  const ANY_BRACKET_RE = /\[[^\]\n]+\]/g;
+  // Keywords that strongly suggest someone pasted prompt-style tags into
+  // the lyrics box. Not exhaustive, just the common cases the doc warns
+  // about: BPM, vocal qualifiers, common instruments / genres.
+  const PROMPTY_IN_LYRICS_RE = /\b(\d{2,3}\s*bpm|electric guitar|drums|piano|synth|808|bass|hi-hats|saxophone|female vocals|male vocals|polished vocals|raw vocals|smooth vocals|silky vocals)\b/i;
+
+  // Lint: prompt should NOT contain structure tags
+  const promptHasStructureTag = !!prompt.match(ALLOWED_STRUCTURE_RE);
+  // Lint: lyrics shouldn't read like a prompt
+  const lyricsLooksLikePrompt = !instrumentalOnly && PROMPTY_IN_LYRICS_RE.test(lyrics);
+  // Lint: lyrics should only use the 11 known structure tokens
+  const unknownBracketInLyrics = (() => {
+    if (instrumentalOnly) return null;
+    const matches = lyrics.match(ANY_BRACKET_RE) ?? [];
+    const offending = matches.find((m) => !ALLOWED_STRUCTURE_RE.test(m));
+    return offending ?? null;
+  })();
 
   const startTimer = () => { setElapsed(0); timerRef.current = setInterval(() => setElapsed(p => p + 1), 1000); };
   const stopTimer = () => { if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; } };
+
+  // True from the moment Generate is clicked until the music job
+  // completes (or fails). Drives the Generate button's disabled +
+  // spinner state so a user can't queue a second job while one is
+  // already in flight. The local ``loading`` flag now only covers the
+  // initial /startJob HTTP call; ``hasPending('music')`` covers the
+  // longer polling phase after the job is queued.
+  const isGenerating = loading || generations.hasPending('music');
+
+  // Per-quality duration caps. Higher quality multiplies compute time,
+  // so we shorten the allowed song length to stay inside the music-engine
+  // phase timeout. Mirrors the backend tiers in routers/studio.py.
+  const MAX_DURATION_BY_MODE = { fast: 400, balanced: 300, max: 200 } as const;
+  // For Custom (user touched Advanced manually) fall back to the strictest
+  // tier so we don't let exotic combos sneak past.
+  const currentDurationCap = qualityMode === 'custom'
+    ? MAX_DURATION_BY_MODE.max
+    : MAX_DURATION_BY_MODE[qualityMode];
+
+  // Quality mode → infer_step + guidance_scale presets. Picked from the
+  // ACE-Step integration guide §6 ("Sensible modes"). Also clamps the
+  // duration if the new mode's cap is tighter than the current value.
+  const applyQualityMode = (mode: 'fast' | 'balanced' | 'max') => {
+    setQualityMode(mode);
+    if (mode === 'fast')     { setInferStep(27);  setGuidanceScale(12); }
+    if (mode === 'balanced') { setInferStep(60);  setGuidanceScale(15); }
+    if (mode === 'max')      { setInferStep(120); setGuidanceScale(18); }
+    setDuration((d) => (d !== -1 && d > MAX_DURATION_BY_MODE[mode] ? MAX_DURATION_BY_MODE[mode] : d));
+  };
 
   const handleGenerate = async () => {
     if (!isAuthenticated || !user) { setStatus({ type: 'error', message: 'Please sign in to generate music.' }); return; }
     if (!title.trim()) { setTitleInvalid(true); setStatus({ type: 'error', message: 'Please enter a title.' }); return; }
     setTitleInvalid(false);
     if (needsAudioFile && !audioFile) { setStatus({ type: 'error', message: 'Please select a source audio file.' }); return; }
-    if (!prompt.trim()) { setStatus({ type: 'error', message: 'Please enter a prompt.' }); return; }
-    if (activeTask !== 'text2music') {
-      setStatus({ type: 'error', message: `${activeTask} is not yet supported via the queued backend. Coming soon.` });
+    // Fast client-side size cap so the user doesn't wait on a presign+413
+    // round-trip when their file is too big. Server still re-checks.
+    if (audioFile && audioFile.size > 300 * 1024 * 1024) {
+      setStatus({ type: 'error', message: `Audio file is ${(audioFile.size / 1024 / 1024).toFixed(0)}MB, max is 300MB. Pick a smaller file.` });
       return;
     }
-
+    if (!prompt.trim()) { setStatus({ type: 'error', message: 'Please enter a prompt.' }); return; }
+    // Lyrics required, empty lyrics is an engine error. ``[inst]`` is
+    // the official instrumental sentinel.
+    if (!lyrics.trim()) {
+      setStatus({ type: 'error', message: 'Lyrics is required, use [inst] for an instrumental track.' });
+      return;
+    }
+    // Soft block on the cross-field warnings, not catastrophic but
+    // results will likely be wrong, so confirm before burning credits.
+    if (promptHasStructureTag || lyricsLooksLikePrompt || unknownBracketInLyrics) {
+      if (!await confirm({ title: 'Mixed Up Fields?', message: 'Your prompt and lyrics may be mixed up. Generate anyway?', confirmLabel: 'Generate', confirmVariant: 'primary' })) return;
+    }
     if (generations.hasPending('music')) {
-      const ok = window.confirm('You already have a music generation in progress. Start another anyway?');
-      if (!ok) return;
+      if (!await confirm({ title: 'Already Generating', message: 'You already have a music generation in progress. Start another anyway?', confirmLabel: 'Start Another', confirmVariant: 'primary' })) return;
     }
 
     setStatus(null); setResultAudioUrl(null); setLoading(true); startTimer();
     const token = localStorage.getItem('vocence_token');
+
+    // All six music tasks (text2music + the five audio-input modes) go
+    // through the same /jobs/start queue. The worker dispatches on
+    // payload.task. For tasks that need a source/reference audio we
+    // upload the file first to /studio/music/upload-source (multipart,
+    // small endpoint, R2) and put just the bucket+key in the job
+    // payload, keeps every job payload the same shape and size as
+    // text2music so they all behave identically through Cloudflare/HTTP2.
+    let srcAudioBucket: string | undefined;
+    let srcAudioKey: string | undefined;
+    let srcAudioFilename: string | undefined;
+    if (activeTask !== 'text2music') {
+      if (!audioFile) {
+        setStatus({ type: 'error', message: 'Please select a source audio file.' });
+        setLoading(false);
+        stopTimer();
+        return;
+      }
+      if (activeTask === 'edit' && !editTargetPrompt.trim()) {
+        setStatus({ type: 'error', message: 'Target prompt is required for Edit mode.' });
+        setLoading(false);
+        stopTimer();
+        return;
+      }
+      try {
+        // Direct browser → R2 PUT via presigned URL. The bytes do NOT
+        // pass through Cloudflare's proxy on backend.vocence.ai, so this
+        // works for files much larger than the proxy's per-request body
+        // limit and avoids the HTTP/2 upload stalls that broke the
+        // previous multipart endpoint for big files.
+        const uploaded = await dashboardApi.uploadDirectToR2('music-source', audioFile, token);
+        srcAudioBucket = uploaded.bucket;
+        srcAudioKey = uploaded.key;
+        srcAudioFilename = uploaded.filename || audioFile.name;
+      } catch (e: unknown) {
+        const msg = humanizeApiError(e, 'Could not upload the source audio file.');
+        setStatus({ type: 'error', message: msg });
+        setLoading(false);
+        stopTimer();
+        return;
+      }
+    }
+
+    const basePayload: Record<string, unknown> = {
+      task: activeTask,
+      title: title.trim(),
+      prompt,
+      lyrics,
+      audio_duration: duration,
+      format,
+      infer_step: inferStep,
+      guidance_scale: guidanceScale,
+    };
+    if (activeTask === 'text2music') {
+      Object.assign(basePayload, {
+        scheduler_type: schedulerType,
+        cfg_type: cfgType,
+        omega_scale: omegaScale,
+        manual_seeds: manualSeeds,
+        guidance_interval: guidanceInterval,
+        guidance_interval_decay: guidanceIntervalDecay,
+        min_guidance_scale: minGuidanceScale,
+        use_erg_tag: useErgTag,
+        use_erg_lyric: useErgLyric,
+        use_erg_diffusion: useErgDiffusion,
+        oss_steps: ossSteps,
+        guidance_scale_text: guidanceScaleText,
+        guidance_scale_lyric: guidanceScaleLyric,
+        lora_name_or_path: loraPath,
+      });
+    } else {
+      basePayload.src_audio_bucket = srcAudioBucket;
+      basePayload.src_audio_key = srcAudioKey;
+      basePayload.src_audio_filename = srcAudioFilename;
+      if (activeTask === 'audio2audio') {
+        basePayload.ref_audio_strength = refAudioStrength;
+      } else if (activeTask === 'retake') {
+        basePayload.retake_variance = retakeVariance;
+        basePayload.retake_seeds = retakeSeeds;
+      } else if (activeTask === 'repaint') {
+        basePayload.repaint_start = repaintStart;
+        basePayload.repaint_end = repaintEnd;
+        basePayload.retake_variance = retakeVariance;
+      } else if (activeTask === 'edit') {
+        basePayload.edit_target_prompt = editTargetPrompt;
+        basePayload.edit_target_lyrics = editTargetLyrics;
+        basePayload.edit_n_min = editNMin;
+        basePayload.edit_n_max = editNMax;
+      } else if (activeTask === 'extend') {
+        basePayload.left_extend_length = leftExtend;
+        basePayload.right_extend_length = rightExtend;
+        basePayload.extend_seeds = extendSeeds;
+      }
+    }
+
     try {
       const submission = await dashboardApi.startJob({
         type: 'music',
         credits: CREDIT_MUSIC,
-        payload: {
-          title: title.trim(),
-          prompt,
-          lyrics,
-          audio_duration: duration,
-          format,
-          infer_step: inferStep,
-          guidance_scale: guidanceScale,
-          scheduler_type: schedulerType,
-          cfg_type: cfgType,
-          omega_scale: omegaScale,
-          manual_seeds: manualSeeds,
-          guidance_interval: guidanceInterval,
-          guidance_interval_decay: guidanceIntervalDecay,
-          min_guidance_scale: minGuidanceScale,
-          use_erg_tag: useErgTag,
-          use_erg_lyric: useErgLyric,
-          use_erg_diffusion: useErgDiffusion,
-          oss_steps: ossSteps,
-          guidance_scale_text: guidanceScaleText,
-          guidance_scale_lyric: guidanceScaleLyric,
-          lora_name_or_path: loraPath,
-        },
+        payload: basePayload,
       }, token);
       setLocalCredits((user.credits ?? 0) - CREDIT_MUSIC);
       setStatus({
         type: submission.load_warning ? 'info' : 'success',
         message: submission.load_warning
-          ? `Queued (position ${submission.queue_position}). Capacity is heavy right now — this may take roughly 2× as long as usual.`
+          ? `Queued (position ${submission.queue_position}). Capacity is heavy right now, this may take roughly 2× as long as usual.`
           : `Queued (position ${submission.queue_position}). Generating…`,
       });
       generations.trackServerJob({
@@ -201,12 +864,19 @@ Hear the night sing out our song`);
           downloadFilename: `${slugify(title)}-${Date.now()}.${format}`,
         },
       });
-      // The result will be set by the polling helper below
+      // The result will be set by the polling helper below.
+      // ``loading`` only covers the queueing HTTP call; the long-running
+      // polling phase relies on ``isGenerating`` (loading || hasPending)
+      // so the Generate button stays disabled + spinning the WHOLE time
+      // until the music job completes.
+      setLoading(false);
       void pollMusicJobUntilDone(submission.job_id);
     } catch (e: unknown) {
       const msg = humanizeApiError(e, 'Music generation failed. Please try again.');
       setStatus({ type: 'error', message: msg });
-    } finally { setLoading(false); stopTimer(); }
+      setLoading(false);
+      stopTimer();
+    }
   };
 
   /** Mirror the job's progress into the local Result card (separate from the global pill). */
@@ -228,14 +898,16 @@ Hear the night sing out our song`);
               downloadFilename: `${slugify(title)}-${Date.now()}.${format}`,
             });
           }
+          stopTimer();
           return;
         }
         if (job.status === 'failed' || job.status === 'timeout' || job.status === 'cancelled') {
           setStatus({ type: 'error', message: job.error_message || 'Music generation failed.' });
           setLocalCredits((user?.credits ?? 0) + CREDIT_MUSIC);
+          stopTimer();
           return;
         }
-        // pending or processing — keep polling. Surface phase + queue position.
+        // pending or processing, keep polling. Surface phase + queue position.
         const sub = job.phase
           ? job.phase
           : job.status === 'pending'
@@ -243,24 +915,34 @@ Hear the night sing out our song`);
             : 'Generating…';
         setStatus({ type: 'info', message: sub });
       } catch {
-        // transient — keep polling
+        // transient, keep polling
       }
     }
   };
 
-  const activeTabInfo = TASK_TABS.find(t => t.id === activeTask)!;
   const inputCls = 'w-full bg-[#1c1d21] border border-[#2e2f33] rounded-xl px-4 py-2.5 text-sm text-white placeholder-[#9ca3af] outline-none focus:border-[#DFFF00]/50 transition-colors [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none';
   const labelCls = 'text-[11px] text-[#9ca3af] uppercase tracking-wider font-medium';
 
   return (
     <div className="space-y-8">
       {/* Header */}
-      <div>
-        <h2 className="text-2xl font-bold mb-1">Text-to-Music</h2>
-        <p className="text-sm text-[#9ca3af]">Generate original music with AI — describe a style, add lyrics, and create.</p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-2xl font-bold mb-1">Text-to-Music</h2>
+          <p className="text-sm text-[#9ca3af]">Generate original music with AI, describe a style, add lyrics, and create.</p>
+        </div>
+        <a
+          href="/docs/guide-music"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.02] px-3 py-2 text-xs text-[#A7B0B7] hover:border-white/25 hover:text-white transition-colors"
+        >
+          <BookOpen size={14} />
+          Guide
+        </a>
       </div>
 
-      {/* Task tabs — icon + label */}
+      {/* Task tabs, icon + label */}
       <div className="flex gap-2 flex-wrap">
         {TASK_TABS.map((tab) => {
           const Icon = tab.icon;
@@ -269,12 +951,9 @@ Hear the night sing out our song`);
             <button
               key={tab.id}
               onClick={() => {
-                if (tab.id !== 'text2music') {
-                  setStatus({ type: 'info', message: `${tab.label} is currently under development. Stay tuned!` });
-                  setResultAudioUrl(null);
-                  return;
-                }
-                setActiveTask(tab.id); setStatus(null); setResultAudioUrl(null);
+                setActiveTask(tab.id);
+                setStatus(null);
+                setResultAudioUrl(null);
               }}
               className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all ${
                 active
@@ -289,18 +968,32 @@ Hear the night sing out our song`);
         })}
       </div>
 
-      {/* Tab description */}
-      <p className="text-xs text-[#9ca3af] -mt-4">{activeTabInfo.desc}</p>
+      {/* Per-mode inline guide. Compact, scannable, sits right above
+          the form so users don't have to open the docs to know what
+          each field means in the current mode. Full guide at
+          /docs/guide-music. */}
+      <ModeGuide task={activeTask} />
 
       {/* Two-column layout */}
       <div className="flex flex-col lg:flex-row gap-6">
-        {/* LEFT — Main input area */}
+        {/* LEFT, Main input area */}
         <div className="flex-1 min-w-0 space-y-5">
-          {/* Audio upload for non-text2music */}
+          {/* Audio upload for non-text2music. Supports both click-to-browse
+              and drag-and-drop. ``isDragActive`` paints the dropzone in the
+              brand lime while a drag is hovering, so the user has clear
+              visual feedback that a drop will be accepted. */}
           {needsAudioFile && (
             <div
               onClick={() => fileInputRef.current?.click()}
-              className="border-2 border-dashed border-[#2e2f33] rounded-2xl p-8 text-center cursor-pointer hover:border-[#444] transition-colors group"
+              onDragEnter={handleAudioDragOver}
+              onDragOver={handleAudioDragOver}
+              onDragLeave={handleAudioDragLeave}
+              onDrop={handleAudioDrop}
+              className={`border-2 border-dashed rounded-2xl p-8 text-center cursor-pointer transition-colors group ${
+                isDragActive
+                  ? 'border-[#DFFF00] bg-[#DFFF00]/[0.05]'
+                  : 'border-[#2e2f33] hover:border-[#444]'
+              }`}
             >
               <input ref={fileInputRef} type="file" accept="audio/*" className="hidden" onChange={(e) => setAudioFile(e.target.files?.[0] || null)} />
               {audioFile ? (
@@ -314,15 +1007,19 @@ Hear the night sing out our song`);
                 </div>
               ) : (
                 <>
-                  <Upload size={24} className="mx-auto text-[#666] group-hover:text-[#999] mb-2" />
-                  <p className="text-sm text-[#9ca3af]">Drop {activeTask === 'audio2audio' ? 'reference' : 'source'} audio here or click to browse</p>
-                  <p className="text-xs text-[#666] mt-1">WAV, MP3, OGG, FLAC — max 100MB</p>
+                  <Upload size={24} className={`mx-auto mb-2 ${isDragActive ? 'text-[#DFFF00]' : 'text-[#666] group-hover:text-[#999]'}`} />
+                  <p className={`text-sm ${isDragActive ? 'text-[#DFFF00]' : 'text-[#9ca3af]'}`}>
+                    {isDragActive
+                      ? 'Drop to upload'
+                      : `Drop ${activeTask === 'audio2audio' ? 'reference' : 'source'} audio here or click to browse`}
+                  </p>
+                  <p className="text-xs text-[#666] mt-1">WAV, MP3, OGG, FLAC, M4A, WebM, max 300MB</p>
                 </>
               )}
             </div>
           )}
 
-          {/* Genre presets — only for text2music */}
+          {/* Genre presets, only for text2music */}
           {activeTask === 'text2music' && (
             <div>
               <label className={labelCls}>Genre</label>
@@ -330,14 +1027,34 @@ Hear the night sing out our song`);
                 {GENRE_PRESETS.map((g) => (
                   <button
                     key={g.label}
-                    onClick={() => { setPrompt(g.value); setSelectedGenre(g.label); }}
+                    onClick={() => {
+                      // Always update prompt + selected tile, the two
+                      // fields are independent and the user clearly
+                      // wants the new tag string.
+                      setPrompt(g.value);
+                      setSelectedGenre(g.label);
+
+                      // Lyric overwrite policy:
+                      //   • Clean (untouched preset / [inst] / freshly
+                      //     generated text) → swap to the new genre's
+                      //     template, including the instrumental flag.
+                      //   • User has typed → leave the lyrics alone
+                      //     entirely. They've put effort in; switching
+                      //     genre shouldn't destroy that. The prompt
+                      //     update above is enough, they can apply a
+                      //     different style to their own lyrics.
+                      if (userEditedLyrics) return;
+                      const isInstrumental = g.lyrics.trim() === '[inst]';
+                      setInstrumentalOnly(isInstrumental);
+                      setLyrics(g.lyrics);
+                    }}
                     className={`rounded-lg px-2 py-1.5 text-center transition-all border-2 relative overflow-hidden ${
                       selectedGenre === g.label
                         ? 'border-[#DFFF00] shadow-[0_0_8px_rgba(223,255,0,0.25)]'
                         : 'border-transparent hover:border-[#444]'
                     }`}
                   >
-                    <img loading="lazy" src={g.image} alt="" className="absolute inset-0 w-full h-full object-cover opacity-50" />
+                    <img src={g.image} alt="" className="absolute inset-0 w-full h-full object-cover opacity-50" />
                     <div className="absolute inset-0 bg-black/30" />
                     <div className="relative z-10">
                       <span className="text-xl">{g.emoji}</span>
@@ -365,7 +1082,21 @@ Hear the night sing out our song`);
 
           {/* Prompt */}
           <div>
-            <label className={labelCls}>Prompt / Tags</label>
+            <div className="flex items-baseline justify-between gap-3 flex-wrap">
+              <label className={labelCls}>Prompt / Tags</label>
+              <p className="text-[11px] text-[#666]">
+                Replace this with what you want to design.{' '}
+                <a
+                  href="/docs/guide-music"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-[#DFFF00]/80 hover:text-[#DFFF00] underline-offset-2 hover:underline"
+                >
+                  Check guide
+                </a>{' '}
+                for best practice.
+              </p>
+            </div>
             <input
               type="text"
               className={`${inputCls} mt-1.5`}
@@ -373,21 +1104,98 @@ Hear the night sing out our song`);
               onChange={(e) => { setPrompt(e.target.value); setSelectedGenre(null); }}
               placeholder="genre, instruments, tempo, mood, vocal style..."
             />
+            {promptHasStructureTag && (
+              <p className="text-[11px] text-amber-300 mt-1.5 flex items-center gap-1.5">
+                <AlertCircle size={11} />
+                Structure tags like [verse] / [chorus] belong in the lyrics box, not here.
+              </p>
+            )}
           </div>
 
           {/* Lyrics */}
           <div>
-            <div className="flex items-center justify-between">
-              <label className={labelCls}>Lyrics</label>
-              <span className="text-[10px] text-[#666]">[verse] [chorus] [bridge] [instrumental]</span>
+            <div className="flex items-baseline justify-between gap-3 flex-wrap">
+              <div className="flex items-baseline gap-3 flex-wrap">
+                <label className={labelCls}>Lyrics</label>
+                <p className="text-[11px] text-[#666]">
+                  Replace this with what you want sung.{' '}
+                  <a
+                    href="/docs/guide-music"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-[#DFFF00]/80 hover:text-[#DFFF00] underline-offset-2 hover:underline"
+                  >
+                    Check guide
+                  </a>{' '}
+                  for best practice.
+                </p>
+              </div>
+              <label className="flex items-center gap-1.5 text-[11px] text-[#9ca3af] cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={instrumentalOnly}
+                  onChange={(e) => setInstrumentalOnly(e.target.checked)}
+                  className="w-3.5 h-3.5 accent-[#DFFF00] rounded"
+                />
+                Instrumental only
+              </label>
             </div>
+
+            {/* Structure tag helper bar + Generate-with-AI button */}
+            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+              <div className={`flex flex-wrap gap-1.5 ${instrumentalOnly ? 'opacity-40 pointer-events-none' : ''}`}>
+                {STRUCTURE_TAGS.map((t) => (
+                  <button
+                    key={t}
+                    type="button"
+                    onClick={() => insertStructureTag(t)}
+                    className="text-[11px] font-mono px-2 py-1 rounded-md border border-white/10 bg-white/[0.03] text-[#A7B0B7] hover:border-[#DFFF00]/40 hover:text-white transition-colors"
+                  >
+                    {t}
+                  </button>
+                ))}
+              </div>
+              <button
+                type="button"
+                onClick={() => { if (instrumentalOnly) return; setLyricGenError(null); setLyricGenOpen(true); }}
+                disabled={instrumentalOnly}
+                title={instrumentalOnly ? 'Disabled while Instrumental only is on' : 'Generate lyrics with AI'}
+                className="ml-auto inline-flex items-center gap-2 text-xs font-semibold px-3.5 py-2 rounded-lg border border-[#DFFF00]/40 bg-[#DFFF00]/[0.10] text-[#DFFF00] hover:bg-[#DFFF00]/[0.18] hover:border-[#DFFF00]/60 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+              >
+                <Sparkles size={14} />
+                Generate lyrics with AI
+              </button>
+            </div>
+
             <textarea
+              ref={lyricsRef}
               rows={16}
-              className={`${inputCls} mt-1.5 resize-y font-mono text-[13px] leading-relaxed`}
+              disabled={instrumentalOnly}
+              className={`${inputCls} mt-2 resize-y font-mono text-[13px] leading-relaxed disabled:opacity-50 disabled:cursor-not-allowed`}
               value={lyrics}
-              onChange={(e) => setLyrics(e.target.value)}
+              onChange={(e) => { setLyrics(e.target.value); setUserEditedLyrics(true); }}
               placeholder={"[verse]\nYour lyrics here...\n\n[chorus]\nThe hook goes here..."}
             />
+            {instrumentalOnly && (
+              <p className="text-[11px] text-[#9ca3af] mt-1.5">
+                Locked to <span className="font-mono">[inst]</span>, uncheck "Instrumental only" to write lyrics.
+              </p>
+            )}
+            {!instrumentalOnly && lyricsLooksLikePrompt && (
+              <p className="text-[11px] text-amber-300 mt-1.5 flex items-center gap-1.5">
+                <AlertCircle size={11} />
+                Looks like genre / instrument tags, those go in the prompt above. Lyrics is what gets sung.
+              </p>
+            )}
+            {!instrumentalOnly && unknownBracketInLyrics && (
+              <p className="text-[11px] text-amber-300 mt-1.5 flex items-center gap-1.5">
+                <AlertCircle size={11} />
+                <span>
+                  <span className="font-mono">{unknownBracketInLyrics}</span> isn't a known structure tag —
+                  it'll be sung out loud. Use one of the buttons above.
+                </span>
+              </p>
+            )}
           </div>
 
           {/* Task-specific fields */}
@@ -440,18 +1248,71 @@ Hear the night sing out our song`);
           )}
         </div>
 
-        {/* RIGHT — Settings panel */}
+        {/* RIGHT, Settings panel */}
         <div className="lg:w-72 shrink-0 space-y-4">
           {/* Duration + Format */}
           {(activeTask === 'text2music' || activeTask === 'audio2audio') && (
             <div className="rounded-xl border border-[#2e2f33] bg-[#1c1d21]/50 p-4 space-y-3">
-              <Field label="Duration (sec)">
-                <input type="number" className={inputCls} value={duration} onChange={(e) => setDuration(Number(e.target.value))} min={-1} max={240} />
+              <Field
+                label="Duration (sec)"
+                hint={
+                  qualityMode === 'custom'
+                    ? `Capped at ${currentDurationCap}s on Custom (uses the strictest tier).`
+                    : `Capped at ${currentDurationCap}s on ${qualityMode === 'fast' ? 'Fast' : qualityMode === 'balanced' ? 'Balanced' : 'Max'} quality. Use -1 for random.`
+                }
+              >
+                <input
+                  type="number"
+                  className={inputCls}
+                  value={duration}
+                  onChange={(e) => {
+                    const v = Number(e.target.value);
+                    if (v === -1) { setDuration(-1); return; }
+                    setDuration(Math.min(currentDurationCap, Math.max(-1, v)));
+                  }}
+                  min={-1}
+                  max={currentDurationCap}
+                />
               </Field>
               <Field label="Format">
                 <CustomSelect value={format} onChange={setFormat}
                   options={[{ value: 'wav', label: 'WAV' }, { value: 'mp3', label: 'MP3' }, { value: 'ogg', label: 'OGG' }, { value: 'flac', label: 'FLAC' }]} />
               </Field>
+            </div>
+          )}
+
+          {/* Quality mode, preset for infer_step + guidance_scale.
+              Most users pick a mode and never expand Advanced. */}
+          {activeTask === 'text2music' && (
+            <div className="rounded-xl border border-[#2e2f33] bg-[#1c1d21]/50 p-4 space-y-2">
+              <p className={labelCls}>Quality</p>
+              <div className="grid grid-cols-3 gap-1.5">
+                {([
+                  { id: 'fast',     label: 'Fast',     hint: '~1 min' },
+                  { id: 'balanced', label: 'Balanced', hint: 'default' },
+                  { id: 'max',      label: 'Max',      hint: 'slowest' },
+                ] as const).map((m) => {
+                  const active = qualityMode === m.id;
+                  return (
+                    <button
+                      key={m.id}
+                      type="button"
+                      onClick={() => applyQualityMode(m.id)}
+                      className={`rounded-lg border px-2 py-2 text-center transition-all ${
+                        active
+                          ? 'border-[#DFFF00] bg-[#DFFF00]/[0.08] text-white'
+                          : 'border-[#2e2f33] bg-white/[0.02] text-[#9ca3af] hover:text-white hover:border-[#444]'
+                      }`}
+                    >
+                      <div className="text-xs font-semibold">{m.label}</div>
+                      <div className="text-[10px] text-[#666] mt-0.5">{m.hint}</div>
+                    </button>
+                  );
+                })}
+              </div>
+              {qualityMode === 'custom' && (
+                <p className="text-[10px] text-[#666] mt-1">Custom values from Advanced, pick a mode to reset.</p>
+              )}
             </div>
           )}
 
@@ -466,8 +1327,8 @@ Hear the night sing out our song`);
             </button>
             {showSettings && (
               <div className="px-4 pb-4 space-y-3 border-t border-[#2e2f33] pt-3">
-                <Field label="Infer Steps"><input type="number" className={inputCls} value={inferStep} onChange={(e) => setInferStep(Number(e.target.value))} min={1} max={200} /></Field>
-                <Field label="Guidance Scale"><input type="number" className={inputCls} value={guidanceScale} onChange={(e) => setGuidanceScale(Number(e.target.value))} step={0.1} /></Field>
+                <Field label="Infer Steps"><input type="number" className={inputCls} value={inferStep} onChange={(e) => { setInferStep(Number(e.target.value)); setQualityMode('custom'); }} min={1} max={200} /></Field>
+                <Field label="Guidance Scale"><input type="number" className={inputCls} value={guidanceScale} onChange={(e) => { setGuidanceScale(Number(e.target.value)); setQualityMode('custom'); }} step={0.1} /></Field>
                 <Field label="Scheduler">
                   <CustomSelect value={schedulerType} onChange={setSchedulerType}
                     options={[{ value: 'euler', label: 'Euler' }, { value: 'heun', label: 'Heun' }, { value: 'pingpong', label: 'Pingpong' }]} />
@@ -495,16 +1356,19 @@ Hear the night sing out our song`);
             )}
           </div>
 
-          {/* Generate button */}
+          {/* Generate button, disabled (and spinning) for the WHOLE
+              music-generation lifecycle, not just the queueing call.
+              ``isGenerating`` = local ``loading`` (initial /startJob)
+              OR ``generations.hasPending('music')`` (polling phase). */}
           <button
             onClick={handleGenerate}
-            disabled={loading}
+            disabled={isGenerating}
             className="w-full py-3 rounded-xl font-semibold text-sm transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed bg-white text-[#07080A] hover:bg-white/90 active:scale-[0.98]"
           >
-            {loading ? (
+            {isGenerating ? (
               <>
                 <Loader2 size={16} className="animate-spin" />
-                <span>Generating... <span className="tabular-nums">{elapsed}s</span></span>
+                <span>Generating… <span className="tabular-nums">{elapsed}s</span></span>
               </>
             ) : (
               <>
@@ -521,9 +1385,13 @@ Hear the night sing out our song`);
             </p>
           )}
 
-          {loading && (
+          {isGenerating && (
             <p className="text-center text-xs text-[#A7B0B7] mt-1">
-              This might take a few minutes — feel free to leave the page open.
+              {qualityMode === 'fast'
+                ? 'Usually around a minute, first run after the engine warms up may be longer.'
+                : qualityMode === 'max'
+                  ? 'Max quality takes 2–4 minutes, feel free to leave the page open.'
+                  : 'Usually 1–2 minutes, feel free to leave the page open.'}
             </p>
           )}
         </div>
@@ -566,7 +1434,7 @@ Hear the night sing out our song`);
                   a.click();
                   setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(blobUrl); }, 1000);
                 } catch {
-                  // CORS blocked — open directly
+                  // CORS blocked, open directly
                   const a = document.createElement('a');
                   a.href = url;
                   a.target = '_blank';
@@ -585,12 +1453,88 @@ Hear the night sing out our song`);
 
       {/* Sample music */}
       <SampleMusicSection />
+
+      {/* AI lyric generation modal */}
+      {lyricGenOpen && (
+        <div
+          className="fixed inset-0 z-[80] flex items-center justify-center bg-black/70 backdrop-blur-sm p-6"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Generate lyrics with AI"
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !lyricGenBusy) setLyricGenOpen(false);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape' && !lyricGenBusy) setLyricGenOpen(false);
+          }}
+        >
+          <div className="w-full max-w-md bg-[#0B0D10] border border-white/10 rounded-2xl shadow-2xl shadow-black/60 p-5">
+            <div className="flex items-center gap-2 mb-4">
+              <Sparkles size={16} className="text-[#DFFF00]" />
+              <h3 className="text-sm font-semibold text-white">Generate lyrics with AI</h3>
+              <button
+                type="button"
+                onClick={() => !lyricGenBusy && setLyricGenOpen(false)}
+                disabled={lyricGenBusy}
+                className="ml-auto text-[#A7B0B7] hover:text-white p-1 rounded-md hover:bg-white/5 disabled:opacity-50"
+                aria-label="Close"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <p className="text-xs text-[#9ca3af] mb-3 leading-relaxed">
+              Tell me what the song is about. I'll write lyrics in the right structure
+              and match the style of your prompt
+              <span className="text-[#666]"> ({prompt.split(',').slice(0, 3).join(',').trim() || 'no style set'}…)</span>.
+            </p>
+
+            <textarea
+              autoFocus
+              rows={4}
+              value={lyricGenTopic}
+              onChange={(e) => { setLyricGenTopic(e.target.value); if (lyricGenError) setLyricGenError(null); }}
+              placeholder="A driving night in the city, feeling alive, turning headlights into freedom"
+              disabled={lyricGenBusy}
+              className="w-full bg-[#1c1d21] border border-[#2e2f33] rounded-xl px-3 py-2.5 text-sm text-white placeholder-[#666] outline-none focus:border-[#DFFF00]/50 transition-colors resize-y disabled:opacity-50"
+            />
+
+            {lyricGenError && (
+              <p className="mt-2 text-[11px] text-red-300 flex items-start gap-1.5">
+                <AlertCircle size={11} className="mt-0.5 shrink-0" />
+                <span>{lyricGenError}</span>
+              </p>
+            )}
+
+            <div className="flex items-center justify-end gap-2 mt-4">
+              <button
+                type="button"
+                onClick={() => !lyricGenBusy && setLyricGenOpen(false)}
+                disabled={lyricGenBusy}
+                className="px-3 py-1.5 text-xs text-[#A7B0B7] hover:text-white rounded-lg hover:bg-white/5 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={runLyricGeneration}
+                disabled={lyricGenBusy || !lyricGenTopic.trim()}
+                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-[#DFFF00] text-[#07080A] text-xs font-semibold hover:brightness-110 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {lyricGenBusy ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
+                {lyricGenBusy ? 'Writing…' : 'Generate'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {confirmDialog}
     </div>
   );
 }
 
 /* ==========================================================================
-   Sample music list — placeholder audio, replace later
+   Sample music list, placeholder audio, replace later
    ========================================================================== */
 
 const SAMPLE_TRACKS = [

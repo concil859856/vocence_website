@@ -512,9 +512,15 @@ class StudioCloneResponse(BaseModel):
     detected_language: str | None = None
 
 
+class StudioTtsSampleVoiceRequest(BaseModel):
+    sample_voice_id: str
+    target_text: str
+    target_language: str | None = None
+
+
 class StudioHistoryItemResponse(BaseModel):
     id: int
-    entry_type: str = "tts"  # "tts", "stt", "clone", or "voice_design" (My voices / designed-voice generation)
+    entry_type: str = "tts"  # "tts", "stt", "clone", "voice_design", "music", or "noise_remover"
     miner_hotkey: str
     model_name: str
     display_name: str
@@ -531,6 +537,16 @@ class StudioHistoryItemResponse(BaseModel):
     reference_text: str | None = None
     target_text: str | None = None
     clone_source: str | None = None
+    # Music-only fields. ``lyrics`` is shared by every music task;
+    # ``music_task`` distinguishes which generator produced this row
+    # (text2music / audio2audio / retake / repaint / edit / extend);
+    # ``music_metadata_json`` carries the mode-specific params
+    # (retake_variance, repaint_start/end, edit_target_prompt, etc.)
+    # the frontend needs to render and copy. Always null for non-music
+    # rows so the schema stays backward-compatible.
+    lyrics: str | None = None
+    music_task: str | None = None
+    music_metadata_json: str | None = None
 
 
 class StudioHistoryResponse(BaseModel):
@@ -599,6 +615,14 @@ class StudioDesignedVoiceItem(BaseModel):
     expires_at: str
     created_at: str
     expired: bool
+    # ``source`` differentiates how the voice entered My Voices:
+    #   "designed" — generated via Voice Design's LLM prompt flow
+    #   "cloned"   — uploaded by the user as a real-voice reference
+    # Default 'designed' for back-compat with rows created before the
+    # column existed. The frontend uses this to render a small badge
+    # so the picker doesn't lump them under one ambiguous label.
+    source: str = "designed"
+    source_language: str | None = None
 
 
 class StudioDesignedVoicesResponse(BaseModel):
@@ -609,6 +633,16 @@ class StudioDesignedVoiceSpeakRequest(BaseModel):
     user_id: str
     voice_id: int
     target_text: str
+
+
+class StudioClonedVoiceSaveResponse(BaseModel):
+    voice_id: int
+    display_name: str
+    ref_script: str
+    source_language: str | None = None
+    audio_url: str | None
+    expires_at: str
+    credits: int
 
 
 # ----- Studio Music Generation (ACE-Step proxy) -----
@@ -644,6 +678,19 @@ class StudioMusicGenerateResponse(BaseModel):
     expires_at: str
     credits: int
     task: str = "text2music"
+
+
+class StudioMusicLyricsRequest(BaseModel):
+    """Request body for AI-generated lyrics. ``topic`` is what the song
+    should be about (free-form, user-supplied); ``prompt`` mirrors the
+    music-prompt tags so the lyric model can match the genre's vibe."""
+    topic: str
+    prompt: str = ""
+    section_count: int = 5  # rough number of structure sections to aim for
+
+
+class StudioMusicLyricsResponse(BaseModel):
+    lyrics: str
 
 
 class StudioMusicHistoryItemResponse(BaseModel):
@@ -716,6 +763,17 @@ class PlaybookResponse(BaseModel):
     visibility: str
     track_count: int = 0
     total_duration: float = 0
+    # Public-playbook play counter. Incremented every time someone hits
+    # Play in the Studio UI. Private playbooks always report 0 (their
+    # plays don't accrue) so the number stays meaningful when a playbook
+    # flips between public and private.
+    play_count: int = 0
+    # Thumb-up vote count (public for all playbooks). ``viewer_voted`` is
+    # True only when the request is authenticated and the signed-in user
+    # has cast a thumb on this playbook; for anonymous requests it's
+    # always False.
+    vote_count: int = 0
+    viewer_voted: bool = False
     created_at: str
     updated_at: str
 

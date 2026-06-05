@@ -43,7 +43,11 @@ function buildPositions(nodes: SubnetGraphNode[]): Record<string, PositionedNode
   const chainBand = { x: 836, y: 68 };
   const validatorBand = { x1: 84, x2: 956, y: 126 };
   const bucketBandOffset = 48;
-  const minerBand = { x1: 76, x2: 964, y1: 394, y2: 474 };
+  // Miner band extends upward toward the buckets (y≈174 + r24 = 198) so
+  // dense subnets (200+ miners) have vertical room without forcing the
+  // node radius down. Bottom-anchored layout below keeps the few-miners
+  // case visually unchanged (rows still start at y=394 when count is low).
+  const minerBand = { x1: 76, x2: 964, y1: 230, y2: 474 };
 
   const owner = nodes.find((n) => n.id === 'owner-api');
   const subtensor = nodes.find((n) => n.id === 'subtensor');
@@ -80,12 +84,19 @@ function buildPositions(nodes: SubnetGraphNode[]): Record<string, PositionedNode
   );
   const rows = Math.max(1, Math.ceil(minerCount / columns));
   const xGap = columns > 1 ? aspectWidth / (columns - 1) : 0;
-  const yGap = rows > 1 ? Math.min(52, aspectHeight / (rows - 1)) : 0;
+  // 40 = no-overlap spacing for the r=11 node (diameter 22) with margin.
+  // When miner count grows past what fits in (y2 - y1) at this gap, the
+  // gap shrinks to fit the band, overlap is acceptable per the design.
+  const yGap = rows > 1 ? Math.min(40, aspectHeight / (rows - 1)) : 0;
+  // Bottom-anchor so few miners sit at the visual bottom (y≈394, matching
+  // the original layout) and only dense subnets reach upward toward the
+  // bucket band.
+  const minerYStart = minerBand.y2 - (rows - 1) * yGap;
   miners.forEach((node, index) => {
     const row = Math.floor(index / columns);
     const col = index % columns;
     const x = minerBand.x1 + col * xGap;
-    const y = minerBand.y1 + row * yGap;
+    const y = minerYStart + row * yGap;
     byId[node.id] = { ...node, x, y };
   });
 

@@ -26,6 +26,15 @@ async def get_connection() -> aiosqlite.Connection:
     conn = await aiosqlite.connect(DB_PATH)
     conn.row_factory = aiosqlite.Row
     await conn.execute("PRAGMA foreign_keys = ON")
+    # WAL lets readers and a single writer proceed concurrently without
+    # blocking each other — essential because this DB is shared by two
+    # processes (dashboard-backend + developer-api) plus this backend's own
+    # concurrent async connections. busy_timeout makes a writer wait for a
+    # lock instead of failing instantly with "database is locked" (default
+    # busy_timeout is 0). journal_mode is a persistent DB-level setting;
+    # busy_timeout is per-connection so must be set on every connection.
+    await conn.execute("PRAGMA journal_mode = WAL")
+    await conn.execute("PRAGMA busy_timeout = 5000")
     return conn
 
 
@@ -319,6 +328,21 @@ SCHEMA_SQL = [
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS studio_noise_remover_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        source_audio_filename TEXT NOT NULL DEFAULT '',
+        audio_s3_bucket TEXT NOT NULL,
+        audio_s3_key TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        credits_used INTEGER NOT NULL DEFAULT 5,
+        latency_ms INTEGER,
+        status TEXT NOT NULL DEFAULT 'completed',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS studio_voice_design_previews (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id TEXT NOT NULL,
@@ -365,8 +389,31 @@ SCHEMA_SQL = [
         description TEXT NOT NULL DEFAULT '',
         cover_image_url TEXT,
         visibility TEXT NOT NULL DEFAULT 'private',
+        play_count INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS playbook_votes (
+        playbook_id INTEGER NOT NULL,
+        user_id TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (playbook_id, user_id),
+        FOREIGN KEY (playbook_id) REFERENCES playbooks(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
+    )
+    """,
+    # Per-(user, voice) like for the Community Voices catalog. ``voice_id``
+    # is the catalog id string (e.g. ``voc-atlas``, ``design-aria``).
+    # Aggregate counts power the popularity sort on /studio/community-voices.
+    """
+    CREATE TABLE IF NOT EXISTS voice_likes (
+        voice_id TEXT NOT NULL,
+        user_id  TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (voice_id, user_id),
         FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
     )
     """,
@@ -405,6 +452,299 @@ SCHEMA_SQL = [
         FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS agents (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        type TEXT NOT NULL,                -- 'knowledge' | 'goal'
+        status TEXT NOT NULL DEFAULT 'draft',  -- draft|active|paused|archived
+        name TEXT NOT NULL,
+        config_json TEXT NOT NULL,         -- AgentConfig as JSON
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        last_run_at TEXT,
+        run_count INTEGER NOT NULL DEFAULT 0,
+        FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS agent_custom_tools (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        name TEXT NOT NULL,                -- function name the LLM calls (snake_case)
+        description TEXT NOT NULL,         -- LLM uses this to decide when to invoke
+        parameters_json TEXT NOT NULL,     -- JSON Schema for the function's args
+        endpoint_url TEXT NOT NULL,        -- where we POST when the LLM calls it
+        method TEXT NOT NULL DEFAULT 'POST',
+        auth_type TEXT NOT NULL DEFAULT 'none',  -- 'none' | 'bearer' | 'header'
+        auth_header_name TEXT,             -- for 'header' auth (e.g. 'X-API-Key')
+        auth_secret TEXT,                  -- bearer token or header value (plaintext, internal-only)
+        timeout_ms INTEGER NOT NULL DEFAULT 5000,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE (user_id, name),
+        FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS agent_custom_tool_bindings (
+        agent_id TEXT NOT NULL,
+        tool_id TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (agent_id, tool_id),
+        FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE,
+        FOREIGN KEY (tool_id) REFERENCES agent_custom_tools(id) ON DELETE CASCADE
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS agent_runs (
+        id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        status TEXT NOT NULL,              -- pending|running|completed|failed|cancelled
+        goal TEXT NOT NULL,
+        success_metric TEXT NOT NULL,
+        iterations_json TEXT NOT NULL DEFAULT '[]',
+        best_output TEXT,
+        best_score REAL,
+        error TEXT,
+        started_at TEXT NOT NULL DEFAULT (datetime('now')),
+        finished_at TEXT,
+        FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS studio_voicechat_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        mode TEXT NOT NULL,                 -- 'voice' | 'text'
+        user_text TEXT,
+        bot_text TEXT,
+        latency_ms INTEGER NOT NULL DEFAULT 0,
+        ttft_ms INTEGER NOT NULL DEFAULT 0, -- time to first LLM token
+        ttfa_ms INTEGER,                    -- time to first audio frame (null if turn errored before audio)
+        error TEXT,
+        status TEXT NOT NULL DEFAULT 'completed',
+        -- One WS open = one session_id, every turn on that WS shares it.
+        -- COUNT(DISTINCT session_id) is the true "calls handled" metric.
+        -- Old rows (pre-migration) have NULL and are excluded from counts.
+        session_id TEXT,
+        -- Which agent the call was against. NULL = Logos / Vocence
+        -- Assistant (no user-built agent attached).
+        agent_id TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
+    )
+    """,
+    # CLI device-code login flow (RFC 8628-ish). The CLI obtains a
+    # device_code + user_code, opens the user_code page in the browser,
+    # and polls the device_code endpoint until the user approves. On
+    # approval we mint a fresh API key and stash it here so the next
+    # poll returns the plaintext exactly once.
+    """
+    CREATE TABLE IF NOT EXISTS cli_auth_codes (
+        device_code TEXT PRIMARY KEY,
+        user_code TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL DEFAULT 'pending',      -- pending | approved | denied | expired | consumed
+        user_id TEXT,
+        api_key_id TEXT,
+        api_key_plain TEXT,
+        approved_at TEXT,
+        expires_at TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
+    )
+    """,
+    # Per-call LLM telemetry. Every chat/stream call from llm_client.py
+    # writes one row (or one row per attempt when fallback fires).
+    #
+    # ``mode`` is 'chat' (non-streaming) or 'stream'. ``fallback_from``
+    # is the provider of the prior attempt when this call is a fallback
+    # ladder rung — e.g. when Cerebras 429s and Grok takes over,
+    # the Grok row has fallback_from='cerebras'. ``rate_limited`` and
+    # ``timed_out`` are derived booleans for fast filtering — the
+    # canonical truth is in ``http_status``/``error_message``.
+    #
+    # ``cost_usd`` is computed at insert time from llm_pricing — if no
+    # price row exists for (provider, model) it stays NULL and the row
+    # is still useful for failure/latency analysis. ``user_id`` /
+    # ``agent_id`` may be NULL for system calls (voice design, summaries).
+    """
+    CREATE TABLE IF NOT EXISTS llm_calls (
+        id TEXT PRIMARY KEY,
+        provider TEXT NOT NULL,              -- 'cerebras'|'xai'|'groq'|'openai'|'chutes'|'local'
+        model TEXT NOT NULL,
+        mode TEXT NOT NULL,                  -- 'chat' | 'stream'
+        status TEXT NOT NULL,                -- 'ok'|'error'|'empty'
+        http_status INTEGER,                 -- transport-level status, NULL if connect failed
+        rate_limited INTEGER NOT NULL DEFAULT 0,  -- 1 when http_status=429
+        timed_out INTEGER NOT NULL DEFAULT 0,     -- 1 when underlying request timed out
+        latency_ms INTEGER,                  -- wall time from request start to call end
+        ttft_ms INTEGER,                     -- streaming only: time to first delta
+        prompt_tokens INTEGER,
+        completion_tokens INTEGER,
+        total_tokens INTEGER,
+        cost_usd REAL,                       -- NULL when no llm_pricing row matches
+        fallback_from TEXT,                  -- previous provider if this is a fallback rung
+        fallback_reason TEXT,                -- short label, e.g. 'cerebras_429', 'cerebras_timeout'
+        user_id TEXT,                        -- nullable: NULL for system/background calls
+        agent_id TEXT,                       -- nullable: agent that triggered this call
+        error_message TEXT,                  -- truncated to 500 chars at insert
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+    """,
+    # Per-provider/model pricing. ``input_per_1m`` and ``output_per_1m``
+    # are USD per million tokens for prompt / completion respectively
+    # (matches every major provider's published pricing format). The
+    # admin UI edits this table directly; llm_logging.record_call reads
+    # it on every write to compute cost_usd.
+    """
+    CREATE TABLE IF NOT EXISTS llm_pricing (
+        provider TEXT NOT NULL,
+        model TEXT NOT NULL,
+        input_per_1m REAL NOT NULL,          -- USD per 1M prompt tokens
+        output_per_1m REAL NOT NULL,         -- USD per 1M completion tokens
+        notes TEXT,                          -- e.g. 'public price 2026-05-29; private discount: 30%'
+        active INTEGER NOT NULL DEFAULT 1,   -- 0 = retired entry, kept for historical cost lookup
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (provider, model)
+    )
+    """,
+    # User-facing thumbs-up/down on a single generation output. One row
+    # per (user, entry_type, entry_id) — a user can change their vote
+    # by replacing the row (UPSERT). entry_type matches the StudioHistory
+    # categories: 'tts'|'stt'|'clone'|'voice_design'|'music'|
+    # 'noise_remover'|'agent_call'|'agent_message'. entry_id is the
+    # primary key of the corresponding history table for that type
+    # (integer id) — or, for agent_message, the message id from the
+    # voicechat session log.
+    """
+    CREATE TABLE IF NOT EXISTS generation_feedback (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        entry_type TEXT NOT NULL,
+        entry_id TEXT NOT NULL,              -- TEXT so it works for both INT and UUID keyspaces
+        rating INTEGER NOT NULL,             -- 1 = thumbs up, -1 = thumbs down
+        comment TEXT,                        -- optional short reason ('robotic', 'wrong language', etc.)
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE (user_id, entry_type, entry_id),
+        FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
+    )
+    """,
+    # Auth event log — distinct from auth_history (which is the user's
+    # action history, mis-named). Captures login/logout/failed-attempts
+    # with IP / user-agent / country so admins can spot brute force,
+    # geographic anomalies, and account-takeover signals.
+    #
+    # user_id is NULL for failed attempts when the email didn't match
+    # an account (so we don't expose existence via failed-login analytics).
+    """
+    CREATE TABLE IF NOT EXISTS auth_login_events (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,                  -- 'login_ok'|'login_fail'|'logout'|'token_refresh'
+        user_id TEXT,
+        email_attempted TEXT,                -- present for failed attempts (lowercased)
+        ip TEXT,
+        country TEXT,                        -- ISO-3166 alpha-2, derived from IP at write time if avail
+        user_agent TEXT,
+        reason TEXT,                         -- 'bad_password'|'unknown_email'|'oauth'|'manual_logout'|...
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE SET NULL
+    )
+    """,
+    # Embed tokens — agent owners generate these from Studio to let
+    # anonymous visitors on their own websites use the agent via the
+    # embeddable widget. Each token:
+    #   • binds to one specific agent_id
+    #   • is owned by the user who created it (they get billed)
+    #   • optionally restricts which Origin headers can present it
+    #   • carries per-IP rate limits
+    #   • is revocable (set ``revoked_at``); revoked tokens are kept
+    #     for audit purposes, NOT deleted, so the Studio UI can still
+    #     show last_used_at history after revocation
+    #
+    # ``token_hash`` is SHA-256 of the plaintext token. The plaintext
+    # itself is shown ONCE on creation and never stored — same pattern
+    # as the api_keys table. ``token_prefix`` (first 6 chars of the
+    # plaintext) is stored separately so the Studio UI can show
+    # "vet_abc123…" in the issuance list without revealing the secret.
+    """
+    CREATE TABLE IF NOT EXISTS agent_embed_tokens (
+        id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL,
+        owner_user_id TEXT NOT NULL,
+        token_hash TEXT NOT NULL UNIQUE,
+        token_prefix TEXT NOT NULL,                  -- 'vet_abc123' style preview
+        label TEXT NOT NULL DEFAULT '',              -- human-friendly name
+        allowed_origins_json TEXT NOT NULL DEFAULT '[]',  -- JSON array of host patterns; empty = any origin
+        rate_limit_per_ip_per_hour INTEGER NOT NULL DEFAULT 30,
+        max_session_minutes INTEGER NOT NULL DEFAULT 5,
+        last_used_at TEXT,
+        revoked_at TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE,
+        FOREIGN KEY (owner_user_id) REFERENCES auth_users(id) ON DELETE CASCADE
+    )
+    """,
+    # Per-token rate-limit ledger. One row per session start so we can
+    # enforce "≤ N per IP per rolling hour" without an external store.
+    # Rows are pruned by a scheduled job (or naturally evicted by a
+    # trailing window query — both work).
+    """
+    CREATE TABLE IF NOT EXISTS agent_embed_token_uses (
+        token_id TEXT NOT NULL,
+        ip TEXT NOT NULL,
+        at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (token_id) REFERENCES agent_embed_tokens(id) ON DELETE CASCADE
+    )
+    """,
+    # User-submitted voices for the Community Voices catalog. Reviewed
+    # by admin; on approval the voice is published, the submitter gets
+    # a credit bonus, and a notification fires. Files (audio + avatar)
+    # live in object storage (MinIO/R2); we keep only the URLs here.
+    """
+    CREATE TABLE IF NOT EXISTS voice_submissions (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        description TEXT NOT NULL,             -- ≤30 chars, user-facing tagline
+        ref_text TEXT NOT NULL,                -- the exact words spoken in audio_url
+        language TEXT NOT NULL,                -- one of the qwen3-clone supported langs
+        audio_url TEXT NOT NULL,               -- 8-15s WAV/MP3, object-storage URL
+        audio_duration_ms INTEGER NOT NULL,
+        avatar_url TEXT NOT NULL,              -- square 512x512 WebP after server-side normalize
+        status TEXT NOT NULL DEFAULT 'pending',-- pending | approved | rejected
+        reject_reason TEXT,
+        reviewed_at TEXT,
+        reviewed_by TEXT,                      -- admin email
+        approved_voice_id TEXT,                -- catalog id once published (e.g. ``community-<id>``)
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
+    )
+    """,
+    # In-product notifications. Created by the system (approval/rejection
+    # of a voice submission, credit bonuses, etc.) OR by an admin
+    # broadcasting to recipients via the admin composer. Read state is
+    # tracked per row (one row per recipient, even for broadcasts) so
+    # the unread count is a cheap COUNT(*).
+    """
+    CREATE TABLE IF NOT EXISTS notifications (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,                 -- recipient
+        kind TEXT NOT NULL,                    -- submission_approved | submission_rejected | credit_bonus | admin_announcement | ...
+        title TEXT NOT NULL,
+        body TEXT NOT NULL DEFAULT '',
+        link TEXT,                             -- optional in-app destination (e.g. /studio/community-voices)
+        image_url TEXT,                        -- optional banner image; rendered atop the detail modal when set
+        sender TEXT,                           -- 'system' or admin email
+        read_at TEXT,                          -- NULL = unread
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
+    )
+    """,
 ]
 
 
@@ -418,6 +758,8 @@ INDEX_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_studio_clone_history_user_id ON studio_clone_history (user_id, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_payment_sessions_user_id ON payment_sessions (user_id, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_payments_user_id ON payments (user_id, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_cli_auth_user_code ON cli_auth_codes (user_code)",
+    "CREATE INDEX IF NOT EXISTS idx_cli_auth_expires_at ON cli_auth_codes (expires_at)",
     "CREATE INDEX IF NOT EXISTS idx_payment_sessions_stripe_checkout ON payment_sessions (stripe_checkout_session_id)",
     "CREATE INDEX IF NOT EXISTS idx_payment_sessions_stripe_subscription ON payment_sessions (stripe_subscription_id)",
     "CREATE INDEX IF NOT EXISTS idx_payments_stripe_invoice ON payments (stripe_invoice_id)",
@@ -427,13 +769,68 @@ INDEX_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_api_request_logs_key_time ON api_request_logs (api_key_id, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_api_request_logs_user_time ON api_request_logs (user_id, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_studio_music_history_user_id ON studio_music_history (user_id, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_studio_noise_remover_history_user_id ON studio_noise_remover_history (user_id, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_studio_voice_design_previews_user ON studio_voice_design_previews (user_id, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_voice_submissions_status ON voice_submissions (status, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_voice_submissions_user ON voice_submissions (user_id, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_notifications_recipient_unread ON notifications (user_id, read_at, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_studio_user_designed_voices_user ON studio_user_designed_voices (user_id, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_playbooks_user_id ON playbooks (user_id, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_playbook_tracks_playbook_id ON playbook_tracks (playbook_id, position ASC)",
+    "CREATE INDEX IF NOT EXISTS idx_playbook_votes_playbook ON playbook_votes (playbook_id)",
+    "CREATE INDEX IF NOT EXISTS idx_playbook_votes_user ON playbook_votes (user_id)",
+    "CREATE INDEX IF NOT EXISTS idx_voice_likes_voice ON voice_likes (voice_id)",
+    "CREATE INDEX IF NOT EXISTS idx_voice_likes_user ON voice_likes (user_id)",
     "CREATE INDEX IF NOT EXISTS idx_generation_jobs_user_created ON generation_jobs (user_id, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_generation_jobs_status ON generation_jobs (status, created_at)",
     "CREATE INDEX IF NOT EXISTS idx_generation_jobs_type_status ON generation_jobs (type, status, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_studio_voicechat_history_user ON studio_voicechat_history (user_id, created_at DESC)",
+    # Used by the public /stats/voice endpoint for COUNT(DISTINCT session_id).
+    "CREATE INDEX IF NOT EXISTS idx_studio_voicechat_history_session ON studio_voicechat_history (session_id) WHERE session_id IS NOT NULL",
+    "CREATE INDEX IF NOT EXISTS idx_agents_user ON agents (user_id, updated_at DESC)",
+    # FTS5 virtual table for agent knowledge chunks (RAG retrieval).
+    # Created with porter+unicode61 tokenizer so English stems work
+    # (e.g. "running" matches "run"). agent_id and chunk_idx are stored
+    # but NOT searched (UNINDEXED). Filter by agent_id in the WHERE clause
+    # of MATCH queries.
+    """
+    CREATE VIRTUAL TABLE IF NOT EXISTS agent_knowledge_chunks
+    USING fts5(
+        agent_id UNINDEXED,
+        chunk_idx UNINDEXED,
+        content,
+        tokenize = 'porter unicode61'
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_agent_runs_agent ON agent_runs (agent_id, started_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_agent_runs_user ON agent_runs (user_id, started_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_agent_custom_tools_user ON agent_custom_tools (user_id, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_agent_custom_tool_bindings_agent ON agent_custom_tool_bindings (agent_id)",
+    "CREATE INDEX IF NOT EXISTS idx_agent_custom_tool_bindings_tool ON agent_custom_tool_bindings (tool_id)",
+    # LLM telemetry — index the four common admin query shapes.
+    "CREATE INDEX IF NOT EXISTS idx_llm_calls_created ON llm_calls (created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_llm_calls_provider_time ON llm_calls (provider, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_llm_calls_status_time ON llm_calls (status, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_llm_calls_agent_time ON llm_calls (agent_id, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_llm_calls_user_time ON llm_calls (user_id, created_at DESC)",
+    # generation_feedback: per-entry lookups (already enforced UNIQUE) +
+    # per-user history (for "voices you've rated" type views).
+    "CREATE INDEX IF NOT EXISTS idx_generation_feedback_entry ON generation_feedback (entry_type, entry_id)",
+    "CREATE INDEX IF NOT EXISTS idx_generation_feedback_user_time ON generation_feedback (user_id, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_generation_feedback_type_rating ON generation_feedback (entry_type, rating, created_at DESC)",
+    # Auth login events: by time (for the global feed) and by user (for
+    # per-user security drill-down).
+    "CREATE INDEX IF NOT EXISTS idx_auth_login_events_time ON auth_login_events (created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_auth_login_events_user_time ON auth_login_events (user_id, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_auth_login_events_kind_time ON auth_login_events (kind, created_at DESC)",
+    # Embed tokens: look up by hash on every embed-WS handshake (hot path)
+    # and by agent_id when the Studio UI lists tokens for an agent.
+    "CREATE INDEX IF NOT EXISTS idx_agent_embed_tokens_hash ON agent_embed_tokens (token_hash)",
+    "CREATE INDEX IF NOT EXISTS idx_agent_embed_tokens_agent ON agent_embed_tokens (agent_id, revoked_at)",
+    "CREATE INDEX IF NOT EXISTS idx_agent_embed_tokens_owner ON agent_embed_tokens (owner_user_id, created_at DESC)",
+    # Token-uses: count rows per (token_id, ip) in a rolling hour window.
+    "CREATE INDEX IF NOT EXISTS idx_agent_embed_token_uses_token_at ON agent_embed_token_uses (token_id, at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_agent_embed_token_uses_ip_at ON agent_embed_token_uses (token_id, ip, at DESC)",
 ]
 
 
@@ -452,23 +849,27 @@ PLAN_SEEDS = [
         "features_json": json.dumps(
             [
                 "300 free credits when you register",
-                "TTS, STT, Voice Cloning, Music Generation",
+                "TTS, STT, Voice Cloning, Music, Noise Remover",
+                "Voice Agents — pay-per-minute",
                 "Up to 5 custom voices (Voice Design)",
                 "Generation history saved for 7 days",
-                "Best for light usage and personal projects",
             ]
         ),
         "cta_label": "Buy credits",
+        # Crypto: 20% more credits per dollar (400 cr/$ vs 333 cr/$ card).
         "crypto_price_usd": 20.0,
-        "crypto_credits_included": 7000,
+        "crypto_credits_included": 8000,
     },
     {
         "code": "premium",
         "name": "Premium",
         "price_usd": 24.0,
         "billing_type": "credits",
-        "credits_included": 10000,
-        "credits_per_pack": 10000,
+        # Same cr/$ rate as Normal — predictable pricing, no volume
+        # discount on top of the existing crypto bonus. (Was 10K, now 8K
+        # so the per-dollar rate matches Normal exactly.)
+        "credits_included": 8000,
+        "credits_per_pack": 8000,
         "price_subtitle": "one-time pack",
         "description": "High-volume credit pack for active creators.",
         "sort_order": 2,
@@ -478,7 +879,7 @@ PLAN_SEEDS = [
                 "Everything in Normal, plus:",
                 "Generation history never expires",
                 "Unlimited custom voices (Voice Design)",
-                "Developer API access (TTS, STT, Clone, Music)",
+                "Developer API access (TTS, STT, Clone, Music, Voice Agents)",
                 "Ideal for teams, creators, and production workflows",
             ]
         ),
@@ -565,6 +966,23 @@ async def seed_pricing_plans(conn: aiosqlite.Connection) -> None:
 async def ensure_tables() -> None:
     conn = await get_connection()
     try:
+        # Rename the dubbing table to noise_remover BEFORE CREATE TABLE
+        # IF NOT EXISTS runs — otherwise CREATE makes a fresh empty
+        # noise_remover table next to the old populated dubbing table.
+        # Only renames if dubbing exists and noise_remover doesn't.
+        try:
+            cur = await conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('studio_dubbing_history','studio_noise_remover_history')"
+            )
+            existing_names = {row["name"] for row in await cur.fetchall()}
+            if "studio_dubbing_history" in existing_names and "studio_noise_remover_history" not in existing_names:
+                await conn.execute("ALTER TABLE studio_dubbing_history RENAME TO studio_noise_remover_history")
+        except Exception:
+            # Best-effort migration; if it fails the CREATE below just
+            # makes the new table empty and old data is orphaned. Logged
+            # by the connection driver if it happened.
+            pass
+
         for statement in SCHEMA_SQL:
             await conn.execute(statement)
 
@@ -595,6 +1013,101 @@ async def ensure_tables() -> None:
         await _ensure_column(conn, "payments", "credits_applied_at", "credits_applied_at TEXT")
         await _ensure_column(conn, "api_keys", "tier", "tier TEXT")
         await _ensure_column(conn, "api_keys", "rate_limit_rpm", "rate_limit_rpm INTEGER")
+        # Notifications got an optional banner-image field after the
+        # initial ship. Backfill nullable so historical rows remain
+        # valid; new rows default to NULL (= no image).
+        await _ensure_column(conn, "notifications", "image_url", "image_url TEXT")
+        # session_id is required to distinguish a single voice "call"
+        # (one WS open → multiple turns) from raw turn counts. Old rows
+        # have NULL here — the stats endpoint ignores them when
+        # counting distinct calls. agent_id captures which agent the
+        # call was against (NULL = Logos / Vocence Assistant).
+        await _ensure_column(
+            conn, "studio_voicechat_history", "session_id", "session_id TEXT"
+        )
+        await _ensure_column(
+            conn, "studio_voicechat_history", "agent_id", "agent_id TEXT"
+        )
+        # Public-playbook play counter. Added after the table shipped, so
+        # existing rows need backfilling to 0 (NOT NULL needs a default).
+        await _ensure_column(conn, "playbooks", "play_count", "play_count INTEGER NOT NULL DEFAULT 0")
+        # ``source`` distinguishes how the saved voice was created:
+        #   'designed' — generated via Voice Design (LLM prompt → TTS preview)
+        #   'cloned'   — uploaded by the user as a real-voice reference clip
+        # Both reuse the same row shape (ref_script + audio_s3_*); the
+        # designed-only fields (voice_description, revised_instruction,
+        # chute_slug, etc.) are blank for cloned rows. Frontend uses the
+        # column to render a badge so users can tell the two apart.
+        await _ensure_column(
+            conn,
+            "studio_user_designed_voices",
+            "source",
+            "source TEXT NOT NULL DEFAULT 'designed'",
+        )
+        await _ensure_column(
+            conn,
+            "studio_user_designed_voices",
+            "source_language",
+            "source_language TEXT",
+        )
+
+        # Email + password auth columns on auth_users. Google-signup users
+        # have password_hash=NULL and email_verified=1 (Google asserts the
+        # email is verified). Email-signup users have password_hash set
+        # and email_verified=0 until they click the verification link.
+        # All timestamps are ISO-8601 strings to match existing columns;
+        # the lockout / token-expiry helpers in auth_security.py compare
+        # them via datetime.fromisoformat for monotonic correctness.
+        await _ensure_column(conn, "auth_users", "password_hash", "password_hash TEXT")
+        await _ensure_column(conn, "auth_users", "email_verified", "email_verified INTEGER NOT NULL DEFAULT 1")
+        await _ensure_column(conn, "auth_users", "verification_token_hash", "verification_token_hash TEXT")
+        await _ensure_column(conn, "auth_users", "verification_token_expires_at", "verification_token_expires_at TEXT")
+        await _ensure_column(conn, "auth_users", "failed_login_attempts", "failed_login_attempts INTEGER NOT NULL DEFAULT 0")
+        await _ensure_column(conn, "auth_users", "locked_until", "locked_until TEXT")
+        await _ensure_column(conn, "auth_users", "password_reset_token_hash", "password_reset_token_hash TEXT")
+        await _ensure_column(conn, "auth_users", "password_reset_expires_at", "password_reset_expires_at TEXT")
+        await _ensure_column(conn, "auth_users", "password_changed_at", "password_changed_at TEXT")
+        # Stashed at signup so the verify endpoint can pass it into
+        # validate_referral. Without this, every email-signup referral
+        # was silently dropped (the device-fingerprint gate refused
+        # None). Audit finding H1.
+        await _ensure_column(conn, "auth_users", "signup_device_fingerprint", "signup_device_fingerprint TEXT")
+        # Per-account cooldown on verification-email resends. Without
+        # this an attacker can rotate IPs to bomb a victim's inbox
+        # with verification emails. Audit finding M40 — checked on
+        # /resend-verify and on the login auto-resend path. Updated
+        # every time we successfully issue a new verification token.
+        await _ensure_column(conn, "auth_users", "last_verification_resend_at", "last_verification_resend_at TEXT")
+        # Lookups by reset / verification token hash MUST be O(1) — the
+        # token is the only thing the request bears, and a table scan
+        # leaks timing information about user count under load.
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_auth_users_verification_token "
+            "ON auth_users(verification_token_hash) WHERE verification_token_hash IS NOT NULL"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_auth_users_reset_token "
+            "ON auth_users(password_reset_token_hash) WHERE password_reset_token_hash IS NOT NULL"
+        )
+
+        # Referral system columns on auth_users.
+        await _ensure_column(conn, "auth_users", "referral_code", "referral_code TEXT")
+        await conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_users_referral_code "
+            "ON auth_users(referral_code) WHERE referral_code IS NOT NULL"
+        )
+        await _ensure_column(conn, "auth_users", "referred_by", "referred_by TEXT")
+        await _ensure_column(conn, "auth_users", "referral_activated", "referral_activated INTEGER NOT NULL DEFAULT 0")
+
+        # Referral device tracking (anti-abuse: one referral per device).
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS referral_devices (
+                device_fingerprint TEXT PRIMARY KEY,
+                referral_code TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
 
         for statement in INDEX_SQL:
             await conn.execute(statement)
@@ -617,6 +1130,29 @@ def generate_api_key() -> tuple[str, str]:
     token = secrets.token_urlsafe(32).replace("-", "").replace("_", "")
     plain = f"voc_live_{token}"
     return plain, plain[:16]
+
+
+async def atomic_deduct_credits(
+    conn: aiosqlite.Connection,
+    *,
+    user_id: str,
+    cost: int,
+) -> int | None:
+    """Atomically deduct credits. Returns new balance, or None if insufficient.
+
+    Uses UPDATE ... WHERE credits >= cost to prevent races where concurrent
+    requests all pass a separate credit check then all deduct."""
+    cursor = await conn.execute(
+        "UPDATE auth_users SET credits = credits - ?, updated_at = datetime('now') "
+        "WHERE id = ? AND credits >= ?",
+        (cost, user_id, cost),
+    )
+    if cursor.rowcount == 0:
+        return None
+    row = await (await conn.execute(
+        "SELECT credits FROM auth_users WHERE id = ?", (user_id,)
+    )).fetchone()
+    return int(row["credits"]) if row else 0
 
 
 async def record_credit_transaction(

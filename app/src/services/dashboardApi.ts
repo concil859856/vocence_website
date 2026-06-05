@@ -1,21 +1,33 @@
 /**
- * Dashboard API client — same backend as auth (VITE_API_URL).
+ * Dashboard API client, same backend as auth (VITE_API_URL).
  */
 import { API_ORIGIN_BASE } from './baseUrl';
+import { authFetch } from './authFetch';
 
 const DASHBOARD_BASE = API_ORIGIN_BASE;
 
 /**
- * Build the Authorization header for admin-only dashboard calls.
+ * Build the Authorization + X-Admin-Token headers for admin-only dashboard calls.
  *
- * Admin auth on the backend is gated by `require_admin_session`, which
- * verifies a JWT from `Authorization: Bearer <token>` and checks the decoded
- * email matches `ADMIN_EMAIL`. The token is the same one the website issues
- * after Google OAuth login, stored under `vocence_token` in localStorage.
+ * Backend gates admin routes on TWO layers (see routers/admin_auth.py):
+ *   1. `Authorization: Bearer <JWT>`, Google OAuth + email == ADMIN_EMAIL
+ *   2. `X-Admin-Token: <admin_token>`, sudo-mode unlock (separate password)
+ *
+ * Both must be sent or the backend rejects with 401 code=admin_unlock_required,
+ * which the AdminGate wrapper interprets by popping the AdminUnlockModal.
+ *
+ * The JWT lives in localStorage (survives browser close). The admin_token
+ * lives in sessionStorage (cleared on browser close, by design; admin
+ * should re-auth after closing their laptop).
  */
 function adminAuthHeaders(): Record<string, string> {
-  const token = typeof window !== 'undefined' ? window.localStorage.getItem('vocence_token') || '' : '';
-  return token ? { Authorization: `Bearer ${token}` } : {};
+  const headers: Record<string, string> = {};
+  if (typeof window === 'undefined') return headers;
+  const token = window.localStorage.getItem('vocence_token') || '';
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  const adminToken = window.sessionStorage.getItem('vocence.admin_token') || '';
+  if (adminToken) headers['X-Admin-Token'] = adminToken;
+  return headers;
 }
 
 /**
@@ -79,7 +91,11 @@ async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
   const url = `${DASHBOARD_BASE}${path}`;
   let res: Response;
   try {
-    res = await fetch(url, {
+    // authFetch routes via the central wrapper so every authenticated
+    // dashboard call sends ``credentials: 'include'`` (cookie travels)
+    // AND keeps the legacy Bearer fallback from localStorage. Backend
+    // dual-accepts either; phase 4 drops Bearer entirely.
+    res = await authFetch(url, {
       ...options,
       headers: { Accept: 'application/json', ...options?.headers },
     });
@@ -95,6 +111,19 @@ async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     if (typeof console !== 'undefined') console.warn('[fetchJson]', url, res.status, text);
+    // Admin sudo-mode: detect the backend's "admin password required" rejection
+    // and dispatch a global event so AdminGate re-pops the unlock modal.
+    // Also wipe the locally-stored admin_token so the next call doesn't keep
+    // sending a known-bad one.
+    if (res.status === 401 && text.includes('admin_unlock_required')) {
+      if (typeof window !== 'undefined') {
+        try {
+          window.sessionStorage.removeItem('vocence.admin_token');
+          window.sessionStorage.removeItem('vocence.admin_token_expires_at');
+        } catch { /* ignore */ }
+        window.dispatchEvent(new Event('admin-unlock-required'));
+      }
+    }
     const { userMessage, detail } = _extractUserMessage(res.status, text);
     throw new ApiError({ status: res.status, userMessage, detail });
   }
@@ -723,7 +752,7 @@ export const dashboardApi = {
   uploadBlogImage(file: File, _adminEmail: string): Promise<{ url: string }> {
     const form = new FormData();
     form.append('file', file);
-    return fetch(`${DASHBOARD_BASE}/api/dashboard/blog/upload`, {
+    return authFetch(`${DASHBOARD_BASE}/api/dashboard/blog/upload`, {
       method: 'POST',
       headers: adminAuthHeaders(),
       body: form,
@@ -805,6 +834,27 @@ export const dashboardApi = {
     });
   },
 
+  /**
+   * Generate TTS using a pre-stored sample voice. Backend uses voice cloning
+   * under the hood with the matching reference clip; charged at TTS price.
+   */
+  generateStudioTtsSampleVoice(
+    body: {
+      sample_voice_id: string;
+      target_text: string;
+      target_language?: string | null;
+    },
+    token: string | null
+  ): Promise<StudioCloneResponse> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson('/api/dashboard/studio/tts/voice-clone-sample', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+  },
+
   generateStudioStt(
     body: { user_id: string; language?: string | null; audio_file: File },
     token: string | null
@@ -856,11 +906,13 @@ export const dashboardApi = {
   },
 
   getStudioHistory(userId: string): Promise<{ items: StudioHistoryItem[] }> {
-    return fetchJson(`/api/dashboard/studio/history?user_id=${encodeURIComponent(userId)}`);
+    return fetchJson(`/api/dashboard/studio/history?user_id=${encodeURIComponent(userId)}`, {
+      headers: adminAuthHeaders(),
+    });
   },
 
   deleteStudioHistory(
-    items: Array<{ id: number; type: 'tts' | 'stt' | 'clone' | 'voice_design' | 'music' }>,
+    items: Array<{ id: number; type: 'tts' | 'stt' | 'clone' | 'voice_design' | 'music' | 'noise_remover' }>,
     token: string | null,
   ): Promise<{ deleted: number }> {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -886,7 +938,8 @@ export const dashboardApi = {
             ? '&entry_type=music'
             : '';
     return fetchJson(
-      `/api/dashboard/studio/history/${historyId}/audio-url?user_id=${encodeURIComponent(userId)}${et}`
+      `/api/dashboard/studio/history/${historyId}/audio-url?user_id=${encodeURIComponent(userId)}${et}`,
+      { headers: adminAuthHeaders() },
     );
   },
 
@@ -939,6 +992,29 @@ export const dashboardApi = {
     return fetchJson(`/api/dashboard/studio/voice-design/voices/${voiceId}`, {
       method: 'DELETE',
       headers,
+    });
+  },
+
+  /** Upload a voice clip and save it as a reusable "cloned" voice in My
+   *  Voices. The backend transcribes the clip once on save and stores both
+   *  the reference audio (long-retention R2 object) and transcription. The
+   *  returned voice_id is selectable as `dv:<voice_id>` anywhere voices are
+   *  used (agents, Studio clone target, designed-voice speak). */
+  saveStudioClonedVoice(
+    args: { displayName: string; audioFile: File; language?: string; referenceText?: string },
+    token: string | null,
+  ): Promise<StudioClonedVoiceSaveResponse> {
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    const form = new FormData();
+    form.append('display_name', args.displayName);
+    form.append('audio_file', args.audioFile);
+    if (args.language) form.append('language', args.language);
+    if (args.referenceText) form.append('reference_text', args.referenceText);
+    return fetchJson('/api/dashboard/studio/voice-design/cloned-voices', {
+      method: 'POST',
+      headers,
+      body: form,
     });
   },
 
@@ -1006,13 +1082,101 @@ export const dashboardApi = {
     });
   },
 
+  /** Upload the source/reference audio for retake/repaint/edit/extend/audio2audio
+   * to the backend bucket. Returns ``{src_audio_bucket, src_audio_key}`` which
+   * the caller passes inside the /jobs/start payload, keeps the job payload
+   * tiny (no base64) so all 6 music tasks behave identically over the wire.
+   * @deprecated prefer ``presignUpload`` + direct PUT so the bytes skip the
+   * Cloudflare proxy entirely. Kept for backward compat. */
+  uploadStudioMusicSource(
+    userId: string,
+    file: File,
+    token: string | null,
+  ): Promise<{ src_audio_bucket: string; src_audio_key: string; src_audio_filename: string }> {
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    const form = new FormData();
+    form.append('user_id', userId);
+    form.append('src_audio', file, file.name);
+    return fetchJson('/api/dashboard/studio/music/upload-source', {
+      method: 'POST',
+      headers,
+      body: form,
+    });
+  },
+
+  /** Ask the backend for a presigned PUT URL pointing directly at R2.
+   *  The browser then PUTs the file straight to R2, the bytes do NOT
+   *  traverse the API's Cloudflare proxy, so we sidestep the per-request
+   *  body-size limits and large HTTP/2 upload stalls that plague big
+   *  multipart POSTs to ``backend.vocence.ai``. The caller passes the
+   *  returned ``key`` into whichever job/start endpoint needs it. */
+  presignUpload(
+    body: { kind: 'music-source' | 'playbook-audio' | 'voice-clone-ref' | 'stt-source'; filename: string; content_type?: string; size: number },
+    token: string | null,
+  ): Promise<{ put_url: string; bucket: string; key: string; filename: string; expires_at: string; max_bytes: number }> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson('/api/dashboard/uploads/presign', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+  },
+
+  /** Convenience: presign + PUT in one call. Returns the bucket/key the
+   *  caller should put in the job payload. PUT goes browser → R2 directly
+   *  so it bypasses Cloudflare and isn't subject to your API's body limits. */
+  async uploadDirectToR2(
+    kind: 'music-source' | 'playbook-audio' | 'voice-clone-ref' | 'stt-source',
+    file: File,
+    token: string | null,
+  ): Promise<{ bucket: string; key: string; filename: string }> {
+    const presigned = await this.presignUpload(
+      { kind, filename: file.name, content_type: file.type || 'application/octet-stream', size: file.size },
+      token,
+    );
+    // Third-party object storage (R2/S3 presigned URL). MUST NOT send
+    // credentials — presigned URLs are pre-signed; cookies would be
+    // ignored at best, rejected at worst. Use bare fetch.
+    const putRes = await fetch(presigned.put_url, {
+      method: 'PUT',
+      body: file,
+      headers: file.type ? { 'Content-Type': file.type } : undefined,
+    });
+    if (!putRes.ok) {
+      const text = await putRes.text().catch(() => '');
+      throw new Error(`Upload to storage failed (${putRes.status}): ${text.slice(0, 200)}`);
+    }
+    return { bucket: presigned.bucket, key: presigned.key, filename: presigned.filename };
+  },
+
+  /** AI-generate lyrics from a topic. Free; no credits charged. The
+   * server uses the same LLM router as agents and enforces the
+   * ACE-Step structure-tag format ([verse]/[chorus]/...). */
+  generateStudioMusicLyrics(
+    body: { topic: string; prompt?: string; section_count?: number },
+    token: string | null
+  ): Promise<{ lyrics: string }> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson('/api/dashboard/studio/music/generate-lyrics', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+  },
+
   getStudioMusicHistory(userId: string): Promise<{ items: StudioMusicHistoryItem[] }> {
-    return fetchJson(`/api/dashboard/studio/music/history?user_id=${encodeURIComponent(userId)}`);
+    return fetchJson(`/api/dashboard/studio/music/history?user_id=${encodeURIComponent(userId)}`, {
+      headers: adminAuthHeaders(),
+    });
   },
 
   getStudioMusicHistoryAudioUrl(historyId: number, userId: string): Promise<{ audio_url: string }> {
     return fetchJson(
-      `/api/dashboard/studio/music/history/${historyId}/audio-url?user_id=${encodeURIComponent(userId)}`
+      `/api/dashboard/studio/music/history/${historyId}/audio-url?user_id=${encodeURIComponent(userId)}`,
+      { headers: adminAuthHeaders() },
     );
   },
 
@@ -1024,8 +1188,35 @@ export const dashboardApi = {
     return fetchJson('/api/dashboard/playbooks', { method: 'POST', headers, body: JSON.stringify(body) });
   },
 
-  browsePublicPlaybooks(limit = 20): Promise<{ playbooks: PublicPlaybook[] }> {
-    return fetchJson(`/api/dashboard/playbooks/public/browse?limit=${limit}`);
+  browsePublicPlaybooks(limit = 20, token?: string | null): Promise<{ playbooks: PublicPlaybook[] }> {
+    // Auth is optional: when a token is supplied each item's
+    // ``viewer_voted`` reflects whether the signed-in user already
+    // thumbed it; anonymous callers always see viewer_voted = false.
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson(`/api/dashboard/playbooks/public/browse?limit=${limit}`, { headers });
+  },
+
+  votePlaybook(id: number, token: string | null): Promise<{ vote_count: number; viewer_voted: boolean }> {
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson(`/api/dashboard/playbooks/${id}/vote`, { method: 'POST', headers });
+  },
+
+  unvotePlaybook(id: number, token: string | null): Promise<{ vote_count: number; viewer_voted: boolean }> {
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson(`/api/dashboard/playbooks/${id}/vote`, { method: 'DELETE', headers });
+  },
+
+  recordPlaybookPlay(id: number, token?: string | null): Promise<{ play_count: number }> {
+    // Auth is optional. Anonymous viewers (via shared links) get
+    // counted too; private playbooks silently no-op server-side.
+    // Callers should fire-and-forget, the play UI shouldn't wait
+    // on the increment to complete.
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson(`/api/dashboard/playbooks/${id}/play`, { method: 'POST', headers });
   },
 
   listPlaybooks(token: string | null): Promise<{ playbooks: Playbook[] }> {
@@ -1122,7 +1313,389 @@ export const dashboardApi = {
     form.append('audio_file', file);
     return fetchJson(`/api/dashboard/playbooks/${playbookId}/upload`, { method: 'POST', headers, body: form });
   },
+
+  /** Two-step upload: PUT the file directly to R2 (no Cloudflare in the path)
+   * then register the track on the backend with the resulting key. Use this
+   * for any file you want to skip the API proxy for, supports up to the
+   * presign endpoint's cap (300 MB by default). */
+  async uploadPlaybookTrackDirect(
+    playbookId: number,
+    file: File,
+    title: string,
+    token: string | null,
+  ): Promise<PlaybookDetail> {
+    const { bucket, key, filename } = await this.uploadDirectToR2('playbook-audio', file, token);
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson(`/api/dashboard/playbooks/${playbookId}/upload-from-r2`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ title, bucket, key, filename }),
+    });
+  },
+
+  // ----- Generation feedback (thumbs up/down) -----
+
+  /** Submit / replace the current user's thumb for one generation result.
+   *  Pass rating=0 to clear an existing vote (so the user can un-thumb
+   *  by clicking the active arrow again). */
+  submitGenerationFeedback(
+    body: {
+      entry_type:
+        | 'tts' | 'stt' | 'clone' | 'voice_design' | 'music'
+        | 'noise_remover' | 'agent_call' | 'agent_message';
+      entry_id: string;
+      rating: -1 | 0 | 1;
+      comment?: string;
+    },
+    token: string | null,
+  ): Promise<{ ok: true; rating: number }> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson('/api/dashboard/feedback', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+  },
+
+  /** Look up the current user's thumb for one entry, used to pre-paint
+   *  the UI on result-page load so a previous vote is reflected. Returns
+   *  rating=0 when no vote exists. */
+  getMyGenerationFeedback(
+    entry_type: string,
+    entry_id: string,
+    token: string | null,
+  ): Promise<{ rating: number; comment: string | null; created_at?: string; updated_at?: string }> {
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    const qs = new URLSearchParams({ entry_type, entry_id });
+    return fetchJson(`/api/dashboard/feedback?${qs}`, { headers });
+  },
+
+  // ----- Agent knowledge (external sources via the knowledge-ingestion pod) -----
+
+  listAgentKnowledgeSources(
+    agentId: string, token: string | null,
+  ): Promise<{ sources: KnowledgeSource[] }> {
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson(`/api/dashboard/agents/${agentId}/knowledge/sources`, { headers });
+  },
+
+  deleteAgentKnowledgeSource(
+    agentId: string, sourceId: string, token: string | null,
+  ): Promise<{ deleted: boolean; chunks_removed: number }> {
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson(`/api/dashboard/agents/${agentId}/knowledge/sources/${sourceId}`, {
+      method: 'DELETE', headers,
+    });
+  },
+
+  ingestAgentKnowledgeText(
+    agentId: string, body: { content: string; title?: string }, token: string | null,
+  ): Promise<KnowledgeIngestResponse> {
+    return _postJson(`/api/dashboard/agents/${agentId}/knowledge/ingest/text`, body, token);
+  },
+
+  ingestAgentKnowledgeMarkdown(
+    agentId: string, body: { content: string; title?: string }, token: string | null,
+  ): Promise<KnowledgeIngestResponse> {
+    return _postJson(`/api/dashboard/agents/${agentId}/knowledge/ingest/markdown`, body, token);
+  },
+
+  ingestAgentKnowledgeUrl(
+    agentId: string,
+    body: { url: string; title?: string; max_depth?: 0 | 1 },
+    token: string | null,
+  ): Promise<KnowledgeIngestResponse> {
+    return _postJson(`/api/dashboard/agents/${agentId}/knowledge/ingest/url`, body, token);
+  },
+
+  ingestAgentKnowledgeSitemap(
+    agentId: string,
+    body: { url: string; title?: string; include?: string[]; exclude?: string[]; max_pages?: number },
+    token: string | null,
+  ): Promise<KnowledgeIngestResponse> {
+    return _postJson(`/api/dashboard/agents/${agentId}/knowledge/ingest/sitemap`, body, token);
+  },
+
+  /** PDF ingest uses multipart/form-data because the file body is binary. */
+  ingestAgentKnowledgePdf(
+    agentId: string, args: { file: File; title?: string }, token: string | null,
+  ): Promise<KnowledgeIngestResponse> {
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    const form = new FormData();
+    form.append('file', args.file);
+    if (args.title) form.append('title', args.title);
+    return fetchJson(`/api/dashboard/agents/${agentId}/knowledge/ingest/pdf`, {
+      method: 'POST', headers, body: form,
+    });
+  },
+
+  getAgentKnowledgeJob(
+    agentId: string, jobId: string, token: string | null,
+  ): Promise<KnowledgeJob> {
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson(`/api/dashboard/agents/${agentId}/knowledge/jobs/${jobId}`, { headers });
+  },
+
+  // ----- Embed tokens (anonymous-visitor widget access to an agent) -----
+
+  createAgentEmbedToken(
+    agentId: string,
+    body: {
+      label?: string;
+      allowed_origins?: string[];
+      rate_limit_per_ip_per_hour?: number;
+      max_session_minutes?: number;
+    },
+    token: string | null,
+  ): Promise<{
+    token: EmbedTokenRow;
+    plaintext: string;
+    embed_snippet: string;
+  }> {
+    return _postJson(`/api/dashboard/agents/${agentId}/embed-tokens`, body, token);
+  },
+
+  listAgentEmbedTokens(
+    agentId: string, token: string | null,
+  ): Promise<{ tokens: EmbedTokenRow[] }> {
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson(`/api/dashboard/agents/${agentId}/embed-tokens`, { headers });
+  },
+
+  revokeAgentEmbedToken(
+    agentId: string, tokenId: string, token: string | null,
+  ): Promise<{ ok: true }> {
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson(`/api/dashboard/agents/${agentId}/embed-tokens/${tokenId}`, {
+      method: 'DELETE', headers,
+    });
+  },
+
+  // -------------------------------------------------------------------
+  // Voice submissions, user-contributed voices for Community Voices.
+  // -------------------------------------------------------------------
+
+  submitVoice(form: FormData, token: string): Promise<VoiceSubmission> {
+    // Multipart upload, DON'T set Content-Type, the browser fills in
+    // the multipart boundary automatically.
+    return fetchJson(`/api/dashboard/voice-submissions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: form,
+    });
+  },
+
+  listMyVoiceSubmissions(token: string): Promise<{ submissions: VoiceSubmission[] }> {
+    return fetchJson(`/api/dashboard/voice-submissions/mine`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+
+  adminListVoiceSubmissions(
+    statusFilter: 'all' | 'pending' | 'approved' | 'rejected' = 'all',
+  ): Promise<{ submissions: AdminVoiceSubmission[]; pending_count: number }> {
+    return fetchJson(
+      `/api/dashboard/admin/voice-submissions?status_filter=${statusFilter}`,
+      { headers: adminAuthHeaders() },
+    );
+  },
+
+  adminApproveVoiceSubmission(
+    submissionId: string,
+  ): Promise<{ ok: true; approved_voice_id: string; credits_granted: number }> {
+    return fetchJson(
+      `/api/dashboard/admin/voice-submissions/${submissionId}/approve`,
+      { method: 'POST', headers: adminAuthHeaders() },
+    );
+  },
+
+  adminRejectVoiceSubmission(
+    submissionId: string, reason: string,
+  ): Promise<{ ok: true }> {
+    return fetchJson(
+      `/api/dashboard/admin/voice-submissions/${submissionId}/reject`,
+      {
+        method: 'POST',
+        headers: { ...adminAuthHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason }),
+      },
+    );
+  },
+
+  // -------------------------------------------------------------------
+  // Notifications, bell + admin composer.
+  // -------------------------------------------------------------------
+
+  listNotifications(
+    limit: number, offset: number, token: string,
+  ): Promise<NotificationListResponse> {
+    return fetchJson(
+      `/api/dashboard/notifications?limit=${limit}&offset=${offset}`,
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+  },
+
+  getUnreadNotificationCount(token: string): Promise<{ unread_count: number }> {
+    return fetchJson(`/api/dashboard/notifications/unread-count`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+
+  markNotificationRead(
+    notificationId: string, token: string,
+  ): Promise<{ ok: true; updated: number }> {
+    return fetchJson(
+      `/api/dashboard/notifications/${notificationId}/read`,
+      { method: 'POST', headers: { Authorization: `Bearer ${token}` } },
+    );
+  },
+
+  markAllNotificationsRead(token: string): Promise<{ ok: true; updated: number }> {
+    return fetchJson(`/api/dashboard/notifications/read-all`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+
+  adminSendNotification(body: AdminSendNotificationBody): Promise<{ sent: number }> {
+    return fetchJson(`/api/dashboard/admin/notifications/send`, {
+      method: 'POST',
+      headers: { ...adminAuthHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  },
+
+  adminUploadNotificationImage(file: File): Promise<{ url: string }> {
+    const form = new FormData();
+    form.append('image', file);
+    // Multipart upload, DON'T set Content-Type, the browser fills in
+    // the multipart boundary automatically. Auth headers stay.
+    return fetchJson(`/api/dashboard/admin/notifications/upload-image`, {
+      method: 'POST',
+      headers: adminAuthHeaders(),
+      body: form,
+    });
+  },
 };
+
+// Voice-submission + notification types match the backend Pydantic
+// models in voice_submissions.py / notifications.py.
+
+export interface VoiceSubmission {
+  id: string;
+  name: string;
+  description: string;
+  ref_text: string;
+  language: string;
+  audio_url: string;
+  audio_duration_ms: number;
+  avatar_url: string;
+  status: 'pending' | 'approved' | 'rejected';
+  reject_reason: string | null;
+  reviewed_at: string | null;
+  approved_voice_id: string | null;
+  created_at: string;
+}
+
+export interface AdminVoiceSubmission extends VoiceSubmission {
+  user_id: string;
+  user_email: string | null;
+  user_name: string | null;
+  reviewed_by: string | null;
+}
+
+export interface NotificationItem {
+  id: string;
+  kind: string;
+  title: string;
+  body: string;
+  link: string | null;
+  image_url: string | null;
+  sender: string | null;
+  read: boolean;
+  created_at: string;
+}
+
+export interface NotificationListResponse {
+  notifications: NotificationItem[];
+  unread_count: number;
+  has_more: boolean;
+}
+
+export interface AdminSendNotificationBody {
+  title: string;
+  body: string;
+  link?: string | null;
+  image_url?: string | null;
+  audience: 'all' | 'user_ids' | 'premium';
+  user_ids?: string[];
+  kind?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Helpers + types for the additions above
+// ---------------------------------------------------------------------------
+
+/** Internal: JSON POST with bearer auth. Inlined here rather than in the
+ *  ``dashboardApi`` object because TypeScript would otherwise need an
+ *  explicit ``this`` type, simpler to use a free function. */
+function _postJson<T>(path: string, body: unknown, token: string | null): Promise<T> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  return fetchJson(path, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+  });
+}
+
+export interface KnowledgeSource {
+  source_id: string;
+  source_title: string;
+  chunks: number;
+  ingested_at: string;
+}
+
+export interface KnowledgeIngestResponse {
+  status: 'completed' | 'pending';
+  source_id: string;
+  job_id?: string;           // pending only
+  chunk_count?: number;      // completed only
+  tokens_indexed?: number;   // completed only
+}
+
+export interface KnowledgeJob {
+  job_id: string;
+  source_id: string;
+  agent_id: string;
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  phase: string | null;
+  chunks_so_far: number;
+  started_at: string | null;
+  finished_at: string | null;
+  error: string | null;
+}
+
+export interface EmbedTokenRow {
+  id: string;
+  token_prefix: string;       // 'vet_ab' style preview, never the plaintext
+  label: string;
+  allowed_origins: string[];
+  rate_limit_per_ip_per_hour: number;
+  max_session_minutes: number;
+  last_used_at: string | null;
+  revoked_at: string | null;
+  created_at: string;
+}
 
 export interface StudioTopModel {
   miner_hotkey: string;
@@ -1180,7 +1753,7 @@ export interface StudioMusicHistoryItem {
 
 export interface StudioHistoryItem {
   id: number;
-  entry_type: 'tts' | 'stt' | 'clone' | 'voice_design' | 'music';
+  entry_type: 'tts' | 'stt' | 'clone' | 'voice_design' | 'music' | 'noise_remover' | 'dubbing';
   miner_hotkey: string;
   model_name: string;
   display_name: string;
@@ -1197,6 +1770,15 @@ export interface StudioHistoryItem {
   reference_text?: string | null;
   target_text?: string | null;
   clone_source?: string | null;
+  // Music-only metadata. ``music_task`` is the generation type
+  // ('text2music' | 'audio2audio' | 'retake' | 'repaint' | 'edit' |
+  // 'extend'); ``music_metadata_json`` is a JSON string of the
+  // task-specific params (variance, repaint window, edit target, etc.).
+  // The history UI parses it lazily to render mode-specific rows and
+  // copy-buttons. Always null for non-music entries.
+  lyrics?: string | null;
+  music_task?: string | null;
+  music_metadata_json?: string | null;
 }
 
 export interface StudioVoiceDesignConfig {
@@ -1242,6 +1824,22 @@ export interface StudioDesignedVoiceItem {
   expires_at: string;
   created_at: string;
   expired: boolean;
+  // ``source`` tells the UI whether this row came from Voice Design's
+  // LLM-driven preview flow ("designed") or from the user uploading a
+  // real-voice reference clip and saving it ("cloned"). Defaults to
+  // 'designed' for rows that pre-date the column.
+  source?: 'designed' | 'cloned';
+  source_language?: string | null;
+}
+
+export interface StudioClonedVoiceSaveResponse {
+  voice_id: number;
+  display_name: string;
+  ref_script: string;
+  source_language: string | null;
+  audio_url: string | null;
+  expires_at: string;
+  credits: number;
 }
 
 // ----- Playbooks -----
@@ -1266,6 +1864,13 @@ export interface Playbook {
   visibility: string;
   track_count: number;
   total_duration: number;
+  // Public-playbook play counter. Always 0 for private playbooks.
+  play_count: number;
+  // Thumb-up vote count (public on all playbooks). ``viewer_voted`` is
+  // true only when the request was authenticated and the signed-in user
+  // has thumbed this playbook.
+  vote_count: number;
+  viewer_voted: boolean;
   created_at: string;
   updated_at: string;
 }

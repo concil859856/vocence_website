@@ -10,7 +10,6 @@ from local_db import get_connection
 from studio_tts_service import get_presigned_url, synthesize_speak, upload_wav_to_hippius
 
 from .. import state
-from ..registry import TTS_POOL
 from ..timeouts import PHASE_TIMEOUT_TTS
 
 
@@ -32,8 +31,6 @@ def _humanize_miner_error(err: str) -> str:
 
 
 async def process_tts(job: state.Job) -> dict:
-    if not TTS_POOL.configured():
-        raise RuntimeError("TTS pool is not configured")
     payload = job.payload
     text = (payload.get("text") or "").strip()
     if not text:
@@ -46,19 +43,16 @@ async def process_tts(job: state.Job) -> dict:
     await state.update_status(job.id, phase="generating speech")
     started = time.perf_counter()
 
-    async with TTS_POOL.acquire() as pod:
-        await state.update_status(job.id, pod_url=pod)
-        try:
-            wav_bytes, err = await asyncio.wait_for(
-                synthesize_speak(chute_slug, text, instruction, base_url=pod),
-                timeout=PHASE_TIMEOUT_TTS,
-            )
-        except asyncio.TimeoutError:
-            TTS_POOL.quarantine(pod)
-            raise
+    # Let synthesize_speak handle pod selection internally — it has its
+    # own ops dispatcher for voice_design pods that uses the correct
+    # per-pod API key. Wrapping it with _pick_tts_pod() would override
+    # that and send the wrong auth key (VOICE_DESIGN_API_KEY from .env
+    # instead of the pod's auto-generated key).
+    wav_bytes, err = await asyncio.wait_for(
+        synthesize_speak(chute_slug, text, instruction),
+        timeout=PHASE_TIMEOUT_TTS,
+    )
     if not wav_bytes:
-        if err and ("returned 5" in err or "timed out" in err.lower()):
-            TTS_POOL.quarantine(pod)
         raise RuntimeError(_humanize_miner_error(err) or "TTS synthesis failed")
     latency_ms = int((time.perf_counter() - started) * 1000)
 

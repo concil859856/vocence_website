@@ -1,16 +1,19 @@
 import { useState, useEffect } from 'react';
-import { Link, useLocation } from 'react-router-dom';
+import { Link, useLocation, useSearchParams } from 'react-router-dom';
 import { Menu, X } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { AuthModal } from './AuthModal';
 import { UserMenu } from './UserMenu';
+import { NotificationBell } from './NotificationBell';
 import { ADMIN_EMAIL } from '../config';
 
 export function Navbar() {
   const location = useLocation();
+  const [searchParams] = useSearchParams();
   const [isScrolled, setIsScrolled] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
   const { user, isAuthenticated } = useAuth();
   const isAdmin = isAuthenticated && !!ADMIN_EMAIL && user?.email === ADMIN_EMAIL;
 
@@ -22,23 +25,39 @@ export function Navbar() {
     return () => window.removeEventListener('scroll', handleScroll);
   }, []);
 
+  // Auto-open the auth modal from URL intent — but never for an already
+  // signed-in user. A referral link (?ref=) means the visitor wants to join,
+  // so default to signup; ?login=1 (CLI-authorize / password-reset redirects)
+  // opens login. The referral code itself is captured separately in App.tsx.
+  useEffect(() => {
+    if (isAuthenticated) return;
+    if (searchParams.get('ref')) {
+      setAuthMode('signup');
+      setIsAuthModalOpen(true);
+    } else if (searchParams.get('login') === '1') {
+      setAuthMode('login');
+      setIsAuthModalOpen(true);
+    }
+  }, [searchParams, isAuthenticated]);
+
   const navLinks = [
     { path: '/', label: 'Overview' },
     { path: '/dashboard', label: 'Dashboard' },
     { path: '/studio/home', label: 'Studio' },
     { path: '/docs/getting-started', label: 'Docs' },
     { path: '/blog', label: 'Blog' },
+    // Admin link only. The 'Web usage' button used to live here too but
+    // was redundant: once you're on /admin the AdminGate top bar has
+    // its own Website usage link, and exposing it on the public site
+    // navbar leaks the URL to every admin's screen-share / browser
+    // history. Reach it via /admin → top bar.
     ...(isAdmin
-      ? [
-          { path: '/admin', label: 'Admin' },
-          { path: '/admin/website_usage', label: 'Web usage' },
-        ]
+      ? [{ path: '/admin', label: 'Admin' }]
       : []),
   ];
 
   const isActive = (path: string) => {
     if (path === '/admin') return location.pathname === '/admin';
-    if (path === '/admin/website_usage') return location.pathname.startsWith('/admin/website_usage');
     return location.pathname === path;
   };
 
@@ -79,9 +98,12 @@ export function Navbar() {
           </div>
 
           {/* Auth Button / User Menu */}
-          <div className="hidden md:block">
+          <div className="hidden md:flex items-center gap-1">
             {isAuthenticated ? (
-              <UserMenu />
+              <>
+                <NotificationBell />
+                <UserMenu />
+              </>
             ) : (
               <button
                 onClick={() => setIsAuthModalOpen(true)}
@@ -139,6 +161,7 @@ export function Navbar() {
       <AuthModal
         isOpen={isAuthModalOpen}
         onClose={() => setIsAuthModalOpen(false)}
+        initialMode={authMode}
       />
     </nav>
   );

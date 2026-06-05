@@ -60,6 +60,15 @@ async def _process_one(task_type: str, job_id: str, handler):
             timeout=JOB_BUDGET.get(task_type, 600),
         )
         await state.update_status(job_id, status="completed", phase=None, result=result)
+
+        # Referral activation: first successful generation activates the
+        # user's referral, granting credits to their referrer.
+        try:
+            from referral_service import try_activate_referral
+            await try_activate_referral(job.user_id)
+        except Exception:
+            pass  # non-critical — don't fail the job
+
     except asyncio.TimeoutError:
         await state.update_status(
             job_id,

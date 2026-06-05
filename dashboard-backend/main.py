@@ -28,20 +28,31 @@ from database import (
     acquire,
     close_pool,
     health_check,
+    ensure_core_tables,
     ensure_evaluations_audio_columns,
     ensure_graph_activity_leases_table,
     ensure_global_scoring_snapshots_table,
     ensure_live_evaluation_pending_table,
 )
 from local_db import ensure_tables as ensure_local_tables, migrate_legacy_website_data
+from assistant_knowledge_indexer import index_assistant_knowledge_at_startup
 from routers import auth, dashboard, studio
 from routers.playbooks import router as playbooks_router
 from routers.jobs import router as jobs_router
+from routers.voicechat import router as voicechat_router
+from routers.agents import router as agents_router
+from routers.agent_custom_tools import router as agent_custom_tools_router
+from routers.share import router as share_router
+from routers.cli_auth import router as cli_auth_router
+from routers.uploads import router as uploads_router
 from jobs import start_workers, stop_workers
 
 
 UPLOADS_DIR = Path(__file__).resolve().parent / "uploads"
 UPLOADS_DIR.mkdir(exist_ok=True)
+
+SAMPLE_VOICES_STATIC_DIR = Path(__file__).resolve().parent / "static" / "sample_voices"
+SAMPLE_VOICES_STATIC_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _cors_allow_origins() -> list[str]:
@@ -52,14 +63,11 @@ def _cors_allow_origins() -> list[str]:
     """
     raw = (os.environ.get("CORS_ORIGIN") or "").strip()
     if not raw:
-        return [
-            "https://vocence.ai",
-            "https://www.vocence.ai",
-            "http://localhost:5173",
-            "http://127.0.0.1:5173",
-            "http://localhost:3000",
-            "http://127.0.0.1:3000",
-        ]
+        origins = ["https://vocence.ai", "https://www.vocence.ai"]
+        if os.environ.get("ENV", "").lower() in ("dev", "development", "local"):
+            origins += ["http://localhost:5173", "http://127.0.0.1:5173",
+                        "http://localhost:3000", "http://127.0.0.1:3000"]
+        return origins
     origins = [o.strip() for o in raw.split(",") if o.strip()]
     # Avoid "Failed to fetch" when the app is opened as localhost vs 127.0.0.1
     expanded: list[str] = []
@@ -83,6 +91,7 @@ def _cors_allow_origins() -> list[str]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    await ensure_core_tables()
     await ensure_evaluations_audio_columns()
     await ensure_graph_activity_leases_table()
     await ensure_global_scoring_snapshots_table()
@@ -90,9 +99,55 @@ async def lifespan(app: FastAPI):
     await ensure_local_tables()
     async with acquire() as conn:
         await migrate_legacy_website_data(conn)
+    # Seed the Vocence Assistant's RAG store from vocence_assistant_knowledge/*.md.
+    # No-op when the content hash matches the last run.
+    try:
+        await index_assistant_knowledge_at_startup()
+    except Exception:
+        # Don't block boot on indexer failure — assistant will still answer
+        # using the static system prompt, just without retrieval depth.
+        import logging
+        logging.getLogger(__name__).exception("assistant knowledge indexing failed; continuing")
     await start_workers()
+
+    # Ops fleet manager: register the schema, then start the background
+    # pollers (health/metrics/update-detector/cleanup). Boot continues even
+    # if ops initialization fails — the rest of the dashboard should still
+    # serve, and the admin will see the failure in the /studio/ops tab.
+    import logging as _logging
+    try:
+        from ops.db import ensure_ops_tables
+        await ensure_ops_tables()
+        from ops.pollers import start_pollers
+        await start_pollers()
+    except Exception:
+        _logging.getLogger(__name__).exception("ops module failed to start; continuing without fleet management")
+
+    # Seed the LLM pricing table with placeholder rates so cost charts
+    # have *some* number on day one. Existing rows are not overwritten
+    # (INSERT OR IGNORE) — admins edit via the /ops/llm/pricing UI.
+    try:
+        from llm_logging import seed_default_pricing
+        await seed_default_pricing()
+    except Exception:
+        _logging.getLogger(__name__).exception("llm pricing seed failed; cost charts will show 0 until pricing is added")
+
     yield
+
+    try:
+        from ops.pollers import stop_pollers
+        await stop_pollers()
+    except Exception:
+        _logging.getLogger(__name__).exception("ops.stop_pollers failed (non-fatal)")
     await stop_workers()
+    # Clean up the agent-tools shared HTTP session so the keep-alive
+    # connector tears down gracefully (otherwise aiohttp logs an
+    # "Unclosed client session" warning at exit).
+    try:
+        import agent_tools_service
+        await agent_tools_service.close_shared_session()
+    except Exception:
+        pass
     await close_pool()
 
 
@@ -101,8 +156,38 @@ app = FastAPI(
     description="Read-only API for the Vocence website dashboard (owner DB)",
     version="1.0.0",
     lifespan=lifespan,
+    # This service is INTERNAL — backend.vocence.ai. The public API
+    # surface lives on the separate developer-api service (api.vocence.ai)
+    # which has its own clean OpenAPI spec. Disable the auto-generated
+    # docs here so subnet/admin/internal endpoints (validators, blocklist,
+    # evaluations, voicechat WS, etc.) don't leak via /docs or /redoc.
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
 register_exception_handlers(app)
+
+
+@app.middleware("http")
+async def _strip_internal_headers(request, call_next):
+    """Strip X-Internal-Service-Token and X-Internal-User-Id from external
+    requests. These headers are a service-to-service trust path — if the
+    reverse proxy doesn't strip them, an attacker who knows the shared
+    secret can impersonate any user. Only allow from loopback."""
+    client_ip = request.client.host if request.client else ""
+    if client_ip not in ("127.0.0.1", "::1", "localhost"):
+        # MutableHeaders so we can delete in-place before the request
+        # reaches any route handler.
+        scope_headers = request.scope.get("headers", [])
+        request.scope["headers"] = [
+            (k, v) for k, v in scope_headers
+            if k.lower() not in (b"x-internal-service-token", b"x-internal-user-id")
+        ]
+    return await call_next(request)
+
+
+from starlette.middleware.gzip import GZipMiddleware
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 app.add_middleware(
     CORSMiddleware,
@@ -113,6 +198,11 @@ app.add_middleware(
         "Content-Type",
         "Accept",
         "Authorization",
+        # Admin sudo-mode token (see routers/admin_auth.py). Missing here
+        # silently breaks every /api/dashboard/ops/* + admin call from a
+        # browser, because the CORS preflight rejects the custom header
+        # before the actual request even hits the server.
+        "X-Admin-Token",
     ],
 )
 
@@ -134,7 +224,92 @@ app.include_router(dashboard.router)
 app.include_router(studio.router, prefix="/api/dashboard")
 app.include_router(playbooks_router, prefix="/api/dashboard")
 app.include_router(jobs_router, prefix="/api/dashboard")
+app.include_router(uploads_router, prefix="/api/dashboard")
+app.include_router(voicechat_router, prefix="/api/dashboard")
+app.include_router(agents_router, prefix="/api/dashboard")
+# Custom (user-defined) voice-agent tools — webhook executors the LLM
+# can call mid-conversation. Lives under /api/dashboard/agents/tools/
+# alongside the built-in /agents/tools/builtin endpoint.
+app.include_router(agent_custom_tools_router, prefix="/api/dashboard")
+# External-knowledge ingestion proxy — Studio UI uploads PDF/URL/sitemap
+# sources for an agent; we forward to the vocence/knowledge-ingestion
+# pod and the dashboard handles auth (owner-only) + per-agent IDOR.
+from routers.agent_knowledge import router as agent_knowledge_router  # noqa: E402
+app.include_router(agent_knowledge_router, prefix="/api/dashboard")
+# Embed-token issuance — agent owners mint long-lived tokens from
+# Studio to allow anonymous visitors on their own websites to use the
+# embeddable voice-agent widget.
+from routers.embed_tokens import router as embed_tokens_router  # noqa: E402
+app.include_router(embed_tokens_router, prefix="/api/dashboard")
+# Public agent metadata — the widget reads agent name + status on
+# mount without an authenticated user. Gated by "at least one
+# non-revoked embed token exists for this agent" so agent ids can't
+# be discovered by guessing.
+from routers.public_agents import router as public_agents_router  # noqa: E402
+app.include_router(public_agents_router, prefix="/api/dashboard")
+# Voice likes — Community Voices page heart counter + popularity sort.
+# Two routers: public counts (anonymous) + authed toggle/mine.
+from routers.voice_likes import (  # noqa: E402
+    public_router as voice_likes_public_router,
+    authed_router as voice_likes_authed_router,
+)
+app.include_router(voice_likes_public_router, prefix="/api/dashboard")
+app.include_router(voice_likes_authed_router, prefix="/api/dashboard")
+# Voice submissions — user-contributed voices reviewed by admin before
+# publication. Two routers: user-facing (submit + mine) + admin-facing
+# (list + approve/reject).
+from routers.voice_submissions import (  # noqa: E402
+    router as voice_submissions_router,
+    admin_router as voice_submissions_admin_router,
+    public_router as voice_submissions_public_router,
+)
+app.include_router(voice_submissions_router, prefix="/api/dashboard")
+app.include_router(voice_submissions_admin_router, prefix="/api/dashboard")
+app.include_router(voice_submissions_public_router, prefix="/api/dashboard")
+# Notifications — in-product bell + admin composer.
+from routers.notifications import (  # noqa: E402
+    router as notifications_router,
+    admin_router as notifications_admin_router,
+)
+app.include_router(notifications_router, prefix="/api/dashboard")
+app.include_router(notifications_admin_router, prefix="/api/dashboard")
+# Admin sudo-mode auth (separate password on top of Google OAuth for
+# /studio/ops + other admin surfaces). Routes live at /api/dashboard/auth/admin/*.
+from routers.admin_auth import router as admin_auth_router  # noqa: E402
+app.include_router(admin_auth_router, prefix="/api/dashboard")
+
+# Ops fleet manager — admin-only. Surfaces /studio/ops UI endpoints
+# (servers + pods CRUD, deploy/stop/restart, analytics queries).
+from routers.ops import router as ops_router  # noqa: E402 — keep ops import lazy so a missing dep doesn't crash boot
+app.include_router(ops_router, prefix="/api/dashboard")
+# Admin LLM analytics (cost, failures, fallbacks, pricing CRUD).
+# Mounted under /api/dashboard/ops/llm/* alongside the other ops admin
+# pages so the same admin-unlock token gates it.
+from routers.admin_llm import router as admin_llm_router  # noqa: E402
+app.include_router(admin_llm_router, prefix="/api/dashboard")
+# Generation feedback — user-facing thumbs (POST /feedback) + admin
+# quality dashboard aggregates (/feedback/admin/*).
+from routers.feedback import router as feedback_router  # noqa: E402
+app.include_router(feedback_router, prefix="/api/dashboard")
+
+# Standalone low-latency TTS + STT WebSocket endpoints — the same
+# streaming primitives the voice-agent pipeline uses, exposed as
+# their own routes for the public developer API + SDK.
+from routers.streaming import router as streaming_router  # noqa: E402
+app.include_router(streaming_router, prefix="/api/dashboard")
+# Public share/embed pages mount at the ROOT (no /api prefix) so the
+# URLs the user actually pastes into tweets/Discord are short and the
+# meta-bot crawlers (which generally only fetch the literal URL) hit
+# the OG-tagged HTML directly. Vercel rewrites + Vite dev proxies on
+# the frontend ensure /p/:id and /embed/p/:id reach this backend.
+app.include_router(share_router)
+app.include_router(cli_auth_router)
 app.mount("/api/dashboard/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
+app.mount(
+    "/api/dashboard/sample-voices",
+    StaticFiles(directory=str(SAMPLE_VOICES_STATIC_DIR)),
+    name="sample-voices",
+)
 
 
 @app.get("/health")

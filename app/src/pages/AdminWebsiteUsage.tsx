@@ -236,7 +236,7 @@ export function AdminWebsiteUsage() {
   ];
 
   return (
-    <div className="min-h-screen bg-[#07080A] pt-24 pb-20 px-4 lg:px-8">
+    <div className="min-h-screen bg-[#07080A] pt-4 pb-20 px-4 lg:px-8">
       <div className="max-w-[1400px] mx-auto">
         <div className="flex flex-wrap items-center gap-3 mb-8">
           {filterUserId ? (
@@ -635,7 +635,7 @@ export function AdminWebsiteUsage() {
               </div>
               {filterUserId && (
                 <p className="text-xs text-[#A7B0B7]">
-                  Filtered to one user — tables below show only their rows.
+                  Filtered to one user, tables below show only their rows.
                 </p>
               )}
             </div>
@@ -643,7 +643,7 @@ export function AdminWebsiteUsage() {
             {listErr && <p className="text-sm text-red-400">{listErr}</p>}
             {loading && <p className="text-sm text-gray-500">Loading…</p>}
 
-            {/* Pagination — only the paginated tabs */}
+            {/* Pagination, only the paginated tabs */}
             {!loading && tab !== 'tts' && (
               <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-[#A7B0B7]">
                 <span>

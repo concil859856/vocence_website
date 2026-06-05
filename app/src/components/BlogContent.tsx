@@ -19,18 +19,47 @@ import { Fragment, type ReactNode } from 'react';
 interface Props {
   content: string;
   className?: string;
+  /** Typography scale. ``normal`` is the long-form blog default;
+   *  ``compact`` is ~0.7× smaller and is the right pick for tight
+   *  surfaces like the notification detail modal where there's
+   *  limited vertical space. */
+  size?: 'normal' | 'compact';
 }
 
-export function BlogContent({ content, className }: Props) {
+export function BlogContent({ content, className, size = 'normal' }: Props) {
   const blocks = parseBlocks(content || '');
   return (
     <div className={className ?? 'space-y-6 text-[#A7B0B7] leading-relaxed'}>
       {blocks.map((b, i) => (
-        <Fragment key={i}>{renderBlock(b, i)}</Fragment>
+        <Fragment key={i}>{renderBlock(b, i, size)}</Fragment>
       ))}
     </div>
   );
 }
+
+
+// Type-size lookup. Headings use Tailwind responsive scales so
+// long-form blog reads big on desktop without overwhelming mobile.
+// ``compact`` collapses to one size class, these slots already live
+// inside a small modal, so the responsive bump isn't useful there.
+const SIZE: Record<'normal' | 'compact', {
+  h1: string; h2: string; h3: string; p: string; li: string;
+}> = {
+  normal: {
+    h1: 'text-3xl md:text-4xl',
+    h2: 'text-2xl md:text-3xl',
+    h3: 'text-xl md:text-2xl',
+    p: 'text-lg leading-8',
+    li: 'text-lg leading-8',
+  },
+  compact: {
+    h1: 'text-lg',
+    h2: 'text-base',
+    h3: 'text-sm',
+    p: 'text-[13px] leading-6',
+    li: 'text-[13px] leading-6',
+  },
+};
 
 type Block =
   | { type: 'h'; level: 1 | 2 | 3; text: string }
@@ -41,8 +70,19 @@ type Block =
   | { type: 'ol'; items: string[] };
 
 function parseBlocks(raw: string): Block[] {
-  const chunks = raw
+  // Pre-normalise so headings + dividers ALWAYS sit on their own block.
+  // Without this a user typing "## Heading\n- list item" (no blank
+  // line between) gets the heading lumped into a paragraph because
+  // ``split(/\n{2,}/)`` won't separate them. We inject blank lines
+  // before/after each ``# / ## / ### `` line + each ``---`` divider,
+  // then rely on the existing chunker. The inserted blanks collapse
+  // away inside the chunk loop's ``.filter(Boolean)``.
+  const padded = raw
     .replace(/\r\n/g, '\n')
+    .replace(/(^|\n)(#{1,3} [^\n]*)/g, '$1\n\n$2\n\n')
+    .replace(/(^|\n)(---|\*\*\*)\s*(?=\n|$)/g, '$1\n\n$2\n\n');
+
+  const chunks = padded
     .split(/\n{2,}/)
     .map((s) => s.trim())
     .filter(Boolean);
@@ -61,7 +101,7 @@ function parseBlocks(raw: string): Block[] {
       if (line.startsWith('# ')) { out.push({ type: 'h', level: 1, text: line.slice(2) }); continue; }
     }
 
-    // Multi-line list — every line must match a bullet/numbered pattern
+    // Multi-line list, every line must match a bullet/numbered pattern
     const allBullet = lines.every((l) => /^(•|-|\*)\s+/.test(l));
     if (allBullet) {
       out.push({ type: 'ul', items: lines.map((l) => l.replace(/^(•|-|\*)\s+/, '')) });
@@ -73,30 +113,31 @@ function parseBlocks(raw: string): Block[] {
       continue;
     }
 
-    // Quote block — every non-empty line starts with `>`
+    // Quote block, every non-empty line starts with `>`
     if (lines.every((l) => l.startsWith('>'))) {
       const text = lines.map((l) => l.replace(/^>\s?/, '')).join(' ');
       out.push({ type: 'quote', text });
       continue;
     }
 
-    // Plain paragraph (joined with single spaces — soft-wraps in source allowed)
+    // Plain paragraph (joined with single spaces, soft-wraps in source allowed)
     out.push({ type: 'p', text: lines.join(' ') });
   }
   return out;
 }
 
-function renderBlock(b: Block, key: number): ReactNode {
+function renderBlock(b: Block, key: number, size: 'normal' | 'compact'): ReactNode {
+  const sz = SIZE[size];
   switch (b.type) {
     case 'h':
-      if (b.level === 1) return <h1 className="text-3xl md:text-4xl font-bold text-white tracking-tight mt-2">{renderInline(b.text, key)}</h1>;
-      if (b.level === 2) return <h2 className="text-2xl md:text-3xl font-semibold text-white tracking-tight mt-2">{renderInline(b.text, key)}</h2>;
-      return <h3 className="text-xl md:text-2xl font-semibold text-white tracking-tight mt-1">{renderInline(b.text, key)}</h3>;
+      if (b.level === 1) return <h1 className={`${sz.h1} font-bold text-white tracking-tight mt-2`}>{renderInline(b.text, key)}</h1>;
+      if (b.level === 2) return <h2 className={`${sz.h2} font-semibold text-white tracking-tight mt-2`}>{renderInline(b.text, key)}</h2>;
+      return <h3 className={`${sz.h3} font-semibold text-white tracking-tight mt-1`}>{renderInline(b.text, key)}</h3>;
     case 'p':
-      return <p className="text-lg leading-8">{renderInline(b.text, key)}</p>;
+      return <p className={sz.p}>{renderInline(b.text, key)}</p>;
     case 'quote':
       return (
-        <blockquote className="border-l-2 border-[#DFFF00] pl-4 italic text-[#C5CAD1]">
+        <blockquote className={`border-l-2 border-[#DFFF00] pl-4 italic text-[#C5CAD1] ${sz.p}`}>
           {renderInline(b.text, key)}
         </blockquote>
       );
@@ -104,22 +145,22 @@ function renderBlock(b: Block, key: number): ReactNode {
       return <hr className="border-white/10" />;
     case 'ul':
       return (
-        <ul className="space-y-2 pl-1">
+        <ul className="space-y-1.5 pl-1">
           {b.items.map((it, i) => (
             <li key={i} className="flex items-start gap-3">
               <span className="text-[#DFFF00] mt-2 leading-none">•</span>
-              <span className="flex-1 text-lg leading-8">{renderInline(it, i)}</span>
+              <span className={`flex-1 ${sz.li}`}>{renderInline(it, i)}</span>
             </li>
           ))}
         </ul>
       );
     case 'ol':
       return (
-        <ol className="space-y-2 pl-1">
+        <ol className="space-y-1.5 pl-1">
           {b.items.map((it, i) => (
             <li key={i} className="flex items-start gap-3">
               <span className="text-[#DFFF00] font-mono shrink-0 mt-1">{i + 1}.</span>
-              <span className="flex-1 text-lg leading-8">{renderInline(it, i)}</span>
+              <span className={`flex-1 ${sz.li}`}>{renderInline(it, i)}</span>
             </li>
           ))}
         </ol>
@@ -129,7 +170,7 @@ function renderBlock(b: Block, key: number): ReactNode {
 
 /**
  * Tokenise inline markdown: **bold**, *italic*, `code`, [text](url).
- * Order matters — `code` first (to escape its content from other matches),
+ * Order matters, `code` first (to escape its content from other matches),
  * then `link`, then `bold`, then `italic`.
  */
 function renderInline(text: string, keyBase: number | string): ReactNode[] {

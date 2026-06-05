@@ -415,10 +415,6 @@ export function Overview() {
           <span className="text-xs text-[#A7B0B7]">Network Status: Healthy</span>
         </div>
 
-        {/* Scroll Hint */}
-        <div className="absolute bottom-8 right-6 lg:right-8 text-xs text-[#666]">
-          Scroll to explore
-        </div>
       </section>
 
       {/* What is Vocence Section */}
@@ -928,7 +924,7 @@ export function Overview() {
             </p>
           </div>
 
-          {/* Horizontal timeline: line with Q1 — Q2 — Q3 nodes */}
+          {/* Horizontal timeline: line with Q1, Q2, Q3 nodes */}
           <div className="flex items-center w-full mb-8">
             <div className="flex-1 h-0.5 bg-white/10 rounded-l" aria-hidden />
             {ROADMAP_QUARTERS.map((q, index) => (

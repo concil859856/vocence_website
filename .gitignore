@@ -133,3 +133,13 @@ developer-api/venv/
 *.temp
 .cache/
 
+
+# Sibling repos cloned into the workspace root for in-session
+# development. Each has its own canonical repo elsewhere; we never
+# want their working trees committed under vocence_website.
+/vocence-sdk
+vocence-sdk/
+/knowledge-ingestion
+knowledge-ingestion/
+/turn-detection
+turn-detection/

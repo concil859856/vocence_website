@@ -18,7 +18,8 @@ interface Props {
 }
 
 export function PlaybookCoverPicker({ playbookId, current, onClose, onSaved }: Props) {
-  const token = localStorage.getItem('vocence_token');
+  // Cookie-only auth: dashboardApi calls carry the session cookie
+  // (credentials:'include'); there's no localStorage JWT to gate on.
   const [tab, setTab] = useState<Tab>('gallery');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -55,11 +56,10 @@ export function PlaybookCoverPicker({ playbookId, current, onClose, onSaved }: P
   };
 
   const pickPreset = async (url: string) => {
-    if (!token) return;
     setSaving(true);
     setError(null);
     try {
-      await dashboardApi.updatePlaybook(playbookId, { cover_image_url: url }, token);
+      await dashboardApi.updatePlaybook(playbookId, { cover_image_url: url }, '');
       onSaved(url);
     } catch (e) {
       setError(humanizeApiError(e, 'Failed to update cover'));
@@ -69,12 +69,12 @@ export function PlaybookCoverPicker({ playbookId, current, onClose, onSaved }: P
   };
 
   const saveCrop = async () => {
-    if (!token || !srcUrl || !croppedArea) return;
+    if (!srcUrl || !croppedArea) return;
     setSaving(true);
     setError(null);
     try {
       const blob = await renderCroppedBlob(srcUrl, croppedArea);
-      const updated = await dashboardApi.uploadPlaybookCover(playbookId, blob, token);
+      const updated = await dashboardApi.uploadPlaybookCover(playbookId, blob, '');
       onSaved(updated.cover_image_url || '');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to upload cover');
@@ -148,7 +148,7 @@ export function PlaybookCoverPicker({ playbookId, current, onClose, onSaved }: P
                   <Upload size={32} className="text-[#A7B0B7]" />
                   <div className="text-center">
                     <p className="text-sm text-white">Click to upload</p>
-                    <p className="text-xs text-[#666] mt-1">PNG, JPEG, or WebP — max 2 MB</p>
+                    <p className="text-xs text-[#666] mt-1">PNG, JPEG, or WebP, max 2 MB</p>
                   </div>
                   <input
                     type="file"

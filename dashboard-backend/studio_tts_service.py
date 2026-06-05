@@ -48,6 +48,13 @@ CHUTES_BASE_URL = os.environ.get("CHUTES_BASE_URL", "https://api.chutes.ai")
 CHUTES_AUTH_KEY = os.environ.get("CHUTES_AUTH_KEY") or os.environ.get("CHUTES_API_KEY", "")
 # Miner endpoint: https://{slug}.chutes.ai/speak (slug from API response)
 CHUTE_TTS_PATH = "/speak"
+
+# Local voice-design server (replaces Chutes for the /speak endpoint).
+# When VOICE_DESIGN_BASE_URL is set, synthesize_speak routes here instead of
+# building a per-slug Chutes URL — keeps PromptTTS + VoiceDesign-preview
+# entirely on-prem. See /workspace/development/qwen3-voice-design/README.md.
+VOICE_DESIGN_BASE_URL = (os.environ.get("VOICE_DESIGN_BASE_URL") or "").strip()
+VOICE_DESIGN_API_KEY = (os.environ.get("VOICE_DESIGN_API_KEY") or "").strip()
 CHUTE_STT_PATH = "/transcribe"
 CHUTES_WHISPER_STT_URL = os.environ.get(
     "CHUTES_WHISPER_STT_URL",
@@ -96,8 +103,8 @@ VOICE_DESIGN_LLM_TEMPERATURE = float(os.environ.get("VOICE_DESIGN_LLM_TEMPERATUR
 # Retries when Chutes returns 429 / capacity (exponential backoff)
 VOICE_DESIGN_LLM_RETRY_MAX = int(os.environ.get("VOICE_DESIGN_LLM_RETRY_MAX", "5"))
 VOICE_DESIGN_LLM_RETRY_BASE_SEC = float(os.environ.get("VOICE_DESIGN_LLM_RETRY_BASE_SEC", "3"))
-VOICE_DESIGN_SAMPLE_WORDS_MIN = int(os.environ.get("VOICE_DESIGN_SAMPLE_WORDS_MIN", "6"))
-VOICE_DESIGN_SAMPLE_WORDS_MAX = int(os.environ.get("VOICE_DESIGN_SAMPLE_WORDS_MAX", "7"))
+VOICE_DESIGN_SAMPLE_WORDS_MIN = int(os.environ.get("VOICE_DESIGN_SAMPLE_WORDS_MIN", "18"))
+VOICE_DESIGN_SAMPLE_WORDS_MAX = int(os.environ.get("VOICE_DESIGN_SAMPLE_WORDS_MAX", "22"))
 VOICE_DESIGN_PREVIEW_EXPIRY_HOURS = int(os.environ.get("VOICE_DESIGN_PREVIEW_EXPIRY_HOURS", "24"))
 
 
@@ -176,13 +183,56 @@ async def fetch_chute_slug(chute_id: str) -> str | None:
 
 
 async def synthesize_speak(chute_slug: str, text: str, instruction: str, *, base_url: str | None = None) -> tuple[bytes | None, str]:
-    """POST to https://{slug}.chutes.ai/speak (or `base_url` override) with JSON { text, instruction }.
+    """POST to the voice-design /speak endpoint with JSON {text, instruction}.
+
+    URL precedence:
+      1. explicit ``base_url`` argument (test/override path)
+      2. ops dispatcher: least-loaded online ``voice_design`` pod from gpu_pool
+      3. ``VOICE_DESIGN_BASE_URL`` env (single local server)
+      4. ``https://{chute_slug}.chutes.ai/speak`` (legacy Chutes path)
+
+    Auth: ops-pod's own api_key for the dispatcher path, else
+    VOICE_DESIGN_API_KEY for local server, else CHUTES_AUTH_KEY.
+
     Returns (wav_bytes, error_message). On success: (bytes, ""). On failure: (None, "reason")."""
-    url = (base_url or _chute_speak_url(chute_slug)).strip()
+    # Try the dispatcher first when ops pods are registered for this service.
+    pod_cm = None
+    pod_url: str | None = None
+    pod_key: str | None = None
+    if base_url is None:
+        try:
+            from ops import pool as gpu_pool  # optional dep
+            if gpu_pool.online_pod_count("voice_design") > 0:
+                pod_cm = gpu_pool.pick_pod("voice_design")
+                pod = await pod_cm.__aenter__()
+                pod_url = pod.url + "/speak"
+                pod_key = pod.api_key or None
+        except Exception as e:
+            try:
+                from ops.pool import NoCapacity
+                if isinstance(e, NoCapacity):
+                    return None, "voice_design fleet busy (all pods at capacity)"
+            except ImportError:
+                pass
+            pod_cm = None
+
+    if pod_url is not None:
+        url = pod_url
+        auth_key = pod_key or VOICE_DESIGN_API_KEY or CHUTES_AUTH_KEY
+    elif base_url:
+        url = base_url.strip()
+        auth_key = VOICE_DESIGN_API_KEY or CHUTES_AUTH_KEY
+    elif VOICE_DESIGN_BASE_URL:
+        url = VOICE_DESIGN_BASE_URL
+        auth_key = VOICE_DESIGN_API_KEY
+    else:
+        url = _chute_speak_url(chute_slug).strip()
+        auth_key = CHUTES_AUTH_KEY
+
     payload = {"text": text or "Hello.", "instruction": instruction or "neutral voice"}
     headers = {"Content-Type": "application/json"}
-    if CHUTES_AUTH_KEY:
-        headers["Authorization"] = f"Bearer {CHUTES_AUTH_KEY}"
+    if auth_key:
+        headers["Authorization"] = f"Bearer {auth_key}"
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(
@@ -202,6 +252,13 @@ async def synthesize_speak(chute_slug: str, text: str, instruction: str, *, base
         return None, "miner request timed out"
     except Exception as e:
         return None, str(e)
+    finally:
+        # Release the dispatcher slot. Safe to call when pod_cm is None.
+        if pod_cm is not None:
+            try:
+                await pod_cm.__aexit__(None, None, None)
+            except Exception:
+                pass
 
 
 async def transcribe_audio(
@@ -217,25 +274,93 @@ async def transcribe_audio(
     keys so the same code works against either provider. `language` is optional.
     Returns ({text, ...}, "") on success, else (None, "reason").
     """
-    url = (base_url or STUDIO_STT_URL or "").strip()
+    # Try the ops dispatcher first when ops pods are registered.
+    # Preference order:
+    #   1. asr_streaming_rt — the new Parakeet pod, which hosts BOTH
+    #      WS /v1/stream and a batch POST /v1/transcribe. This is the
+    #      primary target once a pod is online.
+    #   2. stt — the legacy batch-only image, kept as fallback so
+    #      operators mid-migration don't lose batch capacity.
+    pod_cm = None
+    ops_url: str | None = None
+    ops_key: str | None = None
+    # Variant flag controls auth header + endpoint path. The new pod
+    # uses X-API-Key and the versioned /v1/transcribe path; the legacy
+    # one uses Bearer and /transcribe.
+    pod_variant: str = "legacy"
+    if base_url is None:
+        try:
+            from ops import pool as gpu_pool
+            target = None
+            if gpu_pool.online_pod_count("asr_streaming_rt") > 0:
+                target = ("asr_streaming_rt", "/v1/transcribe", "modern")
+            elif gpu_pool.online_pod_count("stt") > 0:
+                target = ("stt", "/transcribe", "legacy")
+            if target is not None:
+                svc_name, path, variant = target
+                pod_cm = gpu_pool.pick_pod(svc_name)
+                pod = await pod_cm.__aenter__()
+                ops_url = pod.url + path
+                ops_key = pod.api_key or None
+                pod_variant = variant
+        except Exception as e:
+            try:
+                from ops.pool import NoCapacity
+                if isinstance(e, NoCapacity):
+                    return None, "stt fleet busy (all pods at capacity)"
+            except ImportError:
+                pass
+            pod_cm = None
+
+    url = ops_url or (base_url or STUDIO_STT_URL or "").strip()
     if not url:
-        return None, "STT not configured"
-    b64 = base64.b64encode(audio_bytes).decode("utf-8")
-    payload: dict[str, str] = {
-        "audio_b64": b64,
-        "audio_base64": b64,
-    }
-    if language:
-        payload["language"] = language
-    headers = {"Content-Type": "application/json"}
-    if CHUTES_AUTH_KEY:
-        headers["Authorization"] = f"Bearer {CHUTES_AUTH_KEY}"
+        return None, "STT not configured (no ops pods online, STUDIO_STT_URL not set)"
+
+    headers: dict[str, str] = {}
+    auth_key = ops_key or CHUTES_AUTH_KEY
+    if auth_key:
+        if pod_variant == "modern":
+            headers["X-API-Key"] = auth_key
+        else:
+            headers["Authorization"] = f"Bearer {auth_key}"
+
+    # Two on-the-wire shapes:
+    #
+    # * Modern pod (asr_streaming_rt /v1/transcribe) — multipart form with
+    #   ``audio`` file part. This matches the conventional batch-STT API
+    #   shape (Whisper / OpenAI / etc.) and is what the new pod's
+    #   FastAPI route declares.
+    # * Legacy pod (stt /transcribe) + Chutes URL — JSON with both
+    #   ``audio_b64`` and ``audio_base64`` for cross-provider compat.
+    json_payload: dict | None = None
+    form_data: aiohttp.FormData | None = None
+    if pod_variant == "modern":
+        form_data = aiohttp.FormData()
+        form_data.add_field(
+            "audio",
+            audio_bytes,
+            filename="audio.wav",
+            content_type="audio/wav",
+        )
+        if language:
+            form_data.add_field("language", language)
+    else:
+        b64 = base64.b64encode(audio_bytes).decode("utf-8")
+        json_payload = {
+            "audio_b64": b64,
+            "audio_base64": b64,
+        }
+        if language:
+            json_payload["language"] = language
+        headers["Content-Type"] = "application/json"
+
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 url,
                 headers=headers,
-                json=payload,
+                json=json_payload,
+                data=form_data,
                 timeout=aiohttp.ClientTimeout(total=180),
             ) as resp:
                 body = await resp.read()
@@ -258,6 +383,281 @@ async def transcribe_audio(
         return None, "transcription request timed out"
     except Exception as e:
         return None, str(e)
+    finally:
+        if pod_cm is not None:
+            try:
+                await pod_cm.__aexit__(None, None, None)
+            except Exception:
+                pass
+
+
+async def transcribe_audio_streaming(
+    *,
+    audio_bytes: bytes,
+    language: str | None = None,
+    on_partial=None,
+):
+    """Stream a WAV blob to ``asr_streaming_rt``'s WS /v1/stream endpoint
+    and surface partial transcripts as they arrive.
+
+    Designed for the voicechat flow: the client uploads a single VAD-
+    segmented WAV (same protocol as batch), and we replay it into the
+    streaming pod so partials can flow back to the user's UI while the
+    pod is still processing. Returns ``(data, "")`` on success — same
+    shape as ``transcribe_audio`` (``{text, language?, ...}``) — or
+    ``(None, "reason")`` on failure (caller can then fall back to batch).
+
+    ``on_partial`` is awaited once per ``partial`` event with the running
+    text. Returning falsy from it does not cancel the stream.
+    """
+    # Lazy import — wave is stdlib, audioop is stdlib (deprecation noise
+    # in 3.13 is fine; we'll switch to a pure-python resampler if needed).
+    import io
+    import wave
+    try:
+        import audioop  # type: ignore
+    except Exception:
+        audioop = None  # we'll only need it when sample rate ≠ 16000
+
+    # Pick a streaming pod. If none online we tell the caller to fall
+    # back rather than guessing a URL.
+    try:
+        from ops import pool as gpu_pool
+        if gpu_pool.online_pod_count("asr_streaming_rt") <= 0:
+            return None, "no streaming pod online"
+        pod_cm = gpu_pool.pick_pod("asr_streaming_rt")
+    except Exception as e:
+        try:
+            from ops.pool import NoCapacity
+            if isinstance(e, NoCapacity):
+                return None, "asr fleet busy"
+        except ImportError:
+            pass
+        return None, f"streaming pod unavailable: {e}"
+
+    pod = await pod_cm.__aenter__()
+    try:
+        # Parse WAV → mono pcm_s16le @ 16 kHz.
+        try:
+            with wave.open(io.BytesIO(audio_bytes), "rb") as wf:
+                src_rate = wf.getframerate()
+                src_channels = wf.getnchannels()
+                src_sampwidth = wf.getsampwidth()
+                src_pcm = wf.readframes(wf.getnframes())
+        except wave.Error as e:
+            return None, f"non-WAV input not supported for streaming: {e}"
+
+        if src_sampwidth != 2:
+            return None, f"unsupported sample width: {src_sampwidth} bytes"
+        pcm = src_pcm
+        if src_channels == 2 and audioop is not None:
+            pcm = audioop.tomono(pcm, 2, 0.5, 0.5)
+        elif src_channels != 1:
+            return None, f"unsupported channel count: {src_channels}"
+        if src_rate != 16000:
+            if audioop is None:
+                return None, f"need 16 kHz audio, got {src_rate} (no resampler)"
+            pcm, _ = audioop.ratecv(pcm, 2, 1, src_rate, 16000, None)
+
+        # Build WS URL. pod.url is something like http://host:8117 → ws.
+        base = pod.url.rstrip("/")
+        if base.startswith("https://"):
+            ws_url = "wss://" + base[len("https://"):] + "/v1/stream"
+        else:
+            ws_url = "ws://" + base[len("http://"):] + "/v1/stream"
+
+        headers = {}
+        if pod.api_key:
+            headers["X-API-Key"] = pod.api_key
+
+        final_text: str = ""
+        final_lang: str | None = None
+
+        async with aiohttp.ClientSession(headers=headers) as session:
+            try:
+                ws = await session.ws_connect(
+                    ws_url,
+                    timeout=aiohttp.ClientWSTimeout(ws_close=15),
+                    max_msg_size=2 * 1024 * 1024,
+                )
+            except Exception as e:
+                return None, f"ws connect failed: {e}"
+
+            try:
+                # 1. start
+                await ws.send_json({
+                    "type": "start",
+                    "language": (language or "auto"),
+                    "sample_rate": 16000,
+                    "encoding": "pcm_s16le",
+                    "enable_partials": True,
+                })
+
+                # 2. wait for ready (one text frame)
+                ready_msg = await asyncio.wait_for(ws.receive(), timeout=10.0)
+                if ready_msg.type != aiohttp.WSMsgType.TEXT:
+                    return None, f"expected ready, got {ready_msg.type.name}"
+                ready_data = json.loads(ready_msg.data)
+                if ready_data.get("type") != "ready":
+                    return None, f"unexpected first message: {ready_data}"
+
+                # 3. send audio in 20 ms (640-byte) frames + commit + close
+                async def send_audio():
+                    CHUNK = 640  # 20 ms @ 16 kHz mono s16le
+                    REAL_TIME_MS = 20
+                    # The pod may close the WS the moment it commits a
+                    # final transcript — which can happen before we've
+                    # finished pushing the tail of the audio (the model
+                    # is faster than real-time at the end of a clip).
+                    # That's not an error; just stop quietly.
+                    try:
+                        for i in range(0, len(pcm), CHUNK):
+                            if ws.closed:
+                                return
+                            await ws.send_bytes(pcm[i:i + CHUNK])
+                            # Pace gently so the server doesn't drop us
+                            # with "client too fast" — also lets partials
+                            # interleave.
+                            await asyncio.sleep(REAL_TIME_MS / 1000.0 * 0.5)
+                        if not ws.closed:
+                            await ws.send_json({"type": "commit"})
+                        if not ws.closed:
+                            await ws.send_json({"type": "close"})
+                    except (
+                        aiohttp.ClientConnectionResetError,
+                        ConnectionResetError,
+                        aiohttp.ClientConnectionError,
+                    ):
+                        # Recv side already saw the close — recv_loop
+                        # will return cleanly and the wait() below
+                        # picks up the final.
+                        return
+
+                async def recv_loop():
+                    nonlocal final_text, final_lang
+                    while True:
+                        try:
+                            msg = await asyncio.wait_for(ws.receive(), timeout=30.0)
+                        except asyncio.TimeoutError:
+                            return "recv timeout"
+                        if msg.type == aiohttp.WSMsgType.CLOSED:
+                            return ""
+                        if msg.type == aiohttp.WSMsgType.CLOSE:
+                            return ""
+                        if msg.type == aiohttp.WSMsgType.ERROR:
+                            return f"ws error: {ws.exception()}"
+                        if msg.type != aiohttp.WSMsgType.TEXT:
+                            continue
+                        try:
+                            data = json.loads(msg.data)
+                        except Exception:
+                            continue
+                        mtype = data.get("type")
+                        if mtype == "partial":
+                            text = (data.get("text") or "").strip()
+                            if text and on_partial is not None:
+                                try:
+                                    await on_partial(text)
+                                except Exception:
+                                    # Caller-side errors must not poison
+                                    # the upstream stream.
+                                    pass
+                        elif mtype == "final":
+                            # New utterance final replaces previous.
+                            final_text = (data.get("text") or "").strip()
+                            final_lang = data.get("language_detected") or final_lang
+                        elif mtype == "error":
+                            return f"pod error: {data.get('message') or data.get('code')}"
+
+                send_task = asyncio.create_task(send_audio())
+                recv_task = asyncio.create_task(recv_loop())
+                done, pending = await asyncio.wait(
+                    {send_task, recv_task},
+                    return_when=asyncio.FIRST_EXCEPTION,
+                )
+                # Make sure both finish — if send died, recv will see
+                # the close; if recv died, send may still be mid-loop.
+                for t in pending:
+                    try:
+                        await asyncio.wait_for(t, timeout=10.0)
+                    except Exception:
+                        t.cancel()
+
+                err = ""
+                for t in done:
+                    res = t.result() if not t.cancelled() else None
+                    if isinstance(res, str) and res:
+                        err = err or res
+
+                if not final_text:
+                    return None, err or "no final transcript"
+
+                return {
+                    "text": final_text,
+                    "language": final_lang or language,
+                }, ""
+            finally:
+                try:
+                    await ws.close()
+                except Exception:
+                    pass
+    finally:
+        try:
+            await pod_cm.__aexit__(None, None, None)
+        except Exception:
+            pass
+
+
+_COMMUNITY_VOICE_CACHE: dict[str, tuple[bytes, str]] = {}
+
+
+async def load_community_voice(voice_id: str) -> tuple[bytes, str]:
+    """Return (audio_bytes, reference_text) for an approved community-contributed
+    voice (``approved_voice_id`` = ``community-<...>`` in ``voice_submissions``).
+
+    Unlike static sample voices, the submission already carries a human-provided
+    ``ref_text``, so no STT round-trip is needed. Cached per process. Raises
+    RuntimeError if the voice isn't an approved submission.
+    """
+    cached = _COMMUNITY_VOICE_CACHE.get(voice_id)
+    if cached:
+        return cached
+
+    from local_db import get_connection
+    conn = await get_connection()
+    try:
+        row = await (await conn.execute(
+            "SELECT audio_url, ref_text FROM voice_submissions "
+            "WHERE approved_voice_id = ? AND status = 'approved'",
+            (voice_id,),
+        )).fetchone()
+    finally:
+        await conn.close()
+    if row is None:
+        raise RuntimeError(f"unknown community voice: {voice_id}")
+
+    audio_url = (row["audio_url"] or "").strip()
+    ref_text = (row["ref_text"] or "").strip()
+    if not audio_url:
+        raise RuntimeError(f"community voice {voice_id} has no audio")
+
+    import aiohttp
+    timeout = aiohttp.ClientTimeout(total=30)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.get(audio_url) as resp:
+            if resp.status != 200:
+                raise RuntimeError(f"community voice audio fetch failed ({resp.status})")
+            audio = await resp.read()
+
+    if not ref_text:
+        # Fallback: transcribe if a legacy row somehow lacks ref_text.
+        stt_result, stt_err = await transcribe_audio(audio_bytes=audio)
+        ref_text = (stt_result or {}).get("text", "").strip() if stt_result else ""
+        if not ref_text:
+            raise RuntimeError(f"community voice {voice_id}: no reference text ({stt_err})")
+
+    _COMMUNITY_VOICE_CACHE[voice_id] = (audio, ref_text)
+    return audio, ref_text
 
 
 def voice_clone_chute_configured() -> bool:
@@ -352,10 +752,32 @@ async def voice_clone_synthesize(
         STUDIO_VOICE_CLONE_KEY_TARGET: target_text or "",
     }
     headers: dict[str, str] = {}
-    effective_url = (base_url or STUDIO_VOICE_CLONE_URL or "").strip()
+
+    # Try the ops dispatcher first when ops pods are registered.
+    pod_cm = None
+    ops_url: str | None = None
+    if base_url is None:
+        try:
+            from ops import pool as gpu_pool
+            if gpu_pool.online_pod_count("voice_clone") > 0:
+                pod_cm = gpu_pool.pick_pod("voice_clone")
+                pod = await pod_cm.__aenter__()
+                ops_url = pod.url + "/voice-clone"
+                if pod.api_key:
+                    headers["Authorization"] = f"Bearer {pod.api_key}"
+        except Exception as e:
+            try:
+                from ops.pool import NoCapacity
+                if isinstance(e, NoCapacity):
+                    return None, "voice_clone fleet busy (all pods at capacity)"
+            except ImportError:
+                pass
+            pod_cm = None
+
+    effective_url = ops_url or (base_url or STUDIO_VOICE_CLONE_URL or "").strip()
     if effective_url:
         url = effective_url
-        if STUDIO_VOICE_CLONE_API_KEY:
+        if not headers.get("Authorization") and STUDIO_VOICE_CLONE_API_KEY:
             headers["Authorization"] = f"Bearer {STUDIO_VOICE_CLONE_API_KEY}"
         req_mode = STUDIO_VOICE_CLONE_REQUEST_MODE
     else:
@@ -368,7 +790,7 @@ async def voice_clone_synthesize(
         req_mode = "json"
     try:
         async with aiohttp.ClientSession() as session:
-            if STUDIO_VOICE_CLONE_URL and req_mode in ("form", "multipart", "form-data"):
+            if req_mode in ("form", "multipart", "form-data"):
                 form = aiohttp.FormData()
                 form.add_field(STUDIO_VOICE_CLONE_KEY_REF_AUDIO, b64_audio)
                 form.add_field(STUDIO_VOICE_CLONE_KEY_REF_TEXT, reference_text or "")
@@ -379,7 +801,7 @@ async def voice_clone_synthesize(
                     data=form,
                     timeout=aiohttp.ClientTimeout(total=STUDIO_VOICE_CLONE_TIMEOUT_SEC),
                 )
-            elif STUDIO_VOICE_CLONE_URL and req_mode in ("form_file", "multipart_file", "file"):
+            elif req_mode in ("form_file", "multipart_file", "file"):
                 form = aiohttp.FormData()
                 form.add_field(
                     STUDIO_VOICE_CLONE_KEY_REF_AUDIO,
@@ -443,6 +865,12 @@ async def voice_clone_synthesize(
         return None, "clone service request timed out"
     except Exception as e:
         return None, str(e)
+    finally:
+        if pod_cm is not None:
+            try:
+                await pod_cm.__aexit__(None, None, None)
+            except Exception:
+                pass
 
 
 def voice_design_llm_model_ids_for_catalog() -> list[str]:
@@ -472,27 +900,30 @@ def voice_design_llm_configured() -> bool:
 
 
 def clamp_sample_script_words(text: str, low: int | None = None, high: int | None = None) -> str:
-    """Force sample line to 6–7 words (defaults from env). Pad or truncate."""
+    """Force sample line to target word range (defaults from env). Pad or truncate."""
     lo = low if low is not None else VOICE_DESIGN_SAMPLE_WORDS_MIN
     hi = high if high is not None else VOICE_DESIGN_SAMPLE_WORDS_MAX
     if hi < lo:
         lo, hi = hi, lo
     raw = (text or "").strip()
-    # strip surrounding quotes
     if (raw.startswith('"') and raw.endswith('"')) or (raw.startswith("'") and raw.endswith("'")):
         raw = raw[1:-1].strip()
     words = raw.split() if raw else []
     if len(words) > hi:
         words = words[:hi]
     if len(words) < lo:
-        filler = ["hey", "thanks", "so", "much", "for", "this", "today"]
+        filler = [
+            "hey", "thanks", "so", "much", "for", "being", "here", "today",
+            "I", "really", "appreciate", "you", "taking", "the", "time",
+            "to", "listen", "and", "enjoy", "this", "moment", "with", "me",
+        ]
         i = 0
         while len(words) < lo and i < len(filler):
             if filler[i] not in {w.lower() for w in words}:
                 words.append(filler[i])
             i += 1
         while len(words) < lo:
-            words.append("thanks")
+            words.append("today")
     return " ".join(words)
 
 
@@ -597,11 +1028,14 @@ def _parse_voice_design_llm_payload(data: dict) -> tuple[str | None, str | None]
 
 
 async def voice_design_llm_plan(*, voice_description: str) -> tuple[dict | None, str]:
-    """Call Chutes OpenAI-compatible POST .../v1/chat/completions (Bearer = same as TTS/STT)."""
-    if not VOICE_DESIGN_LLM_MODEL:
-        return None, "VOICE_DESIGN_LLM_MODEL is not configured"
-    if not CHUTES_AUTH_KEY:
-        return None, "CHUTES_API_KEY or CHUTES_AUTH_KEY is required for Chutes LLM"
+    """Voice Design plan (sample_script + revised_instruction) via the
+    unified llm_client. Routes to the local Qwen3-4B endpoint by default,
+    falls back to Chutes (with VOICE_DESIGN_LLM_MODEL) on error."""
+    # Avoid import cycles: voicechat / agents may import this module.
+    from llm_client import chat_complete, llm_configured
+
+    if not llm_configured():
+        return None, "no LLM configured (set LOCAL_LLM_BASE_URL or VOICE_DESIGN_LLM_MODEL+CHUTES_AUTH_KEY)"
     user_desc = (voice_description or "").strip()
     if not user_desc:
         return None, "voice description is empty"
@@ -609,126 +1043,82 @@ async def voice_design_llm_plan(*, voice_description: str) -> tuple[dict | None,
         "You help design voices for PromptTTS. Reply with a single JSON object only, no markdown. "
         'Keys: "sample_script" (string) and "revised_instruction" (string). '
         f"sample_script MUST be natural spoken dialogue of exactly {VOICE_DESIGN_SAMPLE_WORDS_MIN} to "
-        f"{VOICE_DESIGN_SAMPLE_WORDS_MAX} words in English — short, fits the vibe of the voice. "
+        f"{VOICE_DESIGN_SAMPLE_WORDS_MAX} words in English — about 1–2 sentences that feel natural when spoken aloud "
+        "and fit the vibe of the described voice. "
         "revised_instruction: one clear English instruction for a TTS model describing timbre, age, emotion, pace, tone — "
         "improved from the user's wording, no quotes inside the values."
     )
-    url = f"{VOICE_DESIGN_LLM_BASE_URL}/chat/completions"
-    payload: dict = {
-        "model": VOICE_DESIGN_LLM_MODEL,
-        "messages": [
-            {"role": "system", "content": system_rules},
-            {"role": "user", "content": f"The user wants this voice:\n{user_desc}"},
-        ],
-        "max_tokens": VOICE_DESIGN_LLM_MAX_TOKENS,
-        "temperature": VOICE_DESIGN_LLM_TEMPERATURE,
-    }
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {CHUTES_AUTH_KEY}",
-    }
+    messages = [
+        {"role": "system", "content": system_rules},
+        {"role": "user", "content": f"The user wants this voice:\n{user_desc}"},
+    ]
     last_err = ""
     max_tries = max(1, VOICE_DESIGN_LLM_RETRY_MAX)
     try:
-        async with aiohttp.ClientSession() as session:
-            for attempt in range(max_tries):
-                async with session.post(
-                    url,
-                    headers=headers,
-                    json=payload,
-                    timeout=aiohttp.ClientTimeout(total=VOICE_DESIGN_LLM_TIMEOUT_SEC),
-                ) as resp:
-                    body = await resp.read()
-                    err_text = body.decode("utf-8", errors="replace")[:500] if body else ""
-                    if resp.status == 429 or resp.status >= 500:
-                        last_err = f"Chutes LLM returned {resp.status}: {err_text}"
-                        _log.warning(
-                            "voice_design_llm_plan: HTTP %s attempt %s/%s url=%s snippet=%r",
-                            resp.status,
-                            attempt + 1,
-                            max_tries,
-                            url,
-                            err_text[:300],
-                        )
-                        if attempt + 1 >= max_tries:
-                            _log.error(
-                                "voice_design_llm_plan: giving up after %s tries last_error=%s",
-                                max_tries,
-                                last_err,
-                            )
-                            return None, last_err
-                        delay = min(VOICE_DESIGN_LLM_RETRY_BASE_SEC * (2**attempt), 120.0)
-                        await asyncio.sleep(delay)
-                        continue
-                    if resp.status != 200:
-                        msg = f"Chutes LLM returned {resp.status}" + (f": {err_text}" if err_text else "")
-                        _log.error(
-                            "voice_design_llm_plan: non-success status=%s url=%s snippet=%r",
-                            resp.status,
-                            url,
-                            err_text[:300],
-                        )
-                        return None, msg
-                    try:
-                        outer = json.loads(body.decode("utf-8"))
-                    except Exception:
-                        raw_snip = body.decode("utf-8", errors="replace")[:400]
-                        _log.error("voice_design_llm_plan: response not JSON snippet=%r", raw_snip)
-                        return None, "LLM returned non-JSON"
-                    if not isinstance(outer, dict):
-                        _log.error("voice_design_llm_plan: top-level JSON is not an object type=%s", type(outer))
-                        return None, "LLM returned unsupported JSON"
-                    served = outer.get("model")
-                    if isinstance(served, str) and served:
-                        _log.info("voice_design_llm_plan: completion served model=%s", served)
-                    content = ""
-                    choices = outer.get("choices")
-                    ch0: dict | None = choices[0] if isinstance(choices, list) and choices else None
-                    if isinstance(ch0, dict):
-                        content = _assistant_text_from_choice(ch0)
-                    inner = _extract_json_dict_from_llm_text(content)
-                    if not inner:
-                        diag_ch = json.dumps(ch0, default=str)[:800] if ch0 else "(no choices[0])"
-                        diag_usage = outer.get("usage")
-                        _log.error(
-                            "voice_design_llm_plan: no JSON in assistant text (empty or unparseable). "
-                            "choice0=%r usage=%r",
-                            diag_ch,
-                            diag_usage,
-                        )
-                        return None, "LLM response did not contain a JSON object with sample_script and revised_instruction"
-                    script, revised = _parse_voice_design_llm_payload(inner)
-                    if not script or not revised:
-                        _log.error(
-                            "voice_design_llm_plan: missing keys after parse script_empty=%s revised_empty=%s",
-                            not bool(script),
-                            not bool(revised),
-                        )
-                        return None, "LLM JSON missing sample_script or revised_instruction"
-                    script = clamp_sample_script_words(script)
-                    revised = revised.strip()
-                    if len(revised) < 8:
-                        _log.error("voice_design_llm_plan: revised_instruction too short len=%s", len(revised))
-                        return None, "revised_instruction too short"
-                    return {
-                        "sample_script": script,
-                        "revised_instruction": revised,
-                        "raw": outer,
-                    }, ""
-            _log.error(
-                "voice_design_llm_plan: loop exhausted without success last_err=%r",
-                last_err,
-            )
-            return None, last_err or "Chutes LLM retries exhausted"
+        for attempt in range(max_tries):
+            try:
+                content = await chat_complete(
+                    messages,
+                    temperature=VOICE_DESIGN_LLM_TEMPERATURE,
+                    max_tokens=VOICE_DESIGN_LLM_MAX_TOKENS,
+                    retries=0,  # we handle retries here for the bigger backoff
+                )
+            except RuntimeError as exc:
+                last_err = str(exc)
+                msg = last_err.lower()
+                transient = ("returned 5" in msg) or ("returned 429" in msg) or ("timed out" in msg) or ("connect" in msg)
+                _log.warning(
+                    "voice_design_llm_plan: attempt %s/%s failed (transient=%s): %s",
+                    attempt + 1, max_tries, transient, last_err[:300],
+                )
+                if attempt + 1 >= max_tries or not transient:
+                    return None, last_err
+                delay = min(VOICE_DESIGN_LLM_RETRY_BASE_SEC * (2 ** attempt), 120.0)
+                await asyncio.sleep(delay)
+                continue
+
+            if not content:
+                _log.error("voice_design_llm_plan: empty content")
+                return None, "LLM returned empty content"
+
+            inner = _extract_json_dict_from_llm_text(content)
+            if not inner:
+                _log.error(
+                    "voice_design_llm_plan: no JSON in assistant text. content=%r",
+                    content[:400],
+                )
+                return None, "LLM response did not contain a JSON object with sample_script and revised_instruction"
+            script, revised = _parse_voice_design_llm_payload(inner)
+            if not script or not revised:
+                _log.error(
+                    "voice_design_llm_plan: missing keys after parse script_empty=%s revised_empty=%s",
+                    not bool(script),
+                    not bool(revised),
+                )
+                return None, "LLM JSON missing sample_script or revised_instruction"
+            script = clamp_sample_script_words(script)
+            revised = revised.strip()
+            if len(revised) < 8:
+                _log.error("voice_design_llm_plan: revised_instruction too short len=%s", len(revised))
+                return None, "revised_instruction too short"
+            return {
+                "sample_script": script,
+                "revised_instruction": revised,
+                "raw": {"content": content},
+            }, ""
+        _log.error(
+            "voice_design_llm_plan: loop exhausted without success last_err=%r",
+            last_err,
+        )
+        return None, last_err or "LLM retries exhausted"
     except asyncio.TimeoutError:
         _log.error(
-            "voice_design_llm_plan: timeout model=%s timeout_sec=%s",
-            VOICE_DESIGN_LLM_MODEL,
+            "voice_design_llm_plan: timeout timeout_sec=%s",
             VOICE_DESIGN_LLM_TIMEOUT_SEC,
         )
         return None, "voice design LLM timed out"
     except Exception as e:
-        _log.exception("voice_design_llm_plan: request error model=%s", VOICE_DESIGN_LLM_MODEL)
+        _log.exception("voice_design_llm_plan: request error")
         return None, str(e)
 
 
@@ -821,6 +1211,99 @@ def upload_wav_to_hippius(user_id: str, wav_bytes: bytes, subdir: str = "") -> t
         content_type="audio/wav",
     )
     return bucket, key, expires_at
+
+
+def assert_user_owned_object(bucket: str, key: str, user_id: str, allowed_subdir: str) -> None:
+    """Raise RuntimeError if the (bucket, key) pair isn't an object that:
+    - lives in our active bucket
+    - is namespaced under ``{user_id}/`` (matching the key shape that
+      /uploads/presign produces)
+    - sits under the expected ``allowed_subdir``
+
+    Use this in workers before calling ``download_object_bytes`` or
+    ``delete_object`` on a (bucket, key) pair that came from the client's
+    job payload — otherwise a crafted payload could read/delete other
+    users' files (the backend has full R2 credentials).
+    """
+    if bucket != _active_bucket():
+        raise RuntimeError("Access denied: invalid bucket for audio source")
+    parts = key.split("/", 2)
+    if len(parts) < 3 or not parts[0] or not parts[1] or not parts[2]:
+        raise RuntimeError("Access denied: malformed audio key")
+    if parts[0] != user_id:
+        raise RuntimeError("Access denied: audio key does not belong to this user")
+    if parts[1] != allowed_subdir:
+        raise RuntimeError(f"Access denied: audio key must be under {allowed_subdir!r}, got {parts[1]!r}")
+
+
+# Cap on bytes pulled out of R2 for any single worker download. Mirrors
+# the presign cap so a client can't bypass it by uploading a 10 GB file
+# (the presigned URL doesn't sign Content-Length).
+R2_MAX_DOWNLOAD_BYTES = int(os.environ.get("R2_MAX_DOWNLOAD_BYTES", str(300 * 1024 * 1024)))
+
+
+def download_object_bytes_capped(bucket: str, key: str, max_bytes: int = R2_MAX_DOWNLOAD_BYTES) -> bytes | None:
+    """Download an R2 object, refusing to load more than ``max_bytes``.
+    Uses ``stat_object`` to check size before reading so we never pull a
+    huge file into memory.
+    """
+    try:
+        client = _minio_client()
+        stat = client.stat_object(bucket, key)
+        if stat.size is not None and stat.size > max_bytes:
+            raise RuntimeError(
+                f"Audio object exceeds maximum size: {stat.size} bytes > {max_bytes}"
+            )
+        obj = client.get_object(bucket, key)
+        try:
+            return obj.read()
+        finally:
+            obj.close()
+            obj.release_conn()
+    except RuntimeError:
+        raise
+    except Exception:
+        return None
+
+
+def presigned_put_url(bucket: str, key: str, expires_seconds: int = 900) -> str:
+    """Generate a presigned PUT URL the browser can use to upload directly to R2.
+    The signed URL is valid for ``expires_seconds`` (default 15 minutes) and
+    points at the storage provider's domain (e.g. ``*.r2.cloudflarestorage.com``),
+    not your API domain — so the byte transfer bypasses your domain's Cloudflare
+    proxy entirely.
+    """
+    from datetime import timedelta as _td
+    client = _minio_client()
+    ensure_bucket(client, bucket)
+    return client.presigned_put_object(bucket, key, expires=_td(seconds=expires_seconds))
+
+
+def upload_audio_bytes_to_bucket(
+    user_id: str,
+    audio_bytes: bytes,
+    *,
+    subdir: str,
+    extension: str = "wav",
+    content_type: str = "audio/wav",
+) -> tuple[str, str]:
+    """Upload arbitrary audio bytes (any format) to the active bucket.
+    Returns (bucket, key). Used for short-lived source-audio uploads
+    submitted by the user for retake/repaint/edit/extend/audio2audio.
+    """
+    bucket = _active_bucket()
+    client = _minio_client()
+    ensure_bucket(client, bucket)
+    safe_ext = (extension or "wav").lstrip(".").lower() or "wav"
+    key = f"{user_id}/{subdir}/{uuid.uuid4().hex}.{safe_ext}"
+    client.put_object(
+        bucket,
+        key,
+        BytesIO(audio_bytes),
+        length=len(audio_bytes),
+        content_type=content_type or "application/octet-stream",
+    )
+    return bucket, key
 
 
 def get_presigned_url(bucket: str, key: str, expires_at: datetime, *, public: bool = False) -> str | None:

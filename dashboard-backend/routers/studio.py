@@ -5,28 +5,32 @@ import os
 import re
 import secrets
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 
 from database import acquire
-from local_db import get_connection, record_credit_transaction, refresh_daily_usage_for_day
+from local_db import atomic_deduct_credits, get_connection, record_credit_transaction, refresh_daily_usage_for_day
 from ranking import (
     RANKING_WINDOW_EVALS,
     get_ranked_miner_stats_for_validator,
     sort_miners_for_display,
 )
-from routers.auth import require_auth
+from routers.auth import require_auth, is_internal_proxy
 from schemas import (
+    StudioClonedVoiceSaveResponse,
     StudioCloneResponse,
     StudioDesignedVoiceItem,
     StudioDesignedVoiceSpeakRequest,
     StudioDesignedVoicesResponse,
     StudioGenerateRequest,
     StudioGenerateResponse,
+    StudioTtsSampleVoiceRequest,
     StudioHistoryItemResponse,
     StudioHistoryResponse,
     StudioMusicGenerateResponse,
+    StudioMusicLyricsRequest,
+    StudioMusicLyricsResponse,
     StudioMusicHistoryItemResponse,
     StudioMusicHistoryResponse,
     StudioMusicText2MusicRequest,
@@ -39,6 +43,8 @@ from schemas import (
     StudioVoiceDesignSaveRequest,
     StudioVoiceDesignSaveResponse,
 )
+from contextlib import asynccontextmanager as _acm
+from jobs.registry import MUSIC_POOL
 from studio_music_service import (
     generate_audio2audio as music_audio2audio,
     generate_edit as music_edit,
@@ -56,8 +62,10 @@ from studio_tts_service import (
     download_object_bytes,
     fetch_chute_slug,
     get_presigned_url,
+    load_community_voice,
     synthesize_speak,
     transcribe_audio,
+    upload_audio_bytes_to_bucket,
     upload_wav_preview,
     upload_wav_to_hippius,
     voice_clone_chute_configured,
@@ -143,6 +151,26 @@ def _configured_studio_models() -> list[StudioTopModelResponse]:
     return models
 
 
+@router.get("/builtin-voices")
+async def list_builtin_voices(_: str = Depends(require_auth)) -> dict:
+    """Pre-defined sample voices users can pass to TTS. Stable ids + a
+    short human-readable name/description.
+
+    Only CDN-hosted voices are exposed via the public API for now —
+    local-disk voices depend on the dashboard-backend process having
+    fresh module state for ``SAMPLE_VOICE_LOCAL_FILES`` and are
+    therefore unreliable to advertise. Studio's UI still uses the full
+    catalog directly."""
+    from sample_voices_data import SAMPLE_VOICE_METADATA, get_sample_url
+    return {
+        "voices": [
+            {"id": vid, "name": meta["name"], "description": meta["description"]}
+            for vid, meta in SAMPLE_VOICE_METADATA.items()
+            if get_sample_url(vid)  # CDN-hosted only — local files are filtered out
+        ]
+    }
+
+
 @router.get("/top-models", response_model=StudioTopModelsResponse)
 async def get_top_models(limit: int = Query(3, ge=1, le=10)):
     """Studio models from env config; fallback to ranked miners if no config exists."""
@@ -190,15 +218,56 @@ async def get_top_models(limit: int = Query(3, ge=1, le=10)):
     return StudioTopModelsResponse(models=models)
 
 
-TTS_CREDITS_COST = int(os.environ.get("STUDIO_TTS_CREDITS_COST", "25"))
-STT_CREDITS_COST = int(os.environ.get("STUDIO_STT_CREDITS_COST", "20"))
+# ── Studio per-generation credit costs (Nov 2026 redesign) ─────────────
+# All values mirror app/src/studio/creditCosts.ts. STUDIO_* env vars
+# override at runtime so the operator can change pricing without code.
+TTS_CREDITS_COST = int(os.environ.get("STUDIO_TTS_CREDITS_COST", "30"))
+STT_CREDITS_COST = int(os.environ.get("STUDIO_STT_CREDITS_COST", "15"))
 STT_MAX_UPLOAD_BYTES = int(os.environ.get("STUDIO_STT_MAX_UPLOAD_BYTES", str(50 * 1024 * 1024)))
-CLONE_CREDITS_COST = int(os.environ.get("STUDIO_CLONE_CREDITS_COST", "50"))
+# Hard cap on STT audio duration. Probed via ffprobe before the
+# expensive transcribe call so we reject 1-hour uploads cheaply.
+STT_MAX_DURATION_SEC = int(os.environ.get("STUDIO_STT_MAX_DURATION_SEC", str(5 * 60)))
+CLONE_CREDITS_COST = int(os.environ.get("STUDIO_CLONE_CREDITS_COST", "40"))
 CLONE_MAX_REF_AUDIO_BYTES = int(os.environ.get("STUDIO_CLONE_MAX_REF_AUDIO_BYTES", str(50 * 1024 * 1024)))
-VOICE_DESIGN_PREVIEW_CREDITS = int(os.environ.get("STUDIO_VOICE_DESIGN_PREVIEW_CREDITS", "120"))
-VOICE_DESIGN_SPEAK_CREDITS = int(os.environ.get("STUDIO_VOICE_DESIGN_SPEAK_CREDITS", "25"))
-MUSIC_CREDITS_COST = int(os.environ.get("STUDIO_MUSIC_CREDITS_COST", "50"))
+VOICE_DESIGN_PREVIEW_CREDITS = int(os.environ.get("STUDIO_VOICE_DESIGN_PREVIEW_CREDITS", "70"))
+# TTS using a saved designed/cloned voice (My Voices page). Same rate as
+# regular TTS — the voice was paid for once at create time.
+VOICE_DESIGN_SPEAK_CREDITS = int(os.environ.get("STUDIO_VOICE_DESIGN_SPEAK_CREDITS", "30"))
+MUSIC_CREDITS_COST = int(os.environ.get("STUDIO_MUSIC_CREDITS_COST", "30"))
 MUSIC_MAX_UPLOAD_BYTES = int(os.environ.get("STUDIO_MUSIC_MAX_UPLOAD_BYTES", str(100 * 1024 * 1024)))
+# Tiered duration caps by inference quality.
+#
+# Higher infer_step values multiply the per-second compute cost. A 300 s
+# Max-quality (120 steps) song already takes ~10 minutes on a single
+# pod — right at the LB_PHASE_TIMEOUT_MUSIC ceiling — so we cap shorter
+# the higher the quality. Fast jobs can run longer because they finish
+# in roughly proportional wall-clock time.
+#
+# The ``infer_step`` thresholds match the frontend mode presets:
+#     Fast      = 27   → up to FAST_MAX     (default 400 s)
+#     Balanced  = 60   → up to BALANCED_MAX (default 300 s)
+#     Max       = 120  → up to MAX_MAX      (default 200 s)
+# Anything between tiers takes the next-stricter cap.
+MUSIC_MAX_DURATION_FAST_SEC     = float(os.environ.get("MUSIC_MAX_DURATION_FAST_SEC",     "400"))
+MUSIC_MAX_DURATION_BALANCED_SEC = float(os.environ.get("MUSIC_MAX_DURATION_BALANCED_SEC", "300"))
+MUSIC_MAX_DURATION_MAX_SEC      = float(os.environ.get("MUSIC_MAX_DURATION_MAX_SEC",      "200"))
+# Absolute hard ceiling — no combination of inputs may exceed this.
+MUSIC_MAX_DURATION_SEC = max(
+    MUSIC_MAX_DURATION_FAST_SEC,
+    MUSIC_MAX_DURATION_BALANCED_SEC,
+    MUSIC_MAX_DURATION_MAX_SEC,
+)
+
+
+def _max_music_duration_for_steps(infer_step: int) -> float:
+    """Pick the tiered duration cap that matches the requested quality.
+    Tiers are inclusive of their named step count; anything higher steps
+    up to the stricter tier."""
+    if infer_step <= 30:
+        return MUSIC_MAX_DURATION_FAST_SEC
+    if infer_step <= 70:
+        return MUSIC_MAX_DURATION_BALANCED_SEC
+    return MUSIC_MAX_DURATION_MAX_SEC
 
 
 async def _resolve_studio_tts_chute(
@@ -225,9 +294,23 @@ async def _resolve_studio_tts_chute(
 
 
 def _configured_stt_provider() -> str:
-    """Returns provider display name for logs/history."""
-    name = (os.environ.get("STUDIO_STT_PROVIDER_NAME") or "").strip()
-    return name or "Whisper Large v3"
+    """Returns provider display name for logs/history.
+
+    Auto-derives from the ops fleet: when an asr_streaming_rt pod is
+    online we are using Parakeet TDT, otherwise the legacy batch pod
+    (Whisper). The env var ``STUDIO_STT_PROVIDER_NAME`` still wins so
+    operators can override.
+    """
+    override = (os.environ.get("STUDIO_STT_PROVIDER_NAME") or "").strip()
+    if override:
+        return override
+    try:
+        from ops import pool as gpu_pool
+        if gpu_pool.online_pod_count("asr_streaming_rt") > 0:
+            return "Parakeet TDT 0.6B v3"
+    except Exception:
+        pass
+    return "Whisper Large v3"
 
 
 @router.post("/generate", response_model=StudioGenerateResponse)
@@ -297,13 +380,9 @@ async def generate_tts(body: StudioGenerateRequest, user_id: str = Depends(requi
         )
         history_id = int(cursor.lastrowid)
         expires_at_val = expires_at
-        await conn.execute(
-            "UPDATE auth_users SET credits = credits - ?, updated_at = datetime('now') WHERE id = ?",
-            (TTS_CREDITS_COST, user_id),
-        )
-        credit_cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
-        new_row = await credit_cursor.fetchone()
-        new_credits = int(new_row["credits"]) if new_row else credits - TTS_CREDITS_COST
+        new_credits = await atomic_deduct_credits(conn, user_id=user_id, cost=TTS_CREDITS_COST)
+        if new_credits is None:
+            raise HTTPException(status_code=402, detail="Insufficient credits.")
         await record_credit_transaction(
             conn,
             user_id=user_id,
@@ -349,7 +428,21 @@ async def transcribe_stt(
     if not raw:
         raise HTTPException(status_code=400, detail="Empty audio file")
     if len(raw) > STT_MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail=f"Audio exceeds max size ({STT_MAX_UPLOAD_BYTES} bytes)")
+        max_mb = STT_MAX_UPLOAD_BYTES / (1024 * 1024)
+        raise HTTPException(status_code=413, detail=f"Audio exceeds {max_mb:.0f} MB limit.")
+
+    # Hard cap on duration. ffprobe runs offline in <50ms and lets us
+    # reject 1-hour uploads before spending a subnet inference call.
+    # When ffprobe is unavailable we fall through and rely on the
+    # provider's post-call duration_seconds (which we re-check below).
+    import asyncio
+    from audio_probe import probe_audio_duration_seconds
+    probed_dur = await asyncio.to_thread(probe_audio_duration_seconds, raw, audio_file.filename)
+    if probed_dur is not None and probed_dur > STT_MAX_DURATION_SEC:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Audio is {probed_dur:.1f}s — STT is limited to {STT_MAX_DURATION_SEC}s ({STT_MAX_DURATION_SEC // 60} min).",
+        )
 
     provider_name = _configured_stt_provider()
     started = time.perf_counter()
@@ -385,6 +478,15 @@ async def transcribe_stt(
 
     detected_language = result.get("language")
     duration_seconds = result.get("duration_seconds")
+    # Post-call duration check. Catches the case where ffprobe wasn't
+    # installed (probed_dur was None) but the provider's response
+    # tells us the audio was longer than the cap — we refuse to bill
+    # and refuse to return the transcript.
+    if duration_seconds is not None and float(duration_seconds) > STT_MAX_DURATION_SEC:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Audio is {float(duration_seconds):.1f}s — STT is limited to {STT_MAX_DURATION_SEC}s ({STT_MAX_DURATION_SEC // 60} min).",
+        )
     latency_ms = int((time.perf_counter() - started) * 1000)
 
     conn = await get_connection()
@@ -408,13 +510,9 @@ async def transcribe_stt(
             ),
         )
         history_id = int(cursor.lastrowid)
-        await conn.execute(
-            "UPDATE auth_users SET credits = credits - ?, updated_at = datetime('now') WHERE id = ?",
-            (STT_CREDITS_COST, user_id),
-        )
-        credit_cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
-        new_row = await credit_cursor.fetchone()
-        new_credits = int(new_row["credits"]) if new_row else credits - STT_CREDITS_COST
+        new_credits = await atomic_deduct_credits(conn, user_id=user_id, cost=STT_CREDITS_COST)
+        if new_credits is None:
+            raise HTTPException(status_code=402, detail="Insufficient credits.")
         await record_credit_transaction(
             conn,
             user_id=user_id,
@@ -434,6 +532,12 @@ async def transcribe_stt(
         await conn.commit()
     finally:
         await conn.close()
+
+    try:
+        from referral_service import try_activate_referral
+        await try_activate_referral(user_id)
+    except Exception:
+        pass
 
     return StudioTranscribeResponse(
         id=history_id,
@@ -457,10 +561,10 @@ async def clone_voice(
     """Transcribe reference audio (STT), call voice-clone Chute, upload result to Hippius."""
     if user_id_form != user_id:
         raise HTTPException(status_code=403, detail="user_id does not match authenticated user")
-    if not voice_clone_chute_configured():
+    if not _clone_available():
         raise HTTPException(
             status_code=503,
-            detail="Voice cloning is not configured (set STUDIO_VOICE_CLONE_URL or STUDIO_VOICE_CLONE_CHUTE_SLUG).",
+            detail="Voice cloning is not available (no ops pods online, STUDIO_VOICE_CLONE_URL not set).",
         )
 
     mode = (ref_source or "").strip().lower()
@@ -564,13 +668,9 @@ async def clone_voice(
             ),
         )
         history_id = int(cursor.lastrowid)
-        await conn.execute(
-            "UPDATE auth_users SET credits = credits - ?, updated_at = datetime('now') WHERE id = ?",
-            (CLONE_CREDITS_COST, user_id),
-        )
-        credit_cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
-        new_row = await credit_cursor.fetchone()
-        new_credits = int(new_row["credits"]) if new_row else credits - CLONE_CREDITS_COST
+        new_credits = await atomic_deduct_credits(conn, user_id=user_id, cost=CLONE_CREDITS_COST)
+        if new_credits is None:
+            raise HTTPException(status_code=402, detail="Insufficient credits.")
         await record_credit_transaction(
             conn,
             user_id=user_id,
@@ -599,6 +699,182 @@ async def clone_voice(
     )
 
 
+# ----------------------------------------------------------------------------
+# General TTS via sample voices — voice cloning under the hood, charged at
+# TTS price. Reference clip lookup is server-side; client only sends the id.
+# ----------------------------------------------------------------------------
+
+import asyncio as _asyncio_general_tts  # local alias to avoid colliding with module-level imports
+from sample_voices_data import is_known_sample, get_sample_url
+
+# voice_id -> (audio_bytes, ref_text). Populated lazily per process so the
+# first call pays the fetch+STT cost, subsequent calls don't.
+_SAMPLE_VOICE_CACHE: dict[str, tuple[bytes, str]] = {}
+_SAMPLE_VOICE_CACHE_LOCK = _asyncio_general_tts.Lock()
+
+
+async def _fetch_sample_audio(url: str) -> bytes:
+    import aiohttp
+    timeout = aiohttp.ClientTimeout(total=30)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.get(url) as resp:
+            if resp.status != 200:
+                raise HTTPException(status_code=502, detail=f"sample audio fetch failed ({resp.status})")
+            return await resp.read()
+
+
+async def _load_sample_voice(voice_id: str) -> tuple[bytes, str]:
+    """Return (audio_bytes, reference_text) for a sample voice, with a per-process cache."""
+    # Approved community-contributed voices live in voice_submissions, not the
+    # static CDN catalog — delegate to the community loader (its own cache).
+    if voice_id.startswith("community-"):
+        return await load_community_voice(voice_id)
+    cached = _SAMPLE_VOICE_CACHE.get(voice_id)
+    if cached:
+        return cached
+    async with _SAMPLE_VOICE_CACHE_LOCK:
+        cached = _SAMPLE_VOICE_CACHE.get(voice_id)
+        if cached:
+            return cached
+        url = get_sample_url(voice_id)
+        if not url:
+            raise HTTPException(status_code=404, detail=f"unknown sample voice: {voice_id}")
+        audio = await _fetch_sample_audio(url)
+        # Transcribe to feed the voice-clone API (it requires a reference transcript)
+        stt_result, stt_err = await transcribe_audio(audio_bytes=audio)
+        ref_text = (stt_result or {}).get("text", "").strip() if stt_result else ""
+        if not ref_text:
+            raise HTTPException(
+                status_code=502,
+                detail=f"could not transcribe sample voice {voice_id}: {stt_err or 'empty transcript'}",
+            )
+        _SAMPLE_VOICE_CACHE[voice_id] = (audio, ref_text)
+        return audio, ref_text
+
+
+@router.post("/tts/voice-clone-sample", response_model=StudioCloneResponse)
+async def tts_voice_clone_sample(
+    body: StudioTtsSampleVoiceRequest,
+    user_id: str = Depends(require_auth),
+    internal_proxy: bool = Depends(is_internal_proxy),
+):
+    """General TTS using a pre-stored sample voice as the cloning reference.
+    Charged at TTS_CREDITS_COST (not the higher clone price) — backend cost
+    of the clone call is absorbed.
+
+    Billing: studio web UI bills flat per-call. Developer-API proxy
+    calls (``internal_proxy=True``) are billed per-character on the
+    API side; we skip billing here in that path to avoid double-billing.
+    """
+    if not _clone_available():
+        raise HTTPException(status_code=503, detail="Voice cloning is not available (no ops pods online, STUDIO_VOICE_CLONE_URL not set).")
+    if not body.sample_voice_id.startswith("community-") and not is_known_sample(body.sample_voice_id):
+        raise HTTPException(status_code=404, detail=f"unknown sample voice: {body.sample_voice_id}")
+    target = (body.target_text or "").strip()
+    if not target:
+        raise HTTPException(status_code=400, detail="target_text is required")
+
+    # Credit check (TTS price, not clone price). Proxied calls skip the
+    # whole billing dance — the dev-api handles it.
+    if not internal_proxy:
+        conn = await get_connection()
+        try:
+            cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
+            row = await cursor.fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail="User not found")
+            credits = int(row["credits"])
+            if credits < TTS_CREDITS_COST:
+                raise HTTPException(
+                    status_code=402,
+                    detail=f"Insufficient credits. Need {TTS_CREDITS_COST} credits. You have {credits}.",
+                )
+        finally:
+            await conn.close()
+
+    # Load sample reference (cached per process)
+    raw_ref, reference_text = await _load_sample_voice(body.sample_voice_id)
+
+    # Clone synthesize
+    clone_started = time.perf_counter()
+    out_bytes, clone_err = await voice_clone_synthesize(
+        reference_audio_bytes=raw_ref,
+        reference_text=reference_text,
+        target_text=target,
+    )
+    clone_latency_ms = int((time.perf_counter() - clone_started) * 1000)
+    if not out_bytes:
+        detail = "Voice clone request failed."
+        if clone_err:
+            detail += f" ({clone_err})"
+        raise HTTPException(status_code=502, detail=detail)
+
+    # Upload result
+    bucket, key, expires_at = upload_wav_to_hippius(user_id, out_bytes, subdir="clone")
+    clone_endpoint_label = voice_clone_endpoint_label()
+
+    conn = await get_connection()
+    try:
+        cursor = await conn.execute(
+            """
+            INSERT INTO studio_clone_history
+            (user_id, reference_text, target_text, source_mode, source_audio_filename, source_language,
+             chute_slug, audio_s3_bucket, audio_s3_key, expires_at, credits_used,
+             stt_latency_ms, clone_latency_ms, status, created_at)
+            VALUES (?, ?, ?, 'sample', ?, ?, ?, ?, ?, ?, ?, 0, ?, 'completed', datetime('now'))
+            """,
+            (
+                user_id,
+                reference_text,
+                target,
+                body.sample_voice_id,         # store sample id in filename slot for traceability
+                body.target_language,
+                clone_endpoint_label,
+                bucket,
+                key,
+                expires_at.isoformat(),
+                TTS_CREDITS_COST,             # charge TTS price, not clone price
+                clone_latency_ms,
+            ),
+        )
+        history_id = int(cursor.lastrowid)
+        if internal_proxy:
+            # Dev-API path: billing already done upstream. Read current
+            # balance for the response, skip deduction + transaction.
+            cur_row = await (await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))).fetchone()
+            new_credits = int(cur_row["credits"]) if cur_row else 0
+        else:
+            new_credits = await atomic_deduct_credits(conn, user_id=user_id, cost=TTS_CREDITS_COST)
+            if new_credits is None:
+                raise HTTPException(status_code=402, detail="Insufficient credits.")
+            await record_credit_transaction(
+                conn,
+                user_id=user_id,
+                transaction_type="tts_sample_voice",
+                amount=-TTS_CREDITS_COST,
+                balance_after=new_credits,
+                description=f"General TTS · voice {body.sample_voice_id}",
+                reference_type="studio_clone_history",
+                reference_id=str(history_id),
+                metadata={"sample_voice_id": body.sample_voice_id, "clone_endpoint": clone_endpoint_label},
+            )
+        await refresh_daily_usage_for_day(conn, datetime.now(timezone.utc).date().isoformat())
+        await conn.commit()
+    finally:
+        await conn.close()
+
+    is_premium = await _is_premium_user(user_id)
+    audio_url = get_presigned_url(bucket, key, expires_at, public=is_premium) or ""
+    return StudioCloneResponse(
+        id=history_id,
+        audio_url=audio_url,
+        expires_at=expires_at.isoformat() if expires_at else "",
+        credits=new_credits,
+        reference_text=reference_text,
+        detected_language=body.target_language,
+    )
+
+
 @router.get("/voice-design/config", response_model=StudioVoiceDesignConfigResponse)
 async def voice_design_config():
     return StudioVoiceDesignConfigResponse(
@@ -610,8 +886,16 @@ async def voice_design_config():
 
 
 @router.post("/voice-design/preview", response_model=StudioVoiceDesignPreviewResponse)
-async def voice_design_preview(body: StudioVoiceDesignPreviewRequest, user_id: str = Depends(require_auth)):
-    """LLM proposes a 6–7 word sample line + revised instruction; two TTS previews; charge credits only on success."""
+async def voice_design_preview(
+    body: StudioVoiceDesignPreviewRequest,
+    user_id: str = Depends(require_auth),
+    internal_proxy: bool = Depends(is_internal_proxy),
+):
+    """LLM proposes an 18–22 word sample line + revised instruction; two TTS previews; charge credits only on success.
+
+    Billing: studio web UI bills 70 cr per preview. Developer-API
+    proxy calls bill 70 cr on the API side and skip billing here.
+    """
     if body.user_id != user_id:
         raise HTTPException(status_code=403, detail="user_id does not match authenticated user")
     if not voice_design_llm_configured():
@@ -641,20 +925,21 @@ async def voice_design_preview(body: StudioVoiceDesignPreviewRequest, user_id: s
     sample_script = plan["sample_script"]
     revised_instruction = plan["revised_instruction"]
 
-    conn = await get_connection()
-    try:
-        cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
-        row = await cursor.fetchone()
-        if row is None:
-            raise HTTPException(status_code=404, detail="User not found")
-        credits = int(row["credits"])
-        if credits < VOICE_DESIGN_PREVIEW_CREDITS:
-            raise HTTPException(
-                status_code=402,
-                detail=f"Insufficient credits. Voice design preview (voice creation) needs {VOICE_DESIGN_PREVIEW_CREDITS} credits. You have {credits}.",
-            )
-    finally:
-        await conn.close()
+    if not internal_proxy:
+        conn = await get_connection()
+        try:
+            cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
+            row = await cursor.fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail="User not found")
+            credits = int(row["credits"])
+            if credits < VOICE_DESIGN_PREVIEW_CREDITS:
+                raise HTTPException(
+                    status_code=402,
+                    detail=f"Insufficient credits. Voice design preview (voice creation) needs {VOICE_DESIGN_PREVIEW_CREDITS} credits. You have {credits}.",
+                )
+        finally:
+            await conn.close()
 
     chute_slug, effective_model_name, effective_miner_hotkey = await _resolve_studio_tts_chute(
         body.chute_slug,
@@ -716,24 +1001,24 @@ async def voice_design_preview(body: StudioVoiceDesignPreviewRequest, user_id: s
                 expires_at.isoformat(),
             ),
         )
-        await conn.execute(
-            "UPDATE auth_users SET credits = credits - ?, updated_at = datetime('now') WHERE id = ?",
-            (VOICE_DESIGN_PREVIEW_CREDITS, user_id),
-        )
-        credit_cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
-        new_row = await credit_cursor.fetchone()
-        new_credits = int(new_row["credits"]) if new_row else credits - VOICE_DESIGN_PREVIEW_CREDITS
-        await record_credit_transaction(
-            conn,
-            user_id=user_id,
-            transaction_type="voice_design_preview",
-            amount=-VOICE_DESIGN_PREVIEW_CREDITS,
-            balance_after=new_credits,
-            description="Voice design A/B preview (2× short TTS)",
-            reference_type="studio_voice_design_preview",
-            reference_id=preview_token,
-            metadata={"chute_slug": chute_slug, "model": effective_model_name or ""},
-        )
+        if internal_proxy:
+            cur_row = await (await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))).fetchone()
+            new_credits = int(cur_row["credits"]) if cur_row else 0
+        else:
+            new_credits = await atomic_deduct_credits(conn, user_id=user_id, cost=VOICE_DESIGN_PREVIEW_CREDITS)
+            if new_credits is None:
+                raise HTTPException(status_code=402, detail="Insufficient credits.")
+            await record_credit_transaction(
+                conn,
+                user_id=user_id,
+                transaction_type="voice_design_preview",
+                amount=-VOICE_DESIGN_PREVIEW_CREDITS,
+                balance_after=new_credits,
+                description="Voice design A/B preview (2× short TTS)",
+                reference_type="studio_voice_design_preview",
+                reference_id=preview_token,
+                metadata={"chute_slug": chute_slug, "model": effective_model_name or ""},
+            )
         await refresh_daily_usage_for_day(conn, datetime.now(timezone.utc).date().isoformat())
         await conn.commit()
     finally:
@@ -881,7 +1166,8 @@ async def list_designed_voices(user_id: str = Depends(require_auth)):
             await conn.execute(
                 """
                 SELECT id, display_name, voice_description, revised_instruction, chosen_variant, ref_script,
-                       miner_hotkey, model_name, chute_slug, audio_s3_bucket, audio_s3_key, expires_at, created_at
+                       miner_hotkey, model_name, chute_slug, audio_s3_bucket, audio_s3_key, expires_at, created_at,
+                       COALESCE(source, 'designed') AS source, source_language
                 FROM studio_user_designed_voices
                 WHERE user_id = ?
                 ORDER BY datetime(created_at) DESC
@@ -917,6 +1203,8 @@ async def list_designed_voices(user_id: str = Depends(require_auth)):
                 expires_at=exp.isoformat() if exp else "",
                 created_at=str(r["created_at"] or ""),
                 expired=expired,
+                source=(r["source"] if "source" in r.keys() else "designed") or "designed",
+                source_language=(r["source_language"] if "source_language" in r.keys() else None),
             )
         )
     return StudioDesignedVoicesResponse(voices=voices)
@@ -948,15 +1236,163 @@ async def delete_designed_voice(voice_id: int, user_id: str = Depends(require_au
     return {"ok": True}
 
 
+# ---------------------------------------------------------------------------
+# Cloned voices — user uploads a real-voice reference clip once, we transcribe
+# it once, and save both so the user can pick this voice anywhere (Studio,
+# voice agents, designed-voice speak) without re-uploading. Reuses the
+# ``studio_user_designed_voices`` table with ``source='cloned'`` so the
+# existing dv:<id> voice routing keeps working out of the box.
+# ---------------------------------------------------------------------------
+
+# Saved cloned voices retain their reference audio for the long haul (5 years).
+# Designed-voice rows ride the 7-day STUDIO_TTS_EXPIRY_DAYS retention because
+# their R2 file is in the same "/voice-design/preview" subfolder that the
+# preview cleanup job sweeps. Cloned voices land under "/voice-design/cloned"
+# and never get swept — they're explicit user uploads, not cheap LLM
+# previews, so deletion is user-initiated only.
+_CLONED_VOICE_RETENTION_DAYS = 365 * 5
+
+
+@router.post("/voice-design/cloned-voices", response_model=StudioClonedVoiceSaveResponse)
+async def save_cloned_voice(
+    display_name: str = Form(...),
+    audio_file: UploadFile = File(...),
+    language: str | None = Form(None),
+    reference_text: str | None = Form(None, description="Optional manual transcript; skips STT when provided."),
+    user_id: str = Depends(require_auth),
+):
+    """Upload a voice clip, transcribe it once, and save it as a reusable
+    voice in the user's My Voices. After saving, the voice is addressable
+    as ``dv:<voice_id>`` from anywhere voices are selected (agents, Studio
+    clone target, designed-voice speak)."""
+    name = (display_name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="display_name is required")
+    if len(name) > 40:
+        raise HTTPException(status_code=400, detail="display_name must be at most 40 characters")
+
+    if not audio_file.filename:
+        raise HTTPException(status_code=400, detail="audio_file is required")
+    raw = await audio_file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Empty audio file")
+    # Same size cap the regular /clone endpoint uses — keeps the contract
+    # consistent and protects us from a user trying to save a 500MB clip.
+    if len(raw) > CLONE_MAX_REF_AUDIO_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Audio exceeds max size ({CLONE_MAX_REF_AUDIO_BYTES} bytes)",
+        )
+
+    # Enforce the same Normal/Premium tier limit Voice Design uses, since
+    # cloned voices share the same My Voices list. Counts BOTH designed
+    # and cloned together to keep the limit meaningful.
+    NORMAL_VOICE_LIMIT = int(os.environ.get("STUDIO_NORMAL_VOICE_LIMIT", "5"))
+    is_premium = await _is_premium_user(user_id)
+    if not is_premium:
+        conn = await get_connection()
+        try:
+            count_row = await (await conn.execute(
+                "SELECT COUNT(*) AS n FROM studio_user_designed_voices WHERE user_id = ?",
+                (user_id,),
+            )).fetchone()
+            voice_count = int(count_row["n"] or 0) if count_row else 0
+            if voice_count >= NORMAL_VOICE_LIMIT:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Normal plan allows up to {NORMAL_VOICE_LIMIT} saved voices. "
+                           f"Upgrade to Premium for unlimited, or delete an existing voice.",
+                )
+        finally:
+            await conn.close()
+
+    # Transcribe once. If the user provided a manual transcript, trust it
+    # (faster + lets users override a flaky STT result for niche accents).
+    lang = (language or "").strip() or None
+    user_ref = (reference_text or "").strip()
+    detected_language: str | None = lang
+    if user_ref:
+        ref_text = user_ref
+    else:
+        stt_result, stt_err = await transcribe_audio(audio_bytes=raw, language=lang)
+        if not stt_result:
+            detail = "Could not transcribe the audio."
+            if stt_err:
+                detail += f" ({stt_err})"
+            raise HTTPException(status_code=502, detail=detail)
+        ref_text = str(stt_result.get("text") or "").strip()
+        if not ref_text:
+            raise HTTPException(
+                status_code=400,
+                detail="Transcription returned empty text — try a clearer clip or set the language.",
+            )
+        if isinstance(stt_result.get("language"), str):
+            detected_language = stt_result.get("language")
+
+    # Upload to permanent storage. ``upload_wav_to_hippius`` writes
+    # under ``{user_id}/{subdir}/{uuid}.wav`` and returns the bucket+key.
+    # The default ``STUDIO_TTS_EXPIRY_DAYS`` it stamps is too short for
+    # a "save for forever" voice — we override below.
+    bucket, key, _short_expiry = upload_wav_to_hippius(user_id, raw, subdir="voice-design/cloned")
+    long_expires = datetime.now(timezone.utc) + timedelta(days=_CLONED_VOICE_RETENTION_DAYS)
+
+    conn = await get_connection()
+    try:
+        cur = await conn.execute(
+            """
+            INSERT INTO studio_user_designed_voices
+            (user_id, display_name, voice_description, revised_instruction, chosen_variant,
+             ref_script, miner_hotkey, model_name, chute_slug,
+             audio_s3_bucket, audio_s3_key, expires_at, source, source_language, created_at)
+            VALUES (?, ?, '', '', '', ?, '', '', '', ?, ?, ?, 'cloned', ?, datetime('now'))
+            """,
+            (
+                user_id,
+                name,
+                ref_text,
+                bucket,
+                key,
+                long_expires.isoformat(),
+                detected_language,
+            ),
+        )
+        voice_id = int(cur.lastrowid)
+        credit_row = await (await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))).fetchone()
+        new_credits = int(credit_row["credits"]) if credit_row else 0
+        await conn.commit()
+    finally:
+        await conn.close()
+
+    audio_url = get_presigned_url(bucket, key, long_expires, public=is_premium) or ""
+    return StudioClonedVoiceSaveResponse(
+        voice_id=voice_id,
+        display_name=name,
+        ref_script=ref_text,
+        source_language=detected_language,
+        audio_url=audio_url,
+        expires_at=long_expires.isoformat(),
+        credits=new_credits,
+    )
+
+
 @router.post("/voice-design/speak", response_model=StudioCloneResponse)
-async def designed_voice_speak(body: StudioDesignedVoiceSpeakRequest, user_id: str = Depends(require_auth)):
-    """Clone target text using saved designed-voice reference (no STT on reference)."""
+async def designed_voice_speak(
+    body: StudioDesignedVoiceSpeakRequest,
+    user_id: str = Depends(require_auth),
+    internal_proxy: bool = Depends(is_internal_proxy),
+):
+    """Clone target text using saved designed-voice reference (no STT on reference).
+
+    Billing: studio web UI bills flat per-call. Developer-API proxy
+    calls (``internal_proxy=True``) are billed per-character on the
+    API side; we skip billing here in that path to avoid double-billing.
+    """
     if body.user_id != user_id:
         raise HTTPException(status_code=403, detail="user_id does not match authenticated user")
-    if not voice_clone_chute_configured():
+    if not _clone_available():
         raise HTTPException(
             status_code=503,
-            detail="Voice cloning is not configured (set STUDIO_VOICE_CLONE_URL or STUDIO_VOICE_CLONE_CHUTE_SLUG).",
+            detail="Voice cloning is not available (no ops pods online, STUDIO_VOICE_CLONE_URL not set).",
         )
 
     target = (body.target_text or "").strip()
@@ -965,16 +1401,17 @@ async def designed_voice_speak(body: StudioDesignedVoiceSpeakRequest, user_id: s
 
     conn = await get_connection()
     try:
-        cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
-        row_c = await cursor.fetchone()
-        if row_c is None:
-            raise HTTPException(status_code=404, detail="User not found")
-        credits = int(row_c["credits"])
-        if credits < VOICE_DESIGN_SPEAK_CREDITS:
-            raise HTTPException(
-                status_code=402,
-                detail=f"Insufficient credits. Need {VOICE_DESIGN_SPEAK_CREDITS} credits to generate with this voice. You have {credits}.",
-            )
+        if not internal_proxy:
+            cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
+            row_c = await cursor.fetchone()
+            if row_c is None:
+                raise HTTPException(status_code=404, detail="User not found")
+            credits = int(row_c["credits"])
+            if credits < VOICE_DESIGN_SPEAK_CREDITS:
+                raise HTTPException(
+                    status_code=402,
+                    detail=f"Insufficient credits. Need {VOICE_DESIGN_SPEAK_CREDITS} credits to generate with this voice. You have {credits}.",
+                )
         row = await (
             await conn.execute(
                 """
@@ -1043,28 +1480,28 @@ async def designed_voice_speak(body: StudioDesignedVoiceSpeakRequest, user_id: s
             ),
         )
         history_id = int(cursor.lastrowid)
-        await conn.execute(
-            "UPDATE auth_users SET credits = credits - ?, updated_at = datetime('now') WHERE id = ?",
-            (VOICE_DESIGN_SPEAK_CREDITS, user_id),
-        )
-        credit_cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
-        new_row = await credit_cursor.fetchone()
-        new_credits = int(new_row["credits"]) if new_row else credits - VOICE_DESIGN_SPEAK_CREDITS
-        await record_credit_transaction(
-            conn,
-            user_id=user_id,
-            transaction_type="voice_clone",
-            amount=-VOICE_DESIGN_SPEAK_CREDITS,
-            balance_after=new_credits,
-            description=f"My voice (designed): {row['display_name']}",
-            reference_type="studio_clone_history",
-            reference_id=str(history_id),
-            metadata={
-                "clone_endpoint": clone_endpoint_label,
-                "ref_source": "designed_voice",
-                "voice_id": body.voice_id,
-            },
-        )
+        if internal_proxy:
+            cur_row = await (await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))).fetchone()
+            new_credits = int(cur_row["credits"]) if cur_row else 0
+        else:
+            new_credits = await atomic_deduct_credits(conn, user_id=user_id, cost=VOICE_DESIGN_SPEAK_CREDITS)
+            if new_credits is None:
+                raise HTTPException(status_code=402, detail="Insufficient credits.")
+            await record_credit_transaction(
+                conn,
+                user_id=user_id,
+                transaction_type="voice_clone",
+                amount=-VOICE_DESIGN_SPEAK_CREDITS,
+                balance_after=new_credits,
+                description=f"My voice (designed): {row['display_name']}",
+                reference_type="studio_clone_history",
+                reference_id=str(history_id),
+                metadata={
+                    "clone_endpoint": clone_endpoint_label,
+                    "ref_source": "designed_voice",
+                    "voice_id": body.voice_id,
+                },
+            )
         await refresh_daily_usage_for_day(conn, datetime.now(timezone.utc).date().isoformat())
         await conn.commit()
     finally:
@@ -1083,8 +1520,20 @@ async def designed_voice_speak(body: StudioDesignedVoiceSpeakRequest, user_id: s
 
 
 @router.get("/history", response_model=StudioHistoryResponse)
-async def get_history(user_id: str = Query(..., description="Website user id (e.g. from auth)")):
-    """List Studio history for user (TTS + STT)."""
+async def get_history(
+    user_id: str = Query(..., description="Must match the authenticated user"),
+    auth_user_id: str = Depends(require_auth),
+):
+    """List Studio history for user (TTS + STT).
+
+    SECURITY (2026-05-14): prior to this patch the endpoint had NO auth
+    and trusted the ``user_id`` query param, so anyone could read any
+    user's Studio history (TTS prompts, STT transcribed text, clone
+    samples) just by guessing user ids. Now requires a valid Bearer
+    JWT and rejects requests where ``user_id`` doesn't match the
+    authenticated user."""
+    if user_id != auth_user_id:
+        raise HTTPException(status_code=403, detail="user_id does not match authenticated user")
     conn = await get_connection()
     try:
         tts_rows = await (await conn.execute("""
@@ -1112,9 +1561,16 @@ async def get_history(user_id: str = Query(..., description="Website user id (e.
             LIMIT 100
         """, (user_id,))).fetchall()
         music_rows = await (await conn.execute("""
-            SELECT id, task, prompt_text, lyrics, audio_duration,
+            SELECT id, task, prompt_text, lyrics, audio_duration, metadata_json,
                    audio_s3_bucket, audio_s3_key, expires_at, created_at
             FROM studio_music_history
+            WHERE user_id = ?
+            ORDER BY datetime(created_at) DESC
+            LIMIT 100
+        """, (user_id,))).fetchall()
+        noise_remover_rows = await (await conn.execute("""
+            SELECT id, source_audio_filename, audio_s3_bucket, audio_s3_key, expires_at, created_at
+            FROM studio_noise_remover_history
             WHERE user_id = ?
             ORDER BY datetime(created_at) DESC
             LIMIT 100
@@ -1238,6 +1694,35 @@ async def get_history(user_id: str = Query(..., description="Website user id (e.
                 expires_at=expires_at.isoformat() if expires_at else "",
                 created_at=str(r["created_at"] or ""),
                 expired=expired,
+                # New: surface the lyrics + the raw task + the mode-specific
+                # metadata blob to the frontend, so the history card can show
+                # everything that went into this generation and let the user
+                # copy / rerun.
+                lyrics=r["lyrics"] or "",
+                music_task=r["task"] or "text2music",
+                music_metadata_json=(r["metadata_json"] if "metadata_json" in r.keys() else None) or "{}",
+            )
+        )
+    for r in noise_remover_rows:
+        expires_at = datetime.fromisoformat(str(r["expires_at"]).replace("Z", "+00:00")) if r["expires_at"] else None
+        expired = expires_at is not None and expires_at <= now if not is_premium else False
+        audio_url = None
+        if not expired and r["audio_s3_bucket"] and r["audio_s3_key"]:
+            audio_url = get_presigned_url(r["audio_s3_bucket"], r["audio_s3_key"], expires_at, public=is_premium)
+        items.append(
+            StudioHistoryItemResponse(
+                id=int(r["id"]),
+                entry_type="noise_remover",
+                miner_hotkey="",
+                model_name="Noise Remover",
+                display_name="Noise Remover",
+                prompt_text=None,
+                style_instruction="Noise reduction",
+                audio_url=audio_url,
+                expires_at=expires_at.isoformat() if expires_at else "",
+                created_at=str(r["created_at"] or ""),
+                expired=expired,
+                source_audio_filename=r["source_audio_filename"] or "",
             )
         )
     items.sort(key=lambda x: x.created_at, reverse=True)
@@ -1262,8 +1747,12 @@ async def delete_history_items(
         "tts": "studio_tts_history",
         "stt": "studio_stt_history",
         "clone": "studio_clone_history",
-        "voice_design": "studio_clone_history",  # voice_design rows live here too
+        "voice_design": "studio_clone_history",
         "music": "studio_music_history",
+        # Accept both the new name and the legacy "dubbing" alias so
+        # bookmarked URLs / stale frontends keep working after the rename.
+        "noise_remover": "studio_noise_remover_history",
+        "dubbing": "studio_noise_remover_history",
     }
     conn = await get_connection()
     deleted = 0
@@ -1295,13 +1784,22 @@ async def get_history_audio_url(
     history_id: int,
     user_id: str = Query(...),
     entry_type: str = Query("tts", description="tts, clone, or voice_design (latter two use clone history table)"),
+    auth_user_id: str = Depends(require_auth),
 ):
-    """Get a fresh presigned audio URL for a history entry (if not expired)."""
+    """Get a fresh presigned audio URL for a history entry (if not expired).
+
+    SECURITY (2026-05-14): require auth and reject mismatched user_id —
+    the WHERE filter on user_id alone is not enough since an attacker
+    could brute force history_ids against guessed user_ids."""
+    if user_id != auth_user_id:
+        raise HTTPException(status_code=403, detail="user_id does not match authenticated user")
     kind = (entry_type or "tts").strip().lower()
     if kind in ("clone", "voice_design", "designed_voice"):
         table = "studio_clone_history"
     elif kind == "music":
         table = "studio_music_history"
+    elif kind in ("noise_remover", "dubbing"):
+        table = "studio_noise_remover_history"
     else:
         table = "studio_tts_history"
     conn = await get_connection()
@@ -1333,17 +1831,233 @@ async def get_history_audio_url(
 # ---------------------------------------------------------------------------
 
 
+# System prompt for the AI lyric writer. Compact and prescriptive — small
+# models follow concrete examples better than abstract instructions.
+_LYRIC_SYSTEM_PROMPT = """You write song lyrics in the ACE-Step structure-tag format.
+
+Output format (HARD RULES — the music engine will reject anything else):
+
+- Use ONLY these structure tags, each on its own line, with a blank line
+  between sections:
+    [intro]  [verse]  [chorus]  [bridge]  [pre-chorus]  [hook]
+    [solo]   [break]  [outro]   [end]     [inst]
+- Tags are lowercase, in square brackets, on their own line.
+- NEVER invent tags. NO [verse 1], NO [guitar], NO [piano], NO [Verse],
+  NO numbered tags. Anything other than the tags above will be sung out
+  loud and break the song.
+- Plain text only inside sections. NO markdown, NO asterisks, NO
+  parentheticals like "(repeat)", NO stage directions, NO emoji.
+- 4 lines per [verse] / [chorus] is a good default. Bridges can be
+  shorter. Choruses repeat — write each chorus identically unless the
+  user asks for variation.
+- Match the genre / mood / vocal style hints from the prompt the user
+  passes in (e.g. if they say "rock, gritty, male vocals" the lyrics
+  should feel that way — punchy, direct, urban grit; not soft).
+
+Canonical structure: [verse] → [chorus] → [verse] → [bridge] → [chorus] → [outro]
+
+Output ONLY the lyrics — no preamble like "Here are your lyrics:", no
+explanations, no markdown fences."""
+
+
+def _strip_lyric_artifacts(s: str) -> str:
+    """Belt-and-suspenders cleanup. The system prompt forbids these,
+    but small models slip — strip stray markdown fences, leading
+    "Here is..." preambles, and ``**`` markers if they leak through."""
+    s = s.strip()
+    # Drop leading "Here is..." / "Sure!" / "Here are the lyrics..." lines
+    lines = s.splitlines()
+    while lines and not lines[0].lstrip().startswith("[") and len(lines) > 5:
+        # If first non-empty line isn't a structure tag and we have plenty
+        # of lines below, drop it as preamble
+        head = lines[0].strip()
+        if head and not head.startswith("[") and (
+            head.lower().startswith(("here", "sure", "okay", "let me", "let's"))
+            or head.endswith(":")
+        ):
+            lines = lines[1:]
+            continue
+        break
+    s = "\n".join(lines).strip()
+    # Strip code-fence wrapping if any
+    if s.startswith("```"):
+        s = s.split("\n", 1)[1] if "\n" in s else s[3:]
+        if s.endswith("```"):
+            s = s[: -3]
+    s = s.strip()
+    # Remove **bold** markers if present
+    s = re.sub(r"\*\*([^*\n]+)\*\*", r"\1", s)
+    return s
+
+
+@router.post("/music/generate-lyrics", response_model=StudioMusicLyricsResponse)
+async def music_generate_lyrics(
+    body: StudioMusicLyricsRequest,
+    user_id: str = Depends(require_auth),
+):
+    """Generate structured song lyrics from a topic + style prompt.
+    Uses the same LLM router as agents (Chutes by default; local if set).
+    Free — no credits charged. Output is plain lyric text with proper
+    [verse]/[chorus]/[bridge] tags, ready to drop into the music
+    generation form."""
+    from llm_client import (  # local import to avoid cycles
+        chat_complete_with_fallback,
+        llm_configured,
+    )
+    _ = user_id  # auth-only; no per-user state
+
+    topic = (body.topic or "").strip()
+    if not topic:
+        raise HTTPException(status_code=400, detail="topic is required")
+    if len(topic) > 500:
+        topic = topic[:500]
+
+    if not llm_configured():
+        raise HTTPException(status_code=503, detail="lyric LLM is not configured")
+
+    style = (body.prompt or "").strip()
+    sections = max(3, min(8, body.section_count or 5))
+
+    user_msg = (
+        f"Write song lyrics about: {topic}\n\n"
+        + (f"Style hints (from the music prompt): {style}\n\n" if style else "")
+        + f"Aim for around {sections} sections total. "
+        "Use the canonical structure: verse, chorus, verse, bridge, chorus, outro. "
+        "Make the chorus catchy and repeat it identically. Output only the lyrics."
+    )
+
+    # Try every Chutes model in the configured fallback list. Some
+    # reasoning models (e.g. R1 variants) occasionally return empty
+    # ``content`` for creative-writing prompts because their reasoning
+    # eats the budget; falling through to the next model in the list
+    # almost always works. Cleanup runs against each candidate so we
+    # never return raw "Here is your song:" preambles.
+    try:
+        raw = await chat_complete_with_fallback(
+            [
+                {"role": "system", "content": _LYRIC_SYSTEM_PROMPT},
+                {"role": "user", "content": user_msg},
+            ],
+            temperature=0.85,   # let it be a little playful
+            max_tokens=1500,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"lyric generation failed: {exc}") from exc
+
+    cleaned = _strip_lyric_artifacts(raw or "")
+    if not cleaned:
+        raise HTTPException(status_code=502, detail="lyric generation returned empty")
+    return StudioMusicLyricsResponse(lyrics=cleaned)
+
+
+@router.post("/music/upload-source")
+async def music_upload_source(
+    user_id_form: str = Form(..., alias="user_id"),
+    src_audio: UploadFile = File(...),
+    user_id: str = Depends(require_auth),
+):
+    """Upload the source/reference audio for retake/repaint/edit/extend/audio2audio
+    to R2. Returns ``{src_audio_bucket, src_audio_key}`` which the caller then
+    passes inside the /jobs/start payload — keeps the job payload tiny (no
+    base64) so the music tasks behave the same as text2music over the wire.
+    """
+    if user_id_form != user_id:
+        raise HTTPException(status_code=403, detail="user_id does not match authenticated user")
+    raw = await src_audio.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Empty audio file")
+    if len(raw) > MUSIC_MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Audio file too large")
+    # Pull the extension off the filename; fall back to wav.
+    filename = src_audio.filename or "source.wav"
+    dot = filename.rfind(".")
+    ext = filename[dot + 1:] if dot >= 0 and dot < len(filename) - 1 else "wav"
+    bucket, key = upload_audio_bytes_to_bucket(
+        user_id,
+        raw,
+        subdir="music-source",
+        extension=ext,
+        content_type=src_audio.content_type or "application/octet-stream",
+    )
+    return {"src_audio_bucket": bucket, "src_audio_key": key, "src_audio_filename": filename}
+
+
+def _clone_available() -> bool:
+    """True if voice clone is available — ops pods or static env."""
+    try:
+        from ops import pool as gpu_pool
+        if gpu_pool.online_pod_count("voice_clone") > 0:
+            return True
+    except Exception:
+        pass
+    return voice_clone_chute_configured()
+
+
+def _music_available() -> bool:
+    """True if at least one music pod is available — either via the ops
+    dispatcher or the static MUSIC_GEN_API_URL env var."""
+    try:
+        from ops import pool as gpu_pool
+        if gpu_pool.online_pod_count("music") > 0:
+            return True
+    except Exception:
+        pass
+    return music_gen_configured()
+
+
+@_acm
+async def _pick_music_pod():
+    """Yield the base URL of the best available music pod.
+
+    Priority:
+      1. ops dispatcher — least-loaded online ``music`` pod
+      2. static MUSIC_POOL (from MUSIC_GEN_API_URL env)
+
+    Raises HTTPException(503) if neither path has capacity."""
+    try:
+        from ops import pool as gpu_pool
+        if gpu_pool.online_pod_count("music") > 0:
+            async with gpu_pool.pick_pod("music") as pod:
+                yield pod.url
+                return
+    except Exception as e:
+        try:
+            from ops.pool import NoCapacity
+            if isinstance(e, NoCapacity):
+                raise HTTPException(status_code=503, detail="Music fleet busy (all pods at capacity)")
+        except ImportError:
+            pass
+
+    if not music_gen_configured():
+        raise HTTPException(status_code=503, detail="No music pods online and MUSIC_GEN_API_URL not configured.")
+    async with _pick_music_pod() as pod_url:
+        yield pod_url
+
+
 @router.post("/music/text2music", response_model=StudioMusicGenerateResponse)
 async def music_generate_text2music(body: StudioMusicText2MusicRequest, user_id: str = Depends(require_auth)):
     """Generate music from text prompt + lyrics via ACE-Step API."""
     if body.user_id != user_id:
         raise HTTPException(status_code=403, detail="user_id does not match authenticated user")
-    if not music_gen_configured():
-        raise HTTPException(status_code=503, detail="Music generation is not configured (MUSIC_GEN_API_URL).")
+    if not _music_available():
+        raise HTTPException(status_code=503, detail="Music generation is not available (no ops pods online, MUSIC_GEN_API_URL not set).")
 
     prompt = (body.prompt or "").strip()
     if not prompt:
         raise HTTPException(status_code=400, detail="prompt is required")
+    # Tiered duration cap by quality. ``-1`` is a sentinel for "random"
+    # supported by the underlying engine; the engine clamps internally
+    # so we let it through.
+    if body.audio_duration != -1:
+        cap = _max_music_duration_for_steps(int(body.infer_step or 60))
+        if body.audio_duration > cap:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"audio_duration must be ≤ {int(cap)} seconds at this quality "
+                    f"(infer_step={body.infer_step}). Pick a faster quality or a shorter song."
+                ),
+            )
 
     conn = await get_connection()
     try:
@@ -1361,28 +2075,32 @@ async def music_generate_text2music(body: StudioMusicText2MusicRequest, user_id:
         await conn.close()
 
     started = time.perf_counter()
-    wav_bytes, audio_path, err_msg = await music_text2music(
-        prompt=prompt,
-        lyrics=body.lyrics,
-        audio_duration=body.audio_duration,
-        format=body.format,
-        infer_step=body.infer_step,
-        guidance_scale=body.guidance_scale,
-        scheduler_type=body.scheduler_type,
-        cfg_type=body.cfg_type,
-        omega_scale=body.omega_scale,
-        manual_seeds=body.manual_seeds,
-        guidance_interval=body.guidance_interval,
-        guidance_interval_decay=body.guidance_interval_decay,
-        min_guidance_scale=body.min_guidance_scale,
-        use_erg_tag=body.use_erg_tag,
-        use_erg_lyric=body.use_erg_lyric,
-        use_erg_diffusion=body.use_erg_diffusion,
-        oss_steps=body.oss_steps,
-        guidance_scale_text=body.guidance_scale_text,
-        guidance_scale_lyric=body.guidance_scale_lyric,
-        lora_name_or_path=body.lora_name_or_path,
-    )
+    async with _pick_music_pod() as pod_url:
+        wav_bytes, audio_path, err_msg = await music_text2music(
+            base_url=pod_url,
+            prompt=prompt,
+            lyrics=body.lyrics,
+            audio_duration=body.audio_duration,
+            format=body.format,
+            infer_step=body.infer_step,
+            guidance_scale=body.guidance_scale,
+            scheduler_type=body.scheduler_type,
+            cfg_type=body.cfg_type,
+            omega_scale=body.omega_scale,
+            manual_seeds=body.manual_seeds,
+            guidance_interval=body.guidance_interval,
+            guidance_interval_decay=body.guidance_interval_decay,
+            min_guidance_scale=body.min_guidance_scale,
+            use_erg_tag=body.use_erg_tag,
+            use_erg_lyric=body.use_erg_lyric,
+            use_erg_diffusion=body.use_erg_diffusion,
+            oss_steps=body.oss_steps,
+            guidance_scale_text=body.guidance_scale_text,
+            guidance_scale_lyric=body.guidance_scale_lyric,
+            lora_name_or_path=body.lora_name_or_path,
+        )
+        if not wav_bytes and err_msg and ("returned 5" in err_msg or "timed out" in err_msg or "connect" in err_msg.lower()):
+            MUSIC_POOL.quarantine(pod_url)
     latency_ms = int((time.perf_counter() - started) * 1000)
 
     if not wav_bytes:
@@ -1420,13 +2138,9 @@ async def music_generate_text2music(body: StudioMusicText2MusicRequest, user_id:
             ),
         )
         history_id = int(cursor.lastrowid)
-        await conn.execute(
-            "UPDATE auth_users SET credits = credits - ?, updated_at = datetime('now') WHERE id = ?",
-            (MUSIC_CREDITS_COST, user_id),
-        )
-        credit_cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
-        new_row = await credit_cursor.fetchone()
-        new_credits = int(new_row["credits"]) if new_row else credits - MUSIC_CREDITS_COST
+        new_credits = await atomic_deduct_credits(conn, user_id=user_id, cost=MUSIC_CREDITS_COST)
+        if new_credits is None:
+            raise HTTPException(status_code=402, detail="Insufficient credits.")
         await record_credit_transaction(
             conn,
             user_id=user_id,
@@ -1470,8 +2184,18 @@ async def music_generate_audio2audio(
     """Audio-to-Audio style transfer via ACE-Step."""
     if user_id_form != user_id:
         raise HTTPException(status_code=403, detail="user_id does not match authenticated user")
-    if not music_gen_configured():
-        raise HTTPException(status_code=503, detail="Music generation is not configured.")
+    if not _music_available():
+        raise HTTPException(status_code=503, detail="Music generation is not available (no ops pods online, MUSIC_GEN_API_URL not set).")
+    if audio_duration != -1:
+        cap = _max_music_duration_for_steps(int(infer_step or 60))
+        if audio_duration > cap:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"audio_duration must be ≤ {int(cap)} seconds at this quality "
+                    f"(infer_step={infer_step}). Pick a faster quality or a shorter song."
+                ),
+            )
 
     raw = await ref_audio.read()
     if not raw:
@@ -1492,17 +2216,21 @@ async def music_generate_audio2audio(
         await conn.close()
 
     started = time.perf_counter()
-    wav_bytes, audio_path, err_msg = await music_audio2audio(
-        ref_audio_bytes=raw,
-        ref_audio_filename=ref_audio.filename or "reference.wav",
-        prompt=prompt,
-        lyrics=lyrics,
-        audio_duration=audio_duration,
-        ref_audio_strength=ref_audio_strength,
-        format=format,
-        infer_step=infer_step,
-        guidance_scale=guidance_scale,
-    )
+    async with _pick_music_pod() as pod_url:
+        wav_bytes, audio_path, err_msg = await music_audio2audio(
+            base_url=pod_url,
+            ref_audio_bytes=raw,
+            ref_audio_filename=ref_audio.filename or "reference.wav",
+            prompt=prompt,
+            lyrics=lyrics,
+            audio_duration=audio_duration,
+            ref_audio_strength=ref_audio_strength,
+            format=format,
+            infer_step=infer_step,
+            guidance_scale=guidance_scale,
+        )
+        if not wav_bytes and err_msg and ("returned 5" in err_msg or "timed out" in err_msg or "connect" in err_msg.lower()):
+            MUSIC_POOL.quarantine(pod_url)
     latency_ms = int((time.perf_counter() - started) * 1000)
 
     if not wav_bytes:
@@ -1526,13 +2254,9 @@ async def music_generate_audio2audio(
              _json.dumps({"ref_audio_strength": ref_audio_strength})),
         )
         history_id = int(cursor.lastrowid)
-        await conn.execute(
-            "UPDATE auth_users SET credits = credits - ?, updated_at = datetime('now') WHERE id = ?",
-            (MUSIC_CREDITS_COST, user_id),
-        )
-        credit_cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
-        new_row = await credit_cursor.fetchone()
-        new_credits = int(new_row["credits"]) if new_row else credits - MUSIC_CREDITS_COST
+        new_credits = await atomic_deduct_credits(conn, user_id=user_id, cost=MUSIC_CREDITS_COST)
+        if new_credits is None:
+            raise HTTPException(status_code=402, detail="Insufficient credits.")
         await record_credit_transaction(
             conn, user_id=user_id, transaction_type="music_generation",
             amount=-MUSIC_CREDITS_COST, balance_after=new_credits,
@@ -1570,8 +2294,8 @@ async def music_generate_retake(
     """Generate variation of existing audio via ACE-Step retake."""
     if user_id_form != user_id:
         raise HTTPException(status_code=403, detail="user_id mismatch")
-    if not music_gen_configured():
-        raise HTTPException(status_code=503, detail="Music generation is not configured.")
+    if not _music_available():
+        raise HTTPException(status_code=503, detail="Music generation is not available (no ops pods online, MUSIC_GEN_API_URL not set).")
 
     raw = await src_audio.read()
     if not raw or len(raw) > MUSIC_MAX_UPLOAD_BYTES:
@@ -1590,11 +2314,15 @@ async def music_generate_retake(
         await conn.close()
 
     started = time.perf_counter()
-    wav_bytes, _, err_msg = await music_retake(
-        src_audio_bytes=raw, src_audio_filename=src_audio.filename or "source.wav",
-        prompt=prompt, lyrics=lyrics, retake_variance=retake_variance,
-        retake_seeds=retake_seeds, format=format, infer_step=infer_step, guidance_scale=guidance_scale,
-    )
+    async with _pick_music_pod() as pod_url:
+        wav_bytes, _, err_msg = await music_retake(
+            base_url=pod_url,
+            src_audio_bytes=raw, src_audio_filename=src_audio.filename or "source.wav",
+            prompt=prompt, lyrics=lyrics, retake_variance=retake_variance,
+            retake_seeds=retake_seeds, format=format, infer_step=infer_step, guidance_scale=guidance_scale,
+        )
+        if not wav_bytes and err_msg and ("returned 5" in err_msg or "timed out" in err_msg or "connect" in err_msg.lower()):
+            MUSIC_POOL.quarantine(pod_url)
     latency_ms = int((time.perf_counter() - started) * 1000)
 
     if not wav_bytes:
@@ -1602,21 +2330,30 @@ async def music_generate_retake(
 
     bucket, key, expires_at = upload_wav_to_hippius(user_id, wav_bytes, subdir="music")
 
+    import json as _json
     conn = await get_connection()
     try:
+        # Persist mode-specific params so the History page can show
+        # the user EXACTLY how this track was generated and let them
+        # rerun / tweak / copy. Without this the user only sees the
+        # prompt + lyrics and forgets that variance=0.7 was the magic.
+        meta = {
+            "retake_variance": retake_variance,
+            "retake_seeds": retake_seeds,
+            "infer_step": infer_step,
+            "guidance_scale": guidance_scale,
+        }
         cursor = await conn.execute(
             """INSERT INTO studio_music_history
             (user_id, task, prompt_text, lyrics, audio_duration, audio_format,
-             audio_s3_bucket, audio_s3_key, expires_at, credits_used, latency_ms, status, created_at)
-            VALUES (?, 'retake', ?, ?, 0, ?, ?, ?, ?, ?, ?, 'completed', datetime('now'))""",
-            (user_id, prompt, lyrics, format, bucket, key, expires_at.isoformat(), MUSIC_CREDITS_COST, latency_ms),
+             audio_s3_bucket, audio_s3_key, expires_at, credits_used, latency_ms, status, metadata_json, created_at)
+            VALUES (?, 'retake', ?, ?, 0, ?, ?, ?, ?, ?, ?, 'completed', ?, datetime('now'))""",
+            (user_id, prompt, lyrics, format, bucket, key, expires_at.isoformat(), MUSIC_CREDITS_COST, latency_ms, _json.dumps(meta)),
         )
         history_id = int(cursor.lastrowid)
-        await conn.execute("UPDATE auth_users SET credits = credits - ?, updated_at = datetime('now') WHERE id = ?",
-                           (MUSIC_CREDITS_COST, user_id))
-        credit_cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
-        new_row = await credit_cursor.fetchone()
-        new_credits = int(new_row["credits"]) if new_row else credits - MUSIC_CREDITS_COST
+        new_credits = await atomic_deduct_credits(conn, user_id=user_id, cost=MUSIC_CREDITS_COST)
+        if new_credits is None:
+            raise HTTPException(status_code=402, detail="Insufficient credits.")
         await record_credit_transaction(conn, user_id=user_id, transaction_type="music_generation",
                                         amount=-MUSIC_CREDITS_COST, balance_after=new_credits,
                                         description="Music generation (retake)",
@@ -1652,8 +2389,8 @@ async def music_generate_repaint(
     """Regenerate a region of audio via ACE-Step repaint."""
     if user_id_form != user_id:
         raise HTTPException(status_code=403, detail="user_id mismatch")
-    if not music_gen_configured():
-        raise HTTPException(status_code=503, detail="Music generation is not configured.")
+    if not _music_available():
+        raise HTTPException(status_code=503, detail="Music generation is not available (no ops pods online, MUSIC_GEN_API_URL not set).")
 
     raw = await src_audio.read()
     if not raw or len(raw) > MUSIC_MAX_UPLOAD_BYTES:
@@ -1672,11 +2409,15 @@ async def music_generate_repaint(
         await conn.close()
 
     started = time.perf_counter()
-    wav_bytes, _, err_msg = await music_repaint(
-        src_audio_bytes=raw, src_audio_filename=src_audio.filename or "source.wav",
-        prompt=prompt, lyrics=lyrics, repaint_start=repaint_start, repaint_end=repaint_end,
-        retake_variance=retake_variance, format=format, infer_step=infer_step, guidance_scale=guidance_scale,
-    )
+    async with _pick_music_pod() as pod_url:
+        wav_bytes, _, err_msg = await music_repaint(
+            base_url=pod_url,
+            src_audio_bytes=raw, src_audio_filename=src_audio.filename or "source.wav",
+            prompt=prompt, lyrics=lyrics, repaint_start=repaint_start, repaint_end=repaint_end,
+            retake_variance=retake_variance, format=format, infer_step=infer_step, guidance_scale=guidance_scale,
+        )
+        if not wav_bytes and err_msg and ("returned 5" in err_msg or "timed out" in err_msg or "connect" in err_msg.lower()):
+            MUSIC_POOL.quarantine(pod_url)
     latency_ms = int((time.perf_counter() - started) * 1000)
 
     if not wav_bytes:
@@ -1684,21 +2425,27 @@ async def music_generate_repaint(
 
     bucket, key, expires_at = upload_wav_to_hippius(user_id, wav_bytes, subdir="music")
 
+    import json as _json
     conn = await get_connection()
     try:
+        meta = {
+            "repaint_start": repaint_start,
+            "repaint_end": repaint_end,
+            "retake_variance": retake_variance,
+            "infer_step": infer_step,
+            "guidance_scale": guidance_scale,
+        }
         cursor = await conn.execute(
             """INSERT INTO studio_music_history
             (user_id, task, prompt_text, lyrics, audio_duration, audio_format,
-             audio_s3_bucket, audio_s3_key, expires_at, credits_used, latency_ms, status, created_at)
-            VALUES (?, 'repaint', ?, ?, 0, ?, ?, ?, ?, ?, ?, 'completed', datetime('now'))""",
-            (user_id, prompt, lyrics, format, bucket, key, expires_at.isoformat(), MUSIC_CREDITS_COST, latency_ms),
+             audio_s3_bucket, audio_s3_key, expires_at, credits_used, latency_ms, status, metadata_json, created_at)
+            VALUES (?, 'repaint', ?, ?, 0, ?, ?, ?, ?, ?, ?, 'completed', ?, datetime('now'))""",
+            (user_id, prompt, lyrics, format, bucket, key, expires_at.isoformat(), MUSIC_CREDITS_COST, latency_ms, _json.dumps(meta)),
         )
         history_id = int(cursor.lastrowid)
-        await conn.execute("UPDATE auth_users SET credits = credits - ?, updated_at = datetime('now') WHERE id = ?",
-                           (MUSIC_CREDITS_COST, user_id))
-        credit_cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
-        new_row = await credit_cursor.fetchone()
-        new_credits = int(new_row["credits"]) if new_row else credits - MUSIC_CREDITS_COST
+        new_credits = await atomic_deduct_credits(conn, user_id=user_id, cost=MUSIC_CREDITS_COST)
+        if new_credits is None:
+            raise HTTPException(status_code=402, detail="Insufficient credits.")
         await record_credit_transaction(conn, user_id=user_id, transaction_type="music_generation",
                                         amount=-MUSIC_CREDITS_COST, balance_after=new_credits,
                                         description="Music generation (repaint)",
@@ -1736,8 +2483,8 @@ async def music_generate_edit(
     """Edit lyrics/tags of existing audio via ACE-Step."""
     if user_id_form != user_id:
         raise HTTPException(status_code=403, detail="user_id mismatch")
-    if not music_gen_configured():
-        raise HTTPException(status_code=503, detail="Music generation is not configured.")
+    if not _music_available():
+        raise HTTPException(status_code=503, detail="Music generation is not available (no ops pods online, MUSIC_GEN_API_URL not set).")
 
     raw = await src_audio.read()
     if not raw or len(raw) > MUSIC_MAX_UPLOAD_BYTES:
@@ -1756,12 +2503,16 @@ async def music_generate_edit(
         await conn.close()
 
     started = time.perf_counter()
-    wav_bytes, _, err_msg = await music_edit(
-        src_audio_bytes=raw, src_audio_filename=src_audio.filename or "source.wav",
-        prompt=prompt, lyrics=lyrics, edit_target_prompt=edit_target_prompt,
-        edit_target_lyrics=edit_target_lyrics, edit_n_min=edit_n_min, edit_n_max=edit_n_max,
-        retake_seeds=retake_seeds, format=format, infer_step=infer_step, guidance_scale=guidance_scale,
-    )
+    async with _pick_music_pod() as pod_url:
+        wav_bytes, _, err_msg = await music_edit(
+            base_url=pod_url,
+            src_audio_bytes=raw, src_audio_filename=src_audio.filename or "source.wav",
+            prompt=prompt, lyrics=lyrics, edit_target_prompt=edit_target_prompt,
+            edit_target_lyrics=edit_target_lyrics, edit_n_min=edit_n_min, edit_n_max=edit_n_max,
+            retake_seeds=retake_seeds, format=format, infer_step=infer_step, guidance_scale=guidance_scale,
+        )
+        if not wav_bytes and err_msg and ("returned 5" in err_msg or "timed out" in err_msg or "connect" in err_msg.lower()):
+            MUSIC_POOL.quarantine(pod_url)
     latency_ms = int((time.perf_counter() - started) * 1000)
 
     if not wav_bytes:
@@ -1769,21 +2520,29 @@ async def music_generate_edit(
 
     bucket, key, expires_at = upload_wav_to_hippius(user_id, wav_bytes, subdir="music")
 
+    import json as _json
     conn = await get_connection()
     try:
+        meta = {
+            "edit_target_prompt": edit_target_prompt,
+            "edit_target_lyrics": edit_target_lyrics,
+            "edit_n_min": edit_n_min,
+            "edit_n_max": edit_n_max,
+            "retake_seeds": retake_seeds,
+            "infer_step": infer_step,
+            "guidance_scale": guidance_scale,
+        }
         cursor = await conn.execute(
             """INSERT INTO studio_music_history
             (user_id, task, prompt_text, lyrics, audio_duration, audio_format,
-             audio_s3_bucket, audio_s3_key, expires_at, credits_used, latency_ms, status, created_at)
-            VALUES (?, 'edit', ?, ?, 0, ?, ?, ?, ?, ?, ?, 'completed', datetime('now'))""",
-            (user_id, prompt, lyrics, format, bucket, key, expires_at.isoformat(), MUSIC_CREDITS_COST, latency_ms),
+             audio_s3_bucket, audio_s3_key, expires_at, credits_used, latency_ms, status, metadata_json, created_at)
+            VALUES (?, 'edit', ?, ?, 0, ?, ?, ?, ?, ?, ?, 'completed', ?, datetime('now'))""",
+            (user_id, prompt, lyrics, format, bucket, key, expires_at.isoformat(), MUSIC_CREDITS_COST, latency_ms, _json.dumps(meta)),
         )
         history_id = int(cursor.lastrowid)
-        await conn.execute("UPDATE auth_users SET credits = credits - ?, updated_at = datetime('now') WHERE id = ?",
-                           (MUSIC_CREDITS_COST, user_id))
-        credit_cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
-        new_row = await credit_cursor.fetchone()
-        new_credits = int(new_row["credits"]) if new_row else credits - MUSIC_CREDITS_COST
+        new_credits = await atomic_deduct_credits(conn, user_id=user_id, cost=MUSIC_CREDITS_COST)
+        if new_credits is None:
+            raise HTTPException(status_code=402, detail="Insufficient credits.")
         await record_credit_transaction(conn, user_id=user_id, transaction_type="music_generation",
                                         amount=-MUSIC_CREDITS_COST, balance_after=new_credits,
                                         description="Music generation (edit)",
@@ -1819,8 +2578,8 @@ async def music_generate_extend(
     """Extend/lengthen audio via ACE-Step."""
     if user_id_form != user_id:
         raise HTTPException(status_code=403, detail="user_id mismatch")
-    if not music_gen_configured():
-        raise HTTPException(status_code=503, detail="Music generation is not configured.")
+    if not _music_available():
+        raise HTTPException(status_code=503, detail="Music generation is not available (no ops pods online, MUSIC_GEN_API_URL not set).")
 
     raw = await src_audio.read()
     if not raw or len(raw) > MUSIC_MAX_UPLOAD_BYTES:
@@ -1839,12 +2598,16 @@ async def music_generate_extend(
         await conn.close()
 
     started = time.perf_counter()
-    wav_bytes, _, err_msg = await music_extend(
-        src_audio_bytes=raw, src_audio_filename=src_audio.filename or "source.wav",
-        prompt=prompt, lyrics=lyrics, left_extend_length=left_extend_length,
-        right_extend_length=right_extend_length, extend_seeds=extend_seeds,
-        format=format, infer_step=infer_step, guidance_scale=guidance_scale,
-    )
+    async with _pick_music_pod() as pod_url:
+        wav_bytes, _, err_msg = await music_extend(
+            base_url=pod_url,
+            src_audio_bytes=raw, src_audio_filename=src_audio.filename or "source.wav",
+            prompt=prompt, lyrics=lyrics, left_extend_length=left_extend_length,
+            right_extend_length=right_extend_length, extend_seeds=extend_seeds,
+            format=format, infer_step=infer_step, guidance_scale=guidance_scale,
+        )
+        if not wav_bytes and err_msg and ("returned 5" in err_msg or "timed out" in err_msg or "connect" in err_msg.lower()):
+            MUSIC_POOL.quarantine(pod_url)
     latency_ms = int((time.perf_counter() - started) * 1000)
 
     if not wav_bytes:
@@ -1852,21 +2615,27 @@ async def music_generate_extend(
 
     bucket, key, expires_at = upload_wav_to_hippius(user_id, wav_bytes, subdir="music")
 
+    import json as _json
     conn = await get_connection()
     try:
+        meta = {
+            "left_extend_length": left_extend_length,
+            "right_extend_length": right_extend_length,
+            "extend_seeds": extend_seeds,
+            "infer_step": infer_step,
+            "guidance_scale": guidance_scale,
+        }
         cursor = await conn.execute(
             """INSERT INTO studio_music_history
             (user_id, task, prompt_text, lyrics, audio_duration, audio_format,
-             audio_s3_bucket, audio_s3_key, expires_at, credits_used, latency_ms, status, created_at)
-            VALUES (?, 'extend', ?, ?, 0, ?, ?, ?, ?, ?, ?, 'completed', datetime('now'))""",
-            (user_id, prompt, lyrics, format, bucket, key, expires_at.isoformat(), MUSIC_CREDITS_COST, latency_ms),
+             audio_s3_bucket, audio_s3_key, expires_at, credits_used, latency_ms, status, metadata_json, created_at)
+            VALUES (?, 'extend', ?, ?, 0, ?, ?, ?, ?, ?, ?, 'completed', ?, datetime('now'))""",
+            (user_id, prompt, lyrics, format, bucket, key, expires_at.isoformat(), MUSIC_CREDITS_COST, latency_ms, _json.dumps(meta)),
         )
         history_id = int(cursor.lastrowid)
-        await conn.execute("UPDATE auth_users SET credits = credits - ?, updated_at = datetime('now') WHERE id = ?",
-                           (MUSIC_CREDITS_COST, user_id))
-        credit_cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
-        new_row = await credit_cursor.fetchone()
-        new_credits = int(new_row["credits"]) if new_row else credits - MUSIC_CREDITS_COST
+        new_credits = await atomic_deduct_credits(conn, user_id=user_id, cost=MUSIC_CREDITS_COST)
+        if new_credits is None:
+            raise HTTPException(status_code=402, detail="Insufficient credits.")
         await record_credit_transaction(conn, user_id=user_id, transaction_type="music_generation",
                                         amount=-MUSIC_CREDITS_COST, balance_after=new_credits,
                                         description="Music generation (extend)",
@@ -1886,8 +2655,16 @@ async def music_generate_extend(
 
 
 @router.get("/music/history", response_model=StudioMusicHistoryResponse)
-async def get_music_history(user_id: str = Query(...)):
-    """List music generation history for a user."""
+async def get_music_history(
+    user_id: str = Query(...),
+    auth_user_id: str = Depends(require_auth),
+):
+    """List music generation history for a user.
+
+    SECURITY (2026-05-14): require auth + user_id match. See note on
+    ``get_history`` above — the same IDOR existed here."""
+    if user_id != auth_user_id:
+        raise HTTPException(status_code=403, detail="user_id does not match authenticated user")
     conn = await get_connection()
     try:
         rows = await (await conn.execute("""
@@ -1927,8 +2704,17 @@ async def get_music_history(user_id: str = Query(...)):
 
 
 @router.get("/music/history/{history_id}/audio-url")
-async def get_music_history_audio_url(history_id: int, user_id: str = Query(...)):
-    """Get a fresh presigned audio URL for a music history entry."""
+async def get_music_history_audio_url(
+    history_id: int,
+    user_id: str = Query(...),
+    auth_user_id: str = Depends(require_auth),
+):
+    """Get a fresh presigned audio URL for a music history entry.
+
+    SECURITY (2026-05-14): require auth + user_id match. Same IDOR as
+    the TTS/STT history endpoint above."""
+    if user_id != auth_user_id:
+        raise HTTPException(status_code=403, detail="user_id does not match authenticated user")
     conn = await get_connection()
     try:
         row = await (await conn.execute(
@@ -1943,7 +2729,185 @@ async def get_music_history_audio_url(history_id: int, user_id: str = Query(...)
     expires_at = datetime.fromisoformat(str(row["expires_at"]).replace("Z", "+00:00")) if row["expires_at"] else None
     if not is_premium and expires_at and expires_at <= datetime.now(timezone.utc):
         raise HTTPException(status_code=410, detail="Audio has expired.")
-    url = get_presigned_url(row["audio_s3_bucket"], row["audio_s3_key"], expires_at, public=is_premium)
-    if not url:
+    music_url = get_presigned_url(row["audio_s3_bucket"], row["audio_s3_key"], expires_at, public=is_premium)
+    if not music_url:
         raise HTTPException(status_code=410, detail="Audio expired.")
-    return {"audio_url": url}
+    return {"audio_url": music_url}
+
+
+# ---------------------------------------------------------------------------
+# Dubbing (noise reduction / speech enhancement)
+# ---------------------------------------------------------------------------
+
+# Noise Remover (was "Dubbing" — DeepFilterNet enhancement).
+# 5 cr/gen, up to 5 minutes of audio, up to 50 MB upload. Old
+# STUDIO_DUBBING_* env vars still honored for backwards compat.
+NOISE_REMOVER_CREDITS_COST = int(
+    os.environ.get("STUDIO_NOISE_REMOVER_CREDITS_COST")
+    or os.environ.get("STUDIO_DUBBING_CREDITS_COST", "5")
+)
+NOISE_REMOVER_MAX_UPLOAD_BYTES = int(
+    os.environ.get("STUDIO_NOISE_REMOVER_MAX_UPLOAD_BYTES")
+    or os.environ.get("STUDIO_DUBBING_MAX_UPLOAD_BYTES", str(50 * 1024 * 1024))
+)
+NOISE_REMOVER_MAX_DURATION_SEC = int(
+    os.environ.get("STUDIO_NOISE_REMOVER_MAX_DURATION_SEC")
+    or os.environ.get("STUDIO_DUBBING_MAX_DURATION_SEC", str(5 * 60))
+)
+NOISE_REMOVER_ALLOWED_MIMES = frozenset({
+    "audio/wav", "audio/x-wav", "audio/wave",
+    "audio/mpeg", "audio/mp3",
+    "audio/mp4", "audio/x-m4a", "audio/m4a",
+    "audio/ogg", "audio/vorbis",
+    "audio/flac", "audio/x-flac",
+    "audio/webm",
+    "audio/aac",
+})
+
+
+def _noise_remover_available() -> bool:
+    """The pod's ops-service name was kept as ``noise_remover`` after the
+    rename; old deployments may still report ``dubbing``. Check both so
+    in-flight pod migrations don't 503 the endpoint mid-rollout."""
+    try:
+        from ops import pool as gpu_pool
+        if gpu_pool.online_pod_count("noise_remover") > 0:
+            return True
+        if gpu_pool.online_pod_count("dubbing") > 0:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+@router.post("/noise-remover/enhance")
+async def noise_remover_enhance(
+    user_id_form: str = Form(..., alias="user_id"),
+    audio_file: UploadFile = File(...),
+    user_id: str = Depends(require_auth),
+    internal_proxy: bool = Depends(is_internal_proxy),
+):
+    """Upload noisy audio, get back enhanced/denoised audio.
+
+    Billing: studio web UI is billed here (flat per-call). Developer-API
+    proxy calls (``internal_proxy=True``) are billed on the API side
+    per-minute at a different rate — we skip ALL credit logic here
+    when called via the trust path, to avoid double-billing.
+    """
+    if user_id_form != user_id:
+        raise HTTPException(status_code=403, detail="user_id does not match authenticated user")
+    if not _noise_remover_available():
+        raise HTTPException(status_code=503, detail="Noise Remover is not available (no ops pods online).")
+
+    content_type = (audio_file.content_type or "").lower().split(";")[0].strip()
+    if content_type and content_type not in NOISE_REMOVER_ALLOWED_MIMES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported audio format: {content_type}. Accepted: WAV, MP3, M4A, OGG, FLAC, WebM, AAC.",
+        )
+
+    raw = await audio_file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Empty audio file")
+    if len(raw) > NOISE_REMOVER_MAX_UPLOAD_BYTES:
+        max_mb = NOISE_REMOVER_MAX_UPLOAD_BYTES / (1024 * 1024)
+        raise HTTPException(status_code=413, detail=f"Audio exceeds {max_mb:.0f} MB limit.")
+
+    # Reject over-cap audio before the expensive DeepFilterNet pass.
+    import asyncio
+    from audio_probe import probe_audio_duration_seconds
+    probed_dur = await asyncio.to_thread(probe_audio_duration_seconds, raw, audio_file.filename)
+    if probed_dur is not None and probed_dur > NOISE_REMOVER_MAX_DURATION_SEC:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Audio is {probed_dur:.1f}s — Noise Remover is limited to {NOISE_REMOVER_MAX_DURATION_SEC}s ({NOISE_REMOVER_MAX_DURATION_SEC // 60} min).",
+        )
+
+    # Pre-flight balance check (website path only — proxied calls own
+    # their own billing on the dev-api side).
+    if not internal_proxy:
+        conn = await get_connection()
+        try:
+            cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
+            urow = await cursor.fetchone()
+            if urow is None:
+                raise HTTPException(status_code=404, detail="User not found")
+            credits = int(urow["credits"])
+            if credits < NOISE_REMOVER_CREDITS_COST:
+                raise HTTPException(
+                    status_code=402,
+                    detail=f"Insufficient credits. Need {NOISE_REMOVER_CREDITS_COST} for Noise Remover. You have {credits}.",
+                )
+        finally:
+            await conn.close()
+
+    from studio_noise_remover_service import enhance_audio
+    started = time.perf_counter()
+    wav_bytes, err = await enhance_audio(
+        audio_bytes=raw,
+        filename=audio_file.filename or "input.wav",
+    )
+    if not wav_bytes:
+        raise HTTPException(status_code=502, detail=f"Enhancement failed: {err}")
+
+    latency_ms = int((time.perf_counter() - started) * 1000)
+
+    conn = await get_connection()
+    try:
+        bucket, key, expires_at = upload_wav_to_hippius(user_id, wav_bytes, subdir="noise-remover")
+        if internal_proxy:
+            # Proxied call: the dev-api already deducted. We still log the
+            # history row (so the user sees the artifact in their history),
+            # but we skip the atomic_deduct_credits + transaction row to
+            # avoid double-billing. Use the current balance for response.
+            cur = await (await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))).fetchone()
+            new_credits = int(cur["credits"]) if cur else 0
+        else:
+            new_credits = await atomic_deduct_credits(conn, user_id=user_id, cost=NOISE_REMOVER_CREDITS_COST)
+            if new_credits is None:
+                raise HTTPException(status_code=402, detail="Insufficient credits.")
+        await conn.execute(
+            """
+            INSERT INTO studio_noise_remover_history
+            (user_id, source_audio_filename, audio_s3_bucket, audio_s3_key, expires_at,
+             credits_used, latency_ms, status, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'completed', datetime('now'))
+            """,
+            (
+                user_id,
+                audio_file.filename or "input.wav",
+                bucket,
+                key,
+                expires_at.isoformat() if expires_at else "",
+                0 if internal_proxy else NOISE_REMOVER_CREDITS_COST,
+                latency_ms,
+            ),
+        )
+        if not internal_proxy:
+            await record_credit_transaction(
+                conn,
+                user_id=user_id,
+                transaction_type="noise_remover",
+                amount=-NOISE_REMOVER_CREDITS_COST,
+                balance_after=new_credits,
+                description="Noise Remover (DeepFilterNet enhancement)",
+                reference_type="studio_noise_remover_history",
+                reference_id=key,
+            )
+        await conn.commit()
+    finally:
+        await conn.close()
+
+    try:
+        from referral_service import try_activate_referral
+        await try_activate_referral(user_id)
+    except Exception:
+        pass
+
+    dub_url = get_presigned_url(bucket, key, expires_at, public=False) or ""
+    return {
+        "audio_url": dub_url,
+        "credits_used": 0 if internal_proxy else NOISE_REMOVER_CREDITS_COST,
+        "credits_remaining": new_credits,
+        "latency_ms": latency_ms,
+    }

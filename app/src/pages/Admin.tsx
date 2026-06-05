@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
+import { useConfirm } from '../hooks/useConfirm';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { dashboardApi, type BlogPost, type RegisteredUser, type DashboardValidator } from '../services/dashboardApi';
@@ -9,6 +10,10 @@ import {
 } from 'lucide-react';
 import { ADMIN_EMAIL } from '../config';
 import { BlogContent } from '../components/BlogContent';
+import { LlmPricingSection } from '../components/admin/LlmPricingSection';
+import { AdminQualitySection } from '../components/admin/AdminQualitySection';
+import { AdminVoiceSubmissionsSection } from '../components/admin/AdminVoiceSubmissionsSection';
+import { AdminNotificationsSection } from '../components/admin/AdminNotificationsSection';
 const ACCENT = '#D1F840';
 const USERS_PAGE_SIZE = 15;
 
@@ -17,6 +22,7 @@ export function Admin() {
   const { user, isAuthenticated } = useAuth();
   const isAdmin = isAuthenticated && user?.email === ADMIN_EMAIL;
 
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [blocklist, setBlocklist] = useState<string[]>([]);
   const [newHotkey, setNewHotkey] = useState('');
   const [blocklistLoading, setBlocklistLoading] = useState(false);
@@ -161,7 +167,7 @@ export function Admin() {
 
   const handleRemoveHotkey = async (hotkey: string) => {
     if (!user?.email) return;
-    if (!window.confirm(`Remove this hotkey from the blocklist?\n\n${hotkey}`)) return;
+    if (!await confirm({ title: 'Remove from Blocklist', message: `Remove hotkey ${hotkey.slice(0, 16)}... from the blocklist?`, confirmLabel: 'Remove', confirmVariant: 'danger' })) return;
     setBlocklistError(null);
     try {
       await dashboardApi.removeBlocklist(hotkey, user.email);
@@ -299,7 +305,8 @@ export function Admin() {
   const charCount = postForm.content.length;
 
   const handleDeletePost = async (id: string) => {
-    if (!user?.email || !confirm('Delete this post?')) return;
+    if (!user?.email) return;
+    if (!await confirm({ title: 'Delete Post', message: 'Delete this blog post? This cannot be undone.', confirmLabel: 'Delete', confirmVariant: 'danger' })) return;
     try {
       await dashboardApi.deleteBlogPost(id, user.email);
       loadPosts();
@@ -344,7 +351,7 @@ export function Admin() {
 
   const handleRemoveValidator = async (uid: number, hotkey: string) => {
     if (!user?.email) return;
-    if (!window.confirm(`Remove this validator from the registry?\n\nUID: ${uid}\nHotkey: ${hotkey}`)) return;
+    if (!await confirm({ title: 'Remove Validator', message: `Remove validator UID ${uid} (${hotkey.slice(0, 16)}...) from the registry?`, confirmLabel: 'Remove', confirmVariant: 'danger' })) return;
     setValidatorError(null);
     try {
       await dashboardApi.removeValidator(uid, user.email);
@@ -357,7 +364,7 @@ export function Admin() {
   if (!isAdmin) return null;
 
   return (
-    <div className="min-h-screen bg-[#07080A] pt-24 pb-16 px-6 lg:px-8">
+    <div className="min-h-screen bg-[#07080A] pt-4 pb-16 px-6 lg:px-8">
       <div className="max-w-4xl mx-auto">
         <h1 className="text-2xl font-semibold text-white mb-8">Admin</h1>
 
@@ -596,6 +603,24 @@ export function Admin() {
           )}
         </section>
 
+        {/* LLM provider pricing (rates used to compute cost_usd on every
+            llm_calls row). Mounted before Blog so the editing surface
+            sits near the rest of the data-management sections. */}
+        <LlmPricingSection />
+
+        {/* User-thumbs feedback. Overall satisfaction + per-feature
+            breakdown + actionable list of recent thumbs-down. */}
+        <AdminQualitySection />
+
+        {/* User-submitted voices awaiting review. Pending sorts first;
+            approval grants the submitter 300 bonus credits and fires
+            a notification. */}
+        <AdminVoiceSubmissionsSection />
+
+        {/* Compose + broadcast in-product notifications. Audience
+            choice: all users, paid users, or an explicit id list. */}
+        <AdminNotificationsSection />
+
         {/* Blog posts */}
         <section className="glass-panel rounded-xl p-6">
           <h2 className="text-lg font-semibold text-white flex items-center gap-2 mb-4">
@@ -758,7 +783,7 @@ export function Admin() {
                       {postForm.content.trim() ? (
                         <BlogContent content={postForm.content} />
                       ) : (
-                        <p className="text-sm text-gray-600 italic">Start typing on the left — preview will appear here.</p>
+                        <p className="text-sm text-gray-600 italic">Start typing on the left, preview will appear here.</p>
                       )}
                     </div>
                   )}
@@ -812,6 +837,7 @@ export function Admin() {
           )}
         </section>
       </div>
+      {confirmDialog}
     </div>
   );
 }

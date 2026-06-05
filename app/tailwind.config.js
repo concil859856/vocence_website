@@ -4,6 +4,12 @@ module.exports = {
   content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'],
   theme: {
     extend: {
+      // Named easings so we avoid arbitrary `ease-[cubic-bezier(...)]`
+      // values inline — those carry commas Tailwind warns about as
+      // potentially ambiguous on every HMR cycle.
+      transitionTimingFunction: {
+        smooth: 'cubic-bezier(0.16, 1, 0.3, 1)',
+      },
       colors: {
         border: "hsl(var(--border))",
         input: "hsl(var(--input))",
@@ -72,11 +78,19 @@ module.exports = {
           "0%,70%,100%": { opacity: "1" },
           "20%,50%": { opacity: "0" },
         },
+        // Playbook track-row "now playing" equalizer bars. Each bar
+        // tweens its vertical scale on a loop; consumers add their own
+        // animation-delay to stagger the bars.
+        eq: {
+          "0%, 100%": { transform: "scaleY(0.4)" },
+          "50%": { transform: "scaleY(1)" },
+        },
       },
       animation: {
         "accordion-down": "accordion-down 0.2s ease-out",
         "accordion-up": "accordion-up 0.2s ease-out",
         "caret-blink": "caret-blink 1.25s ease-out infinite",
+        eq: "eq 0.9s ease-in-out infinite",
       },
     },
   },

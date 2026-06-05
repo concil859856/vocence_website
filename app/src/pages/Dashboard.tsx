@@ -35,8 +35,11 @@ gsap.registerPlugin(ScrollTrigger);
 const SUBNET_ID = 78;
 const ACCENT = '#D1F840';
 
-/** Mock by default. Set VITE_USE_MOCK_DASHBOARD=false in .env to reveal real dashboard. */
-const USE_MOCK_DASHBOARD = import.meta.env.VITE_USE_MOCK_DASHBOARD !== 'false';
+/** Real backend by default. Set VITE_USE_MOCK_DASHBOARD=true in local .env to
+ *  show the static MOCK_* data below (useful when the dashboard-backend's
+ *  subnet indexer isn't running locally). On Vercel / prod we want real
+ *  numbers without having to configure an env var explicitly. */
+const USE_MOCK_DASHBOARD = import.meta.env.VITE_USE_MOCK_DASHBOARD === 'true';
 
 // Mock when backend unavailable or when USE_MOCK_DASHBOARD is true
 const MOCK_OVERVIEW: DashboardOverview = {
@@ -1098,7 +1101,7 @@ export function Dashboard() {
         </div>
       </div>
 
-      {/* Validation detail slide-out (right side) — above navbar (z-[60]) */}
+      {/* Validation detail slide-out (right side), above navbar (z-[60]) */}
       {selectedValidationDetail && (
         <div
           className="fixed inset-0 z-[60] flex justify-end bg-black/50 backdrop-blur-sm"

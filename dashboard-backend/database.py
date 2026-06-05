@@ -36,8 +36,8 @@ async def get_pool() -> asyncpg.Pool:
         params = _build_connection_params()
         _pool = await asyncpg.create_pool(
             **params,
-            min_size=1,
-            max_size=10,
+            min_size=2,
+            max_size=int(os.environ.get("POSTGRES_POOL_MAX_SIZE", "25")),
             command_timeout=10,
         )
     return _pool
@@ -124,6 +124,89 @@ async def ensure_global_scoring_snapshots_table() -> None:
     async with acquire() as conn:
         try:
             await conn.execute(GLOBAL_SCORING_SNAPSHOTS_TABLE_SQL)
+        except Exception:
+            pass
+
+
+REGISTERED_MINERS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS registered_miners (
+    id SERIAL PRIMARY KEY,
+    uid INTEGER,
+    miner_hotkey VARCHAR(64) NOT NULL,
+    block INTEGER,
+    model_name TEXT,
+    model_revision TEXT,
+    chute_id TEXT,
+    chute_slug TEXT,
+    is_valid BOOLEAN NOT NULL DEFAULT FALSE,
+    invalid_reason TEXT,
+    last_validated_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_registered_miners_hotkey ON registered_miners (miner_hotkey);
+CREATE INDEX IF NOT EXISTS idx_registered_miners_uid ON registered_miners (uid);
+CREATE INDEX IF NOT EXISTS idx_registered_miners_is_valid ON registered_miners (is_valid);
+"""
+
+VALIDATOR_REGISTRY_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS validator_registry (
+    uid INTEGER PRIMARY KEY,
+    hotkey VARCHAR(64) NOT NULL UNIQUE,
+    stake DOUBLE PRECISION DEFAULT 0,
+    s3_bucket TEXT,
+    last_seen_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+"""
+
+VALIDATOR_EVALUATIONS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS validator_evaluations (
+    id SERIAL PRIMARY KEY,
+    validator_hotkey VARCHAR(64) NOT NULL,
+    evaluation_id VARCHAR(64) NOT NULL,
+    miner_hotkey VARCHAR(64) NOT NULL,
+    wins BOOLEAN NOT NULL DEFAULT FALSE,
+    evaluated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    prompt TEXT,
+    reasoning TEXT,
+    original_audio_url TEXT,
+    generated_audio_url TEXT,
+    score DOUBLE PRECISION,
+    element_scores TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_validator_evaluations_validator ON validator_evaluations (validator_hotkey);
+CREATE INDEX IF NOT EXISTS idx_validator_evaluations_miner ON validator_evaluations (miner_hotkey);
+CREATE INDEX IF NOT EXISTS idx_validator_evaluations_eval_id ON validator_evaluations (evaluation_id);
+CREATE INDEX IF NOT EXISTS idx_validator_evaluations_evaluated_at ON validator_evaluations (evaluated_at);
+"""
+
+BLOCKED_ENTITIES_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS blocked_entities (
+    hotkey VARCHAR(64) PRIMARY KEY,
+    reason TEXT,
+    added_by TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+"""
+
+
+async def ensure_core_tables() -> None:
+    """Create the core subnet tables if they don't exist yet."""
+    async with acquire() as conn:
+        try:
+            await conn.execute(REGISTERED_MINERS_TABLE_SQL)
+        except Exception:
+            pass
+        try:
+            await conn.execute(VALIDATOR_REGISTRY_TABLE_SQL)
+        except Exception:
+            pass
+        try:
+            await conn.execute(VALIDATOR_EVALUATIONS_TABLE_SQL)
+        except Exception:
+            pass
+        try:
+            await conn.execute(BLOCKED_ENTITIES_TABLE_SQL)
         except Exception:
             pass
 

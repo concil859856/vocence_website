@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-from local_db import get_connection, record_credit_transaction
+from local_db import atomic_deduct_credits, get_connection, record_credit_transaction
 
 from . import state
 from .queues import queue_for
@@ -72,21 +72,55 @@ async def enqueue(
 
     # 1. Verify every required pool is configured and would not exceed cap.
     #    Reserve atomically: if any one fails, roll back earlier reservations.
+    #    A pool counts as "configured" if EITHER the static env-based pool has
+    #    URLs OR the ops dispatcher has online pods for that service.
+    # Each pool can be served by one or more ops service names. STT is
+    # the multi-service case: the legacy ``stt`` batch image and the new
+    # ``asr_streaming_rt`` image both satisfy STT jobs (the latter hosts
+    # both batch /v1/transcribe AND streaming WS /v1/stream, so either
+    # generation works for a batch STT job).
+    _POOL_TO_OPS_SERVICES: dict[str, tuple[str, ...]] = {
+        "tts": ("tts_streaming",),
+        "stt": ("asr_streaming_rt", "stt"),
+        "clone": ("voice_clone",),
+        "music": ("music",),
+        "noise_remover": ("noise_remover",),
+    }
+
+    def _pool_available(pool_name: str, cnt) -> bool:
+        if cnt is not None and cnt.configured:
+            return True
+        services = _POOL_TO_OPS_SERVICES.get(pool_name, ())
+        if services:
+            try:
+                from ops import pool as gpu_pool
+                return any(gpu_pool.online_pod_count(s) > 0 for s in services)
+            except Exception:
+                pass
+        return False
+
     reserved: list[tuple[str, int]] = []
     try:
         for pool_name, slots in demand.items():
             cnt = counters.get(pool_name)
-            if cnt is None or not cnt.configured:
+            if not _pool_available(pool_name, cnt):
                 raise JobAdmissionRejected(
                     f"{_human_pool(pool_name)} is not configured. Please contact support.",
                     retry_after_seconds=300,
                 )
-            if not cnt.try_admit(slots):
-                raise JobAdmissionRejected(
-                    _capacity_message(type, cnt.cap),
-                    retry_after_seconds=60,
-                )
-            reserved.append((pool_name, slots))
+            # When the static pool has capacity counters, use them.
+            # When only ops pods are available (cnt.cap == 0), skip the
+            # static admission — the ops dispatcher enforces its own
+            # 2×N cap inside pick_pod() at execution time.
+            if cnt is not None and cnt.cap > 0:
+                if not cnt.try_admit(slots):
+                    raise JobAdmissionRejected(
+                        _capacity_message(type, cnt.cap),
+                        retry_after_seconds=60,
+                    )
+                reserved.append((pool_name, slots))
+            else:
+                reserved.append((pool_name, 0))
 
         # 2. Charge credits up front (refund on failure).
         if credits_to_charge > 0:
@@ -206,22 +240,16 @@ async def _charge_credits(user_id: str, task_type: str, amount: int) -> None:
         return
     conn = await get_connection()
     try:
-        row = await (await conn.execute(
-            "SELECT credits FROM auth_users WHERE id = ?", (user_id,)
-        )).fetchone()
-        if row is None:
-            raise JobError("User not found")
-        current = int(row["credits"] or 0)
-        if current < amount:
+        new_balance = await atomic_deduct_credits(conn, user_id=user_id, cost=amount)
+        if new_balance is None:
+            row = await (await conn.execute(
+                "SELECT credits FROM auth_users WHERE id = ?", (user_id,)
+            )).fetchone()
+            current = int(row["credits"] or 0) if row else 0
             raise JobAdmissionRejected(
                 f"Insufficient credits. This job costs {amount} credits — you have {current}.",
                 retry_after_seconds=0,
             )
-        new_balance = current - amount
-        await conn.execute(
-            "UPDATE auth_users SET credits = ?, updated_at = datetime('now') WHERE id = ?",
-            (new_balance, user_id),
-        )
         await record_credit_transaction(
             conn,
             user_id=user_id,
@@ -243,17 +271,14 @@ async def _refund_credits(job: state.Job) -> None:
         return
     conn = await get_connection()
     try:
+        await conn.execute(
+            "UPDATE auth_users SET credits = credits + ?, updated_at = datetime('now') WHERE id = ?",
+            (job.credits_charged, job.user_id),
+        )
         row = await (await conn.execute(
             "SELECT credits FROM auth_users WHERE id = ?", (job.user_id,)
         )).fetchone()
-        if row is None:
-            return
-        current = int(row["credits"] or 0)
-        new_balance = current + job.credits_charged
-        await conn.execute(
-            "UPDATE auth_users SET credits = ?, updated_at = datetime('now') WHERE id = ?",
-            (new_balance, job.user_id),
-        )
+        new_balance = int(row["credits"]) if row else 0
         await record_credit_transaction(
             conn,
             user_id=job.user_id,

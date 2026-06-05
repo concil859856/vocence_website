@@ -28,7 +28,7 @@ export interface Job {
   status: 'pending' | 'success' | 'error';
   result?: JobResult;
   error?: string;
-  /** Server-side phase ("transcribing reference", "cloning voice", etc.) — shown as subtitle in pill. */
+  /** Server-side phase ("transcribing reference", "cloning voice", etc.), shown as subtitle in pill. */
   phase?: string | null;
   /** 1-based queue position when status is pending; 0 when processing or done. */
   queuePosition?: number;
@@ -89,10 +89,10 @@ function loadFromStorage(): Job[] {
       if (!j || typeof j.id !== 'string') continue;
       if (j.status !== 'pending' && (j.finishedAt ?? 0) < cutoff) continue;
       if (j.status === 'pending' && !j.serverJobId) {
-        // Legacy in-process pending job — we lost its fetch handle on reload
+        // Legacy in-process pending job, we lost its fetch handle on reload
         out.push({ ...j, staleAfterReload: true });
       } else {
-        // Server-side jobs survive reloads — we can resume polling on mount
+        // Server-side jobs survive reloads, we can resume polling on mount
         out.push(j);
       }
     }
@@ -118,7 +118,7 @@ export function GenerationsProvider({ children }: { children: ReactNode }) {
 
   /** Track jobs we've already toasted on, so duplicate poll responses (or any
    *  re-invocation of `applyServerJob` for a final state) never fire the toast twice.
-   *  React 18 + StrictMode can run state-updaters multiple times — keeping toast.* OUT
+   *  React 18 + StrictMode can run state-updaters multiple times, keeping toast.* OUT
    *  of the `setJobs` updater plus this guard makes the side effect idempotent. */
   const toastedRef = useRef<Set<string>>(new Set());
 
@@ -142,7 +142,7 @@ export function GenerationsProvider({ children }: { children: ReactNode }) {
   }, []);
 
   /** Map backend job → context update; returns true if job is now in a final state.
-   *  Side effects (toast / player) live OUTSIDE the setJobs updater — updaters must be pure. */
+   *  Side effects (toast / player) live OUTSIDE the setJobs updater, updaters must be pure. */
   const applyServerJob = useCallback((localId: string, type: JobType, label: string, server: JobStatusResponse, toastResult?: TrackServerJobArgs['toastResult']): boolean => {
     const phase = server.phase ?? null;
     const queuePosition = server.queue_position ?? 0;
@@ -197,7 +197,7 @@ export function GenerationsProvider({ children }: { children: ReactNode }) {
       return true;
     }
 
-    // pending or processing — update phase + position only
+    // pending or processing, update phase + position only
     setJobs((prev) => prev.map((j) => (j.id !== localId ? j : { ...j, phase, queuePosition })));
     return false;
   }, [player, navigate]);
@@ -232,7 +232,7 @@ export function GenerationsProvider({ children }: { children: ReactNode }) {
           return;
         }
       } catch (e) {
-        // Transient errors (network blips, 4xx) — keep polling. After many failures we give up.
+        // Transient errors (network blips, 4xx), keep polling. After many failures we give up.
         console.warn('[generations] poll failed', e);
       }
       if (!cancelled) {

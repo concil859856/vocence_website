@@ -10,6 +10,9 @@ import {
   Pause,
   Download,
   MoreHorizontal,
+  ChevronDown,
+  ChevronRight,
+  Check,
 } from 'lucide-react';
 import { dashboardApi } from '../services/dashboardApi';
 import {
@@ -24,7 +27,7 @@ const HISTORY_PAGE_SIZE = 10;
 
 interface HistoryItem {
   id: string;
-  type: 'tts' | 'stt' | 'cloning' | 'voice_design';
+  type: 'tts' | 'stt' | 'cloning' | 'voice_design' | 'music' | 'noise_remover';
   timestamp: string;
   date: string;
   content: string;
@@ -37,6 +40,14 @@ interface HistoryItem {
   expired?: boolean;
   /** Query string for /studio/result e.g. ?entry_type=clone */
   resultQuery?: string;
+  /** Music-only: the generation mode (text2music, retake, repaint, edit, extend, audio2audio). */
+  musicTask?: string;
+  /** Music-only: full lyrics block as it was sent to the engine. */
+  lyrics?: string;
+  /** Music-only: parsed mode-specific params. The set of keys depends on
+   *  ``musicTask``, retake has variance/seeds, repaint has start/end,
+   *  edit has target_prompt/target_lyrics, extend has left/right, etc. */
+  musicMeta?: Record<string, unknown>;
 }
 
 export function History() {
@@ -47,6 +58,29 @@ export function History() {
   const [searchQuery, setSearchQuery] = useState('');
   const [filterType, setFilterType] = useState<string>('all');
   const [historyPage, setHistoryPage] = useState(1);
+  // Music rows have rich per-task metadata (prompt, lyrics, mode-specific
+  // params) that would clutter the table if we showed it inline. We
+  // store the set of expanded row ids and render a details panel right
+  // below each expanded music row. Only music rows are expandable; tts/
+  // stt/clone keep the same flat shape they had before.
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  const toggleExpanded = (id: string) =>
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  // Track which field was most recently copied (per row) so the icon
+  // briefly flips to a checkmark, small affordance that makes copy
+  // feel responsive.
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const copyValue = async (key: string, value: string) => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopiedKey(key);
+      window.setTimeout(() => setCopiedKey((c) => (c === key ? null : c)), 1200);
+    } catch { /* clipboard unavailable */ }
+  };
 
   const triggerBrowserDownload = async (url: string, filename: string) => {
     try {
@@ -102,8 +136,26 @@ export function History() {
                 ? 'cloning'
                 : item.entry_type === 'voice_design'
                   ? 'voice_design'
-                  : 'tts';
+                  : item.entry_type === 'music'
+                    ? 'music'
+                    : item.entry_type === 'noise_remover' || item.entry_type === 'dubbing'
+                      ? 'noise_remover'
+                      : 'tts';
           const isCloneLike = item.entry_type === 'clone' || item.entry_type === 'voice_design';
+          // Parse music metadata into a plain object so the expandable
+          // row can render task-specific fields without each consumer
+          // re-parsing the JSON string. Empty / unparsable → {}.
+          let musicMeta: Record<string, unknown> | undefined;
+          if (item.entry_type === 'music') {
+            try {
+              musicMeta = JSON.parse(item.music_metadata_json || '{}');
+            } catch {
+              musicMeta = {};
+            }
+          }
+          const musicTaskLabel = item.music_task
+            ? item.music_task.replace('2', ' to ').replace('_', ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+            : '';
           return {
             id: `api-${item.id}`,
             type,
@@ -113,12 +165,18 @@ export function History() {
               ? item.target_text || item.prompt_text || ''
               : item.entry_type === 'stt'
                 ? item.transcribed_text || item.source_audio_filename || ''
-                : item.prompt_text || '',
+                : item.entry_type === 'noise_remover'
+                  ? item.source_audio_filename || 'Audio enhancement'
+                  : item.prompt_text || '',
             stylePrompt: isCloneLike
               ? (item.reference_text || '').slice(0, 120) + ((item.reference_text || '').length > 120 ? '…' : '')
               : item.entry_type === 'stt'
                 ? item.source_language || 'auto-detect'
-                : item.style_instruction,
+                : item.entry_type === 'music'
+                  ? musicTaskLabel
+                  : item.entry_type === 'noise_remover'
+                    ? 'Noise reduction'
+                    : item.style_instruction,
             model: item.display_name,
             meta:
               item.entry_type === 'voice_design'
@@ -127,7 +185,11 @@ export function History() {
                   ? `Studio Clone · ${item.clone_source || 'ref'}`
                   : item.entry_type === 'stt'
                     ? item.source_audio_filename || 'Studio STT'
-                    : 'Studio TTS',
+                    : item.entry_type === 'music'
+                      ? `Studio Music · ${musicTaskLabel}`
+                      : item.entry_type === 'noise_remover'
+                        ? 'Noise Remover · DeepFilterNet'
+                        : 'Studio TTS',
             duration: item.duration_seconds != null ? `${item.duration_seconds.toFixed(1)}s` : '—',
             audioUrl: item.audio_url,
             expired: item.expired,
@@ -138,7 +200,12 @@ export function History() {
                   ? '?entry_type=voice_design'
                   : item.entry_type === 'music'
                     ? '?entry_type=music'
-                    : '',
+                    : item.entry_type === 'noise_remover'
+                      ? '?entry_type=noise_remover'
+                      : '',
+            musicTask: item.music_task || undefined,
+            lyrics: item.lyrics || undefined,
+            musicMeta,
           };
         });
         setHistory(items);
@@ -185,6 +252,10 @@ export function History() {
         return 'bg-cyan-500/15 text-cyan-400';
       case 'voice_design':
         return 'bg-violet-500/15 text-violet-400';
+      case 'music':
+        return 'bg-pink-500/15 text-pink-300';
+      case 'noise_remover':
+        return 'bg-amber-500/15 text-amber-300';
       default:
         return 'bg-white/10 text-white';
     }
@@ -196,9 +267,91 @@ export function History() {
         return 'CLONE';
       case 'voice_design':
         return 'MY VOICE';
+      case 'music':
+        return 'MUSIC';
+      case 'noise_remover':
+        return 'NOISE REMOVER';
       default:
         return type.toUpperCase();
     }
+  };
+
+  // Renders one labeled row inside the music-detail panel with a
+  // copy-to-clipboard button. The ``key`` makes copy feedback
+  // per-field instead of per-row, so the user sees which field they
+  // just copied.
+  const renderDetailRow = (rowId: string, label: string, value: string, monospace = false) => {
+    const fieldKey = `${rowId}:${label}`;
+    if (!value) return null;
+    const copied = copiedKey === fieldKey;
+    return (
+      <div className="flex items-start gap-3 py-1.5">
+        <div className="text-[10px] uppercase tracking-wider text-[#666] w-32 shrink-0 pt-0.5">{label}</div>
+        <div className={`flex-1 min-w-0 text-sm text-[#C5CAD1] ${monospace ? 'font-mono text-xs' : ''} whitespace-pre-wrap break-words`}>
+          {value}
+        </div>
+        <button
+          type="button"
+          onClick={() => copyValue(fieldKey, value)}
+          className={`shrink-0 inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded border transition-colors ${
+            copied
+              ? 'border-[#DFFF00]/40 text-[#DFFF00] bg-[#DFFF00]/10'
+              : 'border-white/10 text-[#A7B0B7] hover:text-white hover:border-white/30'
+          }`}
+          title={`Copy ${label.toLowerCase()}`}
+        >
+          {copied ? <Check size={12} /> : <Copy size={12} />}
+          {copied ? 'Copied' : 'Copy'}
+        </button>
+      </div>
+    );
+  };
+
+  // Mode-specific fields to show below a music row. Each task has a
+  // different set of knobs that mattered for the generation; we list
+  // the ones the user can reuse or paste back into Studio.
+  const renderMusicDetails = (item: HistoryItem) => {
+    if (item.type !== 'music') return null;
+    const meta = item.musicMeta || {};
+    const task = item.musicTask || 'text2music';
+    const rows: { label: string; value: string; mono?: boolean }[] = [
+      { label: 'Mode', value: item.stylePrompt || task },
+      { label: 'Prompt', value: item.content || '' },
+      { label: 'Lyrics', value: item.lyrics || '', mono: true },
+    ];
+    // Task-specific knobs. Order is "most informative first" so the
+    // user's eye lands on the field they're most likely to want to
+    // copy back into Studio.
+    if (task === 'audio2audio') {
+      if (meta.ref_audio_strength != null) rows.push({ label: 'Ref strength', value: String(meta.ref_audio_strength) });
+    } else if (task === 'retake') {
+      if (meta.retake_variance != null) rows.push({ label: 'Variance', value: String(meta.retake_variance) });
+      if (meta.retake_seeds) rows.push({ label: 'Seeds', value: String(meta.retake_seeds) });
+    } else if (task === 'repaint') {
+      if (meta.repaint_start != null) rows.push({ label: 'Window start', value: `${meta.repaint_start}s` });
+      if (meta.repaint_end != null) rows.push({ label: 'Window end', value: `${meta.repaint_end}s` });
+      if (meta.retake_variance != null) rows.push({ label: 'Variance', value: String(meta.retake_variance) });
+    } else if (task === 'edit') {
+      if (meta.edit_target_prompt) rows.push({ label: 'Target prompt', value: String(meta.edit_target_prompt) });
+      if (meta.edit_target_lyrics) rows.push({ label: 'Target lyrics', value: String(meta.edit_target_lyrics), mono: true });
+      if (meta.edit_n_min != null) rows.push({ label: 'n_min', value: String(meta.edit_n_min) });
+      if (meta.edit_n_max != null) rows.push({ label: 'n_max', value: String(meta.edit_n_max) });
+    } else if (task === 'extend') {
+      if (meta.left_extend_length != null) rows.push({ label: 'Left (sec)', value: String(meta.left_extend_length) });
+      if (meta.right_extend_length != null) rows.push({ label: 'Right (sec)', value: String(meta.right_extend_length) });
+      if (meta.extend_seeds) rows.push({ label: 'Seeds', value: String(meta.extend_seeds) });
+    }
+    // Common engine knobs, last, most users won't care, but power users want them.
+    if (meta.infer_step != null) rows.push({ label: 'Infer step', value: String(meta.infer_step) });
+    if (meta.guidance_scale != null) rows.push({ label: 'Guidance', value: String(meta.guidance_scale) });
+    return (
+      <div className="bg-white/[0.02] border-t border-white/5 px-6 py-3">
+        <div className="text-[10px] uppercase tracking-wider text-[#666] mb-2">Generation details</div>
+        <div className="space-y-0">
+          {rows.map((r) => renderDetailRow(item.id, r.label, r.value, r.mono))}
+        </div>
+      </div>
+    );
   };
 
   return (
@@ -245,6 +398,8 @@ export function History() {
                 <SelectItem value="stt">Speech-to-Text</SelectItem>
                 <SelectItem value="cloning">Voice clone</SelectItem>
                 <SelectItem value="voice_design">My voice (Voice Design)</SelectItem>
+                <SelectItem value="music">Music</SelectItem>
+                <SelectItem value="noise_remover">Noise Remover</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -276,10 +431,22 @@ export function History() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-white/5">
-                  {paginatedHistory.map((item) => (
-                    <tr key={item.id} className="hover:bg-white/5 transition-colors">
+                  {paginatedHistory.flatMap((item) => {
+                    const isMusic = item.type === 'music';
+                    const isExpanded = isMusic && expandedIds.has(item.id);
+                    const rows = [
+                    <tr
+                      key={item.id}
+                      className={`hover:bg-white/5 transition-colors ${isMusic ? 'cursor-pointer' : ''}`}
+                      onClick={isMusic ? () => toggleExpanded(item.id) : undefined}
+                    >
                       <td className="px-4 py-4">
-                        <div className="font-medium">{item.timestamp}</div>
+                        <div className="font-medium flex items-center gap-1.5">
+                          {isMusic && (
+                            isExpanded ? <ChevronDown size={14} className="text-[#A7B0B7]" /> : <ChevronRight size={14} className="text-[#A7B0B7]" />
+                          )}
+                          {item.timestamp}
+                        </div>
                         <div className="text-xs text-[#666]">{item.date}</div>
                       </td>
                       <td className="px-4 py-4">
@@ -294,7 +461,11 @@ export function History() {
                       <td className="px-4 py-4">
                         <div className="flex items-center gap-2">
                           <span className="truncate max-w-[200px]">{item.content}</span>
-                          <button className="text-[#666] hover:text-white" onClick={() => navigator.clipboard.writeText(item.content)} title="Copy">
+                          <button
+                            className="text-[#666] hover:text-white"
+                            onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(item.content); }}
+                            title="Copy"
+                          >
                             <Copy size={14} />
                           </button>
                         </div>
@@ -305,7 +476,11 @@ export function History() {
                             {item.stylePrompt || '-'}
                           </span>
                           {item.stylePrompt && (
-                            <button className="text-[#666] hover:text-white" onClick={() => navigator.clipboard.writeText(item.stylePrompt!)} title="Copy">
+                            <button
+                              className="text-[#666] hover:text-white"
+                              onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(item.stylePrompt!); }}
+                              title="Copy"
+                            >
                               <Copy size={14} />
                             </button>
                           )}
@@ -337,7 +512,10 @@ export function History() {
                           <span className="text-xs">{item.duration}</span>
                         </div>
                       </td>
-                      <td className="px-4 py-4 text-right">
+                      <td
+                        className="px-4 py-4 text-right"
+                        onClick={(e) => e.stopPropagation()}
+                      >
                         <div className="flex items-center justify-end gap-2">
                           {item.audioUrl != null && !item.expired ? (
                             <>
@@ -427,8 +605,19 @@ export function History() {
                           </button>
                         </div>
                       </td>
-                    </tr>
-                  ))}
+                    </tr>,
+                    ];
+                    if (isExpanded) {
+                      rows.push(
+                        <tr key={`${item.id}-details`} className="bg-[#0a0a0a]">
+                          <td colSpan={7} className="p-0">
+                            {renderMusicDetails(item)}
+                          </td>
+                        </tr>,
+                      );
+                    }
+                    return rows;
+                  })}
                 </tbody>
               </table>
             </div>

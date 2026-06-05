@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
 import { Github, Send, Twitter } from 'lucide-react';
 import { TELEGRAM_INVITE_URL } from '../config/socialLinks';
+import { useHasVoiceChatAccess } from '../lib/voicechatAccess';
 
 const SOCIAL_LINKS = [
   { href: 'https://x.com/vocence_bt', label: 'Twitter / X', icon: Twitter },
@@ -24,19 +25,28 @@ function DiscordIcon({ size = 18 }: { size?: number }) {
 }
 
 export function Footer() {
+  const isAdmin = useHasVoiceChatAccess();
+  // API and SDK docs are admin-only until public launch (mirrors
+  // Docs.tsx's adminOnly gate). Hide the footer links to those pages
+  // for non-admins so we don't tease features they can't open.
+  const featureLinks: Array<{ label: string; href?: string; comingSoon?: true }> = [
+    { label: 'Studio', href: '/studio/home' },
+    ...(isAdmin
+      ? [
+          { label: 'API', href: '/docs/api' },
+          { label: 'SDK', href: '/docs/sdk-python' },
+        ]
+      : []),
+    { label: 'Analytics', href: '/dashboard' },
+  ];
   const footerLinks = {
-    features: [
-      { label: 'Studio', href: '/studio/home' },
-      { label: 'API', href: '/docs/api' },
-      { label: 'Models', comingSoon: true },
-      { label: 'Analytics', href: '/dashboard' },
-    ] as Array<{ label: string; href?: string; comingSoon?: true }>,
+    features: featureLinks,
     product: [
       { label: 'Pricing', href: '/pricing' },
       { label: 'Integrations', href: '#' },
       { label: 'Changelog', href: 'https://github.com/vocence-78/vocence/blob/master/CHANGELOG.md' },
       { label: 'Documentation', href: '/docs/getting-started' },
-      { label: 'Status', href: '#' },
+      { label: 'Status', href: 'https://status.vocence.ai' },
     ],
     resources: [
       { label: 'Blog', href: '/blog' },

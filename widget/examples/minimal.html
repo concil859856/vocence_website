@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Vocence widget — minimal example</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #f5f7fa;
+      color: #333;
+      padding: 40px 20px;
+      min-height: 100vh;
+      box-sizing: border-box;
+    }
+    main {
+      max-width: 720px;
+      margin: 0 auto;
+      background: white;
+      padding: 32px;
+      border-radius: 12px;
+      box-shadow: 0 4px 24px rgba(0, 0, 0, 0.06);
+    }
+    h1 { margin-top: 0; }
+    code {
+      background: #eef0f3;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.9em;
+    }
+    pre {
+      background: #1e1e1e;
+      color: #f5f5f5;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Your website</h1>
+    <p>
+      This is a sample page demonstrating the Vocence agent widget. The
+      floating mic button in the bottom-right is the embedded agent —
+      click it to start a conversation.
+    </p>
+    <p>
+      To add the widget to your own site, paste these two lines anywhere
+      in your HTML:
+    </p>
+    <pre>&lt;script src="/dist/widget.iife.js" defer&gt;&lt;/script&gt;
+&lt;vocence-agent
+  agent-id="ag_demo"
+  embed-token="vet_replace_with_your_token"
+  server="http://localhost:8080"&gt;
+&lt;/vocence-agent&gt;</pre>
+    <p>
+      Generate your own embed token from the Vocence Studio agent
+      settings page. Sessions opened via the token bill against
+      the agent owner&rsquo;s account — your visitors don&rsquo;t
+      need to sign in.
+    </p>
+  </main>
+
+  <!-- Adjust paths for your own deploy. The dev build emits to ../dist. -->
+  <script src="../dist/widget.iife.js" defer></script>
+  <vocence-agent
+    agent-id="ag_demo"
+    embed-token="vet_local_dev_token"
+    server="http://localhost:8080"
+  ></vocence-agent>
+</body>
+</html>

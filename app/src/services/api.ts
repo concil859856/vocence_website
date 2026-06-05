@@ -2,6 +2,7 @@
 // Uses VITE_API_URL + '/api' (same backend as dashboard), with Vite proxy
 // support in dev when the backend target is localhost.
 import { API_BASE_URL, withNetworkHint } from './baseUrl';
+import { authFetch } from './authFetch';
 
 export interface User {
   id: string;
@@ -12,6 +13,7 @@ export interface User {
   planCode?: string;
   planStatus?: string;
   createdAt: string;
+  referralCode?: string;
 }
 
 export interface PricingPlan {
@@ -49,6 +51,13 @@ export interface AccountSummary {
   transactions: CreditTransaction[];
   totalTtsGenerations: number;
   totalCreditsUsed: number;
+}
+
+export interface CreditTransactionsPage {
+  items: CreditTransaction[];
+  total: number;
+  offset: number;
+  limit: number;
 }
 
 export interface DailyCreditsDay {
@@ -122,10 +131,19 @@ export interface DeveloperApiUsageLog {
 }
 
 export interface LoginRequest {
-  email: string;
-  name: string;
+  /** The raw Google ID token (JWT) from Google Identity Services'
+   *  ``credentialResponse.credential``. The backend verifies this
+   *  against Google's tokeninfo endpoint before trusting any claim. */
+  credential: string;
+  /** Optional hints, IGNORED by the backend when ``credential`` is
+   *  present (the verified JWT claims always win). Kept so old
+   *  callers don't break the type checker while we migrate. */
+  email?: string;
+  name?: string;
   picture?: string;
-  googleId: string;
+  googleId?: string;
+  referral_code?: string;
+  device_fingerprint?: string;
 }
 
 export interface LoginResponse {
@@ -133,12 +151,37 @@ export interface LoginResponse {
   token: string;
 }
 
+/** Error thrown by the emailX() methods on 4xx/5xx. Carries the HTTP
+ *  status + parsed Retry-After header so the UI can react accordingly
+ *  (audit M38). Falls back to a generic Error.message for any
+ *  consumer that just does `e.message`. */
+export class EmailAuthError extends Error {
+  status: number;
+  /** Seconds until the next retry should be allowed. Null when the
+   *  server didn't send a Retry-After header. */
+  retryAfter: number | null;
+  constructor(message: string, status: number, retryAfter: number | null) {
+    super(message);
+    this.name = 'EmailAuthError';
+    this.status = status;
+    this.retryAfter = retryAfter;
+  }
+}
+
+async function emailAuthError(response: Response, fallback: string): Promise<EmailAuthError> {
+  const data = await response.json().catch(() => ({} as { detail?: string }));
+  const detail = (data as { detail?: string })?.detail || fallback;
+  const ra = response.headers.get('Retry-After');
+  const retryAfter = ra ? Math.max(0, parseInt(ra, 10) || 0) : null;
+  return new EmailAuthError(detail, response.status, retryAfter);
+}
+
 // API Functions
 export const api = {
   // Sign up or login user
   async loginOrSignup(userData: LoginRequest): Promise<LoginResponse> {
     try {
-      const response = await fetch(`${API_BASE_URL}/auth/login`, {
+      const response = await authFetch(`${API_BASE_URL}/auth/login`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -162,7 +205,7 @@ export const api = {
   // Get user by ID
   async getUser(userId: string, token: string): Promise<User> {
     try {
-      const response = await fetch(`${API_BASE_URL}/users/${userId}`, {
+      const response = await authFetch(`${API_BASE_URL}/users/${userId}`, {
         method: 'GET',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -184,7 +227,7 @@ export const api = {
   // Update user credits
   async updateCredits(userId: string, credits: number, token: string): Promise<User> {
     try {
-      const response = await fetch(`${API_BASE_URL}/users/${userId}/credits`, {
+      const response = await authFetch(`${API_BASE_URL}/users/${userId}/credits`, {
         method: 'PATCH',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -204,21 +247,22 @@ export const api = {
     }
   },
 
-  // Verify token
+  // Verify a localStorage-stored legacy JWT. Used only during the
+  // pre-cookie → cookie migration: AuthContext presents the legacy
+  // token so the backend installs a fresh session cookie. After this
+  // call the localStorage token should be discarded.
   async verifyToken(token: string): Promise<User> {
     try {
-      const response = await fetch(`${API_BASE_URL}/auth/verify`, {
+      const response = await authFetch(`${API_BASE_URL}/auth/verify`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ token }),
       });
-
       if (!response.ok) {
         throw new Error('Token verification failed');
       }
-
       const data = await response.json();
       return data.user;
     } catch (error) {
@@ -227,9 +271,128 @@ export const api = {
     }
   },
 
+  // Verify whatever session the browser currently has via the
+  // ``vocence_session`` cookie. No body needed — the cookie travels
+  // automatically via authFetch's ``credentials: 'include'``. This
+  // is the post-migration boot path; the legacy verifyToken above
+  // sticks around for the one-time upgrade of pre-cookie users.
+  async verifyCurrentSession(): Promise<User> {
+    try {
+      const response = await authFetch(`${API_BASE_URL}/auth/verify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      if (!response.ok) {
+        throw new Error('Session verification failed');
+      }
+      const data = await response.json();
+      return data.user;
+    } catch (error) {
+      throw withNetworkHint(error);
+    }
+  },
+
+  // ── Email + password auth ─────────────────────────────────────────
+  // Mirror the Google login UX: success returns {user, token} so the
+  // caller (AuthModal / VerifyEmail page) stores the JWT and updates
+  // AuthContext exactly like the Google path.
+  //
+  // M38: 4xx/5xx throw EmailAuthError carrying (status, retryAfter)
+  // so the UI can disable the submit button + show a countdown on
+  // 429 instead of letting the user keep clicking.
+
+  /** Sign up with email + password. Always returns 200 (anti-enum). */
+  async emailSignup(args: {
+    email: string;
+    password: string;
+    name?: string;
+    referral_code?: string;
+    device_fingerprint?: string;
+    tos_accepted?: boolean;
+  }): Promise<{ ok: boolean; message: string }> {
+    const response = await authFetch(`${API_BASE_URL}/auth/email/signup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(args),
+    });
+    if (!response.ok) throw await emailAuthError(response, 'Signup failed');
+    return response.json();
+  },
+
+  /** Consume an email-verification token. On success returns the
+   *  same {user, token} shape as Google login so the frontend can
+   *  log the user in immediately. */
+  async emailVerify(verifyToken: string): Promise<LoginResponse> {
+    const response = await authFetch(`${API_BASE_URL}/auth/email/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: verifyToken }),
+    });
+    if (!response.ok) throw await emailAuthError(response, 'Verification failed');
+    return response.json();
+  },
+
+  /** Log in with email + password. */
+  async emailLogin(email: string, password: string): Promise<LoginResponse> {
+    const response = await authFetch(`${API_BASE_URL}/auth/email/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    });
+    if (!response.ok) throw await emailAuthError(response, 'Login failed');
+    return response.json();
+  },
+
+  /** Re-send the verification email. */
+  async emailResendVerify(email: string): Promise<{ ok: boolean; message: string }> {
+    const response = await authFetch(`${API_BASE_URL}/auth/email/resend-verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    });
+    if (!response.ok) throw await emailAuthError(response, 'Could not resend verification');
+    return response.json();
+  },
+
+  /** Request a password reset email. */
+  async emailForgot(email: string): Promise<{ ok: boolean; message: string }> {
+    const response = await authFetch(`${API_BASE_URL}/auth/email/forgot`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    });
+    if (!response.ok) throw await emailAuthError(response, 'Could not send reset email');
+    return response.json();
+  },
+
+  /** Consume a reset token + set a new password. */
+  async emailReset(resetToken: string, newPassword: string): Promise<{ ok: boolean; message: string }> {
+    const response = await authFetch(`${API_BASE_URL}/auth/email/reset`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: resetToken, new_password: newPassword }),
+    });
+    if (!response.ok) throw await emailAuthError(response, 'Password reset failed');
+    return response.json();
+  },
+
+  /** Clear the HttpOnly session cookie server-side. Always pair this
+   *  with the local-state cleanup in AuthContext.logout() so the user
+   *  is logged out everywhere. Best-effort: if the network call fails
+   *  the local cleanup still runs, but the cookie may persist until
+   *  natural expiry. */
+  async logout(): Promise<void> {
+    try {
+      await authFetch(`${API_BASE_URL}/auth/logout`, { method: 'POST' });
+    } catch {
+      // Network errors here aren't fatal — local logout still proceeds.
+    }
+  },
+
   async getPricingPlans(): Promise<{ plans: PricingPlan[] }> {
     try {
-      const response = await fetch(`${API_BASE_URL}/pricing/plans`);
+      const response = await authFetch(`${API_BASE_URL}/pricing/plans`);
       if (!response.ok) {
         throw new Error('Failed to fetch pricing plans');
       }
@@ -242,7 +405,7 @@ export const api = {
   async getNowPaymentsPayCurrencyOptions(planCode: string): Promise<NowPaymentsPayCurrencyOptions> {
     try {
       const q = new URLSearchParams({ planCode });
-      const response = await fetch(
+      const response = await authFetch(
         `${API_BASE_URL}/payments/nowpayments/pay-currency-options?${q.toString()}`
       );
       if (!response.ok) {
@@ -256,7 +419,7 @@ export const api = {
 
   async getAccountSummary(token: string): Promise<AccountSummary> {
     try {
-      const response = await fetch(`${API_BASE_URL}/account/summary`, {
+      const response = await authFetch(`${API_BASE_URL}/account/summary`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!response.ok) {
@@ -268,9 +431,28 @@ export const api = {
     }
   },
 
+  async getCreditTransactions(
+    token: string,
+    opts: { offset?: number; limit?: number } = {},
+  ): Promise<CreditTransactionsPage> {
+    const { offset = 0, limit = 25 } = opts;
+    try {
+      const response = await authFetch(
+        `${API_BASE_URL}/account/transactions?limit=${limit}&offset=${offset}`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      if (!response.ok) {
+        throw new Error('Failed to fetch credit transactions');
+      }
+      return response.json();
+    } catch (error) {
+      throw withNetworkHint(error);
+    }
+  },
+
   async getDailyCreditsUsage(token: string, days = 14): Promise<DailyCreditsUsage> {
     try {
-      const response = await fetch(`${API_BASE_URL}/account/credits/usage/daily?days=${days}`, {
+      const response = await authFetch(`${API_BASE_URL}/account/credits/usage/daily?days=${days}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!response.ok) {
@@ -287,7 +469,7 @@ export const api = {
     payload: { provider: 'stripe' | 'crypto'; planCode: string; payCurrency?: string }
   ): Promise<CheckoutSessionResponse> {
     try {
-      const response = await fetch(`${API_BASE_URL}/payments/checkout-session`, {
+      const response = await authFetch(`${API_BASE_URL}/payments/checkout-session`, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${token}`,
@@ -321,7 +503,7 @@ export const api = {
 
   async sendSalesInquiry(payload: SalesInquiryRequest): Promise<SalesInquiryResponse> {
     try {
-      const response = await fetch(`${API_BASE_URL}/sales/contact`, {
+      const response = await authFetch(`${API_BASE_URL}/sales/contact`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -348,7 +530,7 @@ export const api = {
   },
 
   async createDeveloperKey(token: string, payload: { name: string }) {
-    const response = await fetch(`${API_BASE_URL}/developer/keys`, {
+    const response = await authFetch(`${API_BASE_URL}/developer/keys`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${token}`,
@@ -364,7 +546,7 @@ export const api = {
   },
 
   async listDeveloperKeys(token: string): Promise<{ keys: DeveloperApiKey[] }> {
-    const response = await fetch(`${API_BASE_URL}/developer/keys`, {
+    const response = await authFetch(`${API_BASE_URL}/developer/keys`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (!response.ok) {
@@ -374,7 +556,7 @@ export const api = {
   },
 
   async revokeDeveloperKey(token: string, keyId: string): Promise<void> {
-    const response = await fetch(`${API_BASE_URL}/developer/keys/${keyId}/revoke`, {
+    const response = await authFetch(`${API_BASE_URL}/developer/keys/${keyId}/revoke`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}` },
     });
@@ -384,7 +566,7 @@ export const api = {
   },
 
   async getDeveloperUsage(token: string, limit = 50): Promise<{ logs: DeveloperApiUsageLog[] }> {
-    const response = await fetch(`${API_BASE_URL}/developer/usage?limit=${limit}`, {
+    const response = await authFetch(`${API_BASE_URL}/developer/usage?limit=${limit}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (!response.ok) {
@@ -405,6 +587,14 @@ export const localStorageFallback = {
     if (existingUser) {
       user = existingUser;
     } else {
+      // Fallback path runs offline / when the API is unreachable. The
+      // backend normally derives id/email/name from the verified Google
+      // JWT (``credential``); here we accept the caller-supplied hints
+      // but require them to be present, without an id/email/name we
+      // can't construct a usable User.
+      if (!userData.googleId || !userData.email || !userData.name) {
+        throw new Error('localStorageFallback: googleId, email, and name are required');
+      }
       user = {
         id: userData.googleId,
         email: userData.email,

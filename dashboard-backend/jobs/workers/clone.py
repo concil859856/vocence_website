@@ -1,4 +1,13 @@
-"""Voice clone worker — composite (auto-STT if no ref text, then clone)."""
+"""Voice clone worker — composite (auto-STT if no ref text, then clone).
+
+Two payload modes:
+  1. Upload/record mode: client sends `audio_b64`. We optionally STT to derive
+     the reference transcript, then call the clone API.
+  2. Sample-voice mode: client sends `sample_voice_id` (an entry in
+     sample_voices_data.SAMPLE_VOICE_AUDIO_URLS). We fetch the audio from the
+     CDN and STT it once, caching both per process for subsequent calls. Used
+     by the General TTS subpage.
+"""
 
 from __future__ import annotations
 
@@ -8,8 +17,15 @@ import logging
 import time
 
 from local_db import get_connection
+from sample_voice_loader import load_sample_voice
+from sample_voices_data import is_known_sample
 from studio_tts_service import (
+    assert_user_owned_object,
+    delete_object,
+    download_object_bytes,
+    download_object_bytes_capped,
     get_presigned_url,
+    load_community_voice,
     transcribe_audio,
     upload_wav_to_hippius,
     voice_clone_synthesize,
@@ -24,15 +40,31 @@ from ..timeouts import PHASE_TIMEOUT_CLONE, PHASE_TIMEOUT_STT
 _log = logging.getLogger(__name__)
 
 
+def _stt_available() -> bool:
+    try:
+        from ops import pool as gpu_pool
+        if gpu_pool.online_pod_count("stt") > 0:
+            return True
+    except Exception:
+        pass
+    return STT_POOL.configured()
+
+
+def _clone_available() -> bool:
+    try:
+        from ops import pool as gpu_pool
+        if gpu_pool.online_pod_count("voice_clone") > 0:
+            return True
+    except Exception:
+        pass
+    return CLONE_POOL.configured()
+
+
 async def process_clone(job: state.Job) -> dict:
     payload = job.payload
-    if not CLONE_POOL.configured():
-        raise RuntimeError("Voice clone pool is not configured")
+    if not _clone_available():
+        raise RuntimeError("Voice clone pool is not configured (no ops pods online, STUDIO_VOICE_CLONE_URL not set)")
 
-    audio_b64 = payload.get("audio_b64") or ""
-    if not audio_b64:
-        raise RuntimeError("audio_b64 missing in payload")
-    raw_ref = base64.b64decode(audio_b64)
     target = (payload.get("target_text") or "").strip()
     if not target:
         raise RuntimeError("target_text missing in payload")
@@ -40,6 +72,37 @@ async def process_clone(job: state.Job) -> dict:
     language = (payload.get("language") or "").strip() or None
     source_mode = (payload.get("ref_source") or "upload").strip().lower()
     source_filename = (payload.get("source_audio_filename") or "reference.wav")[:120]
+
+    sample_voice_id = (payload.get("sample_voice_id") or "").strip()
+    audio_bucket = (payload.get("audio_bucket") or "").strip()
+    audio_key = (payload.get("audio_key") or "").strip()
+    audio_b64 = payload.get("audio_b64") or ""
+
+    if sample_voice_id:
+        if sample_voice_id.startswith("community-"):
+            # Approved community-contributed voice: reference audio + transcript
+            # come from the voice_submissions row, not the static CDN catalog.
+            await state.update_status(job.id, phase="loading community voice")
+            raw_ref, cached_ref_text = await load_community_voice(sample_voice_id)
+        elif is_known_sample(sample_voice_id):
+            await state.update_status(job.id, phase="loading sample voice")
+            raw_ref, cached_ref_text = await load_sample_voice(
+                sample_voice_id, language=language,
+            )
+        else:
+            raise RuntimeError(f"unknown sample voice: {sample_voice_id}")
+        user_ref_text = cached_ref_text
+        source_mode = "sample"
+        source_filename = sample_voice_id[:120]
+    elif audio_bucket and audio_key:
+        assert_user_owned_object(audio_bucket, audio_key, job.user_id, allowed_subdir="voice-clone-ref")
+        raw_ref = download_object_bytes_capped(audio_bucket, audio_key)
+        if not raw_ref:
+            raise RuntimeError(f"Could not fetch reference audio from bucket={audio_bucket} key={audio_key}")
+    elif audio_b64:
+        raw_ref = base64.b64decode(audio_b64)
+    else:
+        raise RuntimeError("payload requires audio_bucket+audio_key (upload mode), audio_b64 (legacy), or sample_voice_id (general TTS)")
 
     started_total = time.perf_counter()
 
@@ -49,23 +112,17 @@ async def process_clone(job: state.Job) -> dict:
         ref_text = user_ref_text
         stt_latency_ms = 0
     else:
-        if not STT_POOL.configured():
-            raise RuntimeError("Auto-transcription requires STT pool, which is not configured")
+        if not _stt_available():
+            raise RuntimeError("Auto-transcription requires STT (no ops pods online, STUDIO_STT_URL not set)")
         await state.update_status(job.id, phase="transcribing reference")
         stt_started = time.perf_counter()
-        async with STT_POOL.acquire() as stt_pod:
-            await state.update_status(job.id, pod_url=stt_pod)
-            try:
-                data, err = await asyncio.wait_for(
-                    transcribe_audio(audio_bytes=raw_ref, language=language, base_url=stt_pod),
-                    timeout=PHASE_TIMEOUT_STT,
-                )
-            except asyncio.TimeoutError:
-                STT_POOL.quarantine(stt_pod)
-                raise
+        # Let transcribe_audio handle pod selection — its internal
+        # dispatcher picks stt pods with the correct per-pod API key.
+        data, err = await asyncio.wait_for(
+            transcribe_audio(audio_bytes=raw_ref, language=language),
+            timeout=PHASE_TIMEOUT_STT,
+        )
         if not data:
-            if err and ("returned 5" in err or "timed out" in err or "connect" in err.lower()):
-                STT_POOL.quarantine(stt_pod)
             raise RuntimeError(err or "Could not transcribe reference audio")
         ref_text = (data.get("text") or "").strip()
         if not ref_text:
@@ -77,24 +134,17 @@ async def process_clone(job: state.Job) -> dict:
     # ── Phase 2: Clone ─────────────────────────────────────────────────────
     await state.update_status(job.id, phase="cloning voice")
     clone_started = time.perf_counter()
-    async with CLONE_POOL.acquire() as clone_pod:
-        await state.update_status(job.id, pod_url=clone_pod)
-        try:
-            wav_bytes, clone_err = await asyncio.wait_for(
-                voice_clone_synthesize(
-                    reference_audio_bytes=raw_ref,
-                    reference_text=ref_text,
-                    target_text=target,
-                    base_url=clone_pod,
-                ),
-                timeout=PHASE_TIMEOUT_CLONE,
-            )
-        except asyncio.TimeoutError:
-            CLONE_POOL.quarantine(clone_pod)
-            raise
+    # Let voice_clone_synthesize handle pod selection — its internal
+    # dispatcher picks voice_clone pods with the correct per-pod API key.
+    wav_bytes, clone_err = await asyncio.wait_for(
+        voice_clone_synthesize(
+            reference_audio_bytes=raw_ref,
+            reference_text=ref_text,
+            target_text=target,
+        ),
+        timeout=PHASE_TIMEOUT_CLONE,
+    )
     if not wav_bytes:
-        if clone_err and ("returned 5" in clone_err or "timed out" in clone_err.lower()):
-            CLONE_POOL.quarantine(clone_pod)
         raise RuntimeError(clone_err or "Voice clone synthesis failed")
     clone_latency_ms = int((time.perf_counter() - clone_started) * 1000)
 
@@ -135,6 +185,16 @@ async def process_clone(job: state.Job) -> dict:
 
     audio_url = get_presigned_url(bucket, key, expires_at, public=False) or ""
     total_ms = int((time.perf_counter() - started_total) * 1000)
+
+    if audio_bucket and audio_key:
+        try:
+            assert_user_owned_object(audio_bucket, audio_key, job.user_id, allowed_subdir="voice-clone-ref")
+            delete_object(audio_bucket, audio_key)
+        except RuntimeError as exc:
+            _log.warning("[clone] refusing cleanup of unowned key: %s", exc)
+        except Exception:
+            _log.warning("[clone] failed to delete reference audio bucket=%s key=%s", audio_bucket, audio_key)
+
     return {
         "audio_url": audio_url,
         "history_id": history_id,

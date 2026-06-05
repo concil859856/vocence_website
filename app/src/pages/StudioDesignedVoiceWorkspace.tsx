@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { AlertCircle, ArrowLeft, Download, Play } from 'lucide-react';
+import { AlertCircle, ArrowLeft, BookOpen, Download, Play } from 'lucide-react';
 import { StudioShell } from '../components/StudioShell';
 import { AuthModal } from '../components/AuthModal';
 import { useAuth } from '../contexts/AuthContext';
@@ -135,7 +135,7 @@ export function StudioDesignedVoiceWorkspace() {
       setGenLoading(true);
       setNotice(null);
       setResult(null);
-      const label = `${voice?.display_name || 'Designed voice'} — ${text.slice(0, 60)}`;
+      const label = `${voice?.display_name || 'Designed voice'}, ${text.slice(0, 60)}`;
       void (async () => {
         try {
           const submission = await dashboardApi.startJob({
@@ -147,7 +147,7 @@ export function StudioDesignedVoiceWorkspace() {
           setNotice({
             type: 'info' as never,
             message: submission.load_warning
-              ? `Queued (position ${submission.queue_position}). Capacity is heavy — this might take roughly 2× as long as usual.`
+              ? `Queued (position ${submission.queue_position}). Capacity is heavy, this might take roughly 2× as long as usual.`
               : `Queued (position ${submission.queue_position}). Generating…`,
           } as never);
           generations.trackServerJob({
@@ -222,10 +222,23 @@ export function StudioDesignedVoiceWorkspace() {
               <ArrowLeft size={16} />
               My voices
             </Link>
-            <h1 className="text-2xl font-semibold text-white tracking-tight">
-              {voice?.display_name ?? 'Your voice'}
-            </h1>
-            {voice?.model_name ? <p className="text-xs text-[#6B7280] mt-1">{voice.model_name}</p> : null}
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h1 className="text-2xl font-semibold text-white tracking-tight">
+                  {voice?.display_name ?? 'Your voice'}
+                </h1>
+                {voice?.model_name ? <p className="text-xs text-[#6B7280] mt-1">{voice.model_name}</p> : null}
+              </div>
+              <a
+                href="/docs/guide-cloning"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.02] px-3 py-2 text-xs text-[#A7B0B7] hover:border-white/25 hover:text-white transition-colors"
+              >
+                <BookOpen size={14} />
+                Guide
+              </a>
+            </div>
           </div>
 
           {!isAuthenticated ? (

@@ -1,11 +1,14 @@
-import { useState } from 'react';
+/**
+ * Voice-cloning consent modal.
+ *
+ * Shown EVERY time the user kicks off a clone, not once-and-cached.
+ * Voice cloning has real abuse potential (impersonation, deepfake fraud)
+ * and a single past acceptance shouldn't stand in for fresh attestation
+ * on the next clone, possibly of a different voice. The user must
+ * re-affirm the four bullet points each time before the clone proceeds.
+ */
+
 import { ShieldCheck, X } from 'lucide-react';
-
-const CONSENT_KEY = 'vocence_voice_clone_consent_v1';
-
-export function hasVoiceCloneConsent(): boolean {
-  try { return !!localStorage.getItem(CONSENT_KEY); } catch { return false; }
-}
 
 interface Props {
   onAccept: () => void;
@@ -13,14 +16,6 @@ interface Props {
 }
 
 export function VoiceCloneConsent({ onAccept, onCancel }: Props) {
-  const [checked, setChecked] = useState(false);
-
-  const accept = () => {
-    if (!checked) return;
-    try { localStorage.setItem(CONSENT_KEY, new Date().toISOString()); } catch { /* ignore */ }
-    onAccept();
-  };
-
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4" onClick={onCancel}>
       <div
@@ -34,7 +29,7 @@ export function VoiceCloneConsent({ onAccept, onCancel }: Props) {
             </div>
             <div>
               <h3 className="text-base font-semibold text-white">Voice cloning consent</h3>
-              <p className="text-xs text-[#A7B0B7] mt-0.5">One-time confirmation before your first clone</p>
+              <p className="text-xs text-[#A7B0B7] mt-0.5">Confirm before each clone</p>
             </div>
           </div>
           <button onClick={onCancel} className="text-[#666] hover:text-white" aria-label="Close">
@@ -49,15 +44,10 @@ export function VoiceCloneConsent({ onAccept, onCancel }: Props) {
           <li className="flex gap-2"><span className="text-[#DFFF00] mt-0.5">•</span><span>I will not use Vocence to impersonate or defraud anyone.</span></li>
         </ul>
 
-        <label className="flex items-start gap-3 rounded-xl border border-white/10 bg-white/[0.03] p-3 cursor-pointer hover:bg-white/[0.05]">
-          <input
-            type="checkbox"
-            checked={checked}
-            onChange={(e) => setChecked(e.target.checked)}
-            className="mt-0.5 w-4 h-4 accent-[#DFFF00]"
-          />
-          <span className="text-sm text-white">I agree to the terms above.</span>
-        </label>
+        <p className="text-xs text-[#A7B0B7] leading-relaxed">
+          By clicking <span className="text-white font-medium">Continue</span> you agree to all of the above.
+          If you don't, click <span className="text-white font-medium">Cancel</span> instead.
+        </p>
 
         <div className="flex justify-end gap-2">
           <button
@@ -69,9 +59,8 @@ export function VoiceCloneConsent({ onAccept, onCancel }: Props) {
           </button>
           <button
             type="button"
-            onClick={accept}
-            disabled={!checked}
-            className="px-4 py-2 text-sm rounded-xl bg-[#DFFF00] text-[#07080A] font-semibold hover:brightness-110 disabled:opacity-50 disabled:cursor-not-allowed"
+            onClick={onAccept}
+            className="px-4 py-2 text-sm rounded-xl bg-[#DFFF00] text-[#07080A] font-semibold hover:brightness-110"
           >
             Continue
           </button>

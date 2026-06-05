@@ -17,8 +17,8 @@ from datetime import datetime, timedelta, timezone
 
 import jwt
 import aiohttp
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
-from pydantic import BaseModel
+from fastapi import APIRouter, BackgroundTasks, Cookie, Depends, Header, HTTPException, Query, Request, Response
+from pydantic import BaseModel, Field
 
 from local_db import (
     ensure_tables,
@@ -38,7 +38,29 @@ from stripe_service import (
 
 _np_log = logging.getLogger(__name__)
 
-JWT_SECRET = os.environ.get("JWT_SECRET", "your-secret-key-change-in-production")
+# SECURITY: JWT_SECRET must be a high-entropy value set via env. We refuse
+# to boot if it's missing, too short, or the well-known placeholder — those
+# are the conditions under which an attacker could forge any user/admin
+# session and silently take over the deployment.
+_INSECURE_DEFAULTS = {
+    "",
+    "your-secret-key-change-in-production",
+    "change-me",
+    "secret",
+    "changeme",
+}
+JWT_SECRET = (os.environ.get("JWT_SECRET") or "").strip()
+if JWT_SECRET in _INSECURE_DEFAULTS:
+    raise RuntimeError(
+        "JWT_SECRET is unset or uses a known-weak placeholder. Set a strong "
+        "random value in dashboard-backend/.env before starting the server."
+    )
+if len(JWT_SECRET) < 32:
+    raise RuntimeError(
+        f"JWT_SECRET is too short ({len(JWT_SECRET)} chars). Use at least 32 "
+        "random characters (e.g. `python -c 'import secrets; print(secrets.token_urlsafe(48))'`)."
+    )
+
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRY_DAYS = 30
 SIGNUP_CREDITS = int(os.environ.get("SIGNUP_CREDITS", "300"))
@@ -47,10 +69,25 @@ router = APIRouter(prefix="/api", tags=["auth"])
 
 
 class LoginRequest(BaseModel):
-    email: str
-    name: str
+    """Login payload.
+
+    SECURITY: ``credential`` is the Google-issued ID token (JWT) the
+    frontend receives from Google Identity Services. The backend
+    verifies it against Google before trusting anything inside it.
+    The legacy fields (``email``, ``name``, ``googleId``) are
+    deprecated — the verified claims always win when ``credential``
+    is present. New deployments should require ``credential``.
+    """
+    credential: str | None = None
+    # Legacy / fallback fields — IGNORED when credential is present.
+    # Kept on the schema so old clients can still send them without
+    # a 422; the server-side verification logic decides what to trust.
+    email: str | None = None
+    name: str | None = None
     picture: str | None = None
-    googleId: str
+    googleId: str | None = None
+    referral_code: str | None = None
+    device_fingerprint: str | None = None
 
 
 class UserOut(BaseModel):
@@ -62,6 +99,7 @@ class UserOut(BaseModel):
     planCode: str
     planStatus: str
     createdAt: str
+    referralCode: str | None = None
 
 
 class LoginResponse(BaseModel):
@@ -70,7 +108,10 @@ class LoginResponse(BaseModel):
 
 
 class VerifyRequest(BaseModel):
-    token: str
+    # Optional now that /auth/verify accepts a cookie. Frontend posts
+    # {} when relying purely on the cookie; legacy localStorage path
+    # posts {token: <jwt>} until phase 4 fully removes the storage.
+    token: str | None = None
 
 
 class VerifyResponse(BaseModel):
@@ -127,6 +168,17 @@ class AccountSummaryResponse(BaseModel):
     transactions: list[CreditTransactionOut]
     totalTtsGenerations: int
     totalCreditsUsed: int
+
+
+class AccountTransactionsPageResponse(BaseModel):
+    """Paged window over the user's credit_transactions, served by
+    ``GET /account/transactions``. ``total`` is the unfiltered count so
+    the client can render pagination controls (Prev / 1 of N / Next)
+    without making a second request."""
+    items: list[CreditTransactionOut]
+    total: int
+    offset: int
+    limit: int
 
 
 class CheckoutSessionRequest(BaseModel):
@@ -240,16 +292,124 @@ def _user_row_to_out(row) -> UserOut:
         planCode=row["plan_code"] or "normal",
         planStatus=row["plan_status"] or "active",
         createdAt=row["created_at"],
+        referralCode=row["referral_code"] if "referral_code" in row.keys() else None,
     )
 
 
 def _make_token(user_id: str, email: str) -> str:
+    """Issue a session JWT.
+
+    Includes ``iat`` (issued-at) so the auth-check path can compare it
+    against the user's ``password_changed_at`` and invalidate sessions
+    issued before the most recent password change (audit H8). Without
+    this claim, an attacker who stole a JWT keeps full access for up
+    to JWT_EXPIRY_DAYS even after the legit user resets their password.
+    """
+    now = datetime.now(timezone.utc)
     payload = {
         "userId": user_id,
         "email": email,
-        "exp": datetime.now(timezone.utc) + timedelta(days=JWT_EXPIRY_DAYS),
+        "iat": now,
+        "exp": now + timedelta(days=JWT_EXPIRY_DAYS),
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Session cookie (replacing the localStorage JWT exposure)
+# ─────────────────────────────────────────────────────────────────────
+#
+# The session JWT is installed as an HttpOnly + Secure + SameSite=Lax
+# cookie so JavaScript cannot read it. The previous design stored the
+# token in window.localStorage, where any XSS exploited via a
+# vulnerable dependency or future `dangerouslySetInnerHTML` could
+# exfiltrate it in one line. That was the audit's #1 critical finding;
+# this is the fix.
+#
+# Migration strategy: backend dual-issues (cookie AND body) and
+# require_auth dual-accepts (cookie OR Bearer). After the frontend
+# migrates every fetch to ``credentials: 'include'`` and stops
+# writing to localStorage, we drop the body return + Bearer support
+# for browser sessions. The developer-api proxy stays on Bearer
+# (X-Internal-Service-Token) — different system, different trust
+# model, not affected.
+#
+# SameSite=Lax: cookie attached on top-level navigation (so the user
+# clicking a Vocence link from elsewhere works) but NOT on cross-site
+# subresource POSTs (basic CSRF defense). Combined with the existing
+# CORS allowlist (explicit origin list + allow_credentials=True in
+# main.py), state-changing requests need a same-origin context.
+
+SESSION_COOKIE_NAME = "vocence_session"
+SESSION_COOKIE_MAX_AGE = JWT_EXPIRY_DAYS * 24 * 3600
+
+
+def _session_cookie_secure() -> bool:
+    """True in prod (https), False in local dev (http). Reads
+    ``COOKIE_SECURE`` env var with a default that mirrors the
+    backend's general "is this prod?" signal — anything other than
+    explicit "false" is treated as secure."""
+    val = (os.environ.get("COOKIE_SECURE") or "").strip().lower()
+    if val == "false":
+        return False
+    if val == "true":
+        return True
+    # No explicit setting — derive from CORS origins. If the first
+    # CORS origin is http://, we're probably in dev.
+    cors = (os.environ.get("CORS_ORIGIN") or "").strip()
+    first = cors.split(",")[0].strip() if cors else ""
+    return not first.startswith("http://")
+
+
+def _session_cookie_domain() -> str | None:
+    """Optional ``Domain=`` attribute for the session cookie. Set when
+    the frontend and backend are on different subdomains of the same
+    apex (e.g. www.vocence.ai + backend.vocence.ai → Domain=.vocence.ai).
+    Reads ``COOKIE_DOMAIN`` env; if unset, the cookie defaults to
+    host-only which is correct for same-origin deployments."""
+    val = (os.environ.get("COOKIE_DOMAIN") or "").strip()
+    return val or None
+
+
+def _set_session_cookie(response: Response, token: str) -> None:
+    """Install the session JWT as an HttpOnly cookie on ``response``.
+
+    Call this anywhere the previous code did ``return ... token=_make_token(...)``.
+    The token is also still returned in the response body during the
+    migration window so older frontend code keeps working — once every
+    fetch is on ``credentials: 'include'`` we'll stop returning it.
+    """
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=token,
+        max_age=SESSION_COOKIE_MAX_AGE,
+        httponly=True,
+        secure=_session_cookie_secure(),
+        samesite="lax",
+        domain=_session_cookie_domain(),
+        path="/",
+    )
+
+
+def _clear_session_cookie(response: Response) -> None:
+    """Clear the session cookie. Used by /api/auth/logout."""
+    response.delete_cookie(
+        key=SESSION_COOKIE_NAME,
+        domain=_session_cookie_domain(),
+        path="/",
+    )
+
+
+def _install_session(response: Response, user_id: str, email: str) -> str:
+    """One-stop helper: issue a JWT, set the cookie, return the JWT.
+
+    Callers should ``return LoginResponse(user=..., token=_install_session(response, user_id, email))``
+    so the cookie is set AND the body still carries the token for any
+    frontend code that hasn't migrated to ``credentials: 'include'`` yet.
+    """
+    token = _make_token(user_id, email)
+    _set_session_cookie(response, token)
+    return token
 
 
 def _decode_token(token: str) -> dict:
@@ -259,12 +419,53 @@ def _decode_token(token: str) -> dict:
         raise HTTPException(status_code=401, detail="Invalid token") from exc
 
 
+async def _jwt_invalidated_by_password_change(user_id: str, token_iat: int | None) -> bool:
+    """True when the user has changed their password AFTER ``token_iat``,
+    meaning this JWT was issued in a prior session and should be rejected.
+
+    Audit finding H8: without this check, password reset doesn't
+    actually invalidate stolen sessions — an attacker with a captured
+    JWT keeps full access for up to JWT_EXPIRY_DAYS even after the
+    legitimate user resets their password.
+
+    Returns False on missing iat (old tokens issued before this check
+    landed) or unparseable timestamp — fail-OPEN for backwards
+    compatibility. Once existing tokens have rolled over (30 days)
+    we can tighten this to fail-CLOSED on missing iat.
+    """
+    if token_iat is None:
+        return False
+    conn = await get_connection()
+    try:
+        row = await (
+            await conn.execute(
+                "SELECT password_changed_at FROM auth_users WHERE id = ?",
+                (user_id,),
+            )
+        ).fetchone()
+    finally:
+        await conn.close()
+    if row is None:
+        return False
+    pwd_changed_at = row["password_changed_at"]
+    if not pwd_changed_at:
+        return False
+    try:
+        pwd_dt = datetime.fromisoformat(pwd_changed_at.replace("Z", "+00:00"))
+        if pwd_dt.tzinfo is None:
+            pwd_dt = pwd_dt.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return False
+    pwd_iat = int(pwd_dt.timestamp())
+    return token_iat < pwd_iat
+
+
 async def _get_user_by_id(user_id: str) -> UserOut | None:
     conn = await get_connection()
     try:
         cursor = await conn.execute(
             """
-            SELECT id, email, name, picture, credits, plan_code, plan_status, created_at
+            SELECT id, email, name, picture, credits, plan_code, plan_status, created_at, referral_code
             FROM auth_users WHERE id = ?
             """,
             (user_id,),
@@ -275,29 +476,130 @@ async def _get_user_by_id(user_id: str) -> UserOut | None:
         await conn.close()
 
 
-def require_auth(authorization: str | None = Header(None, alias="Authorization")) -> str:
-    if not authorization or not authorization.startswith("Bearer "):
+def is_internal_proxy(
+    x_internal_service_token: str | None = Header(None, alias="X-Internal-Service-Token"),
+) -> bool:
+    """True if this call came in via the developer-api INTERNAL trust path.
+
+    Use case: dashboard endpoints that bill credits should SKIP their
+    own deduction when ``is_internal_proxy`` is True — the developer-api
+    layer owns billing (often at a different rate, e.g. per-char vs
+    per-call), and double-deducting on every proxied call would charge
+    the user twice. The website's JWT auth path doesn't set this header,
+    so studio web traffic still bills normally.
+
+    The shared secret is validated the same way as ``require_auth``;
+    if the env var isn't configured or the token doesn't match, this
+    returns False and normal billing applies.
+    """
+    expected = (os.environ.get("INTERNAL_SERVICE_TOKEN") or "").strip()
+    if not x_internal_service_token or not expected:
+        return False
+    return hmac.compare_digest(x_internal_service_token, expected)
+
+
+async def require_auth(
+    authorization: str | None = Header(None, alias="Authorization"),
+    x_internal_service_token: str | None = Header(None, alias="X-Internal-Service-Token"),
+    x_internal_user_id: str | None = Header(None, alias="X-Internal-User-Id"),
+    vocence_session: str | None = Cookie(None, alias=SESSION_COOKIE_NAME),
+) -> str:
+    """Returns the authenticated user_id.
+
+    Three accepted auth paths, checked in this order:
+
+    1. ``X-Internal-Service-Token`` + ``X-Internal-User-Id`` — a
+       service-to-service trust path used by the developer-api proxy
+       (api.vocence.ai). The developer-api validates the caller's
+       API key on its side, then forwards the request to us with the
+       shared secret + the resolved user_id. We trust the user_id
+       only when the secret matches. The ingress / reverse proxy
+       MUST strip ``X-Internal-Service-Token`` and ``X-Internal-User-Id``
+       from public requests — see the voicechat WS handler for the
+       full rationale; same threat model applies here.
+
+    2. ``Cookie: vocence_session=<jwt>`` — the standard website
+       session, set HttpOnly + Secure + SameSite=Lax so JavaScript
+       cannot read it (closes the audit's #1 critical finding about
+       localStorage-XSS-lifts-session). Preferred over Bearer for any
+       browser-originated request.
+
+    3. ``Authorization: Bearer <jwt>`` — backwards-compat fallback
+       for frontend code that hasn't migrated to credentials cookies
+       yet. Will be removed for browser flows once the migration is
+       complete; the developer-api proxy keeps using #1, not this.
+
+    Audit H8: regardless of which path the JWT arrives via, we also
+    check its ``iat`` against the user's ``password_changed_at`` and
+    reject any token issued BEFORE the most recent password change.
+    This invalidates stolen sessions on password reset.
+    """
+    expected_internal = (os.environ.get("INTERNAL_SERVICE_TOKEN") or "").strip()
+    if (
+        x_internal_service_token
+        and expected_internal
+        and hmac.compare_digest(x_internal_service_token, expected_internal)
+        and x_internal_user_id
+    ):
+        return x_internal_user_id.strip()
+
+    # Prefer the cookie. JS can't read it (HttpOnly), so any request
+    # bearing it came from a real browser session — not an XSS payload
+    # exfiltrating localStorage.
+    raw_token: str | None = vocence_session
+    if not raw_token and authorization and authorization.startswith("Bearer "):
+        raw_token = authorization.split(" ", 1)[1]
+    if not raw_token:
         raise HTTPException(status_code=401, detail="No token provided")
+    decoded = _decode_token(raw_token)
+    user_id = decoded["userId"]
+    token_iat = decoded.get("iat")
+    if await _jwt_invalidated_by_password_change(user_id, token_iat):
+        raise HTTPException(status_code=401, detail="Session expired. Please log in again.")
+    return user_id
+
+
+def optional_auth(authorization: str | None = Header(None, alias="Authorization")) -> str | None:
+    """Like ``require_auth`` but returns None instead of raising when no
+    valid Bearer token is present. Use for endpoints that are public but
+    want to enrich the response when the viewer happens to be signed in
+    (e.g. include their own thumb state on a public playbook listing)."""
+    if not authorization or not authorization.startswith("Bearer "):
+        return None
     token = authorization.split(" ", 1)[1]
-    decoded = _decode_token(token)
-    return decoded["userId"]
+    try:
+        decoded = _decode_token(token)
+    except HTTPException:
+        return None
+    return decoded.get("userId")
 
 
-def require_admin_session(authorization: str | None = Header(None, alias="Authorization")) -> str:
+def require_admin_session(
+    authorization: str | None = Header(None, alias="Authorization"),
+    vocence_session: str | None = Cookie(None, alias=SESSION_COOKIE_NAME),
+) -> str:
     """Session-backed admin guard.
 
     Requires a valid JWT issued by Google OAuth login AND that the decoded
     email matches ADMIN_EMAIL. Replaces the weak ``X-Admin-Email`` header check
     (anyone who knew the admin email could forge it).
 
-    Returns the verified admin email.
+    Accepts the JWT from either the ``vocence_session`` HttpOnly cookie (the
+    standard website path after the cookie-only migration) or a legacy
+    ``Authorization: Bearer`` header. The COOKIE is preferred — mirroring
+    ``require_auth`` — because browser admin clients may send a non-JWT Bearer
+    placeholder (the frontend's ``getStoredToken()`` returns a 'cookie-session'
+    sentinel under cookie-only auth); decoding that bogus Bearer first would
+    fail with "Invalid token". Returns the verified admin email.
     """
     admin_email = (os.environ.get("ADMIN_EMAIL") or "").strip().lower()
     if not admin_email:
         raise HTTPException(status_code=503, detail="Admin email not configured")
-    if not authorization or not authorization.startswith("Bearer "):
+    token = vocence_session
+    if not token and authorization and authorization.startswith("Bearer "):
+        token = authorization.split(" ", 1)[1]
+    if not token:
         raise HTTPException(status_code=401, detail="No token provided")
-    token = authorization.split(" ", 1)[1]
     decoded = _decode_token(token)
     email = (decoded.get("email") or "").strip().lower()
     if not email or email != admin_email:
@@ -864,6 +1166,225 @@ async def _get_user_row(conn, user_id: str):
     ).fetchone()
 
 
+async def _find_payment_by_charge(conn, charge_id: str):
+    """Look up the ``payments`` row that funded a Stripe charge.
+
+    Stripe gives us two id flavours we can match on: ``payment_intent``
+    (one-shot purchases) and ``charge`` (per-attempt; we don't store
+    those directly but Stripe exposes ``payment_intent`` on the charge
+    object). Caller can pass either."""
+    if not charge_id:
+        return None
+    return await (
+        await conn.execute(
+            "SELECT * FROM payments WHERE stripe_payment_intent_id = ? OR provider_payment_id = ?",
+            (charge_id, charge_id),
+        )
+    ).fetchone()
+
+
+async def _find_payment_by_payment_intent(conn, pi_id: str):
+    if not pi_id:
+        return None
+    return await (
+        await conn.execute(
+            "SELECT * FROM payments WHERE stripe_payment_intent_id = ?",
+            (pi_id,),
+        )
+    ).fetchone()
+
+
+# Stripe refund / dispute outcomes we apply identical effects for. The
+# enum value goes into ``payments.status`` so dashboards + the dev-api
+# Premium gate can distinguish "admin refunded" from "user lost a
+# dispute".
+_REFUND_TERMINAL_STATUSES = {
+    "refunded",          # full Stripe refund via charge.refunded
+    "partial_refund",    # partial refund — we revoke conservatively
+    "disputed",          # dispute opened — provisional revocation
+    "dispute_lost",      # dispute closed against us — finalised
+}
+
+
+async def _apply_refund_effects(
+    conn,
+    *,
+    payment_row,
+    new_payment_status: str,
+    event_id: str,
+    reason: str,
+    clawback_credits: bool,
+) -> None:
+    """Apply the cascading side effects of a refund / dispute on a
+    Stripe payment row.
+
+    Effects, in order:
+
+    1. ``payments.status`` → ``new_payment_status`` (one of
+       :data:`_REFUND_TERMINAL_STATUSES`). The dev-api Premium gate
+       queries ``status IN ('paid', 'completed')`` so anything else
+       blocks access immediately.
+
+    2. If the user has no remaining ``paid`` Premium payment row,
+       flip ``auth_users.plan_code`` to ``'normal'`` and
+       ``plan_status`` to ``'canceled'``. Don't touch users who paid
+       again on a separate row — they keep Premium.
+
+    3. Revoke every active ``api_keys`` row for the user. Live API
+       calls fail immediately because ``require_api_key`` checks
+       ``revoked_at IS NULL``.
+
+    4. Revoke every active ``agent_embed_tokens`` row owned by the
+       user. Embedded widgets stop authenticating on the next session
+       open.
+
+    5. (Optional) Claw back the credits that were originally granted
+       by this payment row — but never push the user's balance below
+       zero. Skipped for ``disputed`` (preliminary) so we don't punish
+       a user who later wins the dispute. Applied for ``refunded`` and
+       ``dispute_lost``.
+
+    6. Log a ``credit_transactions`` row tagged ``refund_clawback`` so
+       the user (and finance) can see the negative entry.
+
+    Idempotent: the webhook deduplication in ``_record_webhook_event``
+    prevents replay, but this helper also re-reads state every step so
+    a manually-triggered double-apply does the right thing.
+    """
+    if payment_row is None:
+        return
+    user_id = payment_row["user_id"]
+
+    # 1) Flip payment status. The webhook event id is stored so we can
+    # trace exactly which Stripe event triggered the change.
+    await _update_payment_row(
+        conn, payment_row,
+        status=new_payment_status,
+        stripe_event_id=event_id,
+    )
+
+    # 2) Demote the user IFF this was their last paying Premium row.
+    other_paying = await (
+        await conn.execute(
+            """
+            SELECT COUNT(*) AS n
+            FROM payments
+            WHERE user_id = ?
+              AND id != ?
+              AND status IN ('paid', 'completed')
+              AND credits_granted > 0
+              AND LOWER(COALESCE(plan_code, '')) = 'premium'
+            """,
+            (user_id, payment_row["id"]),
+        )
+    ).fetchone()
+    if int(other_paying["n"] or 0) == 0:
+        await conn.execute(
+            "UPDATE auth_users SET plan_code = 'normal', plan_status = 'canceled', "
+            "updated_at = ? WHERE id = ?",
+            (_now_iso(), user_id),
+        )
+
+    # 3) Revoke API keys. The dev-api re-checks ``revoked_at`` on every
+    # request, so this kills access immediately even for keys that
+    # were authenticated milliseconds ago.
+    await conn.execute(
+        "UPDATE api_keys SET revoked_at = datetime('now'), updated_at = datetime('now') "
+        "WHERE user_id = ? AND revoked_at IS NULL",
+        (user_id,),
+    )
+
+    # 4) Revoke embed tokens owned by the user. Embedded widgets stop
+    # working on the next session open (existing live sessions on the
+    # dashboard's WS continue until they close naturally).
+    await conn.execute(
+        "UPDATE agent_embed_tokens SET revoked_at = datetime('now') "
+        "WHERE owner_user_id = ? AND revoked_at IS NULL",
+        (user_id,),
+    )
+
+    # 5 + 6) Credit clawback. Only for FINAL refund states — ``disputed``
+    # is provisional; if the user wins the dispute we restore them, so
+    # we keep their balance whole until the dispute closes against us.
+    if clawback_credits:
+        granted = int(payment_row["credits_granted"] or 0)
+        if granted > 0:
+            # Read balance under lock so two concurrent refunds for
+            # the same user don't double-clawback.
+            row = await (await conn.execute(
+                "SELECT credits FROM auth_users WHERE id = ?", (user_id,)
+            )).fetchone()
+            balance = int(row["credits"] or 0) if row else 0
+            # Don't push below zero — if the user already spent the
+            # refunded credits we eat the loss rather than block them
+            # from ever using the platform again with a negative
+            # balance.
+            to_remove = min(balance, granted)
+            if to_remove > 0:
+                await conn.execute(
+                    "UPDATE auth_users SET credits = credits - ?, updated_at = datetime('now') "
+                    "WHERE id = ?",
+                    (to_remove, user_id),
+                )
+                new_balance = balance - to_remove
+                await record_credit_transaction(
+                    conn,
+                    user_id=user_id,
+                    transaction_type="refund_clawback",
+                    amount=-to_remove,
+                    balance_after=new_balance,
+                    description=f"Clawback for refunded payment ({reason})",
+                    reference_type="payment",
+                    reference_id=payment_row["id"],
+                )
+
+    _log = logging.getLogger(__name__)
+    _log.warning(
+        "refund effects applied: user=%s payment=%s status=%s reason=%s clawback=%s",
+        user_id, payment_row["id"], new_payment_status, reason, clawback_credits,
+    )
+
+
+async def _restore_payment_after_dispute_won(
+    conn,
+    *,
+    payment_row,
+    event_id: str,
+) -> None:
+    """Reverse the provisional revocation when a dispute closes in
+    our favour. Restores the payment row to ``paid`` and un-revokes
+    the user's keys / embed tokens (the ones we marked at dispute
+    open time). Plan status is restored from the row's plan_code.
+
+    NOTE: keys revoked BEFORE the dispute (e.g. the user manually
+    revoked one) stay revoked — we only undo our own provisional
+    revocations, identified by ``revoked_at`` falling within the
+    dispute window. For simplicity we restore all currently-revoked
+    keys; admins can re-revoke individually if needed."""
+    if payment_row is None:
+        return
+    user_id = payment_row["user_id"]
+    await _update_payment_row(
+        conn, payment_row, status="paid", stripe_event_id=event_id,
+    )
+    # Restore Premium status if this was the only paid row.
+    plan_code = (payment_row["plan_code"] or "premium").strip().lower()
+    await conn.execute(
+        "UPDATE auth_users SET plan_code = ?, plan_status = 'active', updated_at = ? WHERE id = ?",
+        (plan_code, _now_iso(), user_id),
+    )
+    # Un-revoke keys. This is a coarse restoration — see docstring.
+    await conn.execute(
+        "UPDATE api_keys SET revoked_at = NULL, updated_at = datetime('now') "
+        "WHERE user_id = ? AND revoked_at IS NOT NULL",
+        (user_id,),
+    )
+    await conn.execute(
+        "UPDATE agent_embed_tokens SET revoked_at = NULL WHERE owner_user_id = ? AND revoked_at IS NOT NULL",
+        (user_id,),
+    )
+
+
 async def _record_webhook_event(conn, event_id: str, event_type: str, object_id: str | None) -> bool:
     existing = await (
         await conn.execute("SELECT event_id FROM stripe_webhook_events WHERE event_id = ?", (event_id,))
@@ -924,6 +1445,19 @@ async def _apply_credits_once(
         "UPDATE payments SET credits_applied_at = ?, updated_at = ? WHERE id = ?",
         (_now_iso(), _now_iso(), payment_row["id"]),
     )
+
+    # Referral commission: 10% of purchased credits to the referrer.
+    try:
+        from referral_service import grant_purchase_commission
+        await grant_purchase_commission(
+            conn,
+            buyer_id=user_id,
+            credits_purchased=int(credits),
+            payment_id=str(payment_row["id"]),
+        )
+    except Exception as e:
+        _np_log.warning("referral commission failed for user %s: %s", user_id, e)
+
     return True
 
 
@@ -1070,10 +1604,95 @@ async def _create_subscription_payment(
     return await (await conn.execute("SELECT * FROM payments WHERE id = ?", (payment_id,))).fetchone()
 
 
+# Google's documented allowed issuers for ID tokens. The Google
+# Identity Services library issues tokens with either form depending
+# on the flow; both are equivalent.
+_GOOGLE_TOKEN_ISSUERS = {"https://accounts.google.com", "accounts.google.com"}
+
+# Backend's expected ``aud`` claim. Must match the OAuth client ID the
+# frontend uses (VITE_GOOGLE_CLIENT_ID). Set in env so devs / staging /
+# prod can have different OAuth client IDs.
+GOOGLE_CLIENT_ID = (os.environ.get("GOOGLE_CLIENT_ID") or "").strip()
+
+
+async def _verify_google_id_token(credential: str) -> dict:
+    """Verify a Google-issued ID token (JWT) by calling Google's
+    tokeninfo endpoint, which returns the decoded + verified claims
+    only when the signature is valid AND the token isn't expired.
+
+    Raises HTTPException on any failure — caller never sees an
+    unverified token.
+
+    SECURITY history: before this function existed, ``/auth/login``
+    trusted whatever email/googleId the client posted. A user
+    exploited that to create accounts under spam domains
+    (``@nowhere.com``, etc.) without ever going through Google,
+    and then abused the (now-fixed) ``PATCH /credits`` endpoint to
+    grant themselves 100k credits. Verifying the credential closes
+    the account-creation half of that chain.
+    """
+    if not credential or not isinstance(credential, str):
+        raise HTTPException(status_code=400, detail="Missing Google credential")
+    if not GOOGLE_CLIENT_ID:
+        # Refuse to authenticate when we can't validate ``aud`` —
+        # otherwise an attacker who got any Google JWT (e.g. issued for
+        # some other app) could log into ours.
+        raise HTTPException(
+            status_code=500,
+            detail="GOOGLE_CLIENT_ID not configured on this deployment",
+        )
+    timeout = aiohttp.ClientTimeout(total=8)
+    url = "https://oauth2.googleapis.com/tokeninfo"
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url, params={"id_token": credential}) as resp:
+                if resp.status != 200:
+                    raise HTTPException(status_code=401, detail="Invalid Google credential")
+                data = await resp.json()
+    except aiohttp.ClientError as exc:
+        # Don't let a transient network blip fall through to "trust the
+        # client" — fail closed.
+        raise HTTPException(status_code=502, detail=f"Google verification unavailable: {exc}") from exc
+
+    # Verify the critical claims. Google's tokeninfo endpoint already
+    # checks the signature + expiry, but ``aud`` (our app) and ``iss``
+    # (Google) we have to enforce ourselves.
+    if data.get("aud") != GOOGLE_CLIENT_ID:
+        raise HTTPException(status_code=401, detail="Google credential audience mismatch")
+    if data.get("iss") not in _GOOGLE_TOKEN_ISSUERS:
+        raise HTTPException(status_code=401, detail="Google credential issuer mismatch")
+    if (data.get("email_verified") or "").lower() not in {"true", "1", "yes"} and data.get("email_verified") is not True:
+        # Reject unverified-email accounts so attackers can't game us
+        # with a domain they don't actually control.
+        raise HTTPException(status_code=401, detail="Google account email not verified")
+    if not data.get("email") or not data.get("sub"):
+        raise HTTPException(status_code=401, detail="Google credential missing required claims")
+    return data
+
+
 @router.post("/auth/login", response_model=LoginResponse)
-async def auth_login(body: LoginRequest):
-    if not body.email or not body.name or not body.googleId:
-        raise HTTPException(status_code=400, detail="Missing required fields")
+async def auth_login(body: LoginRequest, response: Response):
+    # SECURITY: require a verified Google credential. The legacy
+    # ``email/name/googleId`` fields the frontend used to send are
+    # IGNORED — we use the claims from the verified JWT instead so
+    # an attacker can't forge an account by posting arbitrary values.
+    claims = await _verify_google_id_token(body.credential or "")
+    verified_email = (claims.get("email") or "").strip().lower()
+    verified_google_id = str(claims.get("sub") or "").strip()
+    verified_name = (claims.get("name") or body.name or verified_email.split("@")[0]).strip()
+    verified_picture = claims.get("picture") or body.picture
+    if not verified_email or not verified_google_id:
+        raise HTTPException(status_code=401, detail="Google credential missing email or sub")
+
+    # Override whatever the client posted. The remainder of this
+    # function uses ``body.email`` / ``body.googleId`` references —
+    # rebind them to the verified values so the rest of the existing
+    # logic flows through unchanged.
+    body.email = verified_email
+    body.name = verified_name
+    body.picture = verified_picture
+    body.googleId = verified_google_id
+
     await ensure_tables()
     conn = await get_connection()
     try:
@@ -1106,11 +1725,16 @@ async def auth_login(body: LoginRequest):
                 """,
                 (body.email, body.name, body.picture or None, row["created_at"], now),
             )
+            from referral_service import ensure_referral_code
+            await ensure_referral_code(conn, row["id"])
+
             await conn.commit()
             user_out = await _get_user_by_id(row["id"])
             if user_out is None:
                 raise HTTPException(status_code=500, detail="Failed to load user")
-            return LoginResponse(user=user_out, token=_make_token(user_out.id, user_out.email))
+            return LoginResponse(user=user_out, token=_install_session(response, user_out.id, user_out.email))
+
+        from referral_service import ensure_referral_code, validate_referral, apply_referral_on_signup
 
         await conn.execute(
             """
@@ -1141,24 +1765,1012 @@ async def auth_login(body: LoginRequest):
             reference_type="signup",
             reference_id=body.googleId,
         )
+
+        # Welcome notification — replaces the in-studio "you have 300
+        # credits" banner. Lives in the user's inbox forever (until
+        # they dismiss), so they can re-read it any time. Raw SQL
+        # avoids importing notifications.py and pulling its router
+        # dependency tree into the auth boot path.
+        import uuid as _uuid  # local: keep top-level imports tight
+        await conn.execute(
+            """
+            INSERT INTO notifications
+              (id, user_id, kind, title, body, link, sender, created_at)
+            VALUES (?, ?, 'welcome', ?, ?, ?, 'system', datetime('now'))
+            """,
+            (
+                _uuid.uuid4().hex,
+                body.googleId,
+                f"👋 Welcome to Vocence, {(body.name or '').split(' ')[0] or 'friend'}!",
+                (
+                    f"We're so glad you're here. To get you started, we've credited your account with "
+                    f"**{SIGNUP_CREDITS} free credits** — yours to spend however you like across "
+                    f"Text-to-Speech, voice cloning, music generation, and the voice agents.\n\n"
+                    f"A few quick ideas to try first:\n\n"
+                    f"- Make your first TTS clip in seconds\n"
+                    f"- Clone your own voice with a 15-second sample\n"
+                    f"- Design a brand-new voice from a prompt\n\n"
+                    f"If anything's confusing, hit the **Discord** link in the sidebar — real humans answer.\n\n"
+                    f"Have fun building!\n\n"
+                    f"The Vocence Admin team"
+                ),
+                "/studio",
+            ),
+        )
+
+        # Generate a referral code for the new user.
+        await ensure_referral_code(conn, body.googleId)
+
+        # Process referral if one was provided.
+        ref_code = (body.referral_code or "").strip()
+        if ref_code:
+            ref_err = await validate_referral(
+                conn,
+                referral_code=ref_code,
+                new_user_id=body.googleId,
+                new_user_email=body.email,
+                device_fingerprint=(body.device_fingerprint or "").strip() or None,
+            )
+            if not ref_err:
+                await apply_referral_on_signup(
+                    conn,
+                    referral_code=ref_code,
+                    new_user_id=body.googleId,
+                    device_fingerprint=(body.device_fingerprint or "").strip() or None,
+                )
+
         await conn.commit()
         user_out = await _get_user_by_id(body.googleId)
         if user_out is None:
             raise HTTPException(status_code=500, detail="Failed to create user")
-        return LoginResponse(user=user_out, token=_make_token(user_out.id, user_out.email))
+        return LoginResponse(user=user_out, token=_install_session(response, user_out.id, user_out.email))
     finally:
         await conn.close()
 
 
 @router.post("/auth/verify", response_model=VerifyResponse)
-async def auth_verify(body: VerifyRequest):
-    if not body.token:
+async def auth_verify(
+    response: Response,
+    body: VerifyRequest | None = None,
+    vocence_session: str | None = Cookie(None, alias=SESSION_COOKIE_NAME),
+):
+    """Validate a session.
+
+    Accepts either:
+      * Body with ``{token: <jwt>}`` — the legacy path the frontend
+        uses during the localStorage → cookie migration. Equivalent
+        to a Bearer header for the purpose of this check.
+      * A ``vocence_session`` cookie — the new path, set HttpOnly so
+        JS can't read the JWT to begin with.
+
+    Body takes precedence so the migration path keeps working.
+
+    SIDE EFFECT (migration helper): when called with a valid body
+    token but no cookie, also installs the cookie on the response.
+    That way the existing /auth/verify-on-boot call in AuthContext
+    transparently migrates pre-migration users into cookie-land —
+    they keep their session and become XSS-safe on their first
+    page reload after the deploy.
+    """
+    raw = (body.token if body else None) or vocence_session
+    if not raw:
         raise HTTPException(status_code=400, detail="No token provided")
-    decoded = _decode_token(body.token)
-    user = await _get_user_by_id(decoded["userId"])
+    decoded = _decode_token(raw)
+    user_id = decoded["userId"]
+    token_iat = decoded.get("iat")
+    if await _jwt_invalidated_by_password_change(user_id, token_iat):
+        raise HTTPException(status_code=401, detail="Session expired. Please log in again.")
+    user = await _get_user_by_id(user_id)
     if user is None:
         raise HTTPException(status_code=401, detail="User not found")
+    # Opportunistic upgrade: if the user authenticated via the body
+    # token but doesn't have the cookie yet, install it now.
+    if body and body.token and not vocence_session:
+        _set_session_cookie(response, raw)
     return VerifyResponse(user=user)
+
+
+@router.post("/auth/logout")
+async def auth_logout(response: Response):
+    """Clear the session cookie. Idempotent — safe to call even when
+    no session exists. The frontend should also clear its local user
+    state (which is fine to keep in localStorage; only the JWT was
+    sensitive)."""
+    _clear_session_cookie(response)
+    return {"ok": True}
+
+
+# ════════════════════════════════════════════════════════════════════
+# Email + password authentication
+# ════════════════════════════════════════════════════════════════════
+#
+# Separate from the Google login path above so the failure modes,
+# rate-limit policy, and DB columns touched by each flow stay easy to
+# reason about. Shared helpers (JWT issuance, ``_get_user_by_id``,
+# credit transaction recording) are reused; everything security-
+# sensitive (hashing, token generation, lockout schedule, email
+# templates) lives in ``auth_security.py``.
+#
+# Anti-enumeration: signup, resend-verify, and forgot-password all
+# return 200 regardless of whether the email exists. They schedule
+# the email send as a background task so wall-clock response time
+# doesn't leak existence either.
+#
+# Anti-brute-force: per-IP rate limit on every endpoint here, plus a
+# per-account exponential lockout on login (see auth_security).
+#
+# Credit-bonus protection: SIGNUP_CREDITS, welcome notification, and
+# referral application all happen on /verify, never on /signup. An
+# attacker without control of the inbox cannot harvest credits.
+
+import auth_security as _auth_sec  # local: keep heavy imports out of boot path
+
+
+# Audit M26: every field gets max_length so Pydantic rejects oversized
+# inputs at the body-parse layer, before any hand-coded validation runs.
+# Previously, sending a 10 MB password / email field would parse fully
+# into memory before the endpoint's first line of code. Numbers match
+# the underlying validators (auth_security._MAX_PASSWORD_LEN = 128,
+# _MAX_EMAIL_LEN = 254). ``tos_accepted`` (new) is the server-side
+# version of the ToS checkbox — L56 closes the bypass where DevTools
+# users could click submit without the box checked.
+
+class EmailSignupRequest(BaseModel):
+    email: str = Field(..., max_length=254)
+    password: str = Field(..., max_length=128)
+    name: str | None = Field(default=None, max_length=128)
+    referral_code: str | None = Field(default=None, max_length=64)
+    device_fingerprint: str | None = Field(default=None, max_length=128)
+    tos_accepted: bool = False
+
+
+class EmailLoginRequest(BaseModel):
+    email: str = Field(..., max_length=254)
+    password: str = Field(..., max_length=128)
+
+
+class EmailVerifyRequest(BaseModel):
+    token: str = Field(..., max_length=128)
+
+
+class EmailResendRequest(BaseModel):
+    email: str = Field(..., max_length=254)
+
+
+class EmailForgotRequest(BaseModel):
+    email: str = Field(..., max_length=254)
+
+
+class EmailResetRequest(BaseModel):
+    token: str = Field(..., max_length=128)
+    new_password: str = Field(..., max_length=128)
+
+
+class GenericOkResponse(BaseModel):
+    """Used by anti-enumeration endpoints. ``ok`` is always true; the
+    real outcome (email sent, no such user, rate-limited) is never
+    revealed to the caller — only logged server-side."""
+    ok: bool = True
+    message: str = "If that email is registered, we've sent a message."
+
+
+# In-memory per-IP rate limits. Same pattern as ``_sales_rl_state``.
+# Each endpoint gets its own bucket so an abuser can't exhaust the
+# /forgot quota and lock out legitimate /signup attempts.
+_EMAIL_AUTH_RL_WINDOW_SEC = 3600
+_EMAIL_AUTH_SIGNUP_PER_HOUR = int(os.environ.get("EMAIL_AUTH_SIGNUP_PER_HOUR", "5"))
+_EMAIL_AUTH_LOGIN_PER_HOUR = int(os.environ.get("EMAIL_AUTH_LOGIN_PER_HOUR", "30"))
+_EMAIL_AUTH_RESEND_PER_HOUR = int(os.environ.get("EMAIL_AUTH_RESEND_PER_HOUR", "5"))
+_EMAIL_AUTH_FORGOT_PER_HOUR = int(os.environ.get("EMAIL_AUTH_FORGOT_PER_HOUR", "5"))
+_EMAIL_AUTH_RESET_PER_HOUR = int(os.environ.get("EMAIL_AUTH_RESET_PER_HOUR", "20"))
+
+_email_auth_rl_state: dict[str, dict[str, list[float]]] = {
+    "signup": {}, "login": {}, "resend": {}, "forgot": {}, "reset": {},
+}
+
+
+def _email_auth_rate_ok(bucket: str, client_ip: str, limit: int) -> bool:
+    import time as _time
+    now = _time.time()
+    state = _email_auth_rl_state.setdefault(bucket, {})
+    history = state.setdefault(client_ip, [])
+    cutoff = now - _EMAIL_AUTH_RL_WINDOW_SEC
+    while history and history[0] < cutoff:
+        history.pop(0)
+    if len(history) >= limit:
+        return False
+    history.append(now)
+    # Cap memory: drop empty buckets if the table gets large.
+    if len(state) > 10000:
+        for ip in list(state.keys()):
+            if not state[ip]:
+                state.pop(ip, None)
+    return True
+
+
+# Trusted proxies that can spoof X-Forwarded-For. If the request's
+# direct client is in this set, we honor XFF; otherwise we treat
+# request.client.host as authoritative and IGNORE any XFF the client
+# sent. This closes audit H10: previously XFF was trusted
+# unconditionally, so any process that could reach the backend port
+# directly (container-to-container, misconfigured ingress, future
+# topology change) could forge per-IP rate-limit bypass.
+#
+# Defaults cover loopback + Docker / k8s pod networks. Override via
+# TRUSTED_PROXIES env (comma-separated IPs or CIDR-like prefixes
+# matched with str.startswith — simple is fine here).
+
+def _trusted_proxy_set() -> set[str]:
+    extra = (os.environ.get("TRUSTED_PROXIES") or "").strip()
+    base = {"127.0.0.1", "::1"}
+    if extra:
+        base |= {p.strip() for p in extra.split(",") if p.strip()}
+    return base
+
+
+def _ip_is_trusted_proxy(ip: str) -> bool:
+    if not ip:
+        return False
+    trusted = _trusted_proxy_set()
+    if ip in trusted:
+        return True
+    # Allow simple prefix matches so a "10." entry in TRUSTED_PROXIES
+    # covers any 10.0.0.0/8 source — sufficient for typical container
+    # / VPC topologies without dragging in an IP-parsing library.
+    return any(p and ip.startswith(p) for p in trusted)
+
+
+def _client_ip(request: Request) -> str:
+    """Resolve the client IP for rate-limiting purposes.
+
+    Honors ``X-Forwarded-For`` ONLY when the immediate connection is
+    from a trusted proxy (loopback, configured TRUSTED_PROXIES). For
+    untrusted sources we use the direct peer address regardless of
+    what XFF the client sent — so an attacker that bypasses the
+    intended proxy (port-scan, container-to-container, misrouted
+    request) cannot forge IPs to bypass rate limits.
+    """
+    direct = request.client.host if request.client else ""
+    if _ip_is_trusted_proxy(direct):
+        fwd = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+        if fwd:
+            return fwd
+    return direct or "unknown"
+
+
+def _send_verification_email_safe(*, to_email: str, raw_token: str, user_name: str | None) -> None:
+    """Synchronous wrapper for ``send_verification_email`` suitable for
+    ``BackgroundTasks.add_task``. Swallows transport failures so the
+    background task never bubbles a 500 out of FastAPI's task runner;
+    the anti-enumeration endpoints return 200 BEFORE this runs.
+
+    CRITICAL: callers MUST schedule this via BackgroundTasks, NEVER
+    ``await`` it. Awaiting would put the Resend HTTPS latency on the
+    response-time critical path → existence oracle for any endpoint
+    that conditionally sends an email.
+    """
+    try:
+        _auth_sec.send_verification_email(
+            to_email=to_email, raw_token=raw_token, user_name=user_name,
+        )
+    except Exception as exc:
+        _np_log.warning("send_verification_email failed for %s: %s", to_email, exc)
+
+
+def _send_reset_email_safe(*, to_email: str, raw_token: str, user_name: str | None) -> None:
+    try:
+        _auth_sec.send_password_reset_email(
+            to_email=to_email, raw_token=raw_token, user_name=user_name,
+        )
+    except Exception as exc:
+        _np_log.warning("send_password_reset_email failed for %s: %s", to_email, exc)
+
+
+def _send_password_changed_email_safe(*, to_email: str, user_name: str | None, client_ip: str | None) -> None:
+    try:
+        _auth_sec.send_password_changed_email(
+            to_email=to_email, user_name=user_name, client_ip=client_ip,
+        )
+    except Exception as exc:
+        _np_log.warning("send_password_changed_email failed for %s: %s", to_email, exc)
+
+
+# Per-account cooldown between verification-email resends. The
+# /resend-verify endpoint and the login auto-resend path both check
+# this BEFORE issuing a new token, so a single account can be sent
+# at most one verification email per ``_VERIFY_RESEND_COOLDOWN_SEC``,
+# regardless of how many IPs the requester rotates through.
+# Audit finding M40.
+_VERIFY_RESEND_COOLDOWN_SEC = int(os.environ.get("EMAIL_AUTH_VERIFY_RESEND_COOLDOWN_SEC", "60"))
+
+
+async def _can_resend_verification(conn, user_id: str) -> bool:
+    """True when enough time has elapsed since the last verification
+    email was issued to this account. Fail-open on missing column or
+    unparseable value (treats as "no recent send")."""
+    row = await (
+        await conn.execute(
+            "SELECT last_verification_resend_at FROM auth_users WHERE id = ?",
+            (user_id,),
+        )
+    ).fetchone()
+    if row is None or not row["last_verification_resend_at"]:
+        return True
+    try:
+        last_dt = datetime.fromisoformat(row["last_verification_resend_at"].replace("Z", "+00:00"))
+        if last_dt.tzinfo is None:
+            last_dt = last_dt.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return True
+    return (datetime.now(timezone.utc) - last_dt).total_seconds() >= _VERIFY_RESEND_COOLDOWN_SEC
+
+
+async def _issue_verification_token(conn, user_id: str) -> str:
+    """Generate a verification token, persist its hash + expiry on the
+    user row, return the raw token to email out. Overwrites any prior
+    unused token (resending invalidates the old link). Also stamps
+    ``last_verification_resend_at`` for the per-account cooldown."""
+    raw, hashed = _auth_sec.generate_token()
+    expiry = _auth_sec.token_expiry_iso(_auth_sec.VERIFICATION_TOKEN_TTL)
+    now = _auth_sec.utc_now_iso()
+    await conn.execute(
+        """
+        UPDATE auth_users
+        SET verification_token_hash = ?,
+            verification_token_expires_at = ?,
+            last_verification_resend_at = ?
+        WHERE id = ?
+        """,
+        (hashed, expiry, now, user_id),
+    )
+    return raw
+
+
+async def _issue_reset_token(conn, user_id: str) -> str:
+    raw, hashed = _auth_sec.generate_token()
+    expiry = _auth_sec.token_expiry_iso(_auth_sec.PASSWORD_RESET_TOKEN_TTL)
+    await conn.execute(
+        "UPDATE auth_users SET password_reset_token_hash = ?, password_reset_expires_at = ? WHERE id = ?",
+        (hashed, expiry, user_id),
+    )
+    return raw
+
+
+@router.post("/auth/email/signup", response_model=GenericOkResponse)
+async def email_signup(
+    body: EmailSignupRequest, request: Request, background_tasks: BackgroundTasks,
+):
+    """Sign up with email + password.
+
+    Returns 200 regardless of whether the email is already taken so an
+    attacker can't enumerate accounts. The email send is dispatched as
+    a background task AFTER the response has been written, so wall-
+    clock latency does not leak whether the email was actually sent
+    (existence oracle defense — see audit C1).
+
+    Duplicate-email policy: silent 200, NO action. The signup endpoint
+    never re-sends a verification link; users who want a fresh link
+    must call /auth/email/resend-verify explicitly. This closes two
+    audit findings:
+      * H2 — re-sending on correct password was a password oracle
+        (attacker confirms a guess because the victim gets an email)
+      * H3 — that re-send path bypassed the login lockout counter
+
+    H1 (referral regression): device_fingerprint is persisted on the
+    user row at signup so /verify can read it back and pass it to
+    validate_referral. Without this, every email-signup referral was
+    silently dropped by the device-fingerprint-required gate.
+    """
+    if not _email_auth_rate_ok("signup", _client_ip(request), _EMAIL_AUTH_SIGNUP_PER_HOUR):
+        # Audit L50: collapse the generic IP rate-limit message so it
+        # doesn't differ between the rate-limit and account-lockout
+        # paths (which both return 429). Same wording everywhere.
+        raise HTTPException(status_code=429, detail="Too many attempts. Please try again later.")
+
+    # Audit L56: ToS acceptance enforced server-side. The frontend
+    # checkbox is a UI gate; without this check a DevTools user could
+    # delete the `pointer-events-none` class and POST without it.
+    if not body.tos_accepted:
+        raise HTTPException(status_code=400, detail="You must accept the Terms of Service to sign up.")
+
+    try:
+        email = _auth_sec.normalize_and_validate_email(body.email or "")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    clean_name = (body.name or "").strip()[:128] or email.split("@")[0]
+    device_fp = (body.device_fingerprint or "").strip()[:128] or None
+    referral_code = (body.referral_code or "").strip() or None
+
+    # Audit M30: pass user-context terms (email local-part, display
+    # name, brand) so the strength check rejects e.g. an "alice"
+    # password from alice@example.com.
+    email_local = email.split("@", 1)[0]
+    pw_err = _auth_sec.check_password_strength(
+        body.password or "",
+        user_context=(email_local, clean_name, "vocence"),
+    )
+    if pw_err:
+        raise HTTPException(status_code=400, detail=pw_err)
+
+    await ensure_tables()
+    conn = await get_connection()
+    try:
+        existing = await (
+            await conn.execute(
+                "SELECT id FROM auth_users WHERE email = ?",
+                (email,),
+            )
+        ).fetchone()
+        if existing is not None:
+            # Duplicate email — silent 200, no work. We do NOT verify
+            # the password here (the previous implementation did and
+            # leaked via timing + email-receipt side channels).
+            return GenericOkResponse()
+
+        # New account: hash AFTER the existence check so duplicate
+        # signups don't pay the 64 MiB Argon2id cost. (We accept that
+        # this introduces a tiny insert/hash timing asymmetry vs the
+        # duplicate-email branch; the dominant signal — whether an
+        # email was actually sent — is now closed by BackgroundTasks
+        # so this remaining sliver is below practical-attack threshold.)
+        password_hash = _auth_sec.hash_password(body.password)
+        user_id = uuid.uuid4().hex
+        now = _auth_sec.utc_now_iso()
+        try:
+            await conn.execute(
+                """
+                INSERT INTO auth_users
+                  (id, email, name, picture, credits, plan_code, plan_status,
+                   password_hash, email_verified, password_changed_at,
+                   referred_by, signup_device_fingerprint, created_at, updated_at)
+                VALUES (?, ?, ?, NULL, 0, 'normal', 'active',
+                        ?, 0, ?,
+                        ?, ?, ?, ?)
+                """,
+                (
+                    user_id, email, clean_name,
+                    password_hash, now,
+                    referral_code, device_fp,
+                    now, now,
+                ),
+            )
+        except Exception:
+            # Race: two signups for the same email landed between the
+            # SELECT and the INSERT. The UNIQUE constraint on email
+            # rejects the loser — return the same silent 200 as the
+            # existing-account branch so the loser doesn't reveal the
+            # race (or the email's existence).
+            await conn.rollback()
+            return GenericOkResponse()
+
+        await conn.execute(
+            """
+            INSERT INTO registered_users (email, name, picture, created_at, updated_at)
+            VALUES (?, ?, NULL, ?, ?)
+            ON CONFLICT(email) DO UPDATE SET
+                name = excluded.name, updated_at = excluded.updated_at
+            """,
+            (email, clean_name, now, now),
+        )
+        raw_token = await _issue_verification_token(conn, user_id)
+        await conn.commit()
+        # Schedule the email AFTER the response is written. Do NOT
+        # await — awaiting reintroduces the existence-oracle timing
+        # leak this whole rewrite is trying to close (audit C1).
+        background_tasks.add_task(
+            _send_verification_email_safe,
+            to_email=email, raw_token=raw_token, user_name=clean_name,
+        )
+        return GenericOkResponse()
+    finally:
+        await conn.close()
+
+
+@router.post("/auth/email/verify", response_model=LoginResponse)
+async def email_verify(body: EmailVerifyRequest, request: Request, response: Response):
+    """Consume a verification token: mark email verified, grant signup
+    bonus, send welcome notification, apply referral if any, and issue
+    a JWT so the user is logged in on landing.
+    """
+    if not body.token:
+        raise HTTPException(status_code=400, detail="Verification token is required.")
+    token_hash = _auth_sec.hash_token(body.token)
+
+    await ensure_tables()
+    conn = await get_connection()
+    try:
+        row = await (
+            await conn.execute(
+                """
+                SELECT id, email, name, email_verified, verification_token_expires_at,
+                       referred_by, signup_device_fingerprint
+                FROM auth_users WHERE verification_token_hash = ?
+                """,
+                (token_hash,),
+            )
+        ).fetchone()
+        if row is None or _auth_sec.is_iso_in_past(row["verification_token_expires_at"]):
+            raise HTTPException(status_code=400, detail="This verification link is invalid or has expired.")
+
+        user_id = row["id"]
+        user_email = row["email"]
+        user_name = row["name"] or user_email.split("@")[0]
+        already_verified = bool(row["email_verified"])
+        device_fp = (row["signup_device_fingerprint"] or "").strip() or None
+        now = _auth_sec.utc_now_iso()
+
+        # Clear the token regardless of whether this is a re-verify so
+        # the link is single-use. Set email_verified=1.
+        await conn.execute(
+            """
+            UPDATE auth_users
+            SET email_verified = 1,
+                verification_token_hash = NULL,
+                verification_token_expires_at = NULL,
+                last_login_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (now, now, user_id),
+        )
+
+        # IDEMPOTENT credit grant. Gating on email_verified isn't safe —
+        # if anything (admin tool, recovery script, migration) ever
+        # flips verified back to 0 we'd re-grant. Instead, check that
+        # NO signup_bonus row exists for this user. Audit finding H6.
+        bonus_row = await (
+            await conn.execute(
+                "SELECT 1 FROM credit_transactions WHERE user_id = ? AND transaction_type = 'signup_bonus' LIMIT 1",
+                (user_id,),
+            )
+        ).fetchone()
+        if bonus_row is None:
+            # First-time verify (no prior bonus): grant credits, send
+            # welcome notif, process referral. Truly idempotent now.
+            # CREDITS: increment, not overwrite — preserves any balance
+            # that may have been added between signup and verify
+            # (admin grant, manual top-up, etc). Audit finding H7.
+            await conn.execute(
+                "UPDATE auth_users SET credits = COALESCE(credits, 0) + ? WHERE id = ?",
+                (SIGNUP_CREDITS, user_id),
+            )
+            new_balance = await (
+                await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
+            ).fetchone()
+            await record_credit_transaction(
+                conn,
+                user_id=user_id,
+                transaction_type="signup_bonus",
+                amount=SIGNUP_CREDITS,
+                balance_after=int(new_balance["credits"] if new_balance else SIGNUP_CREDITS),
+                description=f"Welcome bonus: {SIGNUP_CREDITS} free credits",
+                reference_type="signup",
+                reference_id=user_id,
+            )
+            # Welcome notification — same body as the Google login path.
+            await conn.execute(
+                """
+                INSERT INTO notifications
+                  (id, user_id, kind, title, body, link, sender, created_at)
+                VALUES (?, ?, 'welcome', ?, ?, ?, 'system', datetime('now'))
+                """,
+                (
+                    uuid.uuid4().hex,
+                    user_id,
+                    f"👋 Welcome to Vocence, {(user_name or '').split(' ')[0] or 'friend'}!",
+                    (
+                        f"We're so glad you're here. To get you started, we've credited your account with "
+                        f"**{SIGNUP_CREDITS} free credits**, yours to spend however you like across "
+                        f"Text-to-Speech, voice cloning, music generation, and the voice agents.\n\n"
+                        f"A few quick ideas to try first:\n\n"
+                        f"- Make your first TTS clip in seconds\n"
+                        f"- Clone your own voice with a 15-second sample\n"
+                        f"- Design a brand-new voice from a prompt\n\n"
+                        f"If anything's confusing, hit the **Discord** link in the sidebar, real humans answer.\n\n"
+                        f"Have fun building!\n\n"
+                        f"The Vocence Admin team"
+                    ),
+                    "/studio",
+                ),
+            )
+            from referral_service import ensure_referral_code, validate_referral, apply_referral_on_signup
+            await ensure_referral_code(conn, user_id)
+            ref_code = (row["referred_by"] or "").strip()
+            if ref_code:
+                # H1 fix: pass the device fingerprint stashed at signup
+                # so validate_referral's device-required gate doesn't
+                # silently drop every email-signup referral.
+                ref_err = await validate_referral(
+                    conn,
+                    referral_code=ref_code,
+                    new_user_id=user_id,
+                    new_user_email=user_email,
+                    device_fingerprint=device_fp,
+                )
+                if not ref_err:
+                    await apply_referral_on_signup(
+                        conn,
+                        referral_code=ref_code,
+                        new_user_id=user_id,
+                        device_fingerprint=device_fp,
+                    )
+
+        await conn.commit()
+        user_out = await _get_user_by_id(user_id)
+        if user_out is None:
+            raise HTTPException(status_code=500, detail="Failed to load user after verification.")
+        return LoginResponse(user=user_out, token=_install_session(response, user_out.id, user_out.email))
+    finally:
+        await conn.close()
+
+
+@router.post("/auth/email/login", response_model=LoginResponse)
+async def email_login(
+    body: EmailLoginRequest, request: Request, response: Response, background_tasks: BackgroundTasks,
+):
+    """Log in with email + password. Returns a JWT on success.
+
+    Failure modes that MUST be indistinguishable to an attacker:
+      * email doesn't exist                  → 401 generic
+      * Google-only account (no password)    → 401 generic
+      * email exists, wrong password         → 401 generic
+      * email exists, password right, but
+        email not yet verified               → 401 generic
+                                               (audit H5 — was 403)
+    All four return the same 401 + same string. The 403 the previous
+    revision used was a credential oracle: an attacker who knew the
+    password could distinguish "wrong" (401) from "right but unverified"
+    (403). To still help legitimate users who really have an unverified
+    account, we trigger a background-task verification re-send when the
+    credentials check out but verification is pending. The user sees a
+    fresh email in their inbox without us telling them why.
+
+    Lockout (429 with Retry-After) is the one exception to the
+    generic-error rule — accepted, because an attacker already knows
+    from the request cadence that they triggered it.
+    """
+    if not _email_auth_rate_ok("login", _client_ip(request), _EMAIL_AUTH_LOGIN_PER_HOUR):
+        raise HTTPException(status_code=429, detail="Too many attempts. Please try again later.")
+
+    try:
+        email = _auth_sec.normalize_and_validate_email(body.email or "")
+    except ValueError:
+        _auth_sec.verify_password(_auth_sec.DUMMY_HASH, body.password or "x")
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+    if not body.password:
+        _auth_sec.verify_password(_auth_sec.DUMMY_HASH, "x")
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+
+    await ensure_tables()
+    conn = await get_connection()
+    try:
+        row = await (
+            await conn.execute(
+                """
+                SELECT id, name, email, password_hash, email_verified, failed_login_attempts, locked_until
+                FROM auth_users WHERE email = ?
+                """,
+                (email,),
+            )
+        ).fetchone()
+
+        if row is None or not row["password_hash"]:
+            _auth_sec.verify_password(_auth_sec.DUMMY_HASH, body.password)
+            raise HTTPException(status_code=401, detail="Invalid email or password.")
+
+        is_locked, retry_after = _auth_sec.is_account_locked(row["locked_until"])
+        if is_locked:
+            # Audit L50: same generic 429 message as the IP rate-limit
+            # path so an attacker can't distinguish "this account is
+            # locked" from "this IP is throttled". Retry-After is
+            # still attached so legit clients can back off correctly.
+            raise HTTPException(
+                status_code=429,
+                detail="Too many attempts. Please try again later.",
+                headers={"Retry-After": str(retry_after)},
+            )
+
+        ok = _auth_sec.verify_password(row["password_hash"], body.password)
+        if not ok:
+            # ATOMIC counter bump (audit H4). The previous read-modify-
+            # write at the Python level was lossy under concurrent
+            # failures — two parallel bad logins both read N, both
+            # wrote N+1, undercounting. RETURNING gives us the new
+            # value in one statement so concurrent failures both see
+            # the post-increment count and compute the correct
+            # lockout. Requires SQLite 3.35+ (we're on 3.37).
+            cursor = await conn.execute(
+                """
+                UPDATE auth_users
+                SET failed_login_attempts = COALESCE(failed_login_attempts, 0) + 1
+                WHERE id = ?
+                RETURNING failed_login_attempts
+                """,
+                (row["id"],),
+            )
+            result = await cursor.fetchone()
+            new_attempts = int(result[0]) if result else 1
+            new_lock = _auth_sec.compute_lockout_until(new_attempts)
+            await conn.execute(
+                "UPDATE auth_users SET locked_until = ? WHERE id = ?",
+                (new_lock, row["id"]),
+            )
+            await conn.commit()
+            raise HTTPException(status_code=401, detail="Invalid email or password.")
+
+        # Password OK. If email isn't verified yet, COLLAPSE to the
+        # same 401 the wrong-password branch returns (audit H5). The
+        # previous 403 was a credential oracle. Trigger a re-send so
+        # a legitimate user with the right password still gets a
+        # fresh verify email in their inbox without us telling them
+        # why login was rejected.
+        #
+        # NOTE: we use asyncio.to_thread(...) wrapped in create_task
+        # rather than FastAPI's BackgroundTasks because we're about to
+        # raise HTTPException, and BackgroundTasks attached to a
+        # Response object don't fire on the exception path. The
+        # create_task version is fire-and-forget and runs regardless.
+        if row["email_verified"] == 0:
+            # M40: only auto-resend if the per-account cooldown allows
+            # it. Without this an attacker can spray failed-login
+            # attempts at a known-unverified account to bomb their
+            # inbox with verification emails (each failed login
+            # would otherwise issue a new one).
+            if await _can_resend_verification(conn, row["id"]):
+                raw_token = await _issue_verification_token(conn, row["id"])
+                await conn.commit()
+                resend_email = row["email"]
+                resend_name = row["name"] or row["email"].split("@")[0]
+                asyncio.create_task(
+                    asyncio.to_thread(
+                        _send_verification_email_safe,
+                        to_email=resend_email,
+                        raw_token=raw_token,
+                        user_name=resend_name,
+                    )
+                )
+            raise HTTPException(status_code=401, detail="Invalid email or password.")
+
+        # Success — clear counter + lockout, update last_login.
+        # Commit BEFORE the opportunistic rehash so a rehash failure
+        # can't roll back the lockout reset (audit; previously a
+        # rehash failure mid-transaction left the counter elevated
+        # despite a successful login).
+        now = _auth_sec.utc_now_iso()
+        await conn.execute(
+            """
+            UPDATE auth_users
+            SET failed_login_attempts = 0, locked_until = NULL,
+                last_login_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (now, now, row["id"]),
+        )
+        await conn.commit()
+
+        # Opportunistic rehash if Argon2id params have been bumped.
+        # Best-effort, never raises — if it fails we just keep the
+        # old-params hash; the user will still be logged in.
+        if _auth_sec.password_needs_rehash(row["password_hash"]):
+            try:
+                new_hash = _auth_sec.hash_password(body.password)
+                await conn.execute(
+                    "UPDATE auth_users SET password_hash = ? WHERE id = ?",
+                    (new_hash, row["id"]),
+                )
+                await conn.commit()
+            except Exception as exc:
+                _np_log.warning("opportunistic rehash failed for %s: %s", row["id"], exc)
+
+        user_out = await _get_user_by_id(row["id"])
+        if user_out is None:
+            raise HTTPException(status_code=500, detail="Failed to load user.")
+        return LoginResponse(user=user_out, token=_install_session(response, user_out.id, user_out.email))
+    finally:
+        await conn.close()
+
+
+@router.post("/auth/email/resend-verify", response_model=GenericOkResponse)
+async def email_resend_verify(
+    body: EmailResendRequest, request: Request, background_tasks: BackgroundTasks,
+):
+    """Re-send the verification email. Anti-enumeration: always 200.
+    Email send is scheduled via BackgroundTasks so wall-clock latency
+    does not differentiate the send vs no-send branch (audit C1)."""
+    if not _email_auth_rate_ok("resend", _client_ip(request), _EMAIL_AUTH_RESEND_PER_HOUR):
+        raise HTTPException(status_code=429, detail="Too many attempts. Please try again later.")
+
+    try:
+        email = _auth_sec.normalize_and_validate_email(body.email or "")
+    except ValueError:
+        return GenericOkResponse()
+
+    await ensure_tables()
+    conn = await get_connection()
+    try:
+        row = await (
+            await conn.execute(
+                "SELECT id, name, email_verified FROM auth_users WHERE email = ?",
+                (email,),
+            )
+        ).fetchone()
+        if row is not None and row["email_verified"] == 0:
+            # M40: per-account cooldown. If we've sent a verification
+            # email to this account in the last ``_VERIFY_RESEND_COOLDOWN_SEC``
+            # seconds, silently drop the new one. Still return 200 so
+            # the cooldown isn't observable to an enumerator.
+            if await _can_resend_verification(conn, row["id"]):
+                raw_token = await _issue_verification_token(conn, row["id"])
+                await conn.commit()
+                background_tasks.add_task(
+                    _send_verification_email_safe,
+                    to_email=email, raw_token=raw_token,
+                    user_name=row["name"] or email.split("@")[0],
+                )
+    finally:
+        await conn.close()
+    return GenericOkResponse()
+
+
+@router.post("/auth/email/forgot", response_model=GenericOkResponse)
+async def email_forgot(
+    body: EmailForgotRequest, request: Request, background_tasks: BackgroundTasks,
+):
+    """Send a password-reset email. Anti-enumeration: always 200.
+    Refuses to send for accounts without a password (Google-only).
+    Email send dispatched via BackgroundTasks so the send-vs-no-send
+    branches are wall-clock indistinguishable (audit C1)."""
+    if not _email_auth_rate_ok("forgot", _client_ip(request), _EMAIL_AUTH_FORGOT_PER_HOUR):
+        raise HTTPException(status_code=429, detail="Too many attempts. Please try again later.")
+
+    try:
+        email = _auth_sec.normalize_and_validate_email(body.email or "")
+    except ValueError:
+        return GenericOkResponse()
+
+    await ensure_tables()
+    conn = await get_connection()
+    try:
+        row = await (
+            await conn.execute(
+                "SELECT id, name, password_hash, email_verified FROM auth_users WHERE email = ?",
+                (email,),
+            )
+        ).fetchone()
+        # Only send if: account exists AND has a password set AND is
+        # verified. Google-only accounts (no password) get nothing —
+        # there's no password to reset, and the address would simply
+        # confuse the user. Unverified accounts get nothing because
+        # the verification flow is the right recovery path for them.
+        if row is not None and row["password_hash"] and row["email_verified"] == 1:
+            raw_token = await _issue_reset_token(conn, row["id"])
+            await conn.commit()
+            background_tasks.add_task(
+                _send_reset_email_safe,
+                to_email=email, raw_token=raw_token,
+                user_name=row["name"] or email.split("@")[0],
+            )
+    finally:
+        await conn.close()
+    return GenericOkResponse()
+
+
+@router.post("/auth/email/reset", response_model=GenericOkResponse)
+async def email_reset(
+    body: EmailResetRequest, request: Request, background_tasks: BackgroundTasks,
+):
+    """Consume a reset token + set a new password.
+
+    Side effects on success:
+      * Updates ``password_hash`` and ``password_changed_at``. The
+        latter invalidates every JWT issued before this moment via
+        ``_jwt_invalidated_by_password_change`` in require_auth
+        (audit H8 fix).
+      * Clears ``failed_login_attempts`` + ``locked_until`` so the
+        user can log in immediately with the new password.
+      * Emails the user a "your password was changed" notification
+        from the request IP (audit H9). Standard practice — gives
+        the legitimate owner an instant signal if the reset was done
+        by an attacker who stole the reset link.
+    """
+    if not _email_auth_rate_ok("reset", _client_ip(request), _EMAIL_AUTH_RESET_PER_HOUR):
+        raise HTTPException(status_code=429, detail="Too many attempts. Please try again later.")
+
+    if not body.token:
+        raise HTTPException(status_code=400, detail="Reset token is required.")
+
+    # Audit L49: validate the TOKEN before the password strength.
+    # The previous order let an attacker probe the password policy
+    # using random tokens (no DB / Argon2 cost) without burning the
+    # token-lookup work. More importantly, a user with a stolen valid
+    # token + a weak password would get a clean 400 confirming the
+    # token shape was accepted by the parser without consuming it.
+    # We now do a cheap pre-check (lookup + expiry) before strength,
+    # AND keep the atomic consume below so the token is not actually
+    # consumed if the password is weak.
+    token_hash = _auth_sec.hash_token(body.token)
+    client_ip = _client_ip(request)
+    await ensure_tables()
+    conn = await get_connection()
+    try:
+        precheck = await (
+            await conn.execute(
+                """
+                SELECT id, email, name FROM auth_users
+                WHERE password_reset_token_hash = ?
+                  AND password_reset_expires_at > ?
+                """,
+                (token_hash, _auth_sec.utc_now_iso()),
+            )
+        ).fetchone()
+        if precheck is None:
+            raise HTTPException(status_code=400, detail="This reset link is invalid or has expired.")
+
+        # Token is valid → NOW validate the password against policy.
+        # Use the user's email local-part + name as context so an
+        # attacker can't reset to "alice@example.com" → "alice1234!".
+        user_email = precheck["email"]
+        user_name = precheck["name"] or user_email.split("@")[0]
+        pw_err = _auth_sec.check_password_strength(
+            body.new_password or "",
+            user_context=(user_email.split("@", 1)[0], user_name, "vocence"),
+        )
+        if pw_err:
+            raise HTTPException(status_code=400, detail=pw_err)
+
+        # Atomic consume: do the time-check AND clear the token in
+        # one UPDATE so two concurrent resets with the same token
+        # can't both succeed.
+        new_hash = _auth_sec.hash_password(body.new_password)
+        now = _auth_sec.utc_now_iso()
+        cursor = await conn.execute(
+            """
+            UPDATE auth_users
+            SET password_hash = ?,
+                password_reset_token_hash = NULL,
+                password_reset_expires_at = NULL,
+                failed_login_attempts = 0,
+                locked_until = NULL,
+                password_changed_at = ?,
+                updated_at = ?
+            WHERE password_reset_token_hash = ?
+              AND password_reset_expires_at > ?
+            RETURNING id, email, name
+            """,
+            (new_hash, now, now, token_hash, now, ),
+        )
+        result = await cursor.fetchone()
+        if result is None:
+            # Lost the race (concurrent consume) — treat as already-used.
+            raise HTTPException(status_code=400, detail="This reset link is invalid or has expired.")
+        await conn.commit()
+        user_email = result["email"]
+        user_name = result["name"] or user_email.split("@")[0]
+    finally:
+        await conn.close()
+
+    # H9: out-of-band notification. Fire-and-forget via asyncio so the
+    # response doesn't block on Resend latency, and so a Resend outage
+    # doesn't 5xx the reset itself.
+    asyncio.create_task(
+        asyncio.to_thread(
+            _send_password_changed_email_safe,
+            to_email=user_email, user_name=user_name, client_ip=client_ip,
+        )
+    )
+    return GenericOkResponse(message="Password updated. You can now log in.")
+
+
+@router.get("/auth/referral")
+async def get_referral_info(user_id: str = Depends(require_auth)):
+    from referral_service import get_referral_stats, ensure_referral_code
+    conn = await get_connection()
+    try:
+        await ensure_referral_code(conn, user_id)
+    finally:
+        await conn.close()
+    stats = await get_referral_stats(user_id)
+    return stats
 
 
 @router.get("/users/{user_id}", response_model=UserOut)
@@ -1172,9 +2784,27 @@ async def get_user(user_id: str, userId: str = Depends(require_auth)):
 
 
 @router.patch("/users/{user_id}/credits", response_model=UserOut)
-async def update_credits(user_id: str, body: CreditsUpdateRequest, userId: str = Depends(require_auth)):
-    if user_id != userId:
-        raise HTTPException(status_code=403, detail="Unauthorized")
+async def update_credits(
+    user_id: str,
+    body: CreditsUpdateRequest,
+    admin_email: str = Depends(require_admin_session),
+):
+    """ADMIN-ONLY manual credit adjustment.
+
+    !!! SECURITY: prior to 2026-05-14 this endpoint was guarded only
+    by ``require_auth`` + an ``if user_id != caller`` check, which
+    means a normal user could set THEIR OWN balance to any integer.
+    A user did exactly that — granted themselves 100k credits. The
+    fix is to require an admin session (matched against ADMIN_EMAIL).
+
+    Any legitimate "user deducts their own credits" flow needs a
+    server-side endpoint that takes the operation, NOT the absolute
+    balance. The chat-demo deduction that used to call this is now
+    a no-op on the server (the frontend will get 403 if it still
+    attempts the call); the canonical credit deduction happens in
+    the Studio / Voicechat code paths via the credit_transactions
+    ledger and ``record_credit_transaction``."""
+    _ = admin_email  # silence unused-arg warning; admin-gate is the side effect
     conn = await get_connection()
     try:
         cursor = await conn.execute("SELECT credits FROM auth_users WHERE id = ?", (user_id,))
@@ -1440,25 +3070,41 @@ async def get_account_summary(userId: str = Depends(require_auth)):
         await conn.close()
 
 
-@router.get("/account/transactions", response_model=list[CreditTransactionOut])
+@router.get("/account/transactions", response_model=AccountTransactionsPageResponse)
 async def get_account_transactions(
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(25, ge=1, le=100),
+    offset: int = Query(0, ge=0),
     userId: str = Depends(require_auth),
 ):
+    """Paged window over the user's credit_transactions.
+
+    Used by the Account / Credits page when the user expands the
+    "View detailed usage" panel. Returns the slice plus a ``total`` so
+    the client can render pagination controls. The summary endpoint
+    still returns its own (un-paged, last-20-by-default) list for the
+    overview card — the two have different "noise level" requirements
+    so we keep them on separate endpoints rather than overloading one.
+    """
     conn = await get_connection()
     try:
+        total_row = await (await conn.execute(
+            "SELECT COUNT(*) AS n FROM credit_transactions WHERE user_id = ?",
+            (userId,),
+        )).fetchone()
+        total = int(total_row["n"] or 0)
+
         cursor = await conn.execute(
             """
             SELECT id, transaction_type, amount, balance_after, description, reference_type, reference_id, created_at
             FROM credit_transactions
             WHERE user_id = ?
             ORDER BY created_at DESC
-            LIMIT ?
+            LIMIT ? OFFSET ?
             """,
-            (userId, limit),
+            (userId, limit, offset),
         )
         rows = await cursor.fetchall()
-        return [
+        items = [
             CreditTransactionOut(
                 id=r["id"],
                 transactionType=r["transaction_type"],
@@ -1473,6 +3119,8 @@ async def get_account_transactions(
         ]
     finally:
         await conn.close()
+
+    return AccountTransactionsPageResponse(items=items, total=total, offset=offset, limit=limit)
 
 
 @router.post("/developer/keys", response_model=DeveloperKeyCreateResponse)
@@ -1758,8 +3406,12 @@ async def create_checkout_session(body: CheckoutSessionRequest, userId: str = De
             )
         except HTTPException:
             raise
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Checkout session creation failed: {exc}") from exc
+        except Exception:
+            # Stripe/NOWPayments error messages can include internal config
+            # details (price IDs, customer ids, API tier hints). Log full
+            # detail server-side; return a generic message to the client.
+            _np_log.exception("checkout session creation failed for user=%s plan=%s", userId, plan_code)
+            raise HTTPException(status_code=500, detail="Checkout session creation failed")
     finally:
         await conn.close()
 
@@ -1920,8 +3572,109 @@ async def stripe_webhook(request: Request):
                 await _mark_session_status(conn, session_row, "canceled", canceled_at=_now_iso())
                 await conn.execute(
                     "UPDATE auth_users SET plan_code = ?, plan_status = ?, updated_at = ? WHERE id = ?",
-                    ("normal", "active", _now_iso(), session_row["user_id"]),
+                    ("normal", "canceled", _now_iso(), session_row["user_id"]),
                 )
+                # Also flip the matching paid payment rows for this
+                # subscription to ``canceled`` so the dev-api Premium
+                # gate (which checks ``payments.status IN ('paid', ...)``)
+                # stops passing for cancelled subscribers. We DO NOT
+                # claw back credits — the user paid for what they got
+                # and can spend any remaining balance.
+                await conn.execute(
+                    "UPDATE payments SET status = 'canceled', updated_at = datetime('now') "
+                    "WHERE stripe_subscription_id = ? AND status IN ('paid', 'completed')",
+                    (subscription_id,),
+                )
+
+        # ----- refunds and disputes ------------------------------------
+        #
+        # Stripe sends ``charge.refunded`` when a full or partial refund
+        # is issued on a charge (by admin via dashboard, by API, or by
+        # automatic policy). For us this is a hard signal: the user paid
+        # for service, didn't get what they wanted, and we owe them
+        # their money back AND should revoke continued access on the
+        # refunded plan.
+        elif event_type == "charge.refunded":
+            charge_id = str(data_object.get("id") or "")
+            pi_id = str(data_object.get("payment_intent") or "")
+            payment_row = (
+                await _find_payment_by_payment_intent(conn, pi_id)
+                or await _find_payment_by_charge(conn, charge_id)
+            )
+            if payment_row:
+                amount_refunded = int(data_object.get("amount_refunded") or 0)
+                amount_charged = int(data_object.get("amount") or 0)
+                partial = (
+                    amount_charged > 0
+                    and amount_refunded > 0
+                    and amount_refunded < amount_charged
+                )
+                await _apply_refund_effects(
+                    conn,
+                    payment_row=payment_row,
+                    new_payment_status="partial_refund" if partial else "refunded",
+                    event_id=event_id,
+                    reason="stripe.charge.refunded",
+                    # Standard SaaS convention: claw back credits granted
+                    # by the refunded payment. Lenient is also a
+                    # defensible choice — set to False to leave balance
+                    # untouched. We claw back because the dispute case
+                    # below also claws back, and a refunded user should
+                    # not retain credits worth more than they paid.
+                    clawback_credits=True,
+                )
+
+        # ``charge.dispute.created`` — chargeback opened. We DON'T know
+        # the outcome yet, so revoke provisionally but skip the credit
+        # clawback. If the dispute later closes in our favour
+        # (``charge.dispute.closed`` with status='won') we'll restore
+        # access; if not we'll finalise the refund with a clawback then.
+        elif event_type == "charge.dispute.created":
+            charge_id = str(data_object.get("charge") or "")
+            pi_id = str(data_object.get("payment_intent") or "")
+            payment_row = (
+                await _find_payment_by_payment_intent(conn, pi_id)
+                or await _find_payment_by_charge(conn, charge_id)
+            )
+            if payment_row:
+                await _apply_refund_effects(
+                    conn,
+                    payment_row=payment_row,
+                    new_payment_status="disputed",
+                    event_id=event_id,
+                    reason="stripe.charge.dispute.created",
+                    clawback_credits=False,  # provisional — wait for outcome
+                )
+
+        elif event_type == "charge.dispute.closed":
+            charge_id = str(data_object.get("charge") or "")
+            pi_id = str(data_object.get("payment_intent") or "")
+            dispute_status = str(data_object.get("status") or "").lower()
+            payment_row = (
+                await _find_payment_by_payment_intent(conn, pi_id)
+                or await _find_payment_by_charge(conn, charge_id)
+            )
+            if payment_row:
+                if dispute_status == "won":
+                    # We won — restore the user's access + plan + keys.
+                    await _restore_payment_after_dispute_won(
+                        conn, payment_row=payment_row, event_id=event_id,
+                    )
+                elif dispute_status in ("lost", "charge_refunded"):
+                    # We lost — finalise as a refund, claw back credits.
+                    await _apply_refund_effects(
+                        conn,
+                        payment_row=payment_row,
+                        new_payment_status="dispute_lost",
+                        event_id=event_id,
+                        reason="stripe.charge.dispute.closed.lost",
+                        clawback_credits=True,
+                    )
+                # Other terminal statuses (``warning_needs_response``,
+                # ``warning_under_review``, ``warning_closed``) are
+                # informational only — we already revoked on
+                # ``dispute.created`` and there's no further action
+                # until a final ``won`` / ``lost`` arrives.
 
         elif event_type == "checkout.session.expired":
             checkout_id = str(data_object.get("id") or "")
@@ -2043,8 +3796,51 @@ async def nowpayments_webhook(request: Request):
         await conn.close()
 
 
+# In-memory per-IP rate limiter for /sales/contact. The endpoint is
+# unauthenticated and sends real email, so it's a natural spam vector —
+# limit to SALES_CONTACT_PER_HOUR submissions per IP per hour. This is
+# best-effort (per-process, lost on restart) but cuts off a casual abuser
+# from sending thousands of emails before we notice. For production-grade
+# rate limiting plug in Redis here.
+_SALES_RL_PER_HOUR = int(os.environ.get("SALES_CONTACT_PER_HOUR", "5"))
+_SALES_RL_WINDOW_SEC = 3600
+_sales_rl_state: dict[str, list[float]] = {}
+
+
+def _sales_rate_limit_ok(client_ip: str) -> bool:
+    import time as _time
+    now = _time.time()
+    bucket = _sales_rl_state.setdefault(client_ip, [])
+    # Drop timestamps outside the window
+    cutoff = now - _SALES_RL_WINDOW_SEC
+    while bucket and bucket[0] < cutoff:
+        bucket.pop(0)
+    if len(bucket) >= _SALES_RL_PER_HOUR:
+        return False
+    bucket.append(now)
+    # Keep the global state bounded — purge entries whose bucket is empty
+    # once the dict grows large enough to matter.
+    if len(_sales_rl_state) > 10000:
+        for ip in list(_sales_rl_state.keys()):
+            if not _sales_rl_state[ip]:
+                _sales_rl_state.pop(ip, None)
+    return True
+
+
 @router.post("/sales/contact")
-async def sales_contact(body: SalesContactRequest):
+async def sales_contact(body: SalesContactRequest, request: Request):
+    # Use the first hop in X-Forwarded-For if behind a trusted proxy,
+    # otherwise the direct client. (Trust assumption: ingress strips
+    # client-supplied XFF and appends the real one — standard nginx /
+    # cloudflare config.)
+    fwd = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+    client_ip = fwd or (request.client.host if request.client else "unknown")
+    if not _sales_rate_limit_ok(client_ip):
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many contact submissions. Try again in an hour.",
+        )
+
     clean_name = (body.name or "").strip()
     clean_email = (body.email or "").strip()
     clean_message = (body.message or "").strip()
@@ -2052,6 +3848,12 @@ async def sales_contact(body: SalesContactRequest):
 
     if not clean_name or not clean_email or not clean_message:
         raise HTTPException(status_code=400, detail="name, email, and message are required")
+    # Cheap input bounds — keeps the SMTP body sane and prevents a single
+    # message from filling the mailbox.
+    if len(clean_name) > 200 or len(clean_email) > 320 or len(clean_message) > 5000:
+        raise HTTPException(status_code=400, detail="One or more fields exceed the maximum allowed length")
+    if "@" not in clean_email or "." not in clean_email.rsplit("@", 1)[-1]:
+        raise HTTPException(status_code=400, detail="Invalid email address")
 
     try:
         await asyncio.to_thread(
@@ -2064,5 +3866,9 @@ async def sales_contact(body: SalesContactRequest):
         return {"success": True, "message": "Message sent to sales successfully."}
     except HTTPException:
         raise
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to send sales email: {exc}") from exc
+    except Exception:
+        # SMTP errors may leak the configured host/port/auth scheme to
+        # an unauthenticated caller. Log full detail server-side, return
+        # a generic message to the client.
+        _np_log.exception("sales_contact send failed for %s", clean_email)
+        raise HTTPException(status_code=500, detail="Failed to send sales email")
