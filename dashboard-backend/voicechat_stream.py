@@ -38,6 +38,7 @@ import asyncio
 import json
 import logging
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
@@ -64,24 +65,8 @@ ENSEMBLER_TICK_MS = 50
 # ensembler never commits, we bail rather than hang the WS.
 SESSION_HARD_TIMEOUT_S = 30.0
 
-# When the client signals end-of-audio (its local Silero hit
-# ``endSilenceMs``) we DO NOT immediately commit. If the EOU models
-# aren't confident the user is done — e.g. their last partial ended on
-# "em" / "uh" / a conjunction — we hold the turn open for up to this
-# many additional ms before forcing a commit. The grace scales with
-# how far below ``eou_threshold`` we are, capped at this value.
-# Patient default: 6 s. Users hitting natural thinking-pauses ("hmm…
-# what was I saying… oh right…") need real time to recover; 3 s wasn't
-# enough. The fast path still commits in 0.6-1 s when EOU agrees, so
-# this only adds latency to ambiguous turns where we'd rather wait.
-DEFER_GRACE_BASE_MS = 6000
-
-# Same threshold as ``should_commit_turn`` — kept in sync explicitly
-# so the two decision points use identical EOU semantics. Raised to
-# 0.75 alongside the longer grace so a borderline 0.65 Turn-Detector
-# score (which fires often on partial-but-grammatical fragments like
-# "I want to go to the store") no longer triggers fast-commit.
-DEFER_EOU_THRESHOLD = 0.75
+# Re-score the text turn detector at most this often during silence.
+TD_REFRESH_MIN_INTERVAL_S = 0.15
 
 # Frame size the client is expected to send.
 EXPECTED_FRAME_BYTES = 640  # 20 ms @ 16 kHz mono s16le
@@ -112,6 +97,12 @@ class _SignalState:
     """
     smart_turn_p: float = 0.0
     turn_detector_p: float = 0.0
+    # Cross-language-comparable EOU signal (= p / per-language threshold)
+    # from the multilingual TD pod. ``>= 1.0`` means the pod considers
+    # the utterance complete for its language. Stays 0.0 when the pod
+    # is the old English-only image (no ``confidence`` field) — ensembler
+    # then falls back to raw ``turn_detector_p`` comparisons.
+    turn_detector_confidence: float = 0.0
     silence_ms: int = 0
     last_speech_at_ms: int = 0
     partial_text: str = ""
@@ -167,12 +158,21 @@ class StreamingTurnSession:
         history: list[dict],
         receive_binary: Callable[[], Awaitable[bytes | None]],
         send_json: Callable[[dict], Awaitable[None]],
+        user_id: str | None = None,
+        client_hints: dict[str, bool] | None = None,
     ) -> None:
         self._client_ws = client_ws
         self._language = language or "auto"
         self._history = history
         self._receive_binary = receive_binary
         self._send_json = send_json
+        self._user_id = user_id
+        self._client_hints = client_hints if client_hints is not None else {}
+        self._last_td_refresh_at = 0.0
+        # Stable per-turn id for correlating the structured ``turn_metrics``
+        # log line with any other diagnostics. 12 hex chars is plenty for
+        # grep + jq correlation across a short window of turns.
+        self._session_id = uuid.uuid4().hex[:12]
 
         self._state = _SignalState(history=history)
         self._stt_session: aiohttp.ClientSession | None = None
@@ -243,7 +243,7 @@ class StreamingTurnSession:
             if not transcript:
                 return None
 
-            return StreamingSessionResult(
+            result = StreamingSessionResult(
                 transcript=transcript,
                 language=self._state.final_language or self._language,
                 duration_ms=int((time.perf_counter() - self._started_at) * 1000),
@@ -252,6 +252,30 @@ class StreamingTurnSession:
                 turn_detector_p_at_commit=self._state.turn_detector_p,
                 rule_fired=getattr(self, "_commit_rule", "stream_ended"),
             )
+            # Structured per-turn metrics — one JSON line per committed
+            # turn so we can grep + jq the prod logs to tune the EOU
+            # threshold and the silence floors from real data. Logged
+            # right before return so ``transcript`` is available.
+            #   grep "turn_metrics" voicechat.log | jq -s '.'
+            _log.info("[stream] turn_metrics %s", json.dumps({
+                "session_id": self._session_id,
+                "user_id": self._user_id,
+                "rule": result.rule_fired,
+                "silence_ms": result.silence_at_commit_ms,
+                "smart_p": round(result.smart_turn_p_at_commit, 3),
+                "td_p": round(result.turn_detector_p_at_commit, 3),
+                "combined_eou": round(
+                    combine_eou(
+                        result.smart_turn_p_at_commit,
+                        result.turn_detector_p_at_commit,
+                    ),
+                    3,
+                ),
+                "duration_ms": result.duration_ms,
+                "language": result.language,
+                "transcript": result.transcript,
+            }))
+            return result
         finally:
             await self._close_upstreams()
 
@@ -390,72 +414,18 @@ class StreamingTurnSession:
         """Pull binary frames from the client WS and tee them to STT
         (mandatory) + Smart Turn (best-effort).
 
-        On client-initiated commit, the client's local Silero VAD has
-        merely *guessed* the user is done. We treat that as a hint:
-          * EOU models confident → finalize immediately (fast reply).
-          * EOU models unconfident → defer for ``DEFER_GRACE_BASE_MS``
-            (scaled by how far below threshold). If PCM arrives during
-            the defer the user has resumed — re-enter the forwarding
-            loop. If the ensembler commits during the defer, we exit
-            via the FIRST_COMPLETED cancellation. Otherwise force a
-            commit when the grace expires.
-
-        After finalize, BLOCK until the pod returns a final — without
-        this wait, ``run()``'s ``FIRST_COMPLETED`` semantics fire as
-        soon as this coroutine returns and cancel ``_pump_stt`` before
-        it can read the final, leaving ``state.final_text`` empty and
-        the turn committing with no transcript.
+        Client ``stream_commit`` is a hint only (local Silero guessed
+        the user paused). The ensembler is the sole authority on
+        turn-end — it keeps evaluating silence + fresh text-EOU even
+        after the client stops sending PCM.
         """
-        frames_in = 0
-        bytes_in = 0
         while True:
             frame = await self._receive_binary()
             if frame is None:
-                # Client signalled end of audio. Decide whether the
-                # EOU models agree, or whether to defer.
-                eou = combine_eou(
-                    self._state.smart_turn_p,
-                    self._state.turn_detector_p,
-                )
-                if eou >= DEFER_EOU_THRESHOLD:
-                    _log.info(
-                        "[stream] client commit honored (eou=%.2f >= %.2f) after %d frames / %d bytes",
-                        eou, DEFER_EOU_THRESHOLD, frames_in, bytes_in,
-                    )
-                    await self._finalize_commit()
-                    return
-
-                resumed = await self._defer_commit(eou)
-                if resumed is not None:
-                    # User resumed speaking during the grace window —
-                    # ``resumed`` is the next PCM frame; forward it and
-                    # continue the main loop.
-                    frame = resumed
-                    frames_in += 1
-                    bytes_in += len(frame)
-                    if self._stt_ws is not None and not self._stt_ws.closed:
-                        try:
-                            await self._stt_ws.send_bytes(frame)
-                        except Exception as exc:  # noqa: BLE001
-                            _log.warning("[stream] STT send_bytes failed: %s", exc)
-                    if self._smart is not None:
-                        try:
-                            await self._smart.send_pcm(frame)
-                        except Exception:
-                            pass
-                    continue
-
-                # Defer expired without resumption. Commit now even
-                # though EOU never reached the threshold.
-                _log.info(
-                    "[stream] defer expired, forcing commit (eou=%.2f) after %d frames / %d bytes",
-                    eou, frames_in, bytes_in,
-                )
-                await self._finalize_commit()
                 return
-            frames_in += 1
-            bytes_in += len(frame)
-            # Forward.
+            if self._client_hints.pop("commit", False):
+                _log.debug("[stream] client stream_commit hint (ensembler decides)")
+                await self._refresh_text_eou(force=True)
             if self._stt_ws is not None and not self._stt_ws.closed:
                 try:
                     await self._stt_ws.send_bytes(frame)
@@ -467,43 +437,22 @@ class StreamingTurnSession:
                 except Exception:
                     pass
 
-    async def _defer_commit(self, eou_at_commit: float) -> bytes | None:
-        """Hold the turn open after a low-EOU client commit. Scales the
-        grace window with the EOU gap so a borderline commit (e.g. 0.6
-        vs threshold 0.65) waits a brief moment while a clearly
-        mid-thought commit (e.g. 0.1) waits the full base.
-
-        Returns the next PCM frame if the user resumed speaking, or
-        ``None`` if the grace expired or another commit arrived.
-        """
-        gap = max(0.0, DEFER_EOU_THRESHOLD - eou_at_commit)
-        scale = gap / DEFER_EOU_THRESHOLD if DEFER_EOU_THRESHOLD > 0 else 1.0
-        grace_ms = int(DEFER_GRACE_BASE_MS * scale)
-        deadline = time.perf_counter() + (grace_ms / 1000.0)
-        _log.info(
-            "[stream] client commit deferred (eou=%.2f, grace=%dms)",
-            eou_at_commit, grace_ms,
-        )
-        while True:
-            remaining = deadline - time.perf_counter()
-            if remaining <= 0:
-                return None
-            # If the ensembler already produced a final transcript in
-            # the background we don't need to keep waiting.
-            if self._state.final_text:
-                return None
-            try:
-                next_msg = await asyncio.wait_for(
-                    self._receive_binary(), timeout=remaining,
-                )
-            except asyncio.TimeoutError:
-                return None
-            if next_msg is None:
-                # Another commit during defer — keep waiting; the
-                # client probably re-triggered after a tiny blip.
-                continue
-            _log.info("[stream] resumption detected during defer")
-            return next_msg
+    async def _refresh_text_eou(self, *, force: bool = False) -> None:
+        """Re-run the text turn detector on the frozen transcript."""
+        if self._detector is None:
+            return
+        transcript = self._state.running_transcript()
+        if not transcript:
+            return
+        if not force and self._state.silence_ms < 300:
+            return
+        now = time.monotonic()
+        if not force and (now - self._last_td_refresh_at) < TD_REFRESH_MIN_INTERVAL_S:
+            return
+        self._last_td_refresh_at = now
+        p = await self._detector.refresh_probability(transcript)
+        if p is not None:
+            self._state.turn_detector_p = float(p)
 
     async def _finalize_commit(self) -> None:
         """Tell STT to flush the in-progress utterance and wait up to
@@ -641,10 +590,19 @@ class StreamingTurnSession:
                 self._state.smart_turn_p = float(self._smart.last_p_end_of_turn)
             if self._detector is not None:
                 self._state.turn_detector_p = float(self._detector.last_p_end_of_turn)
+                self._state.turn_detector_confidence = float(
+                    self._detector.last_confidence
+                )
+            if self._client_hints.get("commit"):
+                await self._refresh_text_eou(force=True)
+            elif self._state.silence_ms >= 300:
+                await self._refresh_text_eou()
             commit, rule = should_commit_turn(
                 silence_ms=self._state.silence_ms,
                 smart_turn_p=self._state.smart_turn_p,
                 turn_detector_p=self._state.turn_detector_p,
+                turn_detector_confidence=self._state.turn_detector_confidence,
+                text_eou_available=self._detector is not None,
             )
             if commit:
                 self._commit_rule = rule

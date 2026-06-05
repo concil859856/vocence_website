@@ -327,6 +327,14 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
             }
             return next;
           });
+          // The server's ensembler just committed this turn. The stream
+          // session is closing on the server side; reset our local flag
+          // so the NEXT user speech-start (or first PCM frame) opens a
+          // fresh stream_start. Doing this here instead of on the local
+          // VAD's onSpeechEnd is what lets a mid-sentence thinking pause
+          // NOT chunk the turn — the ensembler keeps the session open
+          // and we keep streaming until it actually commits.
+          streamTurnOpenRef.current = false;
           setState('thinking');
           break;
         case 'partial_transcript': {
@@ -512,6 +520,9 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
             setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, pending: false } : m)));
           }
           currentBotMsgIdRef.current = null;
+          // Server dropped the stream session — clear our flag so the
+          // next user turn opens a fresh stream_start.
+          streamTurnOpenRef.current = false;
           playerRef.current?.flush();
           audioStartedForTurnRef.current = false;
           // Always-on cancel: usually a barge-in we just sent. Go back
@@ -565,6 +576,10 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
         case 'error':
           setError(payload.message || payload.code || 'error');
           setState('error');
+          // Server-side error ends any in-flight stream session, so
+          // reset the local flag — otherwise the next speech-start
+          // would skip stream_start and the new turn would be lost.
+          streamTurnOpenRef.current = false;
           // one-shot recoverable: drop to idle after surfacing the error
           window.setTimeout(() => setState((prev) => (prev === 'error' ? 'idle' : prev)), 1500);
           break;
@@ -792,17 +807,29 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
               setState('recording');
             }
             if (useStream) {
+              // Send stream_commit as a HINT — the server's ensembler
+              // is the sole authority on turn-end (it can wait up to
+              // 12 s for grammatically-incomplete partials before
+              // committing). Crucially, we do NOT:
+              //   * close ``streamTurnOpenRef`` (the session is still
+              //     alive on the server, and PCM frames must keep
+              //     flowing so the server's STT pod sees the silence
+              //     that lets its VAD measure ``silence_ms``)
+              //   * setState('transcribing') (the server may decide
+              //     this is a mid-sentence pause and wait for more
+              //     audio; flipping the UI now would make a long
+              //     thinking-pause feel like a hang). When the server
+              //     actually commits, it sends a ``transcript`` event
+              //     and the handler transitions to 'thinking'.
               if (streamTurnOpenRef.current && wsRef.current?.readyState === 1) {
                 wsRef.current.send(JSON.stringify({ type: 'stream_commit' }));
-                streamTurnOpenRef.current = false;
                 if (DEBUG_STREAM) {
                   const elapsed = Math.round(performance.now() - streamStartAt);
                   console.log(
-                    `[voicechat] → stream_commit  frames=${streamFramesSent} bytes=${streamBytesSent} elapsed=${elapsed}ms speech_dur=${durationMs}ms`,
+                    `[voicechat] → stream_commit hint  frames=${streamFramesSent} bytes=${streamBytesSent} elapsed=${elapsed}ms speech_dur=${durationMs}ms`,
                   );
                 }
               }
-              setState('transcribing');
               return;
             }
             const b64 = arrayBufferToBase64(wavBytes);
@@ -972,6 +999,9 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
       recorderRef.current.cancel();
       recorderRef.current = null;
     }
+    // Server will drop the in-flight stream session on this cancel;
+    // clear the local flag so the next user speech opens a new one.
+    streamTurnOpenRef.current = false;
     // Always-on: stay listening after cancel so the user can keep
     // talking. Push-to-talk: go idle.
     setState(vadRef.current ? 'listening' : 'idle');

@@ -265,8 +265,20 @@ class TurnDetectorStream:
         self._ws: aiohttp.ClientWebSocketResponse | None = None
         self._reader_task: asyncio.Task | None = None
         self.last_p_end_of_turn: float = 0.0
+        # Cross-language-comparable signal from the pod: confidence =
+        # p_end_of_turn / language_threshold. ``>= 1.0`` means "the
+        # model thinks the turn is over for this language." Older pod
+        # images (pre-multilingual switch) don't send this field — we
+        # store ``0.0`` then so the ensembler can detect "no signal" and
+        # fall back to raw ``p_end_of_turn`` comparisons.
+        self.last_confidence: float = 0.0
+        # Per-language threshold the pod used to compute ``last_confidence``.
+        # Surfaced for diagnostics; the ensembler uses ``last_confidence``
+        # directly rather than re-applying the threshold itself.
+        self.last_language_threshold: float = 0.0
         self.last_event: dict[str, Any] | None = None
         self.fired_end_of_turn: bool = False
+        self._prob_wait: asyncio.Event | None = None
 
     async def __aenter__(self) -> "TurnDetectorStream":
         return self
@@ -329,9 +341,41 @@ class TurnDetectorStream:
         try:
             await ws.send_json({"type": "commit", "content": content})
             self.last_p_end_of_turn = 0.0
+            self.last_confidence = 0.0
             self.fired_end_of_turn = False
         except Exception as exc:  # noqa: BLE001
             _log.warning("turn_detector commit failed: %s", exc)
+
+    async def refresh_probability(
+        self,
+        cumulative_text: str,
+        *,
+        timeout: float = 0.12,
+    ) -> float | None:
+        """Re-score the current transcript after a pause.
+
+        Streaming partials stop while the user is silent, so the last
+        cached ``last_p_end_of_turn`` can be stale. LiveKit's agents
+        framework runs a fresh ``predict_end_of_turn`` at each VAD
+        silence boundary — we mirror that by pushing the frozen
+        transcript and waiting for the next ``probability`` event.
+        """
+        ws = self._ws
+        if ws is None or ws.closed or not cumulative_text.strip():
+            return None
+        self._prob_wait = asyncio.Event()
+        await self.send_token(cumulative_text)
+        try:
+            await asyncio.wait_for(self._prob_wait.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            pass
+        finally:
+            self._prob_wait = None
+        return self.last_p_end_of_turn
+
+    def _notify_probability(self) -> None:
+        if self._prob_wait is not None:
+            self._prob_wait.set()
 
     async def _reader_loop(self) -> None:
         ws = self._ws
@@ -348,10 +392,24 @@ class TurnDetectorStream:
                 if t == "probability":
                     self.last_event = obj
                     self.last_p_end_of_turn = float(obj.get("p_end_of_turn", 0.0))
+                    # ``confidence`` + ``language_threshold`` are only
+                    # emitted by the multilingual pod. Old pod images
+                    # omit them → fall back to 0.0 (ensembler interprets
+                    # 0.0 as "no signal" and uses raw ``p`` instead).
+                    self.last_confidence = float(obj.get("confidence", 0.0))
+                    self.last_language_threshold = float(
+                        obj.get("language_threshold", 0.0)
+                    )
+                    self._notify_probability()
                 elif t == "end_of_turn":
                     self.last_event = obj
                     self.last_p_end_of_turn = float(obj.get("p_end_of_turn", 0.0))
+                    self.last_confidence = float(obj.get("confidence", 0.0))
+                    self.last_language_threshold = float(
+                        obj.get("language_threshold", 0.0)
+                    )
                     self.fired_end_of_turn = True
+                    self._notify_probability()
                 elif t == "error":
                     _log.warning("turn_detector pod error: %s", obj)
         except asyncio.CancelledError:
@@ -409,14 +467,105 @@ def combine_eou(
     return smart_weight * float(smart_turn_p) + td_weight * float(turn_detector_p)
 
 
+# Thresholds for the LEGACY raw-probability code path (when the pod
+# image is the old English-only build that doesn't emit ``confidence``).
+# These are interpreted against the raw model output and only make sense
+# for the English-only SmolLM model, which has its uniform 0..1 scale.
+_TD_UNLIKELY = float(os.environ.get("VOC_TD_UNLIKELY_THRESHOLD", "0.55"))
+_TD_HIGH = float(os.environ.get("VOC_TD_HIGH_THRESHOLD", "0.85"))
+# Thresholds for the MULTILINGUAL pod's ``confidence`` field. Confidence
+# is normalized as ``p_eou / per_language_threshold``, so ``>= 1.0`` is
+# "model fires" for that language regardless of which one. Empirically
+# (characterization across 14 langs):
+#   * "Confident EOU" (text_confident path) starts around 5× threshold.
+#     Complete sentences typically land at 15-200× threshold.
+#   * "Definitely not done" stays at < 1× threshold (raw p below the
+#     calibration point). Trail-offs / dangling preps cluster at <0.5×.
+_TD_CONF_UNLIKELY = float(os.environ.get("VOC_TD_CONF_UNLIKELY", "1.0"))
+_TD_CONF_HIGH = float(os.environ.get("VOC_TD_CONF_HIGH", "5.0"))
+_PROSODY_ASSIST_MIN_TD = float(os.environ.get("VOC_PROSODY_ASSIST_MIN_TD", "0.10"))
+_PROSODY_ASSIST_SHAVE_MS = int(os.environ.get("VOC_PROSODY_ASSIST_SHAVE_MS", "200"))
+
+
+def compute_required_silence_ms(
+    *,
+    turn_detector_p: float,
+    smart_turn_p: float = 0.0,
+    text_eou_available: bool = True,
+    min_endpointing_delay_ms: int = 500,
+    max_endpointing_delay_ms: int = 6000,
+    unlikely_threshold: float | None = None,
+    high_threshold: float | None = None,
+    turn_detector_confidence: float = 0.0,
+) -> tuple[int, str]:
+    """How much post-speech silence is required before committing.
+
+    When ``turn_detector_confidence`` is > 0 (the multilingual pod
+    emits it), we use that instead of raw ``turn_detector_p``. The raw
+    value is calibrated per-language on the multilingual model — DE
+    "complete" scores ~0.09 while EN "complete" scores ~0.93 — so a
+    global threshold against raw ``p`` would silently break non-English.
+    Confidence (= p / per-language threshold) normalises this so a
+    single set of cutoffs works for all 14 supported languages.
+
+    When confidence is 0 (old pod image, or no language metadata
+    available), we fall back to the raw-``p`` thresholds for backwards
+    compatibility.
+    """
+    use_confidence = turn_detector_confidence > 0.0
+    if use_confidence:
+        unlikely = _TD_CONF_UNLIKELY
+        high = _TD_CONF_HIGH
+        td_signal = turn_detector_confidence
+    else:
+        unlikely = _TD_UNLIKELY if unlikely_threshold is None else unlikely_threshold
+        high = _TD_HIGH if high_threshold is None else high_threshold
+        td_signal = turn_detector_p
+
+    if not text_eou_available:
+        span = max_endpointing_delay_ms - min_endpointing_delay_ms
+        required = min_endpointing_delay_ms + int(span * (1.0 - float(smart_turn_p)))
+        rule = "prosody_scaled"
+        if smart_turn_p >= 0.85:
+            required = min(required, min_endpointing_delay_ms + 400)
+            rule = "prosody_only_confident"
+        return required, rule
+
+    if td_signal < unlikely:
+        return max_endpointing_delay_ms, "text_unlikely"
+
+    if td_signal >= high:
+        required = min_endpointing_delay_ms
+        rule = "text_confident"
+    else:
+        span = max_endpointing_delay_ms - min_endpointing_delay_ms
+        t = (td_signal - unlikely) / max(high - unlikely, 1e-6)
+        t = max(0.0, min(1.0, t))
+        required = int(max_endpointing_delay_ms - t * span)
+        rule = "text_scaled"
+
+    if (
+        smart_turn_p >= 0.85
+        and td_signal >= unlikely + _PROSODY_ASSIST_MIN_TD
+    ):
+        required = max(min_endpointing_delay_ms, required - _PROSODY_ASSIST_SHAVE_MS)
+        if rule == "text_scaled":
+            rule = "text_scaled_prosody_assist"
+
+    return required, rule
+
+
 def should_commit_turn(
     *,
     silence_ms: int,
     smart_turn_p: float,
     turn_detector_p: float,
     min_endpointing_delay_ms: int = 500,
-    max_endpointing_delay_ms: int = 12000,
-    eou_threshold: float = 0.75,
+    max_endpointing_delay_ms: int = 6000,
+    text_eou_available: bool = True,
+    unlikely_threshold: float | None = None,
+    high_threshold: float | None = None,
+    turn_detector_confidence: float = 0.0,
 ) -> tuple[bool, str]:
     """Decide whether the user's turn is over.
 
@@ -454,11 +603,15 @@ def should_commit_turn(
     0.75 threshold, BOTH signals have to be reasonably confident
     before we cut off.
 
-    ``max_endpointing_delay_ms`` defaults to 12 s (up from LiveKit's
-    6 s) — the hard cap should be generous enough that long thinking
-    pauses don't get cut off, since the fast paths (EOU-confident +
-    eou-low-silence-extended) already commit much sooner when the
-    signal is clear.
+    ``max_endpointing_delay_ms`` defaults to 6 s (matching LiveKit's
+    default). Earlier we ran at 12 s on the theory that long thinking
+    pauses shouldn't get cut off, but in practice users have already
+    given up by the 5-second mark — a hung TD pod or a truly silent
+    text_unlikely partial that sits there for 12 s reads as "the bot
+    froze." 6 s is the longest worst-case wait that still feels alive.
+    The fast paths (text_confident, text_scaled) already commit much
+    sooner when the signal is clear, so the cap only matters in the
+    pathological case.
 
     Returns ``(should_commit, rule_fired)``. The second item is a
     short string identifying which rule fired — useful for logging
@@ -469,16 +622,16 @@ def should_commit_turn(
     if silence_ms >= max_endpointing_delay_ms:
         return True, "hard_cap"
 
-    combined_eou = combine_eou(smart_turn_p, turn_detector_p)
-
-    # Fast path: turn-detector is confident the user is done.
-    if combined_eou >= eou_threshold:
-        return True, "eou_confident"
-
-    # Slow path: scale the required wait inversely with EOU
-    # confidence — low confidence → wait closer to the max.
-    span = max_endpointing_delay_ms - min_endpointing_delay_ms
-    required_silence = min_endpointing_delay_ms + int(span * (1.0 - combined_eou))
-    if silence_ms >= required_silence:
-        return True, "eou_low_silence_extended"
+    required, rule = compute_required_silence_ms(
+        turn_detector_p=turn_detector_p,
+        smart_turn_p=smart_turn_p,
+        text_eou_available=text_eou_available,
+        min_endpointing_delay_ms=min_endpointing_delay_ms,
+        max_endpointing_delay_ms=max_endpointing_delay_ms,
+        unlikely_threshold=unlikely_threshold,
+        high_threshold=high_threshold,
+        turn_detector_confidence=turn_detector_confidence,
+    )
+    if silence_ms >= required:
+        return True, rule
     return False, ""

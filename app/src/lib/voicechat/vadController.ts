@@ -80,15 +80,20 @@ export class VadController {
   constructor(events: VadEvents, opts: VadOptions = {}) {
     this.events = events;
     this.opts = {
-      // Patient defaults, 1.0 s of post-speech silence and 0.5 s
-      // minimum recording. RealtimeSTT's 0.6 s default cuts users off
-      // mid-thought when they trail into "uh..." or take a breath; 1.0
-      // gives natural thinking-pause room without feeling broken. The
-      // EOU-confident fast path on the server still commits in ~600 ms
-      // for clean endings (Turn Detector says "done"), so this doesn't
-      // slow down snappy questions, it only matters for the long-pause
-      // case the user is hitting.
-      endSilenceMs: opts.endSilenceMs ?? 1000,
+      // Patient defaults — 1.6 s of post-speech silence and 0.5 s
+      // minimum recording. RealtimeSTT's 0.6 s and Pipecat's 0.8 s
+      // defaults cut users off mid-thought when they trail into
+      // "uh..." or take a breath; users were hitting the chunk-mid-
+      // sentence bug at 1.0 s too because natural thinking pauses
+      // routinely run 1.0–1.4 s. 1.6 s gives real thinking-pause room
+      // without feeling broken. The server-side ensembler's EOU-
+      // confident fast path still commits in ~500 ms for clean
+      // endings (Turn Detector says "done"), so this doesn't slow
+      // down snappy questions — it only matters for the long-pause
+      // case. In stream mode, this value is a HINT only: the server
+      // ensembler is the sole authority on turn-end (it can wait up
+      // to 12 s for grammatically-incomplete partials).
+      endSilenceMs: opts.endSilenceMs ?? 1600,
       minSpeechMs: opts.minSpeechMs ?? 500,
       mode: opts.mode ?? 'segment',
     };
