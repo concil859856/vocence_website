@@ -488,6 +488,23 @@ you're not changing):
   max_iterations   Only if type=goal. Default 5.
 
 ═══════════════════════════════════════════════════════════════════════════
+FAST FIRST WORDS — open every reply with one short sentence
+═══════════════════════════════════════════════════════════════════════════
+Before any deeper thinking, write ONE short visible sentence (≤12 words) \
+that acknowledges what the user just asked, in your own words. This \
+appears immediately on the user's screen so they know you've heard them \
+while the rest of the response is composing.
+
+Good preambles:
+  • "Got it — sketching a sales-qualifying voice agent for you."
+  • "Sure, picking sensible defaults and putting a proposal together."
+  • "Quick question coming up so I can build the right thing."
+  • "Renaming to Atlas and keeping everything else."
+
+Bad: starting with the proposal directly, starting with "Sure!" alone, \
+starting with three paragraphs of reasoning.
+
+═══════════════════════════════════════════════════════════════════════════
 THE LOOP — gather → propose → confirm. ALWAYS active, never passive.
 ═══════════════════════════════════════════════════════════════════════════
 
@@ -555,9 +572,42 @@ recommend, no auto-apply. Always end with a concrete next step the user \
 can take.
 
 ═══════════════════════════════════════════════════════════════════════════
+DECIDE BEFORE YOU RESPOND — pattern-match the user's last message to
+═══════════════════════════════════════════════════════════════════════════
+ONE of these rows, then act:
+
+  USER MESSAGE                                | YOUR ACTION
+  --------------------------------------------|---------------------------
+  "build me an agent"                         | preamble + gather (1 batch)
+  "design a support bot"                      | preamble + gather (1 batch)
+  "help me set this up"                       | preamble + gather (1 batch)
+  --------------------------------------------|---------------------------
+  "friendly support bot for SaaS startup"     | preamble + propose
+  (any single-sentence brief with enough info)|
+  "go ahead", "just pick one", "you decide"   | preamble + propose w/defaults
+  "sure", "do it", "ok let's go"              | preamble + propose w/defaults
+  user answered gather questions              | preamble + propose
+  --------------------------------------------|---------------------------
+  "rename to Atlas"                           | preamble + propose (just name)
+  "make it more formal"                       | preamble + propose (tone)
+  "switch the voice to Olivia"                | preamble + propose (voice)
+  any specific field edit                     | preamble + propose
+  --------------------------------------------|---------------------------
+  "what voice should I use?"                  | preamble + recommend (NO tool)
+  "can you check my prompt?"                  | preamble + review (NO tool)
+  "what's the difference between types?"      | preamble + explain (NO tool)
+  --------------------------------------------|---------------------------
+  "(applied)"                                 | confirm (3 sentences, NO tool)
+  --------------------------------------------|---------------------------
+
+If the user message doesn't match any row above, default to: preamble + \
+one question to clarify what they want.
+
+═══════════════════════════════════════════════════════════════════════════
 HARD RULES
 ═══════════════════════════════════════════════════════════════════════════
   • EVERY turn produces visible text. Even when you call propose_changes.
+  • Open every reply with a ≤12-word preamble (see FAST FIRST WORDS).
   • NEVER say "Got it" alone. Say what you got AND what comes next.
   • NEVER ask more than one batch of gather questions per agent. After the \
 first batch you propose, period.
@@ -570,6 +620,20 @@ READ it before responding. You're evolving it, not starting over.
 """
 
 
+# OpenAI ``strict: true`` mode (Structured Outputs) constrains the
+# model's decoder to the schema token-by-token, eliminating the
+# class of failures where propose_changes arrives with a missing
+# required field, a wrong-typed value, or extra noise — which would
+# blow up the Apply path. Constraints strict mode imposes:
+#   • additionalProperties:false on EVERY object node
+#   • every property listed in "required" (so for fields that are
+#     semantically optional, we widen the type to include "null"
+#     and let the model emit null when it doesn't apply)
+#   • no minimum/maximum/oneOf/$ref keywords
+# We trade per-field semantic optionality for structural reliability —
+# the model now ALWAYS returns a full-shaped proposal, and downstream
+# code treats null as "not changing this field" / "not applicable to
+# this agent type".
 _PROPOSE_CHANGES_TOOL = {
     "type": "function",
     "function": {
@@ -580,10 +644,15 @@ _PROPOSE_CHANGES_TOOL = {
             "you have enough information to fill every field. Otherwise "
             "just reply in text."
         ),
+        "strict": True,
         "parameters": {
             "type": "object",
+            "additionalProperties": False,
             "properties": {
-                "name": {"type": "string", "description": "Agent display name."},
+                "name": {
+                    "type": "string",
+                    "description": "Agent display name.",
+                },
                 "type": {
                     "type": "string",
                     "enum": ["knowledge", "goal"],
@@ -591,26 +660,41 @@ _PROPOSE_CHANGES_TOOL = {
                 },
                 "config": {
                     "type": "object",
+                    "additionalProperties": False,
                     "properties": {
                         "purpose": {"type": "string"},
                         "system_prompt": {"type": "string"},
+                        # Optional fields — emit empty string when not
+                        # applicable. Null would also be valid under
+                        # strict mode but downstream _normalize_draft
+                        # already coerces "" cleanly, so prefer string.
                         "knowledge": {"type": "string"},
-                        "voice": {"type": "string", "description": "Sample voice id."},
+                        "voice": {
+                            "type": "string",
+                            "description": "Sample voice id.",
+                        },
                         "language": {"type": "string"},
                         "llm_model": {"type": "string"},
                         "temperature": {"type": "number"},
-                        "goal": {"type": "string"},
-                        "success_metric": {"type": "string"},
-                        "max_iterations": {"type": "integer"},
+                        # Goal-agent-only fields. Pass nullable so the
+                        # model returns null for knowledge-type agents
+                        # without breaking strict-mode's "all required"
+                        # rule.
+                        "goal": {"type": ["string", "null"]},
+                        "success_metric": {"type": ["string", "null"]},
+                        "max_iterations": {"type": ["integer", "null"]},
                     },
-                    "required": ["purpose", "system_prompt"],
+                    "required": [
+                        "purpose", "system_prompt", "knowledge", "voice",
+                        "language", "llm_model", "temperature",
+                        "goal", "success_metric", "max_iterations",
+                    ],
                 },
                 "summary": {
                     "type": "string",
                     "description": (
                         "One sentence in imperative voice describing what "
-                        "this proposal changes vs the current draft. "
-                        "Shown on the Apply button tooltip."
+                        "this proposal changes vs the current draft."
                     ),
                 },
             },
