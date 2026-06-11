@@ -944,6 +944,94 @@ async def voicechat_session(
         # the time the user finishes their first turn.
         session_tts_warmer.schedule_prewarm()
 
+    # ── STT pod prewarm ───────────────────────────────────────────────
+    # Open a fresh STT pod WS in the background, in parallel with the
+    # greeting. By the time the user finishes hearing the greeting and
+    # starts talking, the WS handshake + STT-ready round trip are
+    # already done, so the first user turn skips the per-turn cold
+    # connect (~200-500 ms saved). The first StreamingTurnSession
+    # adopts the bundle via its ``prewarmed_stt`` param; on session
+    # close we clean up anything left over.
+    prewarmed_stt: dict[str, Any] | None = None
+    prewarm_stt_task: asyncio.Task | None = None
+    # Cold path sets STT pod ``start.language`` to self._language,
+    # which normalizes to "auto" for None. Match that so the adopt
+    # check in StreamingTurnSession._open_stt succeeds.
+    prewarm_stt_language = agent_language if agent_language else "auto"
+
+    async def _prewarm_stt() -> None:
+        nonlocal prewarmed_stt
+        import aiohttp
+        from ops import pool as gpu_pool
+        pod_cm = None
+        sess: aiohttp.ClientSession | None = None
+        ws: aiohttp.ClientWebSocketResponse | None = None
+        try:
+            if gpu_pool.online_pod_count("asr_streaming_rt") <= 0:
+                return
+            pod_cm = gpu_pool.pick_pod("asr_streaming_rt")
+            pod = await pod_cm.__aenter__()
+            base = pod.url.rstrip("/")
+            ws_url = (
+                "wss://" + base[len("https://"):] + "/v1/stream"
+                if base.startswith("https://")
+                else "ws://" + base[len("http://"):] + "/v1/stream"
+            )
+            headers = {"X-API-Key": pod.api_key} if pod.api_key else {}
+            sess = aiohttp.ClientSession(headers=headers)
+            ws = await sess.ws_connect(
+                ws_url,
+                timeout=aiohttp.ClientWSTimeout(ws_close=15),
+                max_msg_size=2 * 1024 * 1024,
+            )
+            await ws.send_json({
+                "type": "start",
+                "language": prewarm_stt_language,
+                "sample_rate": 16000,
+                "encoding": "pcm_s16le",
+                "enable_partials": True,
+                "vad_events": True,
+            })
+            ready_msg = await asyncio.wait_for(ws.receive(), timeout=10.0)
+            if ready_msg.type != aiohttp.WSMsgType.TEXT:
+                raise RuntimeError("STT prewarm: ready missing")
+            data = json.loads(ready_msg.data)
+            if data.get("type") != "ready":
+                raise RuntimeError(f"STT prewarm: first msg not ready: {data}")
+            prewarmed_stt = {
+                "pod_cm": pod_cm,
+                "session": sess,
+                "ws": ws,
+                "language": prewarm_stt_language,
+            }
+            _log.info(
+                "[stream] trace session=%s phase=stt_prewarmed lang=%r",
+                session_id, prewarm_stt_language,
+            )
+            # Ownership transferred to the slot — skip the local cleanup.
+            pod_cm = sess = ws = None
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            _log.info(
+                "[stream] trace session=%s phase=stt_prewarm_failed reason=%s "
+                "(first turn will cold-open instead)",
+                session_id, exc,
+            )
+        finally:
+            if ws is not None:
+                with suppress(Exception):
+                    await ws.close()
+            if sess is not None:
+                with suppress(Exception):
+                    await sess.close()
+            if pod_cm is not None:
+                with suppress(Exception):
+                    await pod_cm.__aexit__(None, None, None)
+
+    if streaming_stt_online and not force_segment_only:
+        prewarm_stt_task = asyncio.create_task(_prewarm_stt(), name="prewarm_stt")
+
     # ``bot_speaking_evt`` is the mic-mute gate. While set, the next
     # turn's StreamingTurnSession DROPS incoming PCM frames so the STT
     # pod doesn't transcribe the bot's own voice leaking through the
@@ -1342,6 +1430,18 @@ async def voicechat_session(
             # function). Defaults match AgentConfigIn so an unconfigured
             # agent keeps current production behavior.
             _agent_cfg = (agent_ctx and agent_ctx.get("config")) or {}
+            # Consume the prewarmed STT slot only on stream_start —
+            # text/voice modes don't open the streaming STT WS, so
+            # passing the bundle to them would orphan it. We don't
+            # block on the prewarm task: if it's not done yet,
+            # `prewarmed_stt` is None here and _open_stt falls back
+            # to its existing cold-open path. Waiting would add
+            # latency back exactly when the user is fastest (no
+            # greeting playing → near-immediate stream_start).
+            adopted_prewarm_stt: dict | None = None
+            if payload.get("type") == "stream_start":
+                adopted_prewarm_stt = prewarmed_stt
+                prewarmed_stt = None
             current_turn = asyncio.create_task(
                 _run_turn(
                     ws=ws,
@@ -1360,6 +1460,7 @@ async def voicechat_session(
                     denoise_enabled=bool(_agent_cfg.get("denoise_enabled", False)),
                     turn_decider=str(_agent_cfg.get("turn_decider", "fusion")),
                     ultravad_threshold=float(_agent_cfg.get("ultravad_threshold", 0.4)),
+                    prewarmed_stt=adopted_prewarm_stt,
                 )
             )
             # The idle clock is anchored to "agent stopped talking".
@@ -1398,6 +1499,22 @@ async def voicechat_session(
         if session_tts_warmer is not None:
             with suppress(Exception):
                 await session_tts_warmer.close()
+        # Release any unconsumed STT prewarm — happens when the user
+        # disconnects before their first stream_start (greeting then
+        # close), or when the prewarm task is still mid-handshake.
+        if prewarm_stt_task is not None and not prewarm_stt_task.done():
+            prewarm_stt_task.cancel()
+            with suppress(Exception):
+                await asyncio.wait_for(prewarm_stt_task, timeout=1.0)
+        if prewarmed_stt is not None:
+            pw = prewarmed_stt
+            prewarmed_stt = None
+            with suppress(Exception):
+                await pw["ws"].close()
+            with suppress(Exception):
+                await pw["session"].close()
+            with suppress(Exception):
+                await pw["pod_cm"].__aexit__(None, None, None)
         # Stop the watchdog/billing loop. Runs even on
         # WebSocketDisconnect / cancellation so the user gets
         # correctly charged for the time they actually used (paid
@@ -1429,6 +1546,12 @@ async def _run_turn(
     denoise_enabled: bool = False,
     turn_decider: str = "fusion",
     ultravad_threshold: float = 0.4,
+    # First-turn STT pod prewarm from the session layer (None on later
+    # turns). Forwarded to StreamingTurnSession, which adopts or
+    # discards in _open_stt depending on language match. Ignored for
+    # text/voice modes (segmented STT, no upstream WS to adopt) —
+    # caller closes it in that case.
+    prewarmed_stt: dict | None = None,
 ) -> None:
     mode = payload.get("type")
     started = time.perf_counter()
@@ -1505,6 +1628,7 @@ async def _run_turn(
                 denoise_enabled=denoise_enabled,
                 turn_decider=turn_decider,
                 ultravad_threshold=ultravad_threshold,
+                prewarmed_stt=prewarmed_stt,
             )
             _t_session_start = time.perf_counter()
             _log.info(

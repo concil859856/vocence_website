@@ -37,6 +37,7 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass, field
+from contextlib import suppress
 from typing import Any, Awaitable, Callable
 
 import aiohttp
@@ -152,6 +153,12 @@ class StreamingTurnSession:
         denoise_enabled: bool = False,
         turn_decider: str = "fusion",
         ultravad_threshold: float = 0.4,
+        # Optional STT pod WS prewarmed at session-open. When present,
+        # _open_stt adopts it instead of cold-connecting — saves the
+        # full TLS + WS handshake + STT-pod-ready round trip (~200–500
+        # ms) on the user's first turn. Dict shape:
+        # {"pod_cm", "session", "ws", "language"}.
+        prewarmed_stt: dict | None = None,
     ) -> None:
         self._client_ws = client_ws
         self._language = language or "auto"
@@ -196,6 +203,8 @@ class StreamingTurnSession:
         self._started_at = 0.0
         self._commit_rule: str = "stream_ended"
         self._closed = asyncio.Event()
+        # Stashed at construction, consumed (or discarded) in _open_stt.
+        self._prewarmed_stt = prewarmed_stt
 
     # -----------------------------------------------------------------
     # Lifecycle
@@ -330,6 +339,41 @@ class StreamingTurnSession:
         return True
 
     async def _open_stt(self) -> bool:
+        # Fast path: adopt a connection that the session layer opened in
+        # the background while the greeting was playing. Skips the TLS
+        # handshake + WS upgrade + STT-pod `ready` round trip on the
+        # user's first turn. We consume the slot unconditionally so a
+        # mismatch (e.g. language differs from the per-turn override)
+        # doesn't leak the pre-opened socket — we close + cold-open.
+        pw = self._prewarmed_stt
+        self._prewarmed_stt = None
+        if pw is not None:
+            pw_lang = pw.get("language")
+            pw_ws = pw.get("ws")
+            if pw_lang == self._language and pw_ws is not None and not pw_ws.closed:
+                self._stt_pod_cm = pw["pod_cm"]
+                self._stt_session = pw["session"]
+                self._stt_ws = pw_ws
+                _log.info(
+                    "[stream] trace session=%s phase=stt_adopted_prewarm lang=%r",
+                    self._session_id, self._language,
+                )
+                return True
+            # Mismatch or socket died — release resources, then cold-open.
+            with suppress(Exception):
+                await pw_ws.close()
+            with suppress(Exception):
+                await pw["session"].close()
+            with suppress(Exception):
+                await pw["pod_cm"].__aexit__(None, None, None)
+            _log.info(
+                "[stream] trace session=%s phase=stt_prewarm_unused "
+                "reason=%s pw_lang=%r want=%r",
+                self._session_id,
+                "lang_mismatch" if pw_lang != self._language else "socket_closed",
+                pw_lang, self._language,
+            )
+
         from ops import pool as gpu_pool
         try:
             if gpu_pool.online_pod_count("asr_streaming_rt") <= 0:
