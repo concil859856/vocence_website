@@ -809,10 +809,24 @@ export function Studio() {
         stream.getTracks().forEach((t) => t.stop());
         sttStreamRef.current = null;
         const blob = new Blob(chunks, { type: mr.mimeType || 'audio/webm' });
-        const ext = blob.type.includes('webm') ? 'webm' : blob.type.includes('mp4') ? 'm4a' : 'wav';
-        setSttFile(new File([blob], `recording.${ext}`, { type: blob.type || 'audio/webm' }));
-        setSttIsRecording(false);
-        sttMediaRecorderRef.current = null;
+        // The STT pod decodes via libsndfile, which doesn't recognize
+        // the WebM/Opus container Chromium's MediaRecorder produces.
+        // Decode in the browser via Web Audio and re-encode as 16-bit
+        // mono PCM WAV — same path the clone-reference recorder uses.
+        (async () => {
+          try {
+            const wavFile = await blobToCloneReferenceWav(blob, 'recording.wav');
+            setSttFile(wavFile);
+          } catch {
+            setSttStatus({
+              type: 'error',
+              message: 'Could not convert this recording to WAV. Try again or upload a .wav file.',
+            });
+          } finally {
+            setSttIsRecording(false);
+            sttMediaRecorderRef.current = null;
+          }
+        })();
       };
       mr.start();
       setSttIsRecording(true);

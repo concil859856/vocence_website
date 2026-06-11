@@ -557,32 +557,27 @@ async def voicechat_session(
             #    mid-call, user mid-utterance). _cancel_current is
             #    defined later in voicechat_session — referenced here
             #    via Python's late-binding closure, which resolves at
-            #    call time. By the time the billing loop fires this,
-            #    that function exists.
+            #    call time.
             with suppress(Exception):
                 await _cancel_current()
-            # 2. Tell the UI a session_timeout is happening so the
-            #    chat surface can render a system bubble while the
-            #    farewell audio plays. ``code=free_time_up`` is
-            #    distinct from max_duration so the frontend can
-            #    show a "Build your own agent → Studio" CTA instead
-            #    of the generic "session ended" message.
+            # 2. Speak the farewell as a NORMAL assistant turn:
+            #    token → audio_meta → audio bytes. The chat bubble
+            #    paces with the audio (no early flash) and there's
+            #    exactly one bubble.
+            with suppress(Exception):
+                await _speak_pretext(farewell)
+            with suppress(Exception):
+                await ws.send_json({"type": "turn_end"})
+            # 3. Now signal teardown. No ``message`` field — the
+            #    farewell already showed up as the assistant turn
+            #    above; this event just tells the UI to close the
+            #    call (drop the mic / flip the button back to Start).
             with suppress(Exception):
                 await ws.send_json({
                     "type": "session_timeout",
                     "code": "free_time_up",
-                    "message": farewell,
                 })
-            # 3. Stream the farewell through TTS. Reuses the same
-            #    _speak_pretext path the greeting uses — emits the
-            #    chat token + audio_meta envelope + PCM bytes.
-            with suppress(Exception):
-                await _speak_pretext(farewell)
-            # 4. Close out the assistant turn so the player's
-            #    onSettled fires and the client stops waiting.
-            with suppress(Exception):
-                await ws.send_json({"type": "turn_end"})
-            # 5. Close the WS gracefully. 4408 (same code paid agents
+            # 4. Close the WS gracefully. 4408 (same code paid agents
             #    use for max_duration) signals "policy ended this
             #    session" — the frontend already handles 4408 as a
             #    natural-end, not an error.

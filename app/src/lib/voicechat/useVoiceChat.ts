@@ -579,30 +579,47 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
           });
           break;
         case 'session_timeout': {
-          // Backend auto-closed the session, either the 30-min hard
-          // cap (code: max_duration) or the 60-sec idle watchdog
-          // (code: idle_timeout). Surface a system bubble so the
-          // user knows WHY the session ended; without this they
-          // see the WS just go dead.
+          // Backend auto-closed the session. Three reasons:
+          //   • code: max_duration   — 30-min paid-agent cap
+          //   • code: idle_timeout   — 60-sec idle watchdog
+          //   • code: free_time_up   — Logos 2-min free cap; the
+          //     server has ALREADY spoken the farewell as a normal
+          //     assistant turn, so this event carries no `message`
+          //     and we skip the system bubble (otherwise the user
+          //     sees the farewell text twice).
           const subCode = String(payload.code || '');
-          const messageText = String(payload.message || (
-            subCode === 'idle_timeout'
-              ? 'Session ended, no activity for 60 seconds. Start a new conversation to continue.'
-              : subCode === 'max_duration'
-                ? 'Session ended, reached the 30-minute maximum. Start a new conversation to continue.'
-                : 'Session ended.'
-          ));
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: makeId(),
-              role: 'system',
-              text: messageText,
-              systemKind: subCode === 'idle_timeout'
-                ? 'idle_timeout'
-                : subCode === 'max_duration' ? 'max_duration' : 'info',
-            },
-          ]);
+          const rawMessage = typeof payload.message === 'string' ? payload.message : '';
+          if (rawMessage) {
+            const messageText = rawMessage || (
+              subCode === 'idle_timeout'
+                ? 'Session ended, no activity for 60 seconds. Start a new conversation to continue.'
+                : subCode === 'max_duration'
+                  ? 'Session ended, reached the 30-minute maximum. Start a new conversation to continue.'
+                  : 'Session ended.'
+            );
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: makeId(),
+                role: 'system',
+                text: messageText,
+                systemKind: subCode === 'idle_timeout'
+                  ? 'idle_timeout'
+                  : subCode === 'max_duration' ? 'max_duration' : 'info',
+              },
+            ]);
+          }
+          // Tear down the mic/VAD so the call button flips back to
+          // Start. setState('idle') alone doesn't do this — the
+          // `listening` ref stays true and the button still shows
+          // the red "end call" square. The WS will close right
+          // after this event; we just need to mirror that locally.
+          if (vadRef.current) {
+            void vadRef.current.destroy();
+            vadRef.current = null;
+          }
+          setListening(false);
+          setMicLevel(0);
           setState('idle');
           break;
         }
