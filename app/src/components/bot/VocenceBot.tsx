@@ -19,6 +19,19 @@ import { useArchitectOpen } from '../../lib/uiOverlay';
 import { useHasVoiceChatAccess } from '../../lib/voicechatAccess';
 
 const STORAGE_TOKEN_KEY = 'vocence_token';
+
+// Token resolution for the voicechat WS — handles the cookie-auth
+// migration. Legacy localStorage token still works; cookie-only
+// sessions get a sentinel that the backend ignores in favor of the
+// HttpOnly cookie picked up on the WS upgrade. See
+// lib/agents/api.getStoredToken for the canonical version of this.
+function _readVoicechatToken(): string | null {
+  if (typeof window === 'undefined') return null;
+  const legacy = localStorage.getItem(STORAGE_TOKEN_KEY);
+  if (legacy) return legacy;
+  if (localStorage.getItem('vocence_user')) return 'cookie-session';
+  return null;
+}
 const STORAGE_POS_KEY = 'vocence_bot_launcher_pos';
 
 // 56 was the original; 72 ≈ 1.3×, bumped on user request so her face reads more clearly.
@@ -109,7 +122,7 @@ export function VocenceBot() {
   const { pathname } = useLocation();
   const [open, setOpen] = useState(false);
   const [textInput, setTextInput] = useState('');
-  const [token, setToken] = useState<string | null>(() => localStorage.getItem(STORAGE_TOKEN_KEY));
+  const [token, setToken] = useState<string | null>(_readVoicechatToken);
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
   // Launcher position, drag-and-drop with cursor, persisted per-browser.
@@ -130,7 +143,7 @@ export function VocenceBot() {
 
   // Track token across logins/logouts (AuthContext doesn't expose it directly)
   useEffect(() => {
-    setToken(localStorage.getItem(STORAGE_TOKEN_KEY));
+    setToken(_readVoicechatToken());
   }, [user?.id]);
 
   // Always-on voice: one tap on Speak starts a hands-free session, VAD

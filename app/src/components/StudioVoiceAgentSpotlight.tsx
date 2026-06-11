@@ -87,13 +87,30 @@ const useCall = () => {
 export function StudioVoiceAgentSpotlight() {
   const { user } = useAuth();
   const [live, setLive] = useState(false);
-  const [token, setToken] = useState<string | null>(
-    () => (typeof window !== 'undefined' ? localStorage.getItem('vocence_token') : null)
-  );
+  // Token resolution for the voicechat WS:
+  //   1. Legacy ``vocence_token`` (still works during the cookie-auth
+  //      migration; will be empty for users who logged in via email).
+  //   2. ``'cookie-session'`` sentinel when ``vocence_user`` indicates
+  //      the user IS logged in but only the HttpOnly session cookie
+  //      carries the actual JWT — the WS upgrade picks up the cookie
+  //      same-origin and the backend's auth path tries cookie before
+  //      query-param token. Same pattern as lib/agents/api.getStoredToken
+  //      and StudioPlaybooks. Without this, ``!!token`` was always
+  //      false for cookie-only sessions and ``enabled`` stayed false,
+  //      so the WS never opened — Logos showed "not connected" forever.
+  const readToken = (): string | null => {
+    if (typeof window === 'undefined') return null;
+    const legacy = localStorage.getItem('vocence_token');
+    if (legacy) return legacy;
+    if (localStorage.getItem('vocence_user')) return 'cookie-session';
+    return null;
+  };
+  const [token, setToken] = useState<string | null>(readToken);
 
   // Re-read the token across login/logout (AuthContext doesn't expose it).
   useEffect(() => {
-    setToken(typeof window !== 'undefined' ? localStorage.getItem('vocence_token') : null);
+    setToken(readToken());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
   // Embedded voice session. ``enabled`` is gated on ``live`` so the WS
