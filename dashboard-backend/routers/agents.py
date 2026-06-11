@@ -12,6 +12,7 @@ import logging
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 import agent_knowledge
@@ -48,6 +49,22 @@ class AgentConfigIn(BaseModel):
     # — the no-config default keeps Logos powered up across the full
     # built-in library without explicit setup.
     enabled_tools: Optional[list[str]] = None
+    # ── Voice pipeline knobs (per-agent) ─────────────────────────────
+    # Whether to insert DeepFilterNet 3 denoise upstream of STT +
+    # UltraVAD. Off by default — denoise adds ~200 ms passthrough
+    # latency, only worth it for agents that expect noisy mics
+    # (call-center, mobile-in-public). See DENOISER_STREAMING_POD_SPEC.md.
+    denoise_enabled: bool = False
+    # Which end-of-turn detector to use as PRIMARY. Both paths share
+    # the same fallback story: if the primary pod is unhealthy, the
+    # other path takes over. Default "ultravad" once that pod is
+    # deployed and validated; "fusion" routes to the existing Smart
+    # Turn + LiveKit ensembler. See ULTRAVAD_POD_SPEC.md.
+    turn_decider: str = "ultravad"  # "ultravad" | "fusion"
+    # Threshold the UltraVAD primary path uses to fire commit. Range
+    # [0, 1]; demo's "good start" is 0.4. Higher = more conservative
+    # (waits for stronger model confidence), lower = more eager.
+    ultravad_threshold: float = 0.4
 
 
 class AgentCreateIn(BaseModel):
@@ -262,6 +279,53 @@ async def architect_chat(body: AgentArchitectChatIn, user_id: str = Depends(requ
         _log.exception("architect chat failed")
         raise HTTPException(status_code=502, detail=f"architect chat failed: {exc}")
     return result
+
+
+@router.post("/architect/chat/stream")
+async def architect_chat_stream(
+    body: AgentArchitectChatIn, user_id: str = Depends(require_auth)
+) -> StreamingResponse:
+    """Streaming counterpart to ``/architect/chat``. Returns
+    ``text/event-stream`` with newline-delimited JSON events the
+    frontend's ArchitectDrawer consumes incrementally:
+
+      {"type":"token","delta":"Sure, I can"}     - streamed prose
+      {"type":"proposed","data":{...}}           - propose_changes tool call
+      {"type":"done"}                            - terminal
+      {"type":"error","message":"..."}           - terminal, on failure
+
+    Each event is one ``data: <json>\\n\\n`` SSE frame. The frontend
+    reads with ``fetch`` + ``ReadableStream`` (NOT EventSource — needs
+    an Authorization header)."""
+    if not agents_service.llm_configured():
+        raise HTTPException(status_code=503, detail="agents LLM not configured")
+
+    async def gen():
+        try:
+            async for evt in agents_service.chat_with_architect_stream(
+                user_message=body.message,
+                history=[h.model_dump() for h in body.history],
+                existing=body.existing,
+            ):
+                yield f"data: {json.dumps(evt, ensure_ascii=False)}\n\n"
+        except Exception as exc:  # noqa: BLE001
+            _log.exception("architect stream failed at SSE layer")
+            err = {"type": "error", "message": str(exc) or "architect stream failed"}
+            yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
+
+    # ``X-Accel-Buffering: no`` prevents nginx from buffering the
+    # stream — otherwise tokens batch at the proxy and the UX feels
+    # one-shot anyway. ``Cache-Control: no-cache`` is the standard
+    # SSE escape hatch from CDN/intermediary caches.
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 @router.post("")

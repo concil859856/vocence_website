@@ -363,6 +363,203 @@ async def chat_with_architect(
     return {"reply": reply, "proposed_changes": normalized}
 
 
+# ---------------------------------------------------------------------------
+# Streaming architect — tool-call architecture
+#
+# The non-streaming version above forces the model to emit a single JSON
+# object. That works for one-shot UIs but the user can't see anything
+# until the whole 1-3 s (or 30-90 s on a reasoning model) call finishes.
+# The streaming version below:
+#
+#   1. Streams free-form prose token-by-token (real ChatGPT feel).
+#   2. Uses an OpenAI tool call (``propose_changes``) — emitted ONLY
+#      when the model has decided to propose. Until then, just text.
+#   3. Lets the system prompt express a real agent loop: clarify →
+#      propose → confirm. The flow is encoded in the prompt + the
+#      "applied" hidden trigger fired by the client after Apply.
+# ---------------------------------------------------------------------------
+
+
+CHAT_STREAM_SYSTEM = """You are the Vocence Agent Architect — a conversational \
+copilot that helps people design and refine their voice-first AI agents.
+
+Vocence Agents come in two flavours:
+  • "knowledge" — answers questions / has conversations, fed by knowledge.
+  • "goal"      — runs autonomously, iterating toward a stated goal.
+
+YOU OPERATE AS A REAL AGENT — gather → propose → confirm. NOT one-shot.
+
+1. UNDERSTAND. If the user is vague ("build me an agent", "help me set this \
+up"), DO NOT propose anything yet. Ask one focused clarifying question. \
+Examples of what you should probe: who the agent serves, what task it does, \
+what voice/tone fits, whether they want it "knowledge" or "goal" style.
+
+2. PROPOSE. Only once you have enough to make a confident draft — call the \
+`propose_changes` tool. Always include the WHOLE config (copy current values \
+for fields you aren't changing). Pair the tool call with a short plain-text \
+reply explaining what you're proposing. The UI renders an Apply button on the \
+tool call.
+
+3. CONFIRM. When the user message is exactly "(applied)" — they just clicked \
+Apply on your last proposal. Acknowledge briefly ("Done — I renamed it to \
+Atlas and switched the voice."), then ask what they want to refine next. NO \
+tool call here.
+
+4. CHAT. For questions ("what voice should I use?", "can you check my \
+prompt?"), just discuss. Recommend but don't auto-apply.
+
+CONTEXT: the user's current draft is supplied in their first message of each \
+turn — read it before deciding what to do. The draft persists across turns; \
+your job is to evolve it, not start fresh every time.
+
+STYLE: warm, concise, 1-4 sentences. End with a question when you need \
+information. Speak as if you're sitting next to the user.
+
+WHEN YOU CALL `propose_changes`:
+  - Include EVERY field of config — even ones you didn't change.
+  - Pick a sample voice id from the platform context when proposing for the \
+first time or when the user asks for a voice change.
+  - The `summary` field is shown on the Apply button tooltip — one sentence, \
+imperative ("Rename to Atlas, switch to formal tone").
+"""
+
+
+_PROPOSE_CHANGES_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "propose_changes",
+        "description": (
+            "Emit a complete, ready-to-apply draft of the user's agent. "
+            "ONLY call when the user has clearly asked for a change AND "
+            "you have enough information to fill every field. Otherwise "
+            "just reply in text."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Agent display name."},
+                "type": {
+                    "type": "string",
+                    "enum": ["knowledge", "goal"],
+                    "description": "knowledge = chat / Q&A; goal = autonomous loop.",
+                },
+                "config": {
+                    "type": "object",
+                    "properties": {
+                        "purpose": {"type": "string"},
+                        "system_prompt": {"type": "string"},
+                        "knowledge": {"type": "string"},
+                        "voice": {"type": "string", "description": "Sample voice id."},
+                        "language": {"type": "string"},
+                        "llm_model": {"type": "string"},
+                        "temperature": {"type": "number"},
+                        "goal": {"type": "string"},
+                        "success_metric": {"type": "string"},
+                        "max_iterations": {"type": "integer"},
+                    },
+                    "required": ["purpose", "system_prompt"],
+                },
+                "summary": {
+                    "type": "string",
+                    "description": (
+                        "One sentence in imperative voice describing what "
+                        "this proposal changes vs the current draft. "
+                        "Shown on the Apply button tooltip."
+                    ),
+                },
+            },
+            "required": ["name", "type", "config", "summary"],
+        },
+    },
+}
+
+
+async def chat_with_architect_stream(
+    *,
+    user_message: str,
+    history: Optional[list[dict]] = None,
+    existing: Optional[dict] = None,
+):
+    """Streaming counterpart to ``chat_with_architect``.
+
+    Yields a uniform event stream the SSE endpoint forwards verbatim:
+
+      {"type": "token",   "delta": str}        — content chunk
+      {"type": "proposed", "data":  dict}      — model called the tool
+      {"type": "done"}                         — terminal
+      {"type": "error",   "message": str}     — terminal, only on failure
+
+    Mirrors the non-streaming version's history cap (12 turns) and
+    draft-into-user-message trick. The model gets ONE tool, ``propose_changes``;
+    if it never calls it, we yield ``done`` with no ``proposed`` event and
+    the UI just shows the text reply.
+    """
+    from llm_client import stream_chat_with_tools
+
+    history = list(history or [])[-12:]
+    user_blocks: list[str] = []
+    if existing:
+        user_blocks.append(
+            "Current agent draft (read-only context):\n"
+            + json.dumps(existing, ensure_ascii=False)[:3500]
+        )
+    user_blocks.append(user_message.strip())
+    final_user = "\n\n".join(user_blocks)
+
+    msgs: list[dict] = [{"role": "system", "content": CHAT_STREAM_SYSTEM}]
+    for h in history:
+        role = h.get("role")
+        content = h.get("content")
+        if role in ("user", "assistant") and isinstance(content, str) and content.strip():
+            msgs.append({"role": role, "content": content})
+    msgs.append({"role": "user", "content": final_user})
+
+    try:
+        async for evt in stream_chat_with_tools(
+            msgs,
+            tools=[_PROPOSE_CHANGES_TOOL],
+            tool_choice="auto",
+            temperature=0.5,
+            max_tokens=4000,
+            model=ARCHITECT_LLM_MODEL,
+            reasoning_effort=ARCHITECT_REASONING_EFFORT,
+        ):
+            etype = evt.get("type")
+            if etype == "content":
+                yield {"type": "token", "delta": evt.get("text", "")}
+            elif etype == "tool_call":
+                tc = evt.get("tool_call") or {}
+                if tc.get("name") != "propose_changes":
+                    continue
+                # Arguments arrive as a JSON-encoded string accumulated
+                # across deltas. Parse, normalize, surface as a single
+                # frontend event.
+                try:
+                    raw_args = tc.get("arguments") or "{}"
+                    parsed = json.loads(raw_args) if isinstance(raw_args, str) else {}
+                except Exception as exc:  # noqa: BLE001
+                    _log.warning("architect stream: tool args JSON parse failed: %s", exc)
+                    continue
+                try:
+                    normalized = _normalize_draft(parsed)
+                    summary = str(parsed.get("summary") or "").strip()[:300]
+                    if summary:
+                        normalized["summary"] = summary
+                    yield {"type": "proposed", "data": normalized}
+                except Exception as exc:  # noqa: BLE001
+                    _log.warning(
+                        "architect stream: normalize_draft failed: %s",
+                        exc,
+                    )
+            elif etype == "done":
+                yield {"type": "done"}
+                return
+    except Exception as exc:  # noqa: BLE001
+        _log.exception("architect stream failed")
+        yield {"type": "error", "message": str(exc) or "architect stream failed"}
+        return
+
+
 def _normalize_draft(obj: dict) -> dict:
     """Coerce the LLM output into our expected shape, filling defaults."""
     name = str(obj.get("name") or "Untitled Agent").strip()[:120]

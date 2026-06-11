@@ -1537,6 +1537,7 @@ async def stream_chat_with_tools(
     temperature: float = 0.6,
     max_tokens: int = 1500,
     model: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> AsyncIterator[dict]:
     """Stream a chat-completions call with optional tool calling.
 
@@ -1637,6 +1638,7 @@ async def stream_chat_with_tools(
                 url, model_id, attempt_headers, provider, messages,
                 tools=tools, tool_choice=tool_choice,
                 temperature=temperature, max_tokens=max_tokens,
+                reasoning_effort=reasoning_effort,
             ):
                 if evt.get("type") in ("content", "tool_call"):
                     emitted_any = True
@@ -1702,6 +1704,7 @@ async def stream_chat_with_tools(
         tools=tools, tool_choice=tool_choice,
         temperature=temperature, max_tokens=max_tokens,
         fallback_from="cerebras", fallback_reason=fallback_reason,
+        reasoning_effort=None,
     ):
         yield evt
 
@@ -1719,6 +1722,7 @@ async def _stream_chat_with_tools_once(
     max_tokens: int,
     fallback_from: str | None = None,
     fallback_reason: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> AsyncIterator[dict]:
     """Single-shot streaming chat-completions reader. Yields the same
     event envelope as ``stream_chat_with_tools`` but performs no
@@ -1745,6 +1749,11 @@ async def _stream_chat_with_tools_once(
         body["max_completion_tokens"] = max_tokens
         # Intentionally omit ``temperature`` — gpt-5* models only
         # accept default. Older models default to 1 which is fine.
+        # Forward thinking depth when the caller opted in. Older
+        # non-reasoning OpenAI models reject this field, so we ONLY
+        # send it when set explicitly.
+        if reasoning_effort:
+            body["reasoning_effort"] = reasoning_effort
     else:
         body["max_tokens"] = max_tokens
         body["temperature"] = temperature

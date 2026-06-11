@@ -101,6 +101,27 @@ export const agentsApi = {
     });
   },
 
+  /**
+   * Streaming counterpart to ``architectChat``. POSTs to the
+   * ``/architect/chat/stream`` SSE endpoint and yields parsed events
+   * as the server emits them:
+   *
+   *   {type:'token', delta:string}     - prose chunk, append to bubble
+   *   {type:'proposed', data:Proposed} - tool call materialized
+   *   {type:'done'}                    - terminal, stream complete
+   *   {type:'error', message:string}   - terminal, on failure
+   *
+   * Uses fetch+ReadableStream rather than EventSource so the
+   * Authorization header / cookie credentials flow naturally.
+   */
+  architectChatStream(
+    token: string,
+    body: ArchitectChatRequest,
+    signal?: AbortSignal,
+  ): AsyncGenerator<ArchitectStreamEvent, void, unknown> {
+    return architectStream(token, body, signal);
+  },
+
   async listRuns(token: string, agentId: string): Promise<{ runs: AgentRun[] }> {
     return jsonFetch(`${API_BASE_URL}/dashboard/agents/${encodeURIComponent(agentId)}/runs`, {
       method: 'GET',
@@ -282,6 +303,94 @@ export const agentCustomToolsApi = {
     );
   },
 };
+
+/* ===========================================================================
+   Architect SSE stream consumer
+   ===========================================================================
+
+   Reads the ``/architect/chat/stream`` SSE response with fetch+
+   ReadableStream and yields parsed events. Backend frames each event as:
+
+     data: <one-line JSON>\n\n
+
+   We accumulate decoded bytes, split on ``\n\n``, parse each block's
+   ``data:`` line as JSON, yield it. Abort is honored mid-stream so the
+   drawer can cancel an in-flight architect call cleanly. */
+
+export type ArchitectStreamEvent =
+  | { type: 'token'; delta: string }
+  | { type: 'proposed'; data: { name: string; type: AgentType; config: AgentConfig; summary?: string } }
+  | { type: 'done' }
+  | { type: 'error'; message: string };
+
+async function* architectStream(
+  token: string,
+  body: ArchitectChatRequest,
+  signal?: AbortSignal,
+): AsyncGenerator<ArchitectStreamEvent, void, unknown> {
+  let res: Response;
+  try {
+    res = await authFetch(`${API_BASE_URL}/dashboard/agents/architect/chat/stream`, {
+      method: 'POST',
+      headers: { ...authHeaders(token), Accept: 'text/event-stream' },
+      body: JSON.stringify(body),
+      signal,
+    });
+  } catch (err) {
+    yield { type: 'error', message: (err as Error).message || 'network error' };
+    return;
+  }
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    yield { type: 'error', message: text || `HTTP ${res.status}` };
+    return;
+  }
+  if (!res.body) {
+    yield { type: 'error', message: 'no response body' };
+    return;
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      // SSE frames are double-newline-delimited. Split, keep the
+      // trailing partial in ``buf`` for the next iteration.
+      let idx: number;
+      while ((idx = buf.indexOf('\n\n')) !== -1) {
+        const frame = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        // A frame may have multiple lines (event:, id:, etc.). We
+        // only care about ``data:`` lines and concatenate them per
+        // SSE spec, but the backend only sends one ``data:`` per
+        // frame so the common case is a single line.
+        const dataLine = frame
+          .split('\n')
+          .filter((l) => l.startsWith('data:'))
+          .map((l) => l.slice(5).trimStart())
+          .join('\n');
+        if (!dataLine) continue;
+        try {
+          yield JSON.parse(dataLine) as ArchitectStreamEvent;
+        } catch {
+          // Malformed frame — skip. The backend always emits valid
+          // JSON, so this only fires on transport-corruption edge
+          // cases. Reporting error here would mask the real one.
+        }
+      }
+    }
+  } catch (err) {
+    if ((err as DOMException)?.name === 'AbortError') return;
+    yield { type: 'error', message: (err as Error).message || 'stream error' };
+  } finally {
+    try { reader.releaseLock(); } catch { /* ignore */ }
+  }
+}
+
 
 export function getStoredToken(): string | null {
   // Cookie-only auth: the session JWT no longer lives in localStorage (it's in

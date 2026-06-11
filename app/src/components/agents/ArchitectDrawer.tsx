@@ -113,17 +113,44 @@ export function ArchitectDrawer({ open, onClose, current, onApply }: Props) {
     return () => setArchitectOpen(false);
   }, [open]);
 
-  const send = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const text = input.trim();
-    if (!text) return;
+  // Cancel any in-flight architect stream when the drawer is closed
+  // (user dismissed) or the component unmounts. Otherwise the request
+  // keeps running and the user is billed for tokens they'll never see.
+  useEffect(() => {
+    if (!open) abortRef.current?.abort();
+    return () => abortRef.current?.abort();
+  }, [open]);
+
+  // ``abortRef`` lets us cancel an in-flight streaming call if the
+  // user closes the drawer or sends a new message before the previous
+  // one finishes.
+  const abortRef = useRef<AbortController | null>(null);
+
+  // Send a turn through the streaming endpoint. Tokens arrive as
+  // ``token`` events and we append them to the live architect bubble.
+  // A ``proposed`` event materializes the Apply button mid-stream.
+  // ``done`` closes the turn; ``error`` surfaces the message.
+  //
+  // ``synthetic`` (default false) marks the call as a hidden client-
+  // triggered message — e.g. "(applied)" after the user clicks Apply.
+  // We send it through the LLM but don't echo it as a user bubble.
+  const runArchitectTurn = async (
+    text: string,
+    { synthetic = false }: { synthetic?: boolean } = {},
+  ) => {
     const token = getStoredToken();
     if (!token) {
       setError('Sign in to use the architect.');
       return;
     }
-    // Build the rolling history the backend uses for context, cap at
-    // the last ~10 user/architect turns so latency stays low.
+    // Cancel any prior in-flight stream so the next call's tokens
+    // don't interleave with a stale one's tail.
+    abortRef.current?.abort();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+
+    // History is built from the visible chat; synthetic ("(applied)")
+    // markers ARE included so the model knows what was done.
     const history: ArchitectChatTurn[] = messages
       .filter((m) => m.role === 'user' || m.role === 'architect')
       .slice(-10)
@@ -131,45 +158,106 @@ export function ArchitectDrawer({ open, onClose, current, onApply }: Props) {
         role: m.role === 'user' ? 'user' : 'assistant',
         content: m.text,
       }));
-    setMessages((prev) => [...prev, { id: newId(), role: 'user', text }]);
+
+    // For real user input we add a user bubble immediately. Synthetic
+    // turns stay invisible — we go straight to the architect bubble.
+    if (!synthetic) {
+      setMessages((prev) => [...prev, { id: newId(), role: 'user', text }]);
+    }
+
+    // Pre-create an empty architect bubble that tokens will accumulate
+    // into. Its id is the handle the streaming loop appends to. We
+    // create it AFTER showing the user bubble so the chat order is
+    // correct in StrictMode (the buffered user bubble doesn't get
+    // re-ordered ahead).
+    const architectMsgId = newId();
+    setMessages((prev) => [
+      ...prev,
+      { id: architectMsgId, role: 'architect', text: '' },
+    ]);
     setInput('');
     setBusy(true);
     setError(null);
+
+    let receivedAnyToken = false;
+    let proposedAttached: Proposed | null = null;
     try {
-      const res = await agentsApi.architectChat(token, {
-        message: text,
-        history,
-        existing: { name: current.name, type: current.type, ...current.config },
-      });
-      setMessages((prev) => [
-        ...prev,
+      for await (const evt of agentsApi.architectChatStream(
+        token,
         {
-          id: newId(),
-          role: 'architect',
-          text: res.reply,
-          proposed: res.proposed_changes
-            ? {
-                name: res.proposed_changes.name,
-                type: res.proposed_changes.type,
-                config: res.proposed_changes.config,
-                summary: res.proposed_changes.summary,
-              }
-            : null,
+          message: text,
+          history,
+          existing: { name: current.name, type: current.type, ...current.config },
         },
-      ]);
+        ctrl.signal,
+      )) {
+        if (evt.type === 'token') {
+          receivedAnyToken = true;
+          // Functional update — concurrent state changes (e.g. user
+          // typing in the input) can't race against the appended chunk.
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === architectMsgId ? { ...m, text: (m.text || '') + evt.delta } : m,
+            ),
+          );
+        } else if (evt.type === 'proposed') {
+          proposedAttached = {
+            name: evt.data.name,
+            type: evt.data.type,
+            config: evt.data.config,
+            summary: evt.data.summary,
+          };
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === architectMsgId ? { ...m, proposed: proposedAttached } : m,
+            ),
+          );
+        } else if (evt.type === 'error') {
+          throw new Error(evt.message);
+        }
+        // ``done`` is a no-op here — the loop just exits naturally.
+      }
+      // Edge case: stream ended with no tokens AND no proposal (model
+      // emitted nothing useful). Replace the empty bubble with a
+      // gentle nudge so the user isn't staring at a blank shape.
+      if (!receivedAnyToken && !proposedAttached) {
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === architectMsgId
+              ? { ...m, text: 'Got it. Want me to make any specific changes?' }
+              : m,
+          ),
+        );
+      }
     } catch (err) {
       const msg = (err as Error).message || 'Architect chat failed';
       setError(msg);
-      setMessages((prev) => [...prev, { id: newId(), role: 'architect', text: `(error) ${msg}` }]);
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === architectMsgId ? { ...m, text: `(error) ${msg}` } : m,
+        ),
+      );
     } finally {
       setBusy(false);
+      // Clear the controller ref only if it's still the current one
+      // (a new call may have already supplanted us).
+      if (abortRef.current === ctrl) abortRef.current = null;
     }
   };
 
+  const send = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const text = input.trim();
+    if (!text) return;
+    await runArchitectTurn(text);
+  };
+
   const applyProposed = (msgId: string) => {
+    let appliedSummary: string | undefined;
     setMessages((prev) => {
       const target = prev.find((m) => m.id === msgId);
       if (!target?.proposed) return prev;
+      appliedSummary = target.proposed.summary;
       onApply({
         name: target.proposed.name,
         type: target.proposed.type,
@@ -179,6 +267,14 @@ export function ArchitectDrawer({ open, onClose, current, onApply }: Props) {
         m.id === msgId ? { ...m, applied: true, proposed: null } : m,
       );
     });
+    // Close the loop — fire a hidden synthetic turn so the architect
+    // confirms and asks what's next. CHAT_STREAM_SYSTEM treats
+    // "(applied)" as the canonical post-Apply trigger and replies
+    // briefly without proposing again. Without this the architect
+    // goes silent after Apply, which feels broken.
+    if (appliedSummary !== undefined) {
+      void runArchitectTurn('(applied)', { synthetic: true });
+    }
   };
 
   return (
