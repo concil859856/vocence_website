@@ -323,7 +323,7 @@ function CopyPane() {
 
       <div className="flex flex-wrap items-center gap-3">
         <Link
-          to="/studio/agents"
+          to="/studio/agents/new"
           className="
             group inline-flex items-center gap-2
             rounded-full px-5 py-3 text-sm font-semibold

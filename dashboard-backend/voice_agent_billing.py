@@ -54,6 +54,14 @@ MAX_SESSION_SEC = int(os.environ.get("VOICE_AGENT_MAX_SESSION_SEC", str(30 * 60)
 # session for idleness. Stops a user from accidentally leaving a tab
 # open and burning credits while away.
 IDLE_TIMEOUT_SEC = int(os.environ.get("VOICE_AGENT_IDLE_TIMEOUT_SEC", "60"))
+# Hard cap for free-mode sessions (Logos / Vocence Assistant). When the
+# user has had Logos chat for this many seconds, the billing loop fires
+# REASON_FREE_TIME_UP and the WS handler interrupts whatever's happening
+# to play a farewell + close. Push paid agents into Studio for longer
+# sessions. Env-override per deployment; default 2 minutes per user spec.
+LOGOS_FREE_MAX_SESSION_SEC = int(
+    os.environ.get("LOGOS_FREE_MAX_SESSION_SEC", "120")
+)
 
 
 def credits_for_seconds(seconds: float) -> int:
@@ -116,6 +124,11 @@ class VoiceAgentBilling:
     REASON_EXHAUSTED = "exhausted"
     REASON_MAX_DURATION = "max_duration"
     REASON_IDLE_TIMEOUT = "idle_timeout"
+    # Free-mode (Logos) sessions hit a much shorter cap than paid agents.
+    # Distinct reason so the WS handler can interrupt with a farewell
+    # speech + a sign-in / create-agent CTA instead of the generic
+    # "session ended" close used for paid max-duration.
+    REASON_FREE_TIME_UP = "free_time_up"
 
     def __init__(
         self,
@@ -139,6 +152,13 @@ class VoiceAgentBilling:
         # hard-cap at 30 min and idle-close at 60 sec (protecting
         # upstream pod slots) without charging the user.
         free_mode: bool = False,
+        # Tighter session cap that applies ONLY when free_mode=True.
+        # Defaults to None (use the platform MAX_SESSION_SEC). The
+        # voicechat router passes LOGOS_FREE_MAX_SESSION_SEC here for
+        # Logos sessions so they end after the per-user-spec 2 minutes
+        # via REASON_FREE_TIME_UP, distinct from the generic 30-min
+        # MAX_DURATION cap that paid agents hit.
+        free_max_sec: float | None = None,
     ) -> None:
         self.user_id = user_id
         self.session_id = session_id
@@ -156,6 +176,7 @@ class VoiceAgentBilling:
             self._on_end = None  # type: ignore[assignment]
 
         self._on_deduct = on_deduct
+        self._free_max_sec = free_max_sec
 
         # Per-increment cost. Pre-computed once.
         self._increment_credits: int = max(
@@ -355,6 +376,20 @@ class VoiceAgentBilling:
                 return
 
             now = time.monotonic()
+
+            # 0. Free-mode tighter cap (Logos). Checked BEFORE the generic
+            #    max-duration so Logos always ends with REASON_FREE_TIME_UP
+            #    (which fires the farewell-speech path) rather than the
+            #    generic max_duration close. Idempotent — re-checking the
+            #    same condition next tick is fine because _fire_end returns.
+            if (
+                self.free_mode
+                and self._free_max_sec is not None
+                and self._free_max_sec > 0
+                and (now - self._started_at) >= self._free_max_sec
+            ):
+                await self._fire_end(self.REASON_FREE_TIME_UP)
+                return
 
             # 1. Max session length — cheap check before we touch the DB.
             #    If we deduct then close, we'd over-bill by one increment

@@ -519,6 +519,7 @@ async def voicechat_session(
         MAX_SESSION_SEC,
         IDLE_TIMEOUT_SEC,
         INCREMENT_SEC,
+        LOGOS_FREE_MAX_SESSION_SEC,
     )
 
     paid_agent = bool(agent_id)
@@ -540,8 +541,55 @@ async def voicechat_session(
     async def _on_session_end(reason: str) -> None:
         """Routes the billing-loop's auto-end reason to the right WS
         close code + message. Centralized here so all auto-end paths
-        (balance exhausted, max duration, idle) share one handler.
-        REASON_EXHAUSTED can't fire in free mode (no deductions)."""
+        (balance exhausted, max duration, idle, free-time-up) share
+        one handler. REASON_EXHAUSTED can't fire in free mode (no
+        deductions)."""
+
+        # Logos (free) hit its 2-min cap. Special-case: interrupt
+        # whatever's happening, have the assistant SPEAK a farewell
+        # (so the user hears it rather than just seeing a close
+        # banner), then close cleanly. The visible system-message
+        # payload carries a code/message the UI can render alongside
+        # the chat bubble.
+        if reason == VoiceAgentBilling.REASON_FREE_TIME_UP:
+            farewell = LOGOS_FAREWELL_MESSAGE
+            # 1. Tear down any in-flight turn (TTS mid-stream, LLM
+            #    mid-call, user mid-utterance). _cancel_current is
+            #    defined later in voicechat_session — referenced here
+            #    via Python's late-binding closure, which resolves at
+            #    call time. By the time the billing loop fires this,
+            #    that function exists.
+            with suppress(Exception):
+                await _cancel_current()
+            # 2. Tell the UI a session_timeout is happening so the
+            #    chat surface can render a system bubble while the
+            #    farewell audio plays. ``code=free_time_up`` is
+            #    distinct from max_duration so the frontend can
+            #    show a "Build your own agent → Studio" CTA instead
+            #    of the generic "session ended" message.
+            with suppress(Exception):
+                await ws.send_json({
+                    "type": "session_timeout",
+                    "code": "free_time_up",
+                    "message": farewell,
+                })
+            # 3. Stream the farewell through TTS. Reuses the same
+            #    _speak_pretext path the greeting uses — emits the
+            #    chat token + audio_meta envelope + PCM bytes.
+            with suppress(Exception):
+                await _speak_pretext(farewell)
+            # 4. Close out the assistant turn so the player's
+            #    onSettled fires and the client stops waiting.
+            with suppress(Exception):
+                await ws.send_json({"type": "turn_end"})
+            # 5. Close the WS gracefully. 4408 (same code paid agents
+            #    use for max_duration) signals "policy ended this
+            #    session" — the frontend already handles 4408 as a
+            #    natural-end, not an error.
+            with suppress(Exception):
+                await ws.close(code=4408)
+            return
+
         if reason == VoiceAgentBilling.REASON_EXHAUSTED:
             payload = {
                 "type": "billing_exhausted",
@@ -570,6 +618,18 @@ async def voicechat_session(
         with suppress(Exception):
             await ws.close(code=close_code)
 
+
+    # Spoken when a Logos session hits the 2-min free cap. Written in
+    # Logos's voice style (warm, contractions, short sentences — see
+    # voicechat_knowledge.SYSTEM_PROMPT). Reads naturally when the
+    # TTS pipeline reads it aloud.
+    LOGOS_FAREWELL_MESSAGE = (
+        "Alright, the time's up. To keep chatting, sign in and grab "
+        "some credits, then create your own agent — you'll be able to "
+        "talk with it for up to thirty minutes per session. Thanks for "
+        "visiting — bye!"
+    )
+
     async def _on_billing_deduct(new_balance: int) -> None:
         """After every per-minute deduction (and the final
         reconciliation), push the live balance to the client so the
@@ -589,6 +649,10 @@ async def voicechat_session(
         on_session_end=_on_session_end,
         on_deduct=_on_billing_deduct,
         free_mode=not paid_agent,
+        # Logos (free) sessions get a tight 2-min cap. Paid agents
+        # ignore this — None means "no extra limit, just use the
+        # platform MAX_SESSION_SEC of 30 min".
+        free_max_sec=float(LOGOS_FREE_MAX_SESSION_SEC) if not paid_agent else None,
     )
 
     # Send ready — client may have already disconnected (e.g., React.StrictMode
