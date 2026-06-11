@@ -1,3 +1,11 @@
+# Python bytecode + caches
+__pycache__/
+*.pyc
+*.pyo
+
+# Claude Code session state (per-machine)
+.claude/
+
 # Dependencies
 node_modules/
 npm-debug.log*
