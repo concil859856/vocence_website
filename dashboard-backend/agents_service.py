@@ -39,6 +39,24 @@ AGENTS_LLM_TIMEOUT_SEC = float(os.environ.get("AGENTS_LLM_TIMEOUT_SEC") or "120"
 AGENTS_LOOP_MAX_ITERATIONS_HARD = int(os.environ.get("AGENTS_LOOP_MAX_ITERATIONS_HARD") or "20")
 AGENTS_LOOP_TARGET_SCORE = float(os.environ.get("AGENTS_LOOP_TARGET_SCORE") or "0.9")
 
+# Architect-specific routing. The architect is the conversational
+# copilot inside the Agent Builder — it's the only LLM call in this
+# product where the user EXPECTS to wait while the model thinks. We
+# route it explicitly to a high-reasoning model (gpt-5 with
+# reasoning_effort=high by default) so the suggestions are well-
+# considered rather than the snappy-but-shallow output that a small
+# voice-tier model gives. Override via env when needed.
+ARCHITECT_LLM_MODEL = (
+    os.environ.get("ARCHITECT_LLM_MODEL") or "openai:gpt-5"
+).strip()
+ARCHITECT_REASONING_EFFORT = (
+    os.environ.get("ARCHITECT_REASONING_EFFORT") or "high"
+).strip().lower()
+# Per-call timeout for the architect — high-reasoning gpt-5 can spend
+# 60-180 s thinking on a complex draft. Bump beyond the 120 s default
+# so a deliberate, deep response doesn't get killed mid-flight.
+ARCHITECT_TIMEOUT_SEC = float(os.environ.get("ARCHITECT_TIMEOUT_SEC") or "240")
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -64,6 +82,8 @@ async def _chat_complete_json(
     temperature: float = 0.4,
     max_tokens: int = 1500,
     think: bool | None = None,
+    reasoning_effort: Optional[str] = None,
+    timeout_sec: Optional[float] = None,
 ) -> dict:
     """One-shot chat completion expecting a JSON object back.
 
@@ -94,6 +114,8 @@ async def _chat_complete_json(
         think=think,
         model=model or None,
         retries=1,
+        reasoning_effort=reasoning_effort,
+        timeout_sec=timeout_sec,
     )
 
 
@@ -305,12 +327,20 @@ async def chat_with_architect(
     user_blocks.append(user_message.strip())
     final_user = "\n\n".join(user_blocks)
 
+    # Route this call to the high-reasoning architect model (see
+    # ARCHITECT_LLM_MODEL / ARCHITECT_REASONING_EFFORT at module top).
+    # temperature is ignored when the underlying model is a reasoning
+    # one (gpt-5/o-series), but we keep the kwarg for symmetry with
+    # the draft path.
     obj = await _chat_complete_json(
         system=CHAT_SYSTEM,
         user=final_user,
         history=history,
+        model=ARCHITECT_LLM_MODEL,
+        reasoning_effort=ARCHITECT_REASONING_EFFORT,
+        timeout_sec=ARCHITECT_TIMEOUT_SEC,
         temperature=0.5,
-        max_tokens=1400,
+        max_tokens=4000,
     )
     reply = str(obj.get("reply") or "").strip()[:2000]
     proposed = obj.get("proposed_changes")

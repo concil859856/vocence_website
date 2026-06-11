@@ -312,14 +312,15 @@ def llm_configured() -> bool:
 # specific provider regardless of the system-wide default. This keeps
 # per-agent routing explicit and lets callers mix providers within one
 # deployment (Logos on Claude/Chutes, voice agents on Groq for speed).
-_PROVIDER_PREFIXES = {"groq:", "openai:", "chutes:", "anthropic:", "cerebras:"}
+_PROVIDER_PREFIXES = {"groq:", "openai:", "chutes:", "anthropic:", "cerebras:", "xai:", "grok:"}
 
 
 def split_provider_prefix(model: str | None) -> tuple[str | None, str | None]:
     """Parse ``provider:model`` into ``(provider, model)``. Returns
     ``(None, model)`` when no recognised prefix is present so callers
     fall back to default routing. ``anthropic:`` is treated as Chutes
-    since Claude on this stack is served via Chutes."""
+    since Claude on this stack is served via Chutes. ``grok:`` is
+    treated as ``xai`` so both spellings route the same way."""
     if not model:
         return None, None
     s = model.strip()
@@ -328,6 +329,8 @@ def split_provider_prefix(model: str | None) -> tuple[str | None, str | None]:
             prov = pref[:-1]
             if prov == "anthropic":
                 prov = "chutes"
+            elif prov == "grok":
+                prov = "xai"
             return prov, s[len(pref):].strip() or None
     return None, s
 
@@ -546,6 +549,8 @@ async def _openai_chat_complete(
     *,
     temperature: float,
     max_tokens: int,
+    reasoning_effort: str | None = None,
+    timeout_sec: float | None = None,
 ) -> str:
     if not OPENAI_API_KEY:
         raise RuntimeError("OPENAI_API_KEY not set")
@@ -556,12 +561,24 @@ async def _openai_chat_complete(
     # for reasoning models). Both quirks: just omit temperature and
     # use the new max-token field. Older OpenAI models still accept
     # this shape — default temperature is 1, which is fine.
-    body = {
+    body: dict = {
         "model": OPENAI_MODEL,
         "messages": messages,
         "max_completion_tokens": max_tokens,
     }
-    timeout = aiohttp.ClientTimeout(total=LOCAL_LLM_TIMEOUT_SEC)
+    # ``reasoning_effort`` controls thinking depth on gpt-5 / o-series
+    # ("minimal" | "low" | "medium" | "high"). When set, the model
+    # spends extra hidden tokens reasoning before producing visible
+    # output. Higher = better answers, longer latency (and cost). Only
+    # forward when the caller explicitly opted in — older OpenAI
+    # models reject this field.
+    if reasoning_effort:
+        body["reasoning_effort"] = reasoning_effort
+    # Reasoning models can run for tens of seconds at high effort. Let
+    # the caller override the default 120 s timeout so the architect
+    # endpoint can wait 3-4 minutes for a deep gpt-5-high response
+    # without blocking the rest of the system on the same value.
+    timeout = aiohttp.ClientTimeout(total=timeout_sec or LOCAL_LLM_TIMEOUT_SEC)
     t0 = time.monotonic()
     http_status: int | None = None
     status = "error"
@@ -723,6 +740,71 @@ async def _cerebras_chat_complete(
         )
 
 
+async def _xai_chat_complete(
+    messages: list[dict],
+    *,
+    temperature: float,
+    max_tokens: int,
+    model: str | None,
+) -> str:
+    """Non-streaming xAI (Grok) chat completion. OpenAI-compatible
+    wire shape. Used as the fallback target when the primary Cerebras
+    call fails (in chat_complete's per-call try/except path) AND as a
+    first-class provider via the ``xai:`` / ``grok:`` model prefix.
+
+    Model defaults to ``VOICECHAT_GROK_FALLBACK_MODEL`` (currently the
+    fastest non-reasoning Grok variant) — pass an explicit model id to
+    override per-call."""
+    if not XAI_API_KEY:
+        raise RuntimeError("XAI_API_KEY not set")
+    use_model = (model or VOICECHAT_GROK_FALLBACK_MODEL).strip()
+    if not use_model:
+        raise RuntimeError("No xAI model configured")
+    url = f"{XAI_BASE_URL}/chat/completions"
+    body = {
+        "model": use_model,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+    timeout = aiohttp.ClientTimeout(total=LOCAL_LLM_TIMEOUT_SEC)
+    t0 = time.monotonic()
+    http_status: int | None = None
+    status = "error"
+    err: str | None = None
+    p_tok = c_tok = tot_tok = None
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(url, headers=_xai_headers(), json=body) as resp:
+                http_status = resp.status
+                raw = await resp.read()
+                if resp.status != 200:
+                    snippet = raw[:400].decode("utf-8", errors="replace")
+                    raise RuntimeError(f"xai LLM returned {resp.status}: {snippet}")
+                try:
+                    obj = json.loads(raw.decode("utf-8"))
+                except Exception as exc:
+                    raise RuntimeError(f"xai LLM returned non-JSON: {exc}")
+                p_tok, c_tok, tot_tok = _usage_from(obj)
+                content = _extract_content(obj)
+                if not content:
+                    status = "empty"
+                    raise RuntimeError("xai LLM returned empty content")
+                status = "ok"
+                return content
+    except Exception as exc:
+        err = str(exc)
+        raise
+    finally:
+        _record_llm_call(
+            provider="xai", model=use_model, mode="chat",
+            status=status, http_status=http_status,
+            latency_ms=int((time.monotonic() - t0) * 1000),
+            prompt_tokens=p_tok, completion_tokens=c_tok, total_tokens=tot_tok,
+            error_message=err,
+        )
+
+
 async def _chutes_chat_complete(
     messages: list[dict],
     *,
@@ -790,6 +872,8 @@ async def chat_complete(
     think: bool | None = None,
     model: str | None = None,
     retries: int = 1,
+    reasoning_effort: str | None = None,
+    timeout_sec: float | None = None,
 ) -> str:
     """Non-streaming chat completion. Returns the assistant content string.
 
@@ -817,6 +901,11 @@ async def chat_complete(
                 lambda: _cerebras_chat_complete(messages, temperature=temperature, max_tokens=max_tokens, model=bare_model),
                 retries,
             )
+        if forced_provider == "xai":
+            return await _retry(
+                lambda: _xai_chat_complete(messages, temperature=temperature, max_tokens=max_tokens, model=bare_model),
+                retries,
+            )
         if forced_provider == "openai":
             # OpenAI's slot uses OPENAI_MODEL globally; an explicit
             # provider:model overrides for this single call.
@@ -824,7 +913,13 @@ async def chat_complete(
             prior, OPENAI_MODEL = OPENAI_MODEL, (bare_model or OPENAI_MODEL)
             try:
                 return await _retry(
-                    lambda: _openai_chat_complete(messages, temperature=temperature, max_tokens=max_tokens),
+                    lambda: _openai_chat_complete(
+                        messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        reasoning_effort=reasoning_effort,
+                        timeout_sec=timeout_sec,
+                    ),
                     retries,
                 )
             finally:
@@ -857,7 +952,13 @@ async def chat_complete(
     if primary == "openai":
         try:
             return await _retry(
-                lambda: _openai_chat_complete(messages, temperature=temperature, max_tokens=max_tokens),
+                lambda: _openai_chat_complete(
+                    messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    reasoning_effort=reasoning_effort,
+                    timeout_sec=timeout_sec,
+                ),
                 retries,
             )
         except Exception as exc:  # noqa: BLE001
@@ -884,6 +985,8 @@ async def chat_complete_json(
     think: bool | None = None,
     model: str | None = None,
     retries: int = 1,
+    reasoning_effort: str | None = None,
+    timeout_sec: float | None = None,
 ) -> dict:
     """Convenience: take the assistant content and parse it as a JSON object."""
     content = await chat_complete(
@@ -893,6 +996,8 @@ async def chat_complete_json(
         think=think,
         model=model,
         retries=retries,
+        reasoning_effort=reasoning_effort,
+        timeout_sec=timeout_sec,
     )
     return extract_json_object(content)
 

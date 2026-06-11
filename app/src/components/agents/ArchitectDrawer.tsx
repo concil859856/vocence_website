@@ -27,6 +27,21 @@ import { setArchitectOpen } from '../../lib/uiOverlay';
 
 const newId = () => Math.random().toString(36).slice(2, 11);
 
+// Cosmetic phase label for the thinking bubble. The architect is a
+// reasoning model, so it goes through real internal phases (parse
+// request → consult draft → consider options → compose). We don't
+// have telemetry from OpenAI for these phases, but rotating through
+// plausible labels at human-readable cadence makes the wait feel
+// purposeful rather than stuck. The labels are advisory only — no
+// behavior depends on which one is showing.
+function thinkingPhaseLabel(elapsedSec: number): string {
+  if (elapsedSec < 4) return 'Reading your message…';
+  if (elapsedSec < 12) return 'Considering your draft…';
+  if (elapsedSec < 30) return 'Weighing options…';
+  if (elapsedSec < 60) return 'Composing a response…';
+  return 'Still thinking…';
+}
+
 type Proposed = {
   name: string;
   type: AgentType;
@@ -69,7 +84,25 @@ export function ArchitectDrawer({ open, onClose, current, onApply }: Props) {
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Wall-clock seconds since the current request was sent. The
+  // architect runs on a high-reasoning model (gpt-5 / thinking
+  // effort=high), responses regularly take 30-120 s. Without a
+  // visible counter the user can't tell whether it's still thinking
+  // or the request died, so we show "Thinking… 12s" in the
+  // placeholder bubble.
+  const [thinkingSec, setThinkingSec] = useState(0);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+
+  // Tick the thinking-elapsed counter while a request is in flight.
+  // Resets to 0 the moment ``busy`` flips on, freezes on the final
+  // value when it flips off (so the user briefly sees the total
+  // before the bubble is replaced by the assistant reply).
+  useEffect(() => {
+    if (!busy) return;
+    setThinkingSec(0);
+    const t = window.setInterval(() => setThinkingSec((s) => s + 1), 1000);
+    return () => window.clearInterval(t);
+  }, [busy]);
 
   useEffect(() => {
     if (open && scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
@@ -225,11 +258,17 @@ export function ArchitectDrawer({ open, onClose, current, onApply }: Props) {
           ))}
           {busy && (
             <div className="flex justify-start">
-              <div className="bg-white/[0.06] text-white border border-white/10 rounded-2xl px-3.5 py-2 text-sm">
+              <div className="bg-white/[0.06] text-white border border-white/10 rounded-2xl px-3.5 py-2 text-sm flex items-center gap-2 min-w-[180px]">
                 <span className="inline-flex gap-1">
                   <span className="w-1.5 h-1.5 rounded-full bg-current opacity-60 animate-pulse" />
                   <span className="w-1.5 h-1.5 rounded-full bg-current opacity-60 animate-pulse [animation-delay:120ms]" />
                   <span className="w-1.5 h-1.5 rounded-full bg-current opacity-60 animate-pulse [animation-delay:240ms]" />
+                </span>
+                <span className="text-[#A7B0B7] text-xs">
+                  {thinkingPhaseLabel(thinkingSec)}
+                  {thinkingSec > 0 ? (
+                    <span className="ml-1 opacity-60">· {thinkingSec}s</span>
+                  ) : null}
                 </span>
               </div>
             </div>
