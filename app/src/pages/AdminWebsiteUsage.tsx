@@ -1124,10 +1124,13 @@ export function AdminWebsiteUsage() {
 // =============================================================================
 
 function formatVoicechatRate(s: AdminUserActivitySummary): string {
+  // Defensive: if the backend hasn't been restarted with the new
+  // migration, the *_effective fields will be undefined. Calling
+  // .toLocaleString() on undefined throws and blanks the whole page.
   const t = s.voicechat_rate_limit_turns_effective;
   const w = s.voicechat_rate_limit_window_sec_effective;
+  if (typeof t !== 'number' || typeof w !== 'number') return '—';
   if (t <= 0 || w <= 0) return 'unlimited';
-  // Pretty window: "60s" | "30m" | "1h" | "2h"
   const win = w >= 3600 ? `${Math.round(w / 3600)}h`
             : w >= 60   ? `${Math.round(w / 60)}m`
             : `${w}s`;
@@ -1136,6 +1139,7 @@ function formatVoicechatRate(s: AdminUserActivitySummary): string {
 
 function formatApiRate(s: AdminUserActivitySummary): string {
   const r = s.api_rate_limit_rpm_effective;
+  if (typeof r !== 'number') return '—';
   if (r <= 0) return 'unlimited';
   return `${r.toLocaleString()} rpm`;
 }
@@ -1160,10 +1164,10 @@ function RateLimitModal({ summary, onClose, onUpdated }: RateLimitModalProps) {
         : 'custom';
   const [voiceMode, setVoiceMode] = useState<Mode>(initialVoiceMode);
   const [voiceTurns, setVoiceTurns] = useState<string>(
-    String(summary.voicechat_rate_limit_turns ?? summary.voicechat_rate_limit_turns_effective),
+    String(summary.voicechat_rate_limit_turns ?? summary.voicechat_rate_limit_turns_effective ?? 30),
   );
   const [voiceWindowSec, setVoiceWindowSec] = useState<string>(
-    String(summary.voicechat_rate_limit_window_sec ?? summary.voicechat_rate_limit_window_sec_effective),
+    String(summary.voicechat_rate_limit_window_sec ?? summary.voicechat_rate_limit_window_sec_effective ?? 3600),
   );
 
   // API — same shape.
@@ -1173,7 +1177,7 @@ function RateLimitModal({ summary, onClose, onUpdated }: RateLimitModalProps) {
     : 'custom';
   const [apiMode, setApiMode] = useState<Mode>(initialApiMode);
   const [apiRpm, setApiRpm] = useState<string>(
-    String(summary.api_rate_limit_rpm ?? summary.api_rate_limit_rpm_effective),
+    String(summary.api_rate_limit_rpm ?? summary.api_rate_limit_rpm_effective ?? 4),
   );
 
   const [reason, setReason] = useState('');
