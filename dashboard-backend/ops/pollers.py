@@ -2,11 +2,11 @@
 
 Four asyncio tasks, all started from main.py's lifespan:
 
-  health_poller    — every ~10s: GET /healthz on each pod, mark status,
+  health_poller    — every ~100s: GET /healthz on each pod, mark status,
                      auto-restart after consecutive failures, count uptime
-  metrics_poller   — every ~30s: GET /metrics, compute deltas vs the cursor,
+  metrics_poller   — every ~300s: GET /metrics, compute deltas vs the cursor,
                      write per-minute rollup, bump daily totals
-  update_detector  — every ~5min: compare each pod's image digest against
+  update_detector  — every ~1h: compare each pod's image digest against
                      Docker Hub; log an event when a newer image exists
   cleanup_loop     — every hour: trim per-minute rows older than 30 days
 
@@ -41,9 +41,9 @@ _log = logging.getLogger(__name__)
 # Tunables
 # ---------------------------------------------------------------------------
 
-HEALTH_INTERVAL_S = float(os.environ.get("OPS_HEALTH_INTERVAL_S") or "10")
-METRICS_INTERVAL_S = float(os.environ.get("OPS_METRICS_INTERVAL_S") or "30")
-UPDATE_DETECTOR_INTERVAL_S = float(os.environ.get("OPS_UPDATE_DETECTOR_INTERVAL_S") or "300")
+HEALTH_INTERVAL_S = float(os.environ.get("OPS_HEALTH_INTERVAL_S") or "100")
+METRICS_INTERVAL_S = float(os.environ.get("OPS_METRICS_INTERVAL_S") or "300")
+UPDATE_DETECTOR_INTERVAL_S = float(os.environ.get("OPS_UPDATE_DETECTOR_INTERVAL_S") or "3600")
 CLEANUP_INTERVAL_S = float(os.environ.get("OPS_CLEANUP_INTERVAL_S") or "3600")
 
 HEALTH_REQUEST_TIMEOUT_S = float(os.environ.get("OPS_HEALTH_TIMEOUT_S") or "5")
