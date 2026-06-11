@@ -135,12 +135,17 @@ export function AgentBuilder() {
     <div className="min-h-screen bg-[#07080A] pt-20">
     <StudioShell activeView="agents">
       {/* Stable layout: form is fixed at 1024 px (max-w-5xl). When the
-          architect drawer is closed, the form is centered. When open on
-          ≥ lg viewports, the form right-aligns against the drawer's left
-          edge (`ml-auto` + `mr-[420px]`) so the drawer never covers it.
-          Width stays the same; only position shifts. */}
+          architect drawer is closed, the form is centered. When open
+          on ≥ lg viewports, we reserve right-side space for the drawer
+          via mr-[…] matching the drawer's responsive width ladder
+          (520 lg, 580 xl, 620 2xl) + 16 px buffer. We override the
+          ml-auto half of mx-auto with ml-0 so the form sits LEFT-
+          aligned in the remaining space instead of getting squished
+          flush against the drawer's left edge. */}
       <div className={`max-w-5xl mx-auto transition-[margin] duration-200 ${
-        architectOpen ? 'lg:ml-auto lg:mr-[420px]' : ''
+        architectOpen
+          ? 'lg:ml-0 lg:mr-[536px] xl:mr-[596px] 2xl:mr-[636px]'
+          : ''
       }`}>
         {/* Top bar */}
         <div className="flex items-center justify-between mb-6 flex-wrap gap-3">

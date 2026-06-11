@@ -603,7 +603,9 @@ function SettingsTab({
   return (
     <div
       className={`max-w-3xl space-y-4 pb-28 transition-[margin] duration-200 ${
-        architectOpen ? 'lg:ml-auto lg:mr-[420px]' : ''
+        architectOpen
+          ? 'lg:ml-0 lg:mr-[536px] xl:mr-[596px] 2xl:mr-[636px]'
+          : ''
       }`}
     >
       {/* Architect launcher, sits above the form so the user sees

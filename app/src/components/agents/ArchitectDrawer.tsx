@@ -535,7 +535,7 @@ export function ArchitectDrawer({ open, onClose, current, onApply }: Props) {
       )}
 
       <aside
-        className={`fixed top-20 right-0 z-[45] bg-[#0B0D10] border-l border-white/10 shadow-2xl transition-transform duration-200 flex flex-col w-full sm:w-[480px] lg:w-[560px] xl:w-[620px] ${
+        className={`fixed top-20 right-0 z-[45] bg-[#0B0D10] border-l border-white/10 shadow-2xl transition-transform duration-200 flex flex-col w-full sm:w-[480px] lg:w-[520px] xl:w-[580px] 2xl:w-[620px] ${
           open ? 'translate-x-0' : 'translate-x-full pointer-events-none'
         }`}
         style={{ height: 'calc(100vh - 5rem)' }}

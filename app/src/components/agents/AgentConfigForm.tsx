@@ -610,12 +610,16 @@ function DesignedVoiceMiniAvatar({ item }: { item: StudioDesignedVoiceItem }) {
 
 function Section({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
   return (
-    <section className="rounded-2xl border border-white/10 bg-white/[0.02] p-5">
-      <div className="mb-4">
+    // Tighter padding (px-4 py-4 vs the prior p-5) so the form takes
+    // less horizontal space when the Architect drawer is open. The
+    // drawer eats 480-620px on the right; with the old p-5 every
+    // section card lost another 40px to whitespace at narrow widths.
+    <section className="rounded-2xl border border-white/10 bg-white/[0.02] px-4 py-4">
+      <div className="mb-3">
         <h3 className="text-sm font-semibold text-white">{title}</h3>
         {hint && <p className="text-[11px] text-[#666] mt-0.5">{hint}</p>}
       </div>
-      <div className="space-y-4">{children}</div>
+      <div className="space-y-3.5">{children}</div>
     </section>
   );
 }
