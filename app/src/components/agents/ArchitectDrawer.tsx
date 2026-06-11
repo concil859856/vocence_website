@@ -27,6 +27,138 @@ import { setArchitectOpen } from '../../lib/uiOverlay';
 
 const newId = () => Math.random().toString(36).slice(2, 11);
 
+// Field labels for the proposal card's diff list. Order matters: this
+// is the visual order of the bullets so user-recognisable fields like
+// Name come first, low-importance ones like LLM and Temperature last.
+const PROPOSAL_FIELD_ORDER: { key: keyof AgentConfig | 'name' | 'type'; label: string }[] = [
+  { key: 'name', label: 'Name' },
+  { key: 'type', label: 'Type' },
+  { key: 'voice', label: 'Voice' },
+  { key: 'language', label: 'Language' },
+  { key: 'purpose', label: 'Purpose' },
+  { key: 'system_prompt', label: 'System prompt' },
+  { key: 'knowledge', label: 'Knowledge' },
+  { key: 'goal', label: 'Goal' },
+  { key: 'success_metric', label: 'Success metric' },
+  { key: 'max_iterations', label: 'Max iterations' },
+  { key: 'temperature', label: 'Temperature' },
+  { key: 'llm_model', label: 'LLM' },
+];
+
+// Long-prose fields where a before→after inline diff would be useless
+// (system prompts are paragraphs). Show "(rewritten)" or "(set)"
+// instead so the card stays scannable.
+const PROSE_FIELDS = new Set(['system_prompt', 'knowledge', 'purpose', 'goal', 'success_metric']);
+
+function shortValue(v: unknown, max = 28): string {
+  const s = v == null ? '' : String(v);
+  if (!s) return '—';
+  if (s.length <= max) return s;
+  return s.slice(0, max - 1).trimEnd() + '…';
+}
+
+interface DiffRow { label: string; key: string; before: string; after: string; prose: boolean }
+
+/** Compute which fields the proposal would actually change vs the
+ *  current draft. Skips equal fields so a model that re-proposes the
+ *  whole config doesn't produce a wall of "no change" rows. */
+function diffProposal(
+  proposed: Proposed,
+  current: { name: string; type: AgentType; config: AgentConfig },
+): DiffRow[] {
+  const rows: DiffRow[] = [];
+  for (const { key, label } of PROPOSAL_FIELD_ORDER) {
+    const before =
+      key === 'name' ? current.name
+      : key === 'type' ? current.type
+      : (current.config as any)[key];
+    const after =
+      key === 'name' ? proposed.name
+      : key === 'type' ? proposed.type
+      : (proposed.config as any)[key];
+    // Normalize null/undefined/empty-string so they're all "no value".
+    const beforeStr = before == null ? '' : String(before);
+    const afterStr = after == null ? '' : String(after);
+    if (beforeStr === afterStr) continue;
+    rows.push({ label, key, before: beforeStr, after: afterStr, prose: PROSE_FIELDS.has(String(key)) });
+  }
+  return rows;
+}
+
+interface ProposalCardProps {
+  proposed: Proposed;
+  current: { name: string; type: AgentType; config: AgentConfig };
+  onApply: () => void;
+  onDiscard: () => void;
+}
+
+/** Compact preview card that lists which fields the proposal will
+ *  change before the user commits to Apply. Modelled on the
+ *  Copilot-Edits "preview with clarity" pattern (research finding
+ *  #10). Long-prose fields collapse to "(rewritten)" / "(set)" so
+ *  the card stays scannable. */
+function ProposalCard({ proposed, current, onApply, onDiscard }: ProposalCardProps) {
+  const diffs = diffProposal(proposed, current);
+  const VISIBLE = 6;
+  const visible = diffs.slice(0, VISIBLE);
+  const overflow = Math.max(0, diffs.length - VISIBLE);
+
+  return (
+    <div className="w-full max-w-[85%] rounded-xl border border-[#DFFF00]/25 bg-[#DFFF00]/[0.04] p-3 space-y-2.5">
+      {proposed.summary ? (
+        <div className="text-xs text-white/85 leading-snug">{proposed.summary}</div>
+      ) : null}
+
+      {diffs.length === 0 ? (
+        <div className="text-[11px] text-[#A7B0B7] italic">
+          No changes vs current draft.
+        </div>
+      ) : (
+        <ul className="space-y-1 text-[11px] border-t border-white/[0.06] pt-2">
+          {visible.map((d) => {
+            // For prose fields, replace value with a status token so a
+            // 2000-char system_prompt doesn't blow up the card.
+            const valueText = d.prose
+              ? (d.before ? '(rewritten)' : '(set)')
+              : `${shortValue(d.before)} → ${shortValue(d.after)}`;
+            return (
+              <li key={d.key} className="flex items-baseline gap-1.5">
+                <span className="text-[#DFFF00]/70 shrink-0">•</span>
+                <span className="text-white/80 shrink-0 font-medium">{d.label}</span>
+                <span className="text-[#A7B0B7] truncate">{valueText}</span>
+              </li>
+            );
+          })}
+          {overflow > 0 ? (
+            <li className="text-[11px] text-[#A7B0B7] italic pl-3">
+              + {overflow} more {overflow === 1 ? 'field' : 'fields'}
+            </li>
+          ) : null}
+        </ul>
+      )}
+
+      <div className="flex items-center gap-2 pt-1">
+        <button
+          type="button"
+          onClick={onApply}
+          disabled={diffs.length === 0}
+          className="inline-flex items-center gap-2 rounded-xl bg-[#DFFF00] text-[#07080A] px-3.5 py-2 text-xs font-semibold hover:brightness-110 disabled:opacity-40 shadow-[0_0_24px_-8px_rgba(223,255,0,0.55)]"
+        >
+          <Check size={13} />
+          Apply changes
+        </button>
+        <button
+          type="button"
+          onClick={onDiscard}
+          className="inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-transparent text-[#A7B0B7] hover:text-white hover:bg-white/5 px-3 py-2 text-xs font-medium"
+        >
+          Discard
+        </button>
+      </div>
+    </div>
+  );
+}
+
 type Proposed = {
   name: string;
   type: AgentType;
@@ -475,34 +607,24 @@ export function ArchitectDrawer({ open, onClose, current, onApply }: Props) {
                 )}
               </div>
               {m.role === 'architect' && (m.proposed || m.proposing || m.applied || m.discarded) && (
-                <div className="mt-2 max-w-[85%] flex flex-wrap items-center gap-2">
+                <div className="mt-2 w-full max-w-[85%] flex flex-wrap items-center gap-2">
                   {m.proposing && !m.proposed && !m.applied && !m.discarded ? (
                     // Mid-stream: model committed to a proposal but args
                     // are still streaming. Show a disabled placeholder
                     // so the user has a visible signal a change is on
-                    // the way.
+                    // the way. Replaced by the full ProposalCard the
+                    // moment the args parse cleanly.
                     <div className="inline-flex items-center gap-2 rounded-xl border border-[#DFFF00]/30 bg-[#DFFF00]/[0.06] px-3.5 py-2 text-xs font-semibold text-[#DFFF00]/70 cursor-default select-none">
                       <Loader2 size={13} className="animate-spin" />
                       Preparing changes…
                     </div>
                   ) : m.proposed && !m.applied && !m.discarded ? (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => applyProposed(m.id)}
-                        className="inline-flex items-center gap-2 rounded-xl bg-[#DFFF00] text-[#07080A] px-3.5 py-2 text-xs font-semibold hover:brightness-110 shadow-[0_0_24px_-8px_rgba(223,255,0,0.55)]"
-                      >
-                        <Check size={13} />
-                        Apply changes
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => discardProposed(m.id)}
-                        className="inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-transparent text-[#A7B0B7] hover:text-white hover:bg-white/5 px-3 py-2 text-xs font-medium"
-                      >
-                        Discard
-                      </button>
-                    </>
+                    <ProposalCard
+                      proposed={m.proposed}
+                      current={current}
+                      onApply={() => applyProposed(m.id)}
+                      onDiscard={() => discardProposed(m.id)}
+                    />
                   ) : m.applied ? (
                     <div className="inline-flex items-center gap-1.5 rounded-xl border border-[#DFFF00]/30 bg-[#DFFF00]/[0.08] px-2.5 py-1 text-[11px] font-semibold text-[#DFFF00]/90">
                       <Check size={11} /> Applied
