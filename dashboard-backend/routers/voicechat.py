@@ -881,7 +881,15 @@ async def voicechat_session(
     #   1. ``GATE_MAX_HOLD_S`` auto-clear if ``started`` arrived but
     #      ``settled`` never did (client crash mid-playback).
     #   2. New ``client_audio_started`` arrivals re-arm the safety timer.
-    GATE_MAX_HOLD_S = 30.0
+    #
+    # Was 30 s — too long. By the time the safety fired, the user had
+    # given up. 6 s is enough for a healthy settled to always arrive
+    # first (network jitter + fade-out completion typically lands in
+    # <500 ms), but short enough that a missed settled doesn't kill a
+    # conversation. Combined with the explicit gate-clear on
+    # cancel/stream_start (below), this is now a backstop, not the
+    # primary recovery path.
+    GATE_MAX_HOLD_S = 6.0
     bot_speaking_evt: asyncio.Event = asyncio.Event()
     gate_safety_task: asyncio.Task | None = None
 
@@ -1113,6 +1121,13 @@ async def voicechat_session(
                     "(client cancelled in-flight turn — likely the chunking-then-user-keeps-talking pattern)",
                     session_id,
                 )
+                # User intent: take the floor. Don't wait for the
+                # client_audio_settled round-trip to clear the gate.
+                # If settled is lost in flight (Bug #1 in the audit),
+                # the gate would stay set up to GATE_MAX_HOLD_S
+                # seconds and the user's next utterance would be
+                # silently dropped.
+                _gate_clear_from_client()
                 await _cancel_current()
                 try:
                     await ws.send_json({"type": "cancelled"})
@@ -1149,6 +1164,15 @@ async def voicechat_session(
                 await ws.send_json({"type": "error", "code": "bad_request", "message": f"unknown type: {mtype}"})
                 continue
 
+            # User intent: take the floor with a new turn. ``stream_start``
+            # is only emitted by the frontend on VAD-detected speech, and
+            # ``voice``/``text`` are explicit submissions — all three mean
+            # the user wants to be heard NOW. Don't wait for a possibly-
+            # lost ``client_audio_settled`` to clear the gate; clear it
+            # unconditionally here so any echo PCM from the cancelled
+            # turn's audio tail can be ignored at the source, not by
+            # rejecting the user's mic frames downstream.
+            _gate_clear_from_client()
             # Cancel any in-flight turn before starting a new one
             await _cancel_current()
 

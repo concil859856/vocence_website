@@ -73,10 +73,12 @@ class PcmPlayer extends AudioWorkletProcessor {
     this._rebufferFloorSamples = 0;
     this._rebufferResumeSamples = 0;
     this._endSignaled = false;  // true after caller signals end-of-stream
-    // Fires the ``drained`` message exactly once per turn — the first
-    // time the queue empties out after ``end`` is signaled. Without
-    // this latch the worklet would repeatedly post ``drained`` every
+    // Fires the 'drained' message exactly once per turn, the first
+    // time the queue empties out after 'end' is signaled. Without
+    // this latch the worklet would repeatedly post 'drained' every
     // process() call after the queue empties, spamming the WS.
+    // NB: backticks would terminate WORKLET_SOURCE's template literal,
+    // so single quotes for emphasis here, NOT doubled-backticks.
     this._drainedFired = false;
     this.port.onmessage = (e) => {
       const d = e.data;
@@ -188,9 +190,9 @@ class PcmPlayer extends AudioWorkletProcessor {
         }
         // Once the queue is empty AND the caller has signaled the
         // stream is over, the speakers will produce their final
-        // sample within the next few buffer-quanta. Emit ``drained``
+        // sample within the next few buffer-quanta. Emit 'drained'
         // exactly once so the host can tell the server the audio
-        // tail is gone — which is what releases the server's mic-
+        // tail is gone, which is what releases the server's mic-
         // mute gate without timer estimation.
         if (this._endSignaled && !this._drainedFired) {
           this._drainedFired = true;
@@ -259,15 +261,23 @@ export class StreamingAudioPlayer {
   private events: AudioPlayerEvents;
   private workletReady: Promise<void> | null = null;
   private prebufferMs: number;
-  // Per-turn latches for the audio-lifecycle callbacks. ``audioStartedFired``
-  // gates ``onAudioStarted`` to once-per-turn (vs. the worklet's
-  // ``playing`` message that also fires on rebuffer recoveries).
-  // ``settledFired`` gates ``onSettled`` so a worklet ``drained`` after
-  // a barge-in fade doesn't double-fire on top of the fade's settled
-  // emission. Both reset whenever a new turn starts (next ``push``
-  // after a flush, or first push after init).
+  // Per-turn latches for the audio-lifecycle callbacks.
+  //   audioStartedFired - gates onAudioStarted to once-per-turn (vs. the
+  //                       worklet's 'playing' message that also fires on
+  //                       rebuffer recoveries).
+  //   settledFired      - gates onSettled so a worklet 'drained' after a
+  //                       barge-in fade doesn't double-fire on top of the
+  //                       fade's settled emission.
+  //   turnFirstPushSeen - true between push() of a turn's first frame and
+  //                       the next flush()/signalEnd. Used to detect when
+  //                       a NEW turn begins so the audioStartedFired latch
+  //                       can re-arm even if the prior turn's settled was
+  //                       lost (which would otherwise leave audioStartedFired
+  //                       stuck true forever and prevent onAudioStarted
+  //                       from re-firing on subsequent turns).
   private audioStartedFired = false;
   private settledFired = false;
+  private turnFirstPushSeen = false;
 
   constructor(events: AudioPlayerEvents = {}, options: AudioPlayerOptions = {}) {
     this.events = events;
@@ -316,11 +326,13 @@ export class StreamingAudioPlayer {
       if (d.type === 'drained') {
         // The worklet's queue is empty AND signalEnd() was called —
         // the bot's audio tail is gone. Fire onSettled exactly once
-        // per turn.
+        // per turn AND mark the turn boundary so the next push()
+        // re-arms the latches.
         if (!this.settledFired) {
           this.settledFired = true;
           this.events.onSettled?.();
         }
+        this.turnFirstPushSeen = false;
       }
     };
     // Configure both thresholds in OUTPUT-rate samples (push() resamples
@@ -355,9 +367,16 @@ export class StreamingAudioPlayer {
   /** Push one PCM16 LE mono chunk (server frame) into the player. */
   push(pcm16: ArrayBuffer): void {
     if (!this.worklet) return;
-    // A push after we previously fired settled (= prior turn ended)
-    // means a new turn has begun. Re-arm the per-turn latches.
-    if (this.settledFired) {
+    // Re-arm the per-turn latches on the FIRST push of a new turn.
+    //
+    // The "new turn" boundary is: turnFirstPushSeen flipped false by a
+    // prior flush() or signalEnd, and now we're seeing the first push
+    // since. This works even if the prior turn's settled was lost
+    // (which the old "reset only when settledFired" rule did NOT — it
+    // would leave audioStartedFired stuck true and the new turn's
+    // onAudioStarted would silently skip).
+    if (!this.turnFirstPushSeen) {
+      this.turnFirstPushSeen = true;
       this.audioStartedFired = false;
       this.settledFired = false;
     }
@@ -415,22 +434,29 @@ export class StreamingAudioPlayer {
           try { this.gainNode.gain.setValueAtTime(0.0001, t); } catch { /* ignore */ }
           this.gainNode.gain.linearRampToValueAtTime(1.0, t + 0.005);
         }
-        // Fade is done, speakers are silent — fire onSettled so the
-        // server releases its mic-mute gate. Only if we actually had
-        // audio playing for this turn (settled without started is a
-        // no-op the server tolerates, but we save a WS frame).
-        if (this.audioStartedFired && !this.settledFired) {
+        // ALWAYS fire onSettled when the fade completes. Prior code
+        // gated this on ``audioStartedFired`` — which lost the event
+        // entirely if barge-in happened during the prebuffer window
+        // OR if the latch was stale from a previous broken turn. The
+        // server's gate-clear is idempotent, so a redundant settled
+        // is a harmless no-op; a MISSING settled locks the mic for
+        // up to GATE_MAX_HOLD_S seconds.
+        if (!this.settledFired) {
           this.settledFired = true;
           this.events.onSettled?.();
         }
       }, BARGE_IN_FADE_MS);
     } else {
       this.worklet?.port.postMessage({ type: 'flush' });
-      if (this.audioStartedFired && !this.settledFired) {
+      if (!this.settledFired) {
         this.settledFired = true;
         this.events.onSettled?.();
       }
     }
+    // Mark turn boundary so the NEXT push() re-arms the latches.
+    // Without this, audioStartedFired would stay true and the new
+    // turn's onAudioStarted would never fire (see push() comment).
+    this.turnFirstPushSeen = false;
     // Reset prebuffer to default after a barge-in so the next turn's
     // first content sentence gets the full cold-start cushion.
     this.setPrebufferMs(this.prebufferMs);
