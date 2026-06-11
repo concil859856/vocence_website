@@ -57,7 +57,7 @@ export interface BotMessage {
   tool_calls?: ToolCallStatus[];
   /** Hint used by the chat UI to render system messages distinctly.
    *  e.g. ``'idle_timeout'`` → "Session ended, no activity" banner. */
-  systemKind?: 'idle_timeout' | 'max_duration' | 'billing_exhausted' | 'info';
+  systemKind?: 'idle_timeout' | 'max_duration' | 'billing_exhausted' | 'free_time_up' | 'info';
 }
 
 export interface UseVoiceChatOptions {
@@ -579,43 +579,47 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
           });
           break;
         case 'session_timeout': {
-          // Backend auto-closed the session. Three reasons:
+          // Backend auto-closed the session. Three codes today:
           //   • code: max_duration   — 30-min paid-agent cap
           //   • code: idle_timeout   — 60-sec idle watchdog
-          //   • code: free_time_up   — Logos 2-min free cap; the
+          //   • code: free_time_up   — Logos free-time cap; the
           //     server has ALREADY spoken the farewell as a normal
           //     assistant turn, so this event carries no `message`
-          //     and we skip the system bubble (otherwise the user
-          //     sees the farewell text twice).
+          //     and we use a SHORT placeholder so we don't
+          //     duplicate the spoken farewell text. The bubble
+          //     still has to exist — surface components like
+          //     StudioVoiceAgentSpotlight key off
+          //     `systemKind ∈ TERMINAL_SYSTEM_KINDS` to flip the
+          //     call button back to Start.
           const subCode = String(payload.code || '');
           const rawMessage = typeof payload.message === 'string' ? payload.message : '';
-          if (rawMessage) {
-            const messageText = rawMessage || (
-              subCode === 'idle_timeout'
-                ? 'Session ended, no activity for 60 seconds. Start a new conversation to continue.'
-                : subCode === 'max_duration'
-                  ? 'Session ended, reached the 30-minute maximum. Start a new conversation to continue.'
+          const messageText = rawMessage || (
+            subCode === 'idle_timeout'
+              ? 'Session ended, no activity for 60 seconds. Start a new conversation to continue.'
+              : subCode === 'max_duration'
+                ? 'Session ended, reached the 30-minute maximum. Start a new conversation to continue.'
+                : subCode === 'free_time_up'
+                  ? 'Call ended.'
                   : 'Session ended.'
-            );
-            setMessages((prev) => [
-              ...prev,
-              {
-                id: makeId(),
-                role: 'system',
-                text: messageText,
-                systemKind: subCode === 'idle_timeout'
-                  ? 'idle_timeout'
-                  : subCode === 'max_duration' ? 'max_duration' : 'info',
-              },
-            ]);
-          }
+          );
+          const systemKind: BotMessage['systemKind'] =
+            subCode === 'idle_timeout' ? 'idle_timeout'
+            : subCode === 'max_duration' ? 'max_duration'
+            : subCode === 'free_time_up' ? 'free_time_up'
+            : 'info';
+          setMessages((prev) => [
+            ...prev,
+            { id: makeId(), role: 'system', text: messageText, systemKind },
+          ]);
           // Auto-click the end-call button: mirror EXACTLY what
           // VocenceBot.handleMicClick does when the user taps the
           // red square — stopListening tears down the VAD, mic
-          // level, listening flag, and resets state to idle. The
-          // backend has already closed the WS, so the cancel() the
-          // button-click also calls is a no-op here (server already
-          // cancelled the turn) and we skip it.
+          // level, listening flag, and resets state to idle.
+          // (StudioVoiceAgentSpotlight additionally watches the
+          // terminal system bubble above to flip its own `live`
+          // state, which is what its End-call button keys off of —
+          // the hook's `listening` alone doesn't reach that
+          // surface's button.)
           stopListening();
           break;
         }

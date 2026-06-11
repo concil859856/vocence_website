@@ -46,6 +46,7 @@ const TERMINAL_SYSTEM_KINDS = new Set<string>([
   'idle_timeout',
   'max_duration',
   'billing_exhausted',
+  'free_time_up',
 ]);
 
 interface CallCtx {

@@ -945,19 +945,21 @@ async def voicechat_session(
         session_tts_warmer.schedule_prewarm()
 
     # ── STT pod prewarm ───────────────────────────────────────────────
-    # Open a fresh STT pod WS in the background, in parallel with the
-    # greeting. By the time the user finishes hearing the greeting and
-    # starts talking, the WS handshake + STT-ready round trip are
-    # already done, so the first user turn skips the per-turn cold
-    # connect (~200-500 ms saved). The first StreamingTurnSession
-    # adopts the bundle via its ``prewarmed_stt`` param; on session
-    # close we clean up anything left over.
+    # Open the STT pod WS in the background, in parallel with the
+    # greeting. We DO NOT send the ``start`` config here — only the
+    # raw connection (TLS + WS upgrade) is established. The reason:
+    # the pod's session clock starts at ``start`` and its model
+    # state drifts if we then leave it idle for seconds while the
+    # greeting plays. Result was a broken first turn (single partial
+    # 'Okay.', final 'Hey.' for a sentence the user actually said
+    # in full).
+    #
+    # Instead, the first StreamingTurnSession adopts the open
+    # socket and sends ``start`` just-in-time, right before frames
+    # flow. Saves the TLS+upgrade (~150–250 ms) on the first turn
+    # without giving the pod stale state to operate on.
     prewarmed_stt: dict[str, Any] | None = None
     prewarm_stt_task: asyncio.Task | None = None
-    # Cold path sets STT pod ``start.language`` to self._language,
-    # which normalizes to "auto" for None. Match that so the adopt
-    # check in StreamingTurnSession._open_stt succeeds.
-    prewarm_stt_language = agent_language if agent_language else "auto"
 
     async def _prewarm_stt() -> None:
         nonlocal prewarmed_stt
@@ -984,29 +986,17 @@ async def voicechat_session(
                 timeout=aiohttp.ClientWSTimeout(ws_close=15),
                 max_msg_size=2 * 1024 * 1024,
             )
-            await ws.send_json({
-                "type": "start",
-                "language": prewarm_stt_language,
-                "sample_rate": 16000,
-                "encoding": "pcm_s16le",
-                "enable_partials": True,
-                "vad_events": True,
-            })
-            ready_msg = await asyncio.wait_for(ws.receive(), timeout=10.0)
-            if ready_msg.type != aiohttp.WSMsgType.TEXT:
-                raise RuntimeError("STT prewarm: ready missing")
-            data = json.loads(ready_msg.data)
-            if data.get("type") != "ready":
-                raise RuntimeError(f"STT prewarm: first msg not ready: {data}")
+            # Deliberately do NOT send ``start`` — the adoption path in
+            # StreamingTurnSession._open_stt sends it with the actual
+            # per-turn language and immediately follows with frames.
             prewarmed_stt = {
                 "pod_cm": pod_cm,
                 "session": sess,
                 "ws": ws,
-                "language": prewarm_stt_language,
             }
             _log.info(
-                "[stream] trace session=%s phase=stt_prewarmed lang=%r",
-                session_id, prewarm_stt_language,
+                "[stream] trace session=%s phase=stt_prewarmed (socket-only)",
+                session_id,
             )
             # Ownership transferred to the slot — skip the local cleanup.
             pod_cm = sess = ws = None
