@@ -127,6 +127,12 @@ class VoiceAgentBilling:
         # Back-compat: old call sites pass ``on_exhausted`` with no args.
         # We adapt it to the new ``on_session_end(reason)`` shape.
         on_exhausted: Callable[[], Awaitable[None]] | None = None,
+        # Fired after EVERY successful deduction (per-minute tick AND
+        # final stop() reconciliation) with the new account balance.
+        # The voicechat router wires this to ws.send_json so the
+        # frontend's sidebar credits counter can refresh live instead
+        # of staying stale until the user reloads.
+        on_deduct: Callable[[int], Awaitable[None]] | None = None,
         # ``free_mode``: run only the max-duration and idle watchdogs;
         # skip all credit deductions and the final transaction row.
         # Used for the free Vocence Assistant so its sessions still
@@ -148,6 +154,8 @@ class VoiceAgentBilling:
             self._on_end = _adapter
         else:
             self._on_end = None  # type: ignore[assignment]
+
+        self._on_deduct = on_deduct
 
         # Per-increment cost. Pre-computed once.
         self._increment_credits: int = max(
@@ -260,6 +268,9 @@ class VoiceAgentBilling:
                 await conn.commit()
                 if new_balance is not None:
                     self._total_charged += delta
+                    if self._on_deduct is not None:
+                        with suppress(Exception):
+                            await self._on_deduct(int(new_balance))
             finally:
                 await conn.close()
 
@@ -382,6 +393,13 @@ class VoiceAgentBilling:
                 await self._fire_end(self.REASON_EXHAUSTED)
                 return
             self._total_charged += self._increment_credits
+            # Fire-and-suppress: a slow/dead WS callback must not stall
+            # the billing loop. The next tick will re-fire with a fresh
+            # balance anyway, so a dropped update is at worst one
+            # increment of UI lag.
+            if self._on_deduct is not None:
+                with suppress(Exception):
+                    await self._on_deduct(int(new_balance))
 
     @property
     def exhausted(self) -> bool:

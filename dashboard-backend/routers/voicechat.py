@@ -570,11 +570,24 @@ async def voicechat_session(
         with suppress(Exception):
             await ws.close(code=close_code)
 
+    async def _on_billing_deduct(new_balance: int) -> None:
+        """After every per-minute deduction (and the final
+        reconciliation), push the live balance to the client so the
+        sidebar credits counter updates without a page reload. Free
+        sessions never deduct → this never fires for the Vocence
+        Assistant."""
+        with suppress(Exception):
+            await ws.send_json({
+                "type": "billing_update",
+                "credits_remaining": new_balance,
+            })
+
     billing = VoiceAgentBilling(
         user_id=auth_user_id,
         session_id=session_id,
         agent_id=agent_id or "_assistant",
         on_session_end=_on_session_end,
+        on_deduct=_on_billing_deduct,
         free_mode=not paid_agent,
     )
 

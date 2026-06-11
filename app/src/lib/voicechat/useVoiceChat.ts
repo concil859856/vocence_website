@@ -21,6 +21,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useAuth } from '../../contexts/AuthContext';
 import { StreamingAudioPlayer } from './audioPlayer';
 import { MicRecorder } from './recorder';
 import { VadController, arrayBufferToBase64 } from './vadController';
@@ -115,6 +116,12 @@ function makeId(): string {
 
 export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
   const { enabled, authToken, agentId, alwaysOn = false } = opts;
+  // Live-credit refresh: voice-agent billing deducts every minute on
+  // the server and emits {type:'billing_update', credits_remaining}.
+  // We mirror that into AuthContext so the sidebar credits counter
+  // updates without a page reload. Free Vocence-Assistant sessions
+  // never deduct → this is silent for those.
+  const { setLocalCredits } = useAuth();
   const [state, setState] = useState<BotState>('idle');
   const [messages, setMessages] = useState<BotMessage[]>([]);
   const [micLevel, setMicLevel] = useState(0);
@@ -607,7 +614,21 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
             ...prev,
             { id: makeId(), role: 'system', text: messageText, systemKind: 'billing_exhausted' },
           ]);
+          // Top up the visible balance to 0 so the sidebar reflects
+          // reality immediately.
+          setLocalCredits(0);
           setState('idle');
+          break;
+        }
+        case 'billing_update': {
+          // Fired by the server's VoiceAgentBilling._on_deduct after
+          // every per-minute tick AND the final stop() reconciliation.
+          // Mirror the new balance into AuthContext so the sidebar
+          // credits counter updates without a page reload.
+          const remaining = payload.credits_remaining;
+          if (typeof remaining === 'number' && Number.isFinite(remaining)) {
+            setLocalCredits(Math.max(0, Math.floor(remaining)));
+          }
           break;
         }
         case 'error':
