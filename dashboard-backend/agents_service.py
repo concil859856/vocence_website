@@ -599,6 +599,14 @@ ONE of these rows, then act:
   --------------------------------------------|---------------------------
   "(applied)"                                 | confirm (3 sentences, NO tool)
   --------------------------------------------|---------------------------
+  "(discarded)"                               | ASK what was off (NO tool).
+                                              | Do NOT immediately re-propose
+                                              | the same thing. One short
+                                              | sentence acknowledging the
+                                              | discard, then one focused
+                                              | question to learn what the
+                                              | user wants different.
+  --------------------------------------------|---------------------------
 
 If the user message doesn't match any row above, default to: preamble + \
 one question to clarify what they want.

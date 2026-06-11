@@ -20,7 +20,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { Check, Loader2, Send, Sparkles, X } from 'lucide-react';
+import { Check, Loader2, RotateCcw, Send, Sparkles, X } from 'lucide-react';
 import { agentsApi, getStoredToken } from '../../lib/agents/api';
 import type { AgentConfig, AgentType, ArchitectChatTurn } from '../../lib/agents/types';
 import { setArchitectOpen } from '../../lib/uiOverlay';
@@ -51,6 +51,13 @@ interface ChatMsg {
   proposing?: boolean;
   /** True once the user has clicked Apply on this turn's proposal. */
   applied?: boolean;
+  /** True once the user has clicked Discard on this turn's proposal.
+   *  Mutually exclusive with ``applied``. Render a muted "Discarded"
+   *  pill and trigger a hidden "(discarded)" architect turn so the
+   *  model knows to ask what was off, rather than re-proposing the
+   *  same thing. Research finding #11 (Cursor + arxiv 2505.06120):
+   *  fresh refinement beats follow-up patch prompts. */
+  discarded?: boolean;
 }
 
 interface Props {
@@ -311,6 +318,60 @@ export function ArchitectDrawer({ open, onClose, current, onApply }: Props) {
     }
   };
 
+  // Discard a proposal without applying. Mark the bubble as discarded
+  // and fire a hidden "(discarded)" turn so the architect knows what
+  // happened and asks "what was off?" instead of re-emitting the
+  // same proposal. Research-backed (Cursor blog + arxiv 2505.06120):
+  // fresh refinement of intent beats iterative patches, but the
+  // signal back to the architect has to be explicit.
+  const discardProposed = (msgId: string) => {
+    let didDiscard = false;
+    setMessages((prev) => {
+      const target = prev.find((m) => m.id === msgId);
+      if (!target?.proposed) return prev;
+      didDiscard = true;
+      return prev.map((m) =>
+        m.id === msgId ? { ...m, discarded: true, proposed: null } : m,
+      );
+    });
+    if (didDiscard) {
+      void runArchitectTurn('(discarded)', { synthetic: true });
+    }
+  };
+
+  // "Start over" — clear the conversation back to the opening greeting,
+  // abort any in-flight stream, and re-seed with the FIRST user message
+  // of the prior session so the architect can take another swing without
+  // making the user re-type their original brief. Per research finding
+  // #11 (Cursor): "go back to the plan, refine the plan, run it again"
+  // — but the seed is the user's intent, NOT the failed proposal.
+  const startOver = () => {
+    abortRef.current?.abort();
+    setError(null);
+    setInput('');
+    // Capture the first user message (the original brief) before
+    // wiping state. If there isn't one yet, just reset to the
+    // greeting.
+    const firstBrief = messages.find((m) => m.role === 'user')?.text?.trim();
+    const greeting: ChatMsg = {
+      id: newId(),
+      role: 'architect',
+      text:
+        "Hey — I'll help you design your agent. Tell me what you're " +
+        "building and I'll handle the name, voice, system prompt, tone, " +
+        "and other settings. Knowledge and custom tools are added " +
+        "separately in the builder once the base is set up. Nothing " +
+        "applies until you click Apply.",
+    };
+    setMessages([greeting]);
+    setBusy(false);
+    if (firstBrief) {
+      // Re-run the original brief. ``runArchitectTurn`` is async but we
+      // don't await — let it stream into the freshly cleared chat.
+      void runArchitectTurn(firstBrief);
+    }
+  };
+
   return (
     <>
       {open && (
@@ -338,6 +399,16 @@ export function ArchitectDrawer({ open, onClose, current, onApply }: Props) {
               {busy ? 'Thinking…' : 'Chat, no changes are applied until you click Apply'}
             </div>
           </div>
+          <button
+            type="button"
+            onClick={startOver}
+            disabled={busy}
+            className="p-1.5 rounded-md text-[#A7B0B7] hover:text-white hover:bg-white/5 disabled:opacity-40 disabled:cursor-not-allowed"
+            aria-label="Start over with the same brief"
+            title="Start over — clears chat and re-runs your original brief"
+          >
+            <RotateCcw size={16} />
+          </button>
           <button
             type="button"
             onClick={onClose}
@@ -383,9 +454,9 @@ export function ArchitectDrawer({ open, onClose, current, onApply }: Props) {
                   m.text
                 )}
               </div>
-              {m.role === 'architect' && (m.proposed || m.proposing || m.applied) && (
-                <div className="mt-2 max-w-[85%]">
-                  {m.proposing && !m.proposed && !m.applied ? (
+              {m.role === 'architect' && (m.proposed || m.proposing || m.applied || m.discarded) && (
+                <div className="mt-2 max-w-[85%] flex flex-wrap items-center gap-2">
+                  {m.proposing && !m.proposed && !m.applied && !m.discarded ? (
                     // Mid-stream: model committed to a proposal but args
                     // are still streaming. Show a disabled placeholder
                     // so the user has a visible signal a change is on
@@ -394,18 +465,31 @@ export function ArchitectDrawer({ open, onClose, current, onApply }: Props) {
                       <Loader2 size={13} className="animate-spin" />
                       Preparing changes…
                     </div>
-                  ) : m.proposed && !m.applied ? (
-                    <button
-                      type="button"
-                      onClick={() => applyProposed(m.id)}
-                      className="inline-flex items-center gap-2 rounded-xl bg-[#DFFF00] text-[#07080A] px-3.5 py-2 text-xs font-semibold hover:brightness-110 shadow-[0_0_24px_-8px_rgba(223,255,0,0.55)]"
-                    >
-                      <Check size={13} />
-                      Apply changes
-                    </button>
+                  ) : m.proposed && !m.applied && !m.discarded ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => applyProposed(m.id)}
+                        className="inline-flex items-center gap-2 rounded-xl bg-[#DFFF00] text-[#07080A] px-3.5 py-2 text-xs font-semibold hover:brightness-110 shadow-[0_0_24px_-8px_rgba(223,255,0,0.55)]"
+                      >
+                        <Check size={13} />
+                        Apply changes
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => discardProposed(m.id)}
+                        className="inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-transparent text-[#A7B0B7] hover:text-white hover:bg-white/5 px-3 py-2 text-xs font-medium"
+                      >
+                        Discard
+                      </button>
+                    </>
                   ) : m.applied ? (
                     <div className="inline-flex items-center gap-1.5 rounded-xl border border-[#DFFF00]/30 bg-[#DFFF00]/[0.08] px-2.5 py-1 text-[11px] font-semibold text-[#DFFF00]/90">
                       <Check size={11} /> Applied
+                    </div>
+                  ) : m.discarded ? (
+                    <div className="inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[11px] font-medium text-[#A7B0B7]">
+                      Discarded
                     </div>
                   ) : null}
                 </div>
