@@ -155,6 +155,14 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
   const pendingBargeInRef = useRef<number | null>(null);   // setTimeout id
   const bargeInDeferredRef = useRef<boolean>(false);       // true while grace window is open
   const isAgentSpeakingRef = useRef<boolean>(false);       // mirrors ``state === 'speaking'``
+  // Mirrors any "bot is mid-turn" state — covers BOTH the brief
+  // ``thinking`` window (LLM streaming, TTS hasn't started yet) and
+  // the ``speaking`` window (TTS playing). Used to gate the
+  // ``onPcmFrame`` lazy ``stream_start`` open so a typed text turn
+  // can't be killed by an auto-opened voice stream during its own
+  // LLM/TTS phase (the bot-busy turn would otherwise be cancelled by
+  // ``_cancel_current`` on the server, producing an empty bubble).
+  const isBotBusyRef = useRef<boolean>(false);
   // Streaming-voice opt-in: set true when ready.capabilities.voice_stream
   // is reported by the server. While true, VAD runs in stream mode and
   // we push PCM frames over the WS instead of one-shot WAV uploads.
@@ -197,6 +205,11 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
   // without going stale.
   useEffect(() => {
     isAgentSpeakingRef.current = state === 'speaking';
+    isBotBusyRef.current =
+      state === 'speaking' ||
+      state === 'thinking' ||
+      state === 'transcribing' ||
+      state === 'uploading';
     // When the agent finishes a turn, clear any pending grace window —
     // there's nothing left to defer barge-in on.
     if (state !== 'speaking') clearBackchannelGrace();
@@ -236,6 +249,15 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
       // up by user-installed console-forwarding extensions / RUM).
       const DEBUG_AUDIO = import.meta.env.DEV;
       const turnStart = performance.now();
+      // Tiny helper used by both onAudioStarted and onSettled — the
+      // server's mic-mute gate is now driven by these two signals
+      // instead of byte-count estimates. Tolerates a dead WS so the
+      // tail-callbacks after WS close don't blow up.
+      const sendCtl = (type: string) => {
+        const ws = wsRef.current;
+        if (!ws || ws.readyState !== 1) return;
+        try { ws.send(JSON.stringify({ type })); } catch { /* ignore */ }
+      };
       playerRef.current = new StreamingAudioPlayer({
         onIdle: () => {
           if (DEBUG_AUDIO) console.log(`[audio] idle  t=${Math.round(performance.now() - turnStart)}ms`);
@@ -253,6 +275,21 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
           if (DEBUG_AUDIO) console.warn(
             `[audio] REBUFFERING (underrun)  t=${Math.round(performance.now() - turnStart)}ms  queued=${queuedMs.toFixed(0)}ms`,
           );
+        },
+        onAudioStarted: () => {
+          // First sample reached the speakers. Server now knows to
+          // start dropping any mic frames that arrive (potential
+          // echo). Fires exactly once per turn.
+          if (DEBUG_AUDIO) console.log(`[audio] started  t=${Math.round(performance.now() - turnStart)}ms`);
+          sendCtl('client_audio_started');
+        },
+        onSettled: () => {
+          // Speakers are silent — either the queue drained naturally
+          // after turn_end, or the barge-in fade finished. Server
+          // releases its mic-mute gate on this. Fires exactly once
+          // per turn.
+          if (DEBUG_AUDIO) console.log(`[audio] settled  t=${Math.round(performance.now() - turnStart)}ms`);
+          sendCtl('client_audio_settled');
         },
       });
       await playerRef.current.init();
@@ -721,6 +758,20 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
       let streamFramesSent = 0;
       let streamBytesSent = 0;
       let streamStartAt = 0;
+      // Pre-speech PCM ring buffer. Silero's ``onSpeechStart`` fires
+      // ~500-700 ms AFTER the user actually began talking (the model
+      // needs that much audio to gain confidence). Without a buffer,
+      // the first 500-700 ms of every utterance is dropped at the
+      // frontend because we won't open ``stream_start`` until
+      // onSpeechStart fires — STT then sees a clipped "lo" instead of
+      // "hello". This ring stores the most recent ~700 ms of PCM
+      // frames; on ``onSpeechStart`` we flush it to the server first,
+      // then stream live frames as they arrive.
+      //
+      // Silero @16 kHz emits 32 ms frames (= 512 samples = 1024 bytes
+      // PCM16). 22 frames × 32 ms ≈ 704 ms of pre-roll, ~22 KB total.
+      const PRESPEECH_RING_FRAMES = 22;
+      const preSpeechRing: Uint8Array[] = [];
       // Show a pending user bubble (typing dots) the instant we open
       // a streaming turn. The previous behaviour waited for the first
       // ``partial_transcript`` event to create the bubble, which left
@@ -753,6 +804,26 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
             //    onSpeechEnd will skip both the barge-in and the
             //    submission, the agent keeps talking. Otherwise the
             //    deferred timer fires the normal barge-in path.
+            // Flush the pre-speech ring buffer right after
+            // ``stream_start`` so the server gets the leading
+            // ~700 ms of audio Silero needed to detect speech.
+            // Without this the user's first word is clipped (e.g.
+            // "hello" → "lo").
+            const flushPreSpeechRing = () => {
+              if (!useStream || !wsRef.current || wsRef.current.readyState !== 1) {
+                preSpeechRing.length = 0;
+                return;
+              }
+              for (const frame of preSpeechRing) {
+                wsRef.current.send(frame);
+                streamFramesSent += 1;
+                streamBytesSent += frame.byteLength;
+              }
+              if (DEBUG_STREAM && preSpeechRing.length > 0) {
+                console.log(`[voicechat] flushed pre-speech ring: ${preSpeechRing.length} frames (${(preSpeechRing.length * 32).toFixed(0)}ms)`);
+              }
+              preSpeechRing.length = 0;
+            };
             if (!isAgentSpeakingRef.current) {
               bargeIn();
               setState('recording');
@@ -763,6 +834,7 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
                 streamBytesSent = 0;
                 streamStartAt = performance.now();
                 openPendingUserBubble();
+                flushPreSpeechRing();
                 if (DEBUG_STREAM) console.log('[voicechat] → stream_start (immediate)');
               }
               return;
@@ -780,6 +852,7 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
                 streamBytesSent = 0;
                 streamStartAt = performance.now();
                 openPendingUserBubble();
+                flushPreSpeechRing();
                 if (DEBUG_STREAM) console.log('[voicechat] → stream_start (deferred barge-in)');
               }
             }, BACKCHANNEL_GRACE_MS);
@@ -838,27 +911,21 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
           onPcmFrame: useStream
             ? (pcm: Uint8Array) => {
                 if (!wsRef.current || wsRef.current.readyState !== 1) return;
-                // Open the streaming turn lazily on the first frame so
-                // we don't truncate the start of the utterance.
-                // Silero's onSpeechStart fires ~500-700 ms AFTER speech
-                // actually begins (it needs to accumulate confidence),
-                // so gating stream_start on onSpeechStart drops the
-                // first word of every turn, STT then receives a
-                // half-word and returns empty. The streaming pod's own
-                // server-side VAD filters out the leading silence; we
-                // just need to make sure the actual speech all arrives.
-                if (!streamTurnOpenRef.current) {
-                  wsRef.current.send(JSON.stringify({ type: 'stream_start' }));
-                  streamTurnOpenRef.current = true;
-                  streamFramesSent = 0;
-                  streamBytesSent = 0;
-                  streamStartAt = performance.now();
-                  openPendingUserBubble();
-                  if (DEBUG_STREAM) console.log('[voicechat] → stream_start (first frame)');
+                // If a streaming turn is open, ship the frame live.
+                // Otherwise push it onto the pre-speech ring buffer so
+                // it can be flushed when ``onSpeechStart`` later opens
+                // a stream. The ring keeps the most-recent
+                // ~PRESPEECH_RING_FRAMES (~700 ms) of audio.
+                if (streamTurnOpenRef.current) {
+                  wsRef.current.send(pcm);
+                  streamFramesSent += 1;
+                  streamBytesSent += pcm.byteLength;
+                  return;
                 }
-                wsRef.current.send(pcm);
-                streamFramesSent += 1;
-                streamBytesSent += pcm.byteLength;
+                preSpeechRing.push(pcm);
+                while (preSpeechRing.length > PRESPEECH_RING_FRAMES) {
+                  preSpeechRing.shift();
+                }
               }
             : undefined,
           onProbability: (p) => setMicLevel(p),

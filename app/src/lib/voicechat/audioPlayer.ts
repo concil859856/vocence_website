@@ -19,11 +19,16 @@
 const SAMPLE_RATE = 24000;
 // The streaming server emits frames in chunks (EMIT_FRAMES=6 → ~240 ms of
 // audio per burst) with variable inter-burst gaps that have been observed
-// up to ~1.0 s. GPU speed (4090 vs H100) doesn't change this cadence; it
-// only changes per-burst compute time. So the safe default is large
-// enough that *any* expected gap fits inside the cushion at any moment
-// during playback. 1500 ms covers the worst-case observed.
-const DEFAULT_PREBUFFER_MS = 1500;
+// up to ~1.0 s. The previous 1500 ms safety floor was too generous —
+// it pinned every voice-turn perceived latency at 1.5 s on top of LLM
+// TTFT + TTS TTFA, making "complete sentence → response" feel ~2.5-3 s
+// even when every other stage was fast.
+//
+// 700 ms is a deliberate trade: it covers the typical 240-500 ms inter-
+// burst gap with margin but doesn't cover the rare 1 s worst case. If
+// audio stutters reappear, bump this back up (or make it dynamic — flow
+// control on burst-arrival rate would be the real fix).
+const DEFAULT_PREBUFFER_MS = 700;
 // Mid-stream rebuffering is DISABLED (FLOOR=0). Reason: the server
 // delivers frames at near-real-time pace (Qwen3 TTS doesn't run faster
 // than realtime on the streaming endpoint), so the queue spends most
@@ -68,6 +73,11 @@ class PcmPlayer extends AudioWorkletProcessor {
     this._rebufferFloorSamples = 0;
     this._rebufferResumeSamples = 0;
     this._endSignaled = false;  // true after caller signals end-of-stream
+    // Fires the ``drained`` message exactly once per turn — the first
+    // time the queue empties out after ``end`` is signaled. Without
+    // this latch the worklet would repeatedly post ``drained`` every
+    // process() call after the queue empties, spamming the WS.
+    this._drainedFired = false;
     this.port.onmessage = (e) => {
       const d = e.data;
       if (!d) return;
@@ -99,6 +109,9 @@ class PcmPlayer extends AudioWorkletProcessor {
         this._queuedSamples = 0;
         this._state = 'buffering';
         this._endSignaled = false;
+        // Reset the once-per-turn drained latch — the next turn is a
+        // fresh window with its own drained event.
+        this._drainedFired = false;
       } else if (d.type === 'config') {
         if (typeof d.prebufferSamples === 'number') {
           this._prebufferSamples = d.prebufferSamples;
@@ -173,6 +186,16 @@ class PcmPlayer extends AudioWorkletProcessor {
         if (this._stopped) {
           this.port.postMessage({ type: 'idle' });
         }
+        // Once the queue is empty AND the caller has signaled the
+        // stream is over, the speakers will produce their final
+        // sample within the next few buffer-quanta. Emit ``drained``
+        // exactly once so the host can tell the server the audio
+        // tail is gone — which is what releases the server's mic-
+        // mute gate without timer estimation.
+        if (this._endSignaled && !this._drainedFired) {
+          this._drainedFired = true;
+          this.port.postMessage({ type: 'drained' });
+        }
         break;
       }
       const head = this._chunks[0];
@@ -202,6 +225,19 @@ export interface AudioPlayerEvents {
    * how much audio (in ms) was still queued at the moment of the pause —
    * useful for diagnosing how often / how badly underruns happen. */
   onRebuffering?: (queuedMs: number) => void;
+  /** Fired the FIRST time audio actually starts playing for a turn. The
+   * server's mic-mute gate latches on this so it knows the bot's voice
+   * has reached the speakers — anything the mic picks up between this
+   * event and ``onSettled`` is potentially echo. Unlike
+   * ``onPlayingStart`` (which fires every time the worklet exits a
+   * rebuffer pause), this fires exactly once per turn. */
+  onAudioStarted?: () => void;
+  /** Fired when the bot's audio is genuinely gone from the speakers —
+   * either the queue drained after the server signaled turn_end, or
+   * the barge-in fade completed and the queue was flushed. The server
+   * releases its mic-mute gate on this event. Fires at most once per
+   * turn (resets on the next ``onAudioStarted``). */
+  onSettled?: () => void;
 }
 
 export interface AudioPlayerOptions {
@@ -223,6 +259,15 @@ export class StreamingAudioPlayer {
   private events: AudioPlayerEvents;
   private workletReady: Promise<void> | null = null;
   private prebufferMs: number;
+  // Per-turn latches for the audio-lifecycle callbacks. ``audioStartedFired``
+  // gates ``onAudioStarted`` to once-per-turn (vs. the worklet's
+  // ``playing`` message that also fires on rebuffer recoveries).
+  // ``settledFired`` gates ``onSettled`` so a worklet ``drained`` after
+  // a barge-in fade doesn't double-fire on top of the fade's settled
+  // emission. Both reset whenever a new turn starts (next ``push``
+  // after a flush, or first push after init).
+  private audioStartedFired = false;
+  private settledFired = false;
 
   constructor(events: AudioPlayerEvents = {}, options: AudioPlayerOptions = {}) {
     this.events = events;
@@ -254,9 +299,28 @@ export class StreamingAudioPlayer {
       const d = e.data;
       if (!d) return;
       if (d.type === 'idle' && this.events.onIdle) this.events.onIdle();
-      if (d.type === 'playing' && this.events.onPlayingStart) this.events.onPlayingStart();
+      if (d.type === 'playing') {
+        if (this.events.onPlayingStart) this.events.onPlayingStart();
+        // Once-per-turn audio_started: only emit on the first
+        // ``playing`` after a flush/init. Subsequent rebuffer-recover
+        // ``playing`` messages don't re-fire (the audio gate on the
+        // server is already latched).
+        if (!this.audioStartedFired) {
+          this.audioStartedFired = true;
+          this.events.onAudioStarted?.();
+        }
+      }
       if (d.type === 'rebuffering' && this.events.onRebuffering) {
         this.events.onRebuffering(typeof d.queuedMs === 'number' ? d.queuedMs : 0);
+      }
+      if (d.type === 'drained') {
+        // The worklet's queue is empty AND signalEnd() was called —
+        // the bot's audio tail is gone. Fire onSettled exactly once
+        // per turn.
+        if (!this.settledFired) {
+          this.settledFired = true;
+          this.events.onSettled?.();
+        }
       }
     };
     // Configure both thresholds in OUTPUT-rate samples (push() resamples
@@ -291,6 +355,12 @@ export class StreamingAudioPlayer {
   /** Push one PCM16 LE mono chunk (server frame) into the player. */
   push(pcm16: ArrayBuffer): void {
     if (!this.worklet) return;
+    // A push after we previously fired settled (= prior turn ended)
+    // means a new turn has begun. Re-arm the per-turn latches.
+    if (this.settledFired) {
+      this.audioStartedFired = false;
+      this.settledFired = false;
+    }
     const i16 = new Int16Array(pcm16);
     let f32: Float32Array;
     if (this.outputRate === SAMPLE_RATE) {
@@ -345,9 +415,21 @@ export class StreamingAudioPlayer {
           try { this.gainNode.gain.setValueAtTime(0.0001, t); } catch { /* ignore */ }
           this.gainNode.gain.linearRampToValueAtTime(1.0, t + 0.005);
         }
+        // Fade is done, speakers are silent — fire onSettled so the
+        // server releases its mic-mute gate. Only if we actually had
+        // audio playing for this turn (settled without started is a
+        // no-op the server tolerates, but we save a WS frame).
+        if (this.audioStartedFired && !this.settledFired) {
+          this.settledFired = true;
+          this.events.onSettled?.();
+        }
       }, BARGE_IN_FADE_MS);
     } else {
       this.worklet?.port.postMessage({ type: 'flush' });
+      if (this.audioStartedFired && !this.settledFired) {
+        this.settledFired = true;
+        this.events.onSettled?.();
+      }
     }
     // Reset prebuffer to default after a barge-in so the next turn's
     // first content sentence gets the full cold-start cushion.

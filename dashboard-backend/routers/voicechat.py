@@ -37,7 +37,7 @@ import uuid
 
 import embed_tokens
 from contextlib import suppress
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 
@@ -417,6 +417,17 @@ async def voicechat_session(
 
     if not auth_user_id and embed_ctx is None:
         await ws.accept()
+        # Surface this loudly — silently closing on auth-fail was hiding
+        # the COOKIE_SECURE=true-on-http misconfig that broke local dev.
+        # Caller can correlate the client port from uvicorn's WS accept line.
+        cookie_names = list(ws.cookies.keys())
+        _log.info(
+            "voicechat: AUTH FAILED on WS connect — no valid token. "
+            "client_host=%s cookies_present=%s query_token=%s (likely a "
+            "missing/expired session cookie; on HTTP localhost ensure "
+            "COOKIE_SECURE=false in the backend .env)",
+            client_host, cookie_names, "yes" if token else "no",
+        )
         await ws.send_json({"type": "error", "code": "auth_required", "message": "missing or invalid token"})
         await ws.close(code=4401)
         return
@@ -426,6 +437,7 @@ async def voicechat_session(
 
     user = await _get_user_by_id(auth_user_id)
     if not user:
+        _log.info("voicechat: AUTH FAILED — user_id=%s not found in DB", auth_user_id)
         await ws.send_json({"type": "error", "code": "user_not_found", "message": "user no longer exists"})
         await ws.close(code=4401)
         return
@@ -486,6 +498,11 @@ async def voicechat_session(
     # ``vc-<millis>-<user_prefix>`` pattern's same-millisecond collision
     # risk is gone.
     session_id = f"vc-{uuid.uuid4().hex[:16]}"
+    _session_open_perf = time.perf_counter()
+    _log.info(
+        "[stream] trace session=%s phase=session_open auth_user_id=%s agent_id=%s",
+        session_id, auth_user_id, agent_id,
+    )
 
     # ── Session watchdog + (paid agents only) per-minute billing ──────
     # A ``VoiceAgentBilling`` instance always exists for every session —
@@ -823,6 +840,84 @@ async def voicechat_session(
     # Track current turn task so we can cancel on barge-in
     current_turn: asyncio.Task | None = None
 
+    # Session-scoped TTS WS warmer. The voice is fixed for the lifetime
+    # of this session (one agent, one voice), so we build a single
+    # warmer at session-open and reuse it across every turn instead of
+    # constructing one per ``_run_turn`` invocation. The OLD per-turn
+    # warmer paid the full ~500 ms WS handshake on chunk 1 of EVERY
+    # turn because the warm WS from the previous turn was closed when
+    # the previous ``_run_turn`` exited. By promoting it to session
+    # scope, chunk 1 of each turn (including the FIRST turn after
+    # connect, thanks to the immediate ``schedule_prewarm()`` below)
+    # gets the warm WS that was opened in the background while the
+    # user was speaking. Cuts ~500 ms off TTS time-to-first-audio per
+    # turn — your single biggest fixed latency floor.
+    from voicechat_service import make_tts_warmer_for_voice  # local: keep cold-start lean
+    session_tts_warmer = make_tts_warmer_for_voice(agent_voice)
+    if session_tts_warmer is not None:
+        # Open the first WS in the background NOW so it's ready by
+        # the time the user finishes their first turn.
+        session_tts_warmer.schedule_prewarm()
+
+    # ``bot_speaking_evt`` is the mic-mute gate. While set, the next
+    # turn's StreamingTurnSession DROPS incoming PCM frames so the STT
+    # pod doesn't transcribe the bot's own voice leaking through the
+    # user's speakers (the classic "Yeah / Mm-hmm / Thank you" Parakeet
+    # hallucinations on echo).
+    #
+    # The gate is driven entirely by the CLIENT now. Two mtypes:
+    #   * ``client_audio_started``   → set() — first sample reached speakers
+    #   * ``client_audio_settled``   → clear() — queue drained OR barge-in
+    #                                   fade completed (speakers silent)
+    #
+    # This replaced an older heuristic that estimated playback tail from
+    # byte counts on the server side. The estimate was always wrong by
+    # several seconds because the client's prebuffer and OS audio output
+    # are out of the server's view. The client owns the speakers — it's
+    # the only thing that actually knows when the tail is gone — so we
+    # trust its events instead of guessing.
+    #
+    # Two safeties keep the gate from getting stuck:
+    #   1. ``GATE_MAX_HOLD_S`` auto-clear if ``started`` arrived but
+    #      ``settled`` never did (client crash mid-playback).
+    #   2. New ``client_audio_started`` arrivals re-arm the safety timer.
+    GATE_MAX_HOLD_S = 30.0
+    bot_speaking_evt: asyncio.Event = asyncio.Event()
+    gate_safety_task: asyncio.Task | None = None
+
+    def _gate_set_from_client() -> None:
+        """Latch the mute gate. Triggered by ``client_audio_started``."""
+        nonlocal gate_safety_task
+        bot_speaking_evt.set()
+        if gate_safety_task and not gate_safety_task.done():
+            gate_safety_task.cancel()
+
+        async def _safety() -> None:
+            try:
+                await asyncio.sleep(GATE_MAX_HOLD_S)
+                # If we got here the client never sent ``settled``
+                # within MAX_HOLD — assume it crashed or the WS broke
+                # mid-playback. Release rather than lock the mic
+                # forever.
+                _log.warning(
+                    "[gate] safety release after %.0fs without client_audio_settled "
+                    "(session=%s, likely client crash mid-playback)",
+                    GATE_MAX_HOLD_S, session_id,
+                )
+                bot_speaking_evt.clear()
+            except asyncio.CancelledError:
+                pass
+
+        gate_safety_task = asyncio.create_task(_safety(), name="gate_safety")
+
+    def _gate_clear_from_client() -> None:
+        """Release the mute gate. Triggered by ``client_audio_settled``."""
+        nonlocal gate_safety_task
+        bot_speaking_evt.clear()
+        if gate_safety_task and not gate_safety_task.done():
+            gate_safety_task.cancel()
+            gate_safety_task = None
+
     async def _cancel_current() -> None:
         """Cancel the in-flight turn and wait for it to tear down — but
         DON'T wait forever. The TTS streamers maintain a WebSocket to
@@ -833,7 +928,16 @@ async def voicechat_session(
         After this timeout we return regardless and let the old task
         finish in the background. The streamers themselves (patched in
         voicechat_service.py) cap their own WS close to ~300ms so the
-        old task usually exits well before this outer timeout fires."""
+        old task usually exits well before this outer timeout fires.
+
+        Note: this function does NOT touch the mic-mute gate. The
+        client's ``audioPlayer.flush()`` (which it calls in lockstep
+        with sending the ``cancel`` mtype) fires ``onSettled`` at the
+        end of its 150 ms fade, and the resulting
+        ``client_audio_settled`` clears the gate naturally. Putting
+        gate logic here would double-control it and reintroduce the
+        timing races we just deleted.
+        """
         nonlocal current_turn
         if current_turn and not current_turn.done():
             current_turn.cancel()
@@ -906,6 +1010,11 @@ async def voicechat_session(
                 "encoding": "pcm16le",
                 "channels": 1,
             })
+        # No server-side gate bookkeeping. The client latches the gate
+        # when its first audio sample plays (``client_audio_started``)
+        # and releases it when the queue drains or the barge-in fade
+        # completes (``client_audio_settled``). See the comments on
+        # ``bot_speaking_evt`` for the rationale.
         try:
             async for chunk in stream_tts_for_voice(
                 spoken,
@@ -984,13 +1093,45 @@ async def voicechat_session(
                 continue
 
             mtype = payload.get("type")
+            # Log every client→server message at INFO so we can replay
+            # the exact protocol order: ready, stream_start, cancel,
+            # text, voice. The "only last sentence" bug shows up here
+            # as cancel-followed-by-stream_start in quick succession
+            # (barge-in cascade) — visible only with this log.
+            _log.info(
+                "[stream] trace session=%s phase=client_msg type=%r "
+                "current_turn_active=%s payload_preview=%r",
+                session_id, mtype,
+                bool(current_turn and not current_turn.done()),
+                {k: (v[:60] if isinstance(v, str) else v)
+                 for k, v in payload.items() if k != "audio_b64"},
+            )
 
             if mtype == "cancel":
+                _log.info(
+                    "[stream] trace session=%s phase=barge_in_received "
+                    "(client cancelled in-flight turn — likely the chunking-then-user-keeps-talking pattern)",
+                    session_id,
+                )
                 await _cancel_current()
                 try:
                     await ws.send_json({"type": "cancelled"})
                 except (WebSocketDisconnect, RuntimeError, Exception):
                     return
+                continue
+
+            # Mic-mute gate control — driven by the client now (replaces
+            # the old server-side byte-count tail estimator). The client
+            # sends ``client_audio_started`` when its audio worklet's
+            # first sample reaches the speakers, and
+            # ``client_audio_settled`` when the queue drains naturally
+            # or the barge-in fade completes. We never get the gate
+            # timing wrong now because we aren't guessing it.
+            if mtype == "client_audio_started":
+                _gate_set_from_client()
+                continue
+            if mtype == "client_audio_settled":
+                _gate_clear_from_client()
                 continue
 
             # ``stream_commit`` belongs INSIDE an active stream session
@@ -1087,6 +1228,11 @@ async def voicechat_session(
             # ``enabled_tools_set`` was resolved once at session start
             # (used by both the system prompt and the tool-spec list) —
             # we reuse it here instead of recomputing per turn.
+            # Resolve voice-pipeline knobs from the agent's config —
+            # agent_ctx IS in scope here (outer voicechat_session
+            # function). Defaults match AgentConfigIn so an unconfigured
+            # agent keeps current production behavior.
+            _agent_cfg = (agent_ctx and agent_ctx.get("config")) or {}
             current_turn = asyncio.create_task(
                 _run_turn(
                     ws=ws,
@@ -1100,6 +1246,11 @@ async def voicechat_session(
                     session_id=session_id,
                     llm_model=agent_llm_model,
                     enabled_tools=enabled_tools_set,
+                    bot_speaking_evt=bot_speaking_evt,
+                    tts_warmer=session_tts_warmer,
+                    denoise_enabled=bool(_agent_cfg.get("denoise_enabled", False)),
+                    turn_decider=str(_agent_cfg.get("turn_decider", "fusion")),
+                    ultravad_threshold=float(_agent_cfg.get("ultravad_threshold", 0.4)),
                 )
             )
             # The idle clock is anchored to "agent stopped talking".
@@ -1129,6 +1280,15 @@ async def voicechat_session(
                 current_turn = None
     finally:
         await _cancel_current()
+        _log.info(
+            "[stream] trace session=%s phase=session_close duration=%dms",
+            session_id, int((time.perf_counter() - _session_open_perf) * 1000),
+        )
+        # Release the session-scoped TTS warmer (closes any pre-opened
+        # WS so we don't leak a connection against the pod's cap).
+        if session_tts_warmer is not None:
+            with suppress(Exception):
+                await session_tts_warmer.close()
         # Stop the watchdog/billing loop. Runs even on
         # WebSocketDisconnect / cancellation so the user gets
         # correctly charged for the time they actually used (paid
@@ -1151,6 +1311,15 @@ async def _run_turn(
     session_id: str | None = None,
     llm_model: str | None = None,
     enabled_tools: set[str] | None = None,
+    bot_speaking_evt: asyncio.Event | None = None,
+    tts_warmer: Any | None = None,
+    # Voice-pipeline knobs from agent.config — see AgentConfigIn,
+    # ULTRAVAD_POD_SPEC.md, DENOISER_STREAMING_POD_SPEC.md. Defaults
+    # match the AgentConfigIn defaults so existing agents keep their
+    # current behavior until explicitly opted in.
+    denoise_enabled: bool = False,
+    turn_decider: str = "fusion",
+    ultravad_threshold: float = 0.4,
 ) -> None:
     mode = payload.get("type")
     started = time.perf_counter()
@@ -1179,11 +1348,13 @@ async def _run_turn(
                 if m.role in ("user", "assistant")
             ]
 
+            # ``stream_commit`` is a client-side VAD hint only — the
+            # server ensembler decides turn-end from STT silence + EOU.
+            stream_client_hints: dict[str, bool] = {}
+
             async def _recv_next_audio() -> bytes | None:
                 """Pull the next binary frame from the client WS.
-                Returns ``None`` when the client signals end-of-audio
-                via ``{type:"stream_commit"}`` or ``{type:"cancel"}``,
-                or when the connection drops."""
+                Returns ``None`` on disconnect/cancel only."""
                 while True:
                     try:
                         msg = await ws.receive()
@@ -1199,16 +1370,37 @@ async def _run_turn(
                         except Exception:
                             continue
                         ctype = p.get("type")
-                        if ctype in ("stream_commit", "cancel"):
+                        if ctype == "stream_commit":
+                            stream_client_hints["commit"] = True
+                            continue
+                        if ctype == "cancel":
                             return None
                         # Ignore other control messages mid-stream.
 
+            # Voice-pipeline knobs come in as ``_run_turn`` parameters
+            # (resolved from agent.config in the outer
+            # voicechat_session function where agent_ctx IS in scope).
+            # See ULTRAVAD_POD_SPEC.md, DENOISER_STREAMING_POD_SPEC.md,
+            # AgentConfigIn.
             session = StreamingTurnSession(
                 client_ws=ws,
                 language=language,
                 history=history_for_detector,
                 receive_binary=_recv_next_audio,
                 send_json=ws.send_json,
+                user_id=user_id,
+                client_hints=stream_client_hints,
+                is_bot_speaking=(
+                    bot_speaking_evt.is_set if bot_speaking_evt is not None else None
+                ),
+                denoise_enabled=denoise_enabled,
+                turn_decider=turn_decider,
+                ultravad_threshold=ultravad_threshold,
+            )
+            _t_session_start = time.perf_counter()
+            _log.info(
+                "[stream] trace session=%s phase=turn_start mode=stream lang=%r",
+                session_id, language,
             )
             result = await session.run()
             if result is None:
@@ -1218,9 +1410,28 @@ async def _run_turn(
                     "message": "couldn't hear anything",
                 })
                 error_str = "stt_empty"
+                _log.info(
+                    "[stream] trace session=%s phase=turn_end_no_transcript total=%dms",
+                    session_id, int((time.perf_counter() - _t_session_start) * 1000),
+                )
                 return
 
             user_text_final = result.transcript
+            _t_eou_done = time.perf_counter()
+            _eou_ms = int((_t_eou_done - _t_session_start) * 1000)
+            _log.info(
+                "[stream] trace session=%s phase=eou_committed eou_total=%dms "
+                "rule=%s silence_at_commit=%dms td_p=%.4f conf=%.2fx smart=%.2f "
+                "transcript=%r",
+                session_id, _eou_ms,
+                result.rule_fired, result.silence_at_commit_ms,
+                result.turn_detector_p_at_commit,
+                # confidence isn't on the result dataclass yet; compute
+                # from raw_p + threshold-equivalent later if needed
+                0.0,
+                result.smart_turn_p_at_commit,
+                user_text_final[:120],
+            )
             _log.info(
                 "[stream] turn committed: %dms text=%r silence=%dms smart=%.2f td=%.2f rule=%s",
                 result.duration_ms, user_text_final[:80],
@@ -1357,13 +1568,73 @@ async def _run_turn(
         turn_block_parts: list[str] = []
 
         if rag_agent_id:
-            try:
-                chunks = await agent_knowledge.search_agent_knowledge(
-                    rag_agent_id, user_text_final, top_k=5,
-                )
-            except Exception:  # noqa: BLE001
-                _log.exception("knowledge retrieval failed; continuing without it")
-                chunks = []
+            # Build a topic-aware retrieval query.
+            #
+            # The naive "embed just user_text_final" approach broke any
+            # multi-turn conversation that established a topic:
+            # "how much does it cost?" three turns into a Bittensor
+            # chat embeds against the literal four words and recalls
+            # nothing about Bittensor. The conversation history HAS the
+            # topic words ("TAO", "Bittensor", "subnet") — we just
+            # weren't using them at retrieval time.
+            #
+            # Fix: ALWAYS prepend the last user+assistant exchange (or
+            # two) to the embedding query. The current user message is
+            # appended last so it dominates the BM25 match. Cheap (no
+            # extra LLM call), and dramatically lifts recall on
+            # follow-ups. Capped at ~600 chars total so the embedding
+            # stays focused on topic words.
+            #
+            # Also: SKIP retrieval entirely on conversational closers
+            # (thanks / ok / yeah). These never need facts and the
+            # empty retrieval was just adding ~30 ms latency.
+            chunks: list[str] = []
+            user_text_trim = user_text_final.strip().lower().rstrip("!?.,")
+            _CLOSERS = {
+                "thanks", "thank you", "thx", "ty", "ok", "okay", "alright",
+                "got it", "great", "cool", "nice", "sure", "yeah", "yep",
+                "yes", "no", "nope", "mmhmm", "uh huh",
+            }
+            if user_text_trim and user_text_trim not in _CLOSERS:
+                # Walk history newest → oldest, gather up to 4 most
+                # recent user/assistant messages. We do this even on
+                # long queries because a long query about "pricing"
+                # still benefits from knowing the topic is "Bittensor".
+                context_msgs: list[str] = []
+                budget = 480  # chars of context preamble
+                for m in reversed(conversation):
+                    if m.role not in ("user", "assistant"):
+                        continue
+                    if m.content is user_text_final or not (m.content or "").strip():
+                        continue
+                    snippet = m.content.strip()
+                    take = snippet[: max(0, budget)]
+                    if not take:
+                        break
+                    context_msgs.append(take)
+                    budget -= len(take)
+                    if budget <= 0 or len(context_msgs) >= 4:
+                        break
+                # Order: oldest context first, current user text last.
+                # BM25 still ranks based on term frequency so the user's
+                # words contribute most; embedding sees the full topic
+                # mass for semantic recall.
+                if context_msgs:
+                    context_msgs.reverse()
+                    retrieval_query = " ".join(context_msgs) + " " + user_text_final
+                    _log.info(
+                        "[voicechat] rag query enriched with %d prior turns: %r -> %r",
+                        len(context_msgs), user_text_final[:50], retrieval_query[:160],
+                    )
+                else:
+                    retrieval_query = user_text_final
+                try:
+                    chunks = await agent_knowledge.search_agent_knowledge(
+                        rag_agent_id, retrieval_query, top_k=5,
+                    )
+                except Exception:  # noqa: BLE001
+                    _log.exception("knowledge retrieval failed; continuing without it")
+                    chunks = []
 
             if chunks:
                 chunks_text = agent_knowledge.format_chunks_for_prompt(chunks)
@@ -1563,6 +1834,10 @@ async def _run_turn(
                     return True
                 if ttft_ms is None:
                     ttft_ms = int((time.perf_counter() - started) * 1000)
+                    _log.info(
+                        "[stream] trace session=%s phase=llm_first_token ttft=%dms",
+                        session_id, ttft_ms,
+                    )
                 bot_text_full.append(delta)
                 try:
                     await ws.send_json({"type": "token", "text": delta})
@@ -1846,13 +2121,20 @@ async def _run_turn(
                 # Sentinel to release the consumer no matter what.
                 await sentence_q.put(None)
 
-        # Pre-warm the TTS WS for chunks 2..N. The warmer is created once
-        # per turn knowing which TTS service the voice will hit, and the
-        # streamers below schedule a background open of the next WS as
-        # soon as the current chunk's first audio frame arrives. Saves
-        # ~30-80ms per chunk after the first.
-        from voicechat_service import make_tts_warmer_for_voice  # local import: keeps cold-start lean
-        tts_warmer = make_tts_warmer_for_voice(voice)
+        # TTS WS warmer is now SESSION-scoped (built once in
+        # ``voicechat_session`` and passed in here as ``tts_warmer``).
+        # That means chunk 1 of EVERY turn — not just chunks 2..N
+        # within a turn — gets the pre-warmed WS, saving ~500 ms of
+        # handshake per turn. The first warmup is kicked off
+        # immediately on WS connect so it's ready by the time the
+        # user finishes their first sentence. Each chunk's streamer
+        # additionally schedules a background prewarm for the NEXT
+        # WS, keeping the warmer pipeline full.
+
+        # Mic-mute gate is now driven by the client's ``client_audio_started``
+        # / ``client_audio_settled`` events — see ``bot_speaking_evt``
+        # docstring in ``voicechat_session``. No server-side byte-count
+        # bookkeeping here.
 
         async def tts_consumer() -> None:
             nonlocal ttfa_ms
@@ -1891,6 +2173,10 @@ async def _run_turn(
                             if ttfa_ms is None:
                                 ttfa_ms = int((time.perf_counter() - started) * 1000)
                                 _log.info("tts: TTFA=%d ms (chunk %d)", ttfa_ms, sid)
+                                _log.info(
+                                    "[stream] trace session=%s phase=tts_first_audio ttfa=%dms ttft=%dms",
+                                    session_id, ttfa_ms, ttft_ms or 0,
+                                )
                             try:
                                 # Avoid an extra ~2 KB copy when payload is
                                 # already bytes — only convert if bytearray.
@@ -1930,14 +2216,15 @@ async def _run_turn(
         try:
             await asyncio.gather(llm_producer(), tts_consumer())
         finally:
-            # Always release the prewarmed WS (and any background prewarm
-            # task) — including on barge-in cancel. Otherwise the WS sits
-            # against the cap=2 server slot until its server-side timeout.
-            if tts_warmer is not None:
-                try:
-                    await tts_warmer.close()
-                except Exception:
-                    _log.debug("tts_warmer.close() raised; ignoring", exc_info=True)
+            # Do NOT close ``tts_warmer`` here — it's session-scoped
+            # now and closed once on WS disconnect (in
+            # ``voicechat_session``'s outer finally). Closing it
+            # per-turn would defeat the cross-turn pre-warming and
+            # put us back to the ~500 ms-per-turn WS handshake cost.
+            # Mic-mute gate release happens when the client posts
+            # ``client_audio_settled`` (audio queue drained OR barge-in
+            # fade finished). No server-side scheduling needed.
+            pass
 
         bot_text_joined = "".join(bot_text_full).strip()
         if bot_text_joined:
