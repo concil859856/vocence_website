@@ -271,3 +271,30 @@ img {
   }
 }
 
+
+/* Architect "thinking..." floating-dots animation.
+ *
+ * Each dot bounces vertically with a slight scale + opacity wobble.
+ * The three dots stagger by 160 ms each (set in inline style), so the
+ * group reads as a single travelling wave rather than three pulses in
+ * lockstep. Modelled on ChatGPT's typing indicator.
+ *
+ * The animation runs forever while the bubble is mounted, the parent
+ * unmounts the bubble the moment streaming starts. Honours
+ * prefers-reduced-motion: a static dot is shown instead of a wobble. */
+@keyframes architect-dot-float {
+  0%, 100%   { transform: translateY(0)     scale(1);    opacity: 0.55; }
+  35%        { transform: translateY(-4px)  scale(1.18); opacity: 1; }
+  70%        { transform: translateY(0)     scale(1);    opacity: 0.55; }
+}
+.architect-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background-color: rgba(255, 255, 255, 0.85);
+  animation: architect-dot-float 1.1s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .architect-dot { animation: none; opacity: 0.7; }
+}

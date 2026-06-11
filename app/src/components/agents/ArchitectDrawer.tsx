@@ -27,21 +27,6 @@ import { setArchitectOpen } from '../../lib/uiOverlay';
 
 const newId = () => Math.random().toString(36).slice(2, 11);
 
-// Cosmetic phase label for the thinking bubble. The architect is a
-// reasoning model, so it goes through real internal phases (parse
-// request → consult draft → consider options → compose). We don't
-// have telemetry from OpenAI for these phases, but rotating through
-// plausible labels at human-readable cadence makes the wait feel
-// purposeful rather than stuck. The labels are advisory only — no
-// behavior depends on which one is showing.
-function thinkingPhaseLabel(elapsedSec: number): string {
-  if (elapsedSec < 4) return 'Reading your message…';
-  if (elapsedSec < 12) return 'Considering your draft…';
-  if (elapsedSec < 30) return 'Weighing options…';
-  if (elapsedSec < 60) return 'Composing a response…';
-  return 'Still thinking…';
-}
-
 type Proposed = {
   name: string;
   type: AgentType;
@@ -84,25 +69,22 @@ export function ArchitectDrawer({ open, onClose, current, onApply }: Props) {
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Wall-clock seconds since the current request was sent. The
-  // architect runs on a high-reasoning model (gpt-5 / thinking
-  // effort=high), responses regularly take 30-120 s. Without a
-  // visible counter the user can't tell whether it's still thinking
-  // or the request died, so we show "Thinking… 12s" in the
-  // placeholder bubble.
-  const [thinkingSec, setThinkingSec] = useState(0);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
-  // Tick the thinking-elapsed counter while a request is in flight.
-  // Resets to 0 the moment ``busy`` flips on, freezes on the final
-  // value when it flips off (so the user briefly sees the total
-  // before the bubble is replaced by the assistant reply).
+  // Auto-grow the textarea between 1 and 3 visible lines as the user
+  // types. Strategy: reset to scrollHeight on every change, capped at
+  // ~5.25rem (= 3 lines @ leading-snug + the 2 × py-2 padding). Beyond
+  // 3 lines an overflow-y scroller takes over. Mirrors ChatGPT's
+  // composer — input feels lightweight while one-liner, expands when
+  // the user actually needs space.
   useEffect(() => {
-    if (!busy) return;
-    setThinkingSec(0);
-    const t = window.setInterval(() => setThinkingSec((s) => s + 1), 1000);
-    return () => window.clearInterval(t);
-  }, [busy]);
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = '0px';                    // collapse to measure
+    const MAX_PX = 5.25 * 16;                   // ~3 lines
+    el.style.height = `${Math.min(el.scrollHeight, MAX_PX)}px`;
+  }, [input]);
 
   useEffect(() => {
     if (open && scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
@@ -217,14 +199,17 @@ export function ArchitectDrawer({ open, onClose, current, onApply }: Props) {
         }
         // ``done`` is a no-op here — the loop just exits naturally.
       }
-      // Edge case: stream ended with no tokens AND no proposal (model
-      // emitted nothing useful). Replace the empty bubble with a
-      // gentle nudge so the user isn't staring at a blank shape.
+      // Edge case: stream ended with no tokens AND no proposal. This
+      // should never happen under the current system prompt (which
+      // requires visible text on every turn), but if the model fails
+      // we show an honest error rather than the previous fake-reply
+      // "Got it. Want me to make any specific changes?" which made
+      // the architect look broken even when it was just empty.
       if (!receivedAnyToken && !proposedAttached) {
         setMessages((prev) =>
           prev.map((m) =>
             m.id === architectMsgId
-              ? { ...m, text: 'Got it. Want me to make any specific changes?' }
+              ? { ...m, text: '(no response — please try again)' }
               : m,
           ),
         );
@@ -250,6 +235,19 @@ export function ArchitectDrawer({ open, onClose, current, onApply }: Props) {
     const text = input.trim();
     if (!text) return;
     await runArchitectTurn(text);
+  };
+
+  // Keyboard semantics on the composer match ChatGPT / Slack / Linear:
+  //   Enter           → send
+  //   Shift+Enter     → newline (default textarea behavior — don't preventDefault)
+  //   anything during busy → do nothing (user can edit but not submit)
+  const onTextareaKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key !== 'Enter' || e.shiftKey) return;
+    e.preventDefault();
+    if (busy) return;
+    const text = input.trim();
+    if (!text) return;
+    void runArchitectTurn(text);
   };
 
   const applyProposed = (msgId: string) => {
@@ -354,17 +352,11 @@ export function ArchitectDrawer({ open, onClose, current, onApply }: Props) {
           ))}
           {busy && (
             <div className="flex justify-start">
-              <div className="bg-white/[0.06] text-white border border-white/10 rounded-2xl px-3.5 py-2 text-sm flex items-center gap-2 min-w-[180px]">
-                <span className="inline-flex gap-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-current opacity-60 animate-pulse" />
-                  <span className="w-1.5 h-1.5 rounded-full bg-current opacity-60 animate-pulse [animation-delay:120ms]" />
-                  <span className="w-1.5 h-1.5 rounded-full bg-current opacity-60 animate-pulse [animation-delay:240ms]" />
-                </span>
-                <span className="text-[#A7B0B7] text-xs">
-                  {thinkingPhaseLabel(thinkingSec)}
-                  {thinkingSec > 0 ? (
-                    <span className="ml-1 opacity-60">· {thinkingSec}s</span>
-                  ) : null}
+              <div className="bg-white/[0.06] border border-white/10 rounded-2xl px-3.5 py-3 text-sm">
+                <span className="inline-flex items-center gap-1.5" aria-label="thinking">
+                  <span className="architect-dot" />
+                  <span className="architect-dot" style={{ animationDelay: '160ms' }} />
+                  <span className="architect-dot" style={{ animationDelay: '320ms' }} />
                 </span>
               </div>
             </div>
@@ -372,14 +364,19 @@ export function ArchitectDrawer({ open, onClose, current, onApply }: Props) {
           {error && <div className="text-xs text-red-300">{error}</div>}
         </div>
 
-        <form onSubmit={send} className="p-3 border-t border-white/10 flex items-center gap-2">
-          <input
-            type="text"
+        <form
+          onSubmit={send}
+          className="p-3 border-t border-white/10 flex items-end gap-2"
+        >
+          <textarea
+            ref={textareaRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
+            onKeyDown={onTextareaKey}
             placeholder="Ask anything, or describe a change…"
             disabled={busy}
-            className="flex-1 bg-white/[0.04] border border-white/10 rounded-full px-4 py-2 text-sm text-white placeholder:text-[#666] focus:outline-none focus:border-[#DFFF00]/40 disabled:opacity-50"
+            rows={1}
+            className="flex-1 bg-white/[0.04] border border-white/10 rounded-2xl px-4 py-2 text-sm text-white placeholder:text-[#666] focus:outline-none focus:border-[#DFFF00]/40 disabled:opacity-50 resize-none leading-snug max-h-[5.25rem] overflow-y-auto"
           />
           <button
             type="submit"
