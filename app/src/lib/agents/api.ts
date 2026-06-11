@@ -325,6 +325,10 @@ export type ArchitectStreamEvent =
    *  later with the full validated payload. */
   | { type: 'proposed_starting' }
   | { type: 'proposed'; data: { name: string; type: AgentType; config: AgentConfig; summary?: string } }
+  /** Model emitted a fresh requirements summary via the
+   *  ``update_requirements`` tool. Frontend persists this and round-
+   *  trips it on subsequent turns. Invisible to the user. */
+  | { type: 'requirements'; summary: string }
   | { type: 'done' }
   | { type: 'error'; message: string };
 

@@ -612,6 +612,21 @@ If the user message doesn't match any row above, default to: preamble + \
 one question to clarify what they want.
 
 ═══════════════════════════════════════════════════════════════════════════
+KEEP A RUNNING REQUIREMENTS SUMMARY
+═══════════════════════════════════════════════════════════════════════════
+You have a second tool, ``update_requirements(summary)``. Call it \
+WHENEVER you learn something durable about the user's intent — who the \
+agent is for, what topic, what tone, what it must do, what it must not \
+do, any brand or domain context.
+
+  • The summary is a FULL REPLACEMENT (2-6 sentences), not an append.
+  • It persists across turns even after older messages are dropped from \
+the 12-turn history window, so this is your reliable long-term memory.
+  • Call it FREELY in the same turn as propose_changes — they don't \
+conflict and the user never sees the requirements summary.
+  • If you have nothing new to add, do NOT call it.
+
+═══════════════════════════════════════════════════════════════════════════
 HARD RULES
 ═══════════════════════════════════════════════════════════════════════════
   • EVERY turn produces visible text. Even when you call propose_changes.
@@ -712,11 +727,55 @@ _PROPOSE_CHANGES_TOOL = {
 }
 
 
+# Second tool — the model uses this to maintain a durable summary of
+# what the user wants across the session. Why a tool and not just
+# prompting? The 12-turn rolling history will drop early turns where
+# the user stated their requirements, and the model can't reliably
+# extract them from a summary it produced (which is itself outside
+# the history). By making the summary a STRUCTURED tool output, the
+# frontend can persist it and re-inject it on every turn — surviving
+# truncation. Research finding #12 (arxiv 2505.06120 + MEMORY note:
+# "move source-of-truth to the component that knows").
+_UPDATE_REQUIREMENTS_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "update_requirements",
+        "description": (
+            "Update the running summary of what the user wants this "
+            "agent to do. Call this whenever you learn something "
+            "durable about the user's intent (target audience, "
+            "topic domain, tone, must-haves, must-not-haves, brand). "
+            "DO NOT call this for one-off questions or surface "
+            "details about the platform — only intent. Safe to call "
+            "alongside propose_changes in the same turn."
+        ),
+        "strict": True,
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "summary": {
+                    "type": "string",
+                    "description": (
+                        "Full replacement summary in 2-6 sentences. "
+                        "Include EVERYTHING you've learned about user "
+                        "intent so far — this overwrites the prior "
+                        "summary, it doesn't append."
+                    ),
+                },
+            },
+            "required": ["summary"],
+        },
+    },
+}
+
+
 async def chat_with_architect_stream(
     *,
     user_message: str,
     history: Optional[list[dict]] = None,
     existing: Optional[dict] = None,
+    requirements_summary: Optional[str] = None,
 ):
     """Streaming counterpart to ``chat_with_architect``.
 
@@ -741,6 +800,19 @@ async def chat_with_architect_stream(
             "Current agent draft (read-only context):\n"
             + json.dumps(existing, ensure_ascii=False)[:3500]
         )
+    # Re-inject the running requirements summary so it survives the
+    # 12-turn history cap. The model maintains it via the
+    # update_requirements tool; the frontend round-trips it on every
+    # request. Empty/None means "no summary yet — this is early in
+    # the conversation". Cap at 4000 chars so a runaway summary can't
+    # eat the context.
+    if requirements_summary and requirements_summary.strip():
+        user_blocks.append(
+            "Running requirements summary (what you've learned about "
+            "this user's intent so far — keep evolving via "
+            "update_requirements):\n"
+            + requirements_summary.strip()[:4000]
+        )
     user_blocks.append(user_message.strip())
     final_user = "\n\n".join(user_blocks)
 
@@ -762,7 +834,7 @@ async def chat_with_architect_stream(
         # leaves plenty for prose + tool args.
         async for evt in stream_chat_with_tools(
             msgs,
-            tools=[_PROPOSE_CHANGES_TOOL],
+            tools=[_PROPOSE_CHANGES_TOOL, _UPDATE_REQUIREMENTS_TOOL],
             tool_choice="auto",
             temperature=0.5,
             max_tokens=16000,
@@ -782,30 +854,42 @@ async def chat_with_architect_stream(
                 tc = evt.get("tool_call") or {}
                 if tc.get("name") == "propose_changes":
                     yield {"type": "proposed_starting"}
+                # No early signal needed for update_requirements — it's
+                # invisible to the user.
             elif etype == "tool_call":
                 tc = evt.get("tool_call") or {}
-                if tc.get("name") != "propose_changes":
-                    continue
+                tc_name = tc.get("name")
                 # Arguments arrive as a JSON-encoded string accumulated
-                # across deltas. Parse, normalize, surface as a single
-                # frontend event.
+                # across deltas — parse once per call.
                 try:
                     raw_args = tc.get("arguments") or "{}"
                     parsed = json.loads(raw_args) if isinstance(raw_args, str) else {}
                 except Exception as exc:  # noqa: BLE001
-                    _log.warning("architect stream: tool args JSON parse failed: %s", exc)
-                    continue
-                try:
-                    normalized = _normalize_draft(parsed)
-                    summary = str(parsed.get("summary") or "").strip()[:300]
-                    if summary:
-                        normalized["summary"] = summary
-                    yield {"type": "proposed", "data": normalized}
-                except Exception as exc:  # noqa: BLE001
                     _log.warning(
-                        "architect stream: normalize_draft failed: %s",
-                        exc,
+                        "architect stream: tool args JSON parse failed (%s): %s",
+                        tc_name, exc,
                     )
+                    continue
+
+                if tc_name == "propose_changes":
+                    try:
+                        normalized = _normalize_draft(parsed)
+                        summary = str(parsed.get("summary") or "").strip()[:300]
+                        if summary:
+                            normalized["summary"] = summary
+                        yield {"type": "proposed", "data": normalized}
+                    except Exception as exc:  # noqa: BLE001
+                        _log.warning(
+                            "architect stream: normalize_draft failed: %s",
+                            exc,
+                        )
+                elif tc_name == "update_requirements":
+                    # Frontend persists this and round-trips it on the
+                    # next request, so the model's running summary
+                    # survives the history-cap truncation.
+                    new_summary = str(parsed.get("summary") or "").strip()[:4000]
+                    if new_summary:
+                        yield {"type": "requirements", "summary": new_summary}
             elif etype == "done":
                 yield {"type": "done"}
                 return

@@ -91,6 +91,12 @@ export function ArchitectDrawer({ open, onClose, current, onApply }: Props) {
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Running summary of user intent, maintained by the model via the
+  // ``update_requirements`` tool. Survives the 12-turn history cap on
+  // the backend by being re-sent in the request body each turn.
+  // Treat as a ref-style atomic value — server emits replacements,
+  // we don't merge / append.
+  const [requirementsSummary, setRequirementsSummary] = useState<string>('');
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -200,6 +206,11 @@ export function ArchitectDrawer({ open, onClose, current, onApply }: Props) {
           message: text,
           history,
           existing: { name: current.name, type: current.type, ...current.config },
+          // Persisted-by-the-model summary of user intent. Round-trip
+          // it every turn so the backend can re-inject into the
+          // system context after the 12-turn history truncates the
+          // earliest turns. Empty string == "no summary yet".
+          requirements_summary: requirementsSummary || undefined,
         },
         ctrl.signal,
       )) {
@@ -223,6 +234,11 @@ export function ArchitectDrawer({ open, onClose, current, onApply }: Props) {
               m.id === architectMsgId ? { ...m, proposing: true } : m,
             ),
           );
+        } else if (evt.type === 'requirements') {
+          // Server says "here's the latest understanding of intent".
+          // Replace, don't append — the server side instructs the
+          // model that update_requirements is a full replacement.
+          setRequirementsSummary(evt.summary);
         } else if (evt.type === 'proposed') {
           proposedAttached = {
             name: evt.data.name,
@@ -365,6 +381,10 @@ export function ArchitectDrawer({ open, onClose, current, onApply }: Props) {
     };
     setMessages([greeting]);
     setBusy(false);
+    // Wipe the running requirements summary — start-over means the
+    // model should re-derive intent from scratch given the fresh brief,
+    // not anchor on whatever it thought before the bad proposal.
+    setRequirementsSummary('');
     if (firstBrief) {
       // Re-run the original brief. ``runArchitectTurn`` is async but we
       // don't await — let it stream into the freshly cleared chat.

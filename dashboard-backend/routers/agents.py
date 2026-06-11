@@ -101,6 +101,12 @@ class AgentArchitectChatIn(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
     history: list[_ArchitectChatTurn] = Field(default_factory=list, max_length=24)
     existing: Optional[dict] = None
+    # Running summary of what the model has learned about the user's
+    # intent across the whole session. Maintained by the model via the
+    # ``update_requirements`` tool; the frontend stores it locally and
+    # re-sends it on each turn so it survives the 12-turn history cap.
+    # Empty/None on the first turn of a session.
+    requirements_summary: Optional[str] = Field(default=None, max_length=4000)
 
 
 # ---------------------------------------------------------------------------
@@ -306,6 +312,7 @@ async def architect_chat_stream(
                 user_message=body.message,
                 history=[h.model_dump() for h in body.history],
                 existing=body.existing,
+                requirements_summary=body.requirements_summary,
             ):
                 yield f"data: {json.dumps(evt, ensure_ascii=False)}\n\n"
         except Exception as exc:  # noqa: BLE001

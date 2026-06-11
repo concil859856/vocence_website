@@ -106,6 +106,11 @@ export interface ArchitectChatRequest {
   message: string;
   history: ArchitectChatTurn[];
   existing?: Partial<AgentConfig> & { name?: string; type?: AgentType };
+  /** Running summary of what the model has learned about user intent
+   *  across the session — maintained by the model via the
+   *  ``update_requirements`` tool, persisted client-side, round-
+   *  tripped on every turn so it survives history truncation. */
+  requirements_summary?: string;
 }
 
 export interface ArchitectChatResponse {
