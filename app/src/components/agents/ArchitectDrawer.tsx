@@ -571,7 +571,7 @@ export function ArchitectDrawer({ open, onClose, current, onApply }: Props) {
           </button>
         </header>
 
-        <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-3">
+        <div ref={scrollRef} className="architect-scroll flex-1 overflow-y-auto p-4 space-y-3">
           {messages.map((m) => {
             // The architect bubble may be empty for a beat between
             // "send" and the first streamed token (high-reasoning

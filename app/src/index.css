@@ -298,3 +298,27 @@ img {
 @media (prefers-reduced-motion: reduce) {
   .architect-dot { animation: none; opacity: 0.7; }
 }
+
+/* Architect chat scroll — subtle, low-contrast scrollbar that doesn't
+ * draw the eye away from the conversation. Default browser bars
+ * (especially on Windows/Linux) are too chunky for a 480-620 px side
+ * drawer; this matches the rest of the studio's dark UI.
+ *
+ * On Webkit: 6 px wide, transparent track, semi-opaque thumb that
+ * darkens on hover. On Firefox: scrollbar-width: thin + matching
+ * thumb color. Both fall back gracefully if the property isn't
+ * supported.
+ */
+.architect-scroll::-webkit-scrollbar { width: 6px; }
+.architect-scroll::-webkit-scrollbar-track { background: transparent; }
+.architect-scroll::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.12);
+  border-radius: 9999px;
+}
+.architect-scroll::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(255, 255, 255, 0.22);
+}
+.architect-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
+}
