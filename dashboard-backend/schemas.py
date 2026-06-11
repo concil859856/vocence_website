@@ -344,6 +344,46 @@ class AdminUserActivitySummary(BaseModel):
     tts_total_credits: int
     credit_tx_count: int
     payments_count: int
+    # Per-user voicechat rate-limit override. NULL = use platform defaults.
+    # 0 = no cap. Set by admins for enterprise / sales accounts.
+    voicechat_rate_limit_turns: int | None = None
+    voicechat_rate_limit_window_sec: int | None = None
+    # The effective values after override resolution — handy for the UI
+    # so it can display "current: 999999/3600" without re-reading env.
+    voicechat_rate_limit_turns_effective: int
+    voicechat_rate_limit_window_sec_effective: int
+    # Per-user Developer-API rate-limit override (rpm). NULL = no
+    # override, the per-key resolution + env default applies.
+    # 0 = uncapped. ``effective`` is the rpm a request would face
+    # right now (assuming no per-key NULL exemption — that's a
+    # multi-key state we don't surface in this summary).
+    api_rate_limit_rpm: int | None = None
+    api_rate_limit_rpm_effective: int
+
+
+class AdminSetVoicechatRateLimitIn(BaseModel):
+    """Request body for PATCH /admin/website-usage/user/{id}/voicechat-rate-limit.
+
+    Send {turns: null, window_sec: null} to RESET to defaults.
+    Send {turns: 999999, window_sec: 60} (or any large number) for
+    "effectively unlimited" with a real bucket.
+    Send {turns: 0, window_sec: 0} (or either as 0) to disable the
+    cap entirely (skips bucket bookkeeping for that user).
+    """
+    turns: int | None = None
+    window_sec: int | None = None
+    reason: str = ""
+
+
+class AdminSetApiRateLimitIn(BaseModel):
+    """Request body for PATCH /admin/website-usage/user/{id}/api-rate-limit.
+
+    Send {rpm: null} to RESET to platform defaults (per-key + env).
+    Send {rpm: 0} to remove the cap entirely (admin-granted unlimited).
+    Send {rpm: N} for a custom N requests-per-minute cap for the user.
+    """
+    rpm: int | None = None
+    reason: str = ""
 
 
 class WebsiteUsageDayResponse(BaseModel):

@@ -990,6 +990,32 @@ async def ensure_tables() -> None:
         await _ensure_column(conn, "auth_users", "plan_status", "plan_status TEXT")
         await _ensure_column(conn, "auth_users", "updated_at", "updated_at TEXT")
         await _ensure_column(conn, "auth_users", "last_login_at", "last_login_at TEXT")
+        # Per-user voicechat rate-limit overrides. NULL = inherit the
+        # platform defaults (VOICECHAT_RATE_LIMIT_TURNS /
+        # VOICECHAT_RATE_LIMIT_WINDOW_SEC env vars). Set by admins via
+        # the website-usage page when enterprise / sales users need a
+        # higher cap. Use 0 in either column to disable the cap
+        # entirely for that user.
+        await _ensure_column(
+            conn, "auth_users",
+            "voicechat_rate_limit_turns",
+            "voicechat_rate_limit_turns INTEGER",
+        )
+        await _ensure_column(
+            conn, "auth_users",
+            "voicechat_rate_limit_window_sec",
+            "voicechat_rate_limit_window_sec INTEGER",
+        )
+        # Per-user Developer API rate-limit override (rpm). When set,
+        # takes precedence over per-key rate_limit_rpm AND the
+        # API_RATE_LIMIT_REQUESTS_PER_MINUTE env default. NULL = no
+        # override; the existing per-key resolution path runs. 0 =
+        # uncapped (skips bucket bookkeeping entirely).
+        await _ensure_column(
+            conn, "auth_users",
+            "api_rate_limit_rpm",
+            "api_rate_limit_rpm INTEGER",
+        )
         await conn.execute("UPDATE auth_users SET plan_code = COALESCE(plan_code, 'normal')")
         await conn.execute("UPDATE auth_users SET plan_status = COALESCE(plan_status, 'active')")
         await conn.execute("UPDATE auth_users SET updated_at = COALESCE(updated_at, created_at, datetime('now'))")

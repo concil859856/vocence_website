@@ -11,7 +11,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { ArrowLeft, Search, User, X, ChevronLeft, ChevronRight, Sparkles, Mic, FileAudio, Copy as CopyIcon, Music, Palette, Zap, Maximize2 } from 'lucide-react';
+import { ArrowLeft, Gauge, Search, User, X, ChevronLeft, ChevronRight, Sparkles, Mic, FileAudio, Copy as CopyIcon, Music, Palette, Zap, Maximize2 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { ADMIN_EMAIL } from '../config';
 import {
@@ -61,6 +61,10 @@ export function AdminWebsiteUsage() {
   const [page, setPage] = useState(1);
   const [filterUserId, setFilterUserId] = useState<string | null>(() => searchParams.get('user'));
   const [userSummary, setUserSummary] = useState<AdminUserActivitySummary | null>(null);
+  // Rate-limit override modal — open via the "Adjust rate limits" chip on
+  // the drill-down banner. Lets admins set per-user voicechat + API caps
+  // for enterprise / sales accounts.
+  const [rateLimitOpen, setRateLimitOpen] = useState(false);
 
   const [activity, setActivity] = useState<UserRecentActivityResponse | null>(null);
   const [activityLoading, setActivityLoading] = useState(false);
@@ -294,17 +298,48 @@ export function AdminWebsiteUsage() {
                   <span className="rounded-lg bg-black/30 px-2 py-1 text-gray-400">
                     {userSummary.credit_tx_count} credit events · {userSummary.payments_count} payments
                   </span>
+                  {/* Rate-limit chip — shows the effective values
+                      with a visual hint when an override is set. */}
+                  <span
+                    className={`rounded-lg px-2 py-1 ${
+                      userSummary.voicechat_rate_limit_turns !== null ||
+                      userSummary.api_rate_limit_rpm !== null
+                        ? 'bg-[#DFFF00]/15 border border-[#DFFF00]/30 text-[#DFFF00]'
+                        : 'bg-black/30 text-gray-400'
+                    }`}
+                    title="Voice / API rate limits"
+                  >
+                    <Gauge size={11} className="inline mr-1 -mt-0.5" />
+                    Voice: {formatVoicechatRate(userSummary)} · API: {formatApiRate(userSummary)}
+                  </span>
                 </div>
               </div>
             </div>
-            <button
-              type="button"
-              onClick={clearUserFilter}
-              className="inline-flex items-center gap-1 rounded-lg border border-white/15 px-3 py-1.5 text-xs text-white hover:bg-white/10"
-            >
-              <X size={14} /> Clear user filter
-            </button>
+            <div className="flex flex-col gap-2 items-end">
+              <button
+                type="button"
+                onClick={() => setRateLimitOpen(true)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-[#DFFF00]/30 bg-[#DFFF00]/[0.08] text-[#DFFF00] hover:bg-[#DFFF00]/[0.16] px-3 py-1.5 text-xs font-medium"
+              >
+                <Gauge size={13} /> Adjust rate limits
+              </button>
+              <button
+                type="button"
+                onClick={clearUserFilter}
+                className="inline-flex items-center gap-1 rounded-lg border border-white/15 px-3 py-1.5 text-xs text-white hover:bg-white/10"
+              >
+                <X size={14} /> Clear user filter
+              </button>
+            </div>
           </div>
+        )}
+
+        {rateLimitOpen && userSummary && (
+          <RateLimitModal
+            summary={userSummary}
+            onClose={() => setRateLimitOpen(false)}
+            onUpdated={(next) => setUserSummary(next)}
+          />
         )}
 
         {/* Tab bar */}
@@ -1079,6 +1114,218 @@ export function AdminWebsiteUsage() {
             )}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+// =============================================================================
+// Rate-limit helpers + modal
+// =============================================================================
+
+function formatVoicechatRate(s: AdminUserActivitySummary): string {
+  const t = s.voicechat_rate_limit_turns_effective;
+  const w = s.voicechat_rate_limit_window_sec_effective;
+  if (t <= 0 || w <= 0) return 'unlimited';
+  // Pretty window: "60s" | "30m" | "1h" | "2h"
+  const win = w >= 3600 ? `${Math.round(w / 3600)}h`
+            : w >= 60   ? `${Math.round(w / 60)}m`
+            : `${w}s`;
+  return `${t.toLocaleString()}/${win}`;
+}
+
+function formatApiRate(s: AdminUserActivitySummary): string {
+  const r = s.api_rate_limit_rpm_effective;
+  if (r <= 0) return 'unlimited';
+  return `${r.toLocaleString()} rpm`;
+}
+
+interface RateLimitModalProps {
+  summary: AdminUserActivitySummary;
+  onClose: () => void;
+  onUpdated: (next: AdminUserActivitySummary) => void;
+}
+
+/** Side panel that lets an admin set per-user rate-limit overrides for
+ *  voicechat (turns/window) AND the developer API (rpm). Both are
+ *  optional — fields left at their defaults aren't sent. */
+function RateLimitModal({ summary, onClose, onUpdated }: RateLimitModalProps) {
+  // VOICECHAT — three modes captured in a radio: Default | Unlimited | Custom.
+  type Mode = 'default' | 'unlimited' | 'custom';
+  const initialVoiceMode: Mode =
+    summary.voicechat_rate_limit_turns === null && summary.voicechat_rate_limit_window_sec === null
+      ? 'default'
+      : (summary.voicechat_rate_limit_turns === 0 || summary.voicechat_rate_limit_window_sec === 0)
+        ? 'unlimited'
+        : 'custom';
+  const [voiceMode, setVoiceMode] = useState<Mode>(initialVoiceMode);
+  const [voiceTurns, setVoiceTurns] = useState<string>(
+    String(summary.voicechat_rate_limit_turns ?? summary.voicechat_rate_limit_turns_effective),
+  );
+  const [voiceWindowSec, setVoiceWindowSec] = useState<string>(
+    String(summary.voicechat_rate_limit_window_sec ?? summary.voicechat_rate_limit_window_sec_effective),
+  );
+
+  // API — same shape.
+  const initialApiMode: Mode =
+    summary.api_rate_limit_rpm === null ? 'default'
+    : summary.api_rate_limit_rpm === 0 ? 'unlimited'
+    : 'custom';
+  const [apiMode, setApiMode] = useState<Mode>(initialApiMode);
+  const [apiRpm, setApiRpm] = useState<string>(
+    String(summary.api_rate_limit_rpm ?? summary.api_rate_limit_rpm_effective),
+  );
+
+  const [reason, setReason] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const onSave = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      const voicePayload =
+        voiceMode === 'default'   ? { turns: null, window_sec: null }
+        : voiceMode === 'unlimited' ? { turns: 0, window_sec: 0 }
+        : { turns: parseInt(voiceTurns, 10), window_sec: parseInt(voiceWindowSec, 10) };
+      const apiPayload =
+        apiMode === 'default'   ? { rpm: null }
+        : apiMode === 'unlimited' ? { rpm: 0 }
+        : { rpm: parseInt(apiRpm, 10) };
+
+      // Two PATCH calls because the endpoints are independent. Sequential
+      // so we can keep the second's response as the authoritative summary.
+      let next = await dashboardApi.setAdminUserVoicechatRateLimit(summary.user_id, {
+        ...voicePayload, reason: reason || undefined,
+      });
+      next = await dashboardApi.setAdminUserApiRateLimit(summary.user_id, {
+        ...apiPayload, reason: reason || undefined,
+      });
+      onUpdated(next);
+      onClose();
+    } catch (err) {
+      setError((err as Error).message || 'Failed to save rate limits');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
+      <div
+        className="w-full max-w-md rounded-2xl border border-white/10 bg-[#0B0D10] p-5 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between mb-1">
+          <div>
+            <h2 className="text-base font-semibold text-white flex items-center gap-2">
+              <Gauge size={16} className="text-[#DFFF00]" /> Rate-limit overrides
+            </h2>
+            <p className="text-[11px] text-[#A7B0B7] mt-0.5 truncate max-w-[280px]">
+              {summary.email} · {summary.user_id.slice(0, 12)}…
+            </p>
+          </div>
+          <button onClick={onClose} className="p-1 text-[#A7B0B7] hover:text-white"><X size={18} /></button>
+        </div>
+
+        <p className="text-[11px] text-gray-500 mb-4">
+          Use these for enterprise / sales accounts that need a higher cap than the platform default.
+        </p>
+
+        {/* VOICECHAT section */}
+        <div className="space-y-2 mb-5">
+          <h3 className="text-xs font-semibold text-white uppercase tracking-wider">Voice chat (turns / window)</h3>
+          {(['default', 'unlimited', 'custom'] as const).map((m) => (
+            <label key={m} className="flex items-center gap-2 text-sm text-gray-200 cursor-pointer">
+              <input
+                type="radio"
+                checked={voiceMode === m}
+                onChange={() => setVoiceMode(m)}
+                className="accent-[#DFFF00]"
+              />
+              <span className="capitalize">{m}</span>
+              {m === 'default' && (
+                <span className="text-[11px] text-gray-500">
+                  ({summary.voicechat_rate_limit_turns_effective}/
+                  {summary.voicechat_rate_limit_window_sec_effective}s)
+                </span>
+              )}
+            </label>
+          ))}
+          {voiceMode === 'custom' && (
+            <div className="flex gap-2 mt-2 ml-6">
+              <input
+                type="number" min="1" value={voiceTurns} onChange={(e) => setVoiceTurns(e.target.value)}
+                placeholder="turns" className="w-24 bg-black/30 border border-white/10 rounded px-2 py-1 text-sm text-white"
+              />
+              <span className="text-sm text-gray-400 self-center">per</span>
+              <input
+                type="number" min="1" value={voiceWindowSec} onChange={(e) => setVoiceWindowSec(e.target.value)}
+                placeholder="seconds" className="w-28 bg-black/30 border border-white/10 rounded px-2 py-1 text-sm text-white"
+              />
+              <span className="text-sm text-gray-400 self-center">sec</span>
+            </div>
+          )}
+        </div>
+
+        {/* API section */}
+        <div className="space-y-2 mb-5">
+          <h3 className="text-xs font-semibold text-white uppercase tracking-wider">Developer API (requests / minute)</h3>
+          {(['default', 'unlimited', 'custom'] as const).map((m) => (
+            <label key={m} className="flex items-center gap-2 text-sm text-gray-200 cursor-pointer">
+              <input
+                type="radio"
+                checked={apiMode === m}
+                onChange={() => setApiMode(m)}
+                className="accent-[#DFFF00]"
+              />
+              <span className="capitalize">{m}</span>
+              {m === 'default' && (
+                <span className="text-[11px] text-gray-500">
+                  ({summary.api_rate_limit_rpm_effective} rpm)
+                </span>
+              )}
+            </label>
+          ))}
+          {apiMode === 'custom' && (
+            <div className="flex gap-2 mt-2 ml-6">
+              <input
+                type="number" min="1" value={apiRpm} onChange={(e) => setApiRpm(e.target.value)}
+                placeholder="rpm" className="w-24 bg-black/30 border border-white/10 rounded px-2 py-1 text-sm text-white"
+              />
+              <span className="text-sm text-gray-400 self-center">requests / minute</span>
+            </div>
+          )}
+        </div>
+
+        {/* Reason — required by audit trail */}
+        <div className="mb-4">
+          <label className="block text-xs font-semibold text-white uppercase tracking-wider mb-1">
+            Reason (audit log)
+          </label>
+          <input
+            type="text" value={reason} onChange={(e) => setReason(e.target.value)}
+            placeholder="e.g. Enterprise customer — Acme Corp"
+            className="w-full bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm text-white placeholder:text-gray-600"
+          />
+        </div>
+
+        {error && <p className="text-xs text-red-300 mb-3">{error}</p>}
+
+        <div className="flex gap-2 justify-end">
+          <button
+            onClick={onClose} disabled={saving}
+            className="px-3 py-1.5 rounded-lg border border-white/10 text-sm text-gray-300 hover:bg-white/5"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onSave} disabled={saving}
+            className="px-3 py-1.5 rounded-lg bg-[#DFFF00] text-[#07080A] text-sm font-semibold hover:brightness-110 disabled:opacity-40"
+          >
+            {saving ? 'Saving…' : 'Save'}
+          </button>
+        </div>
       </div>
     </div>
   );

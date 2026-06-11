@@ -38,6 +38,8 @@ from schemas import (
     AdminPaginatedTtsResponse,
     AdminPaymentRow,
     AdminTtsHistoryRow,
+    AdminSetApiRateLimitIn,
+    AdminSetVoicechatRateLimitIn,
     AdminUserActivitySummary,
     BlocklistAddRequest,
     BlocklistResponse,
@@ -1258,7 +1260,9 @@ async def admin_website_usage_user_summary(
         urow = await (
             await conn.execute(
                 """
-                SELECT id, email, name, credits, plan_code, plan_status, created_at, last_login_at
+                SELECT id, email, name, credits, plan_code, plan_status, created_at, last_login_at,
+                       voicechat_rate_limit_turns, voicechat_rate_limit_window_sec,
+                       api_rate_limit_rpm
                 FROM auth_users WHERE id = ?
                 """,
                 (user_id,),
@@ -1290,6 +1294,17 @@ async def admin_website_usage_user_summary(
         ).fetchone()
     finally:
         await conn.close()
+    # Resolve effective voicechat rate-limit values so the admin UI
+    # can show "Current: 30 turns / 1 h" (or the override) without
+    # re-reading env vars on the client.
+    from voicechat_service import RATE_LIMIT_TURNS as _DEF_TURNS
+    from voicechat_service import RATE_LIMIT_WINDOW_SEC as _DEF_WINDOW
+    vc_turns = urow["voicechat_rate_limit_turns"]
+    vc_window = urow["voicechat_rate_limit_window_sec"]
+    # Same for the Developer API rpm. The env-driven default lives in
+    # routers/auth.py to match the developer-api's mirror constant.
+    api_default = int(os.environ.get("API_RATE_LIMIT_REQUESTS_PER_MINUTE") or "4")
+    api_rpm = urow["api_rate_limit_rpm"]
     return AdminUserActivitySummary(
         user_id=urow["id"],
         email=urow["email"],
@@ -1303,7 +1318,164 @@ async def admin_website_usage_user_summary(
         tts_total_credits=int(tts_row["credits"] or 0),
         credit_tx_count=int(tx_row["n"] or 0),
         payments_count=int(pay_row["n"] or 0),
+        voicechat_rate_limit_turns=int(vc_turns) if vc_turns is not None else None,
+        voicechat_rate_limit_window_sec=int(vc_window) if vc_window is not None else None,
+        voicechat_rate_limit_turns_effective=(
+            int(vc_turns) if vc_turns is not None else _DEF_TURNS
+        ),
+        voicechat_rate_limit_window_sec_effective=(
+            int(vc_window) if vc_window is not None else _DEF_WINDOW
+        ),
+        api_rate_limit_rpm=int(api_rpm) if api_rpm is not None else None,
+        api_rate_limit_rpm_effective=(
+            int(api_rpm) if api_rpm is not None else api_default
+        ),
     )
+
+
+@router.patch(
+    "/admin/website-usage/user/{user_id}/voicechat-rate-limit",
+    response_model=AdminUserActivitySummary,
+)
+async def admin_set_voicechat_rate_limit(
+    user_id: str,
+    body: AdminSetVoicechatRateLimitIn,
+    admin_email: str = Depends(require_admin_session),
+) -> AdminUserActivitySummary:
+    """Admin override for a user's voicechat rate-limit cap. Use when
+    enterprise / sales accounts need a higher (or no) cap than the
+    platform default. Both fields are NULL-able:
+
+      * ``turns=null, window_sec=null`` → reset to platform defaults.
+      * ``turns=0`` OR ``window_sec=0`` → no cap (skips bucket).
+      * ``turns=N, window_sec=W`` → custom cap (N turns per W seconds).
+
+    Writes to ``auth_users.voicechat_rate_limit_turns/_window_sec``,
+    logs the action to ``admin_audit_log``, evicts the in-memory cache
+    so the new value takes effect on the user's next turn (no 60 s
+    grace), and returns the updated summary so the UI can re-render.
+    """
+    await ensure_tables()
+    # Light validation: integers must be non-negative; 0 is meaningful
+    # (= no cap). Sanity-cap turns at 10M and window at 30 days so a
+    # typo can't blow up the bucket bookkeeping.
+    def _coerce(v: int | None, name: str, hi: int) -> int | None:
+        if v is None:
+            return None
+        if v < 0 or v > hi:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{name} must be between 0 and {hi:,} (0 means no cap)",
+            )
+        return v
+    turns = _coerce(body.turns, "turns", 10_000_000)
+    window_sec = _coerce(body.window_sec, "window_sec", 30 * 24 * 3600)
+    reason = (body.reason or "").strip()[:500]
+
+    conn = await get_connection()
+    try:
+        prior = await (await conn.execute(
+            "SELECT voicechat_rate_limit_turns, voicechat_rate_limit_window_sec "
+            "FROM auth_users WHERE id = ?",
+            (user_id,),
+        )).fetchone()
+        if prior is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        await conn.execute(
+            "UPDATE auth_users SET voicechat_rate_limit_turns = ?, "
+            "voicechat_rate_limit_window_sec = ?, updated_at = datetime('now') "
+            "WHERE id = ?",
+            (turns, window_sec, user_id),
+        )
+        await log_admin_action(
+            conn,
+            admin_email=admin_email,
+            action="set_voicechat_rate_limit",
+            target_type="user",
+            target_id=user_id,
+            metadata={
+                "from": {
+                    "turns": prior["voicechat_rate_limit_turns"],
+                    "window_sec": prior["voicechat_rate_limit_window_sec"],
+                },
+                "to": {"turns": turns, "window_sec": window_sec},
+                "reason": reason,
+            },
+        )
+        await conn.commit()
+    finally:
+        await conn.close()
+
+    # Evict cached value so the new cap is effective on the next turn.
+    from voicechat_service import invalidate_rate_limit_cache
+    invalidate_rate_limit_cache(user_id)
+
+    # Return the fresh summary (same shape as GET /summary) so the UI
+    # can replace its local copy without a second round-trip.
+    return await admin_website_usage_user_summary(user_id=user_id, _=admin_email)
+
+
+@router.patch(
+    "/admin/website-usage/user/{user_id}/api-rate-limit",
+    response_model=AdminUserActivitySummary,
+)
+async def admin_set_api_rate_limit(
+    user_id: str,
+    body: AdminSetApiRateLimitIn,
+    admin_email: str = Depends(require_admin_session),
+) -> AdminUserActivitySummary:
+    """Admin override for a user's Developer-API rpm cap. Wins over
+    per-key rate_limit_rpm AND the global env default for ANY of that
+    user's API keys.
+
+      * ``rpm=null`` → reset; per-key resolution + env apply.
+      * ``rpm=0``    → uncapped (admin-granted unlimited).
+      * ``rpm=N``    → custom cap (N requests / minute / account).
+
+    Writes ``auth_users.api_rate_limit_rpm``, logs to
+    ``admin_audit_log``, returns the updated summary. No in-memory
+    cache to evict — the developer-api reads from DB on every
+    request.
+    """
+    await ensure_tables()
+    rpm = body.rpm
+    if rpm is not None and (rpm < 0 or rpm > 10_000_000):
+        raise HTTPException(
+            status_code=400,
+            detail="rpm must be between 0 and 10,000,000 (0 means no cap)",
+        )
+    reason = (body.reason or "").strip()[:500]
+
+    conn = await get_connection()
+    try:
+        prior = await (await conn.execute(
+            "SELECT api_rate_limit_rpm FROM auth_users WHERE id = ?",
+            (user_id,),
+        )).fetchone()
+        if prior is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        await conn.execute(
+            "UPDATE auth_users SET api_rate_limit_rpm = ?, updated_at = datetime('now') "
+            "WHERE id = ?",
+            (rpm, user_id),
+        )
+        await log_admin_action(
+            conn,
+            admin_email=admin_email,
+            action="set_api_rate_limit",
+            target_type="user",
+            target_id=user_id,
+            metadata={
+                "from": {"rpm": prior["api_rate_limit_rpm"]},
+                "to": {"rpm": rpm},
+                "reason": reason,
+            },
+        )
+        await conn.commit()
+    finally:
+        await conn.close()
+
+    return await admin_website_usage_user_summary(user_id=user_id, _=admin_email)
 
 
 async def _build_recent_activity(

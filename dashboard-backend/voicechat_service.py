@@ -167,28 +167,111 @@ def _word_before(buf: str, end_pos: int) -> str:
         i -= 1
     return buf[i:end_pos].lower().rstrip(".")
 
-# Per-user rate limit (in-memory; resets on restart)
+# Per-user rate limit (in-memory; resets on restart).
+#
+# The defaults come from env. Per-user OVERRIDES live in the auth_users
+# table (voicechat_rate_limit_turns / voicechat_rate_limit_window_sec
+# columns, both nullable). Admins set them via
+# ``PATCH /admin/website-usage/user/{id}/voicechat-rate-limit`` for
+# enterprise / sales accounts that need a higher cap.
+#
+# An override value of 0 in EITHER column disables the cap entirely
+# for that user (sliding-window degenerates to "always allow").
 RATE_LIMIT_TURNS = int(os.environ.get("VOICECHAT_RATE_LIMIT_TURNS") or "30")
 RATE_LIMIT_WINDOW_SEC = int(os.environ.get("VOICECHAT_RATE_LIMIT_WINDOW_SEC") or "3600")
 
 _rate_lock = asyncio.Lock()
 _rate_buckets: dict[str, deque[float]] = {}
 
+# Per-user limit cache. Each entry is
+# ``(turns, window_sec, expires_at_monotonic)``. Re-fetched from DB
+# when an entry is missing or expired. Evicted explicitly via
+# ``invalidate_rate_limit_cache(user_id)`` when an admin updates the
+# override so the new cap takes effect on the very next turn (no
+# stale 60 s grace).
+_RATE_LIMIT_CACHE_TTL_S = 60.0
+_rate_limit_cache: dict[str, tuple[int, int, float]] = {}
+
+
+def invalidate_rate_limit_cache(user_id: str | None = None) -> None:
+    """Evict cached rate-limit settings. Called by the admin endpoint
+    after an override is written so the new value is picked up on the
+    next turn instead of waiting for the 60 s TTL. Pass None to flush
+    the whole cache (used on schema migration / tests)."""
+    if user_id is None:
+        _rate_limit_cache.clear()
+        return
+    _rate_limit_cache.pop(user_id, None)
+
+
+async def _resolve_rate_limit_for_user(user_id: str) -> tuple[int, int]:
+    """Look up the effective (turns, window_sec) for this user.
+
+    Order of precedence:
+      1. Cached value (≤ 60 s old) — avoids a DB hit per voice turn.
+      2. auth_users override columns when both non-NULL.
+      3. Platform defaults (env-driven).
+
+    Failure modes (DB unreachable, user row missing) fall through to
+    defaults; we never block a user from talking because the override
+    lookup hiccuped.
+    """
+    from time import monotonic
+    now_mono = monotonic()
+    cached = _rate_limit_cache.get(user_id)
+    if cached and cached[2] > now_mono:
+        return cached[0], cached[1]
+
+    turns = RATE_LIMIT_TURNS
+    window_sec = RATE_LIMIT_WINDOW_SEC
+    try:
+        from local_db import get_connection
+        conn = await get_connection()
+        try:
+            row = await (await conn.execute(
+                "SELECT voicechat_rate_limit_turns, voicechat_rate_limit_window_sec "
+                "FROM auth_users WHERE id = ?",
+                (user_id,),
+            )).fetchone()
+            if row is not None:
+                t = row["voicechat_rate_limit_turns"]
+                w = row["voicechat_rate_limit_window_sec"]
+                if t is not None:
+                    turns = int(t)
+                if w is not None:
+                    window_sec = int(w)
+        finally:
+            await conn.close()
+    except Exception:
+        # DB hiccup — fall through to defaults. Don't crash the turn
+        # over a lookup failure.
+        pass
+
+    _rate_limit_cache[user_id] = (turns, window_sec, now_mono + _RATE_LIMIT_CACHE_TTL_S)
+    return turns, window_sec
+
 
 async def check_rate_limit(user_id: str) -> tuple[bool, int]:
     """Return (allowed, retry_after_seconds_if_blocked).
 
-    Sliding window, in-memory. Good enough for v1; swap to Redis/SQLite when
-    we run multiple backend instances.
+    Sliding window, in-memory bucket per user. Per-user overrides
+    (turns / window_sec) read from auth_users with a 60 s cache. An
+    override of 0 turns OR 0 window disables the cap entirely for
+    that user (returns (True, 0) immediately without bucket
+    bookkeeping).
     """
+    turns, window_sec = await _resolve_rate_limit_for_user(user_id)
+    # Sentinel: 0 in either column means "no cap". Skip bucket entirely.
+    if turns <= 0 or window_sec <= 0:
+        return True, 0
     now = time()
-    cutoff = now - RATE_LIMIT_WINDOW_SEC
+    cutoff = now - window_sec
     async with _rate_lock:
         bucket = _rate_buckets.setdefault(user_id, deque())
         while bucket and bucket[0] < cutoff:
             bucket.popleft()
-        if len(bucket) >= RATE_LIMIT_TURNS:
-            retry = max(1, int(bucket[0] + RATE_LIMIT_WINDOW_SEC - now))
+        if len(bucket) >= turns:
+            retry = max(1, int(bucket[0] + window_sec - now))
             return False, retry
         bucket.append(now)
         return True, 0

@@ -501,6 +501,29 @@ export interface AdminUserActivitySummary {
   tts_total_credits: number;
   credit_tx_count: number;
   payments_count: number;
+  /** Per-user voicechat rate-limit override. null = use platform default.
+   *  0 = no cap. The ``_effective`` siblings are the resolved values
+   *  (override if set, otherwise platform default) — handy for "Current"
+   *  chips in the UI. */
+  voicechat_rate_limit_turns: number | null;
+  voicechat_rate_limit_window_sec: number | null;
+  voicechat_rate_limit_turns_effective: number;
+  voicechat_rate_limit_window_sec_effective: number;
+  /** Per-user Developer-API rpm override. null = no override; per-key +
+   *  env apply. 0 = uncapped. */
+  api_rate_limit_rpm: number | null;
+  api_rate_limit_rpm_effective: number;
+}
+
+export interface AdminSetVoicechatRateLimitRequest {
+  turns: number | null;
+  window_sec: number | null;
+  reason?: string;
+}
+
+export interface AdminSetApiRateLimitRequest {
+  rpm: number | null;
+  reason?: string;
 }
 
 export interface BlogPost {
@@ -666,6 +689,34 @@ export const dashboardApi = {
     return fetchJson(`/api/dashboard/admin/website-usage/user/${encodeURIComponent(userId)}/summary`, {
       headers: adminAuthHeaders(),
     });
+  },
+
+  setAdminUserVoicechatRateLimit(
+    userId: string,
+    body: AdminSetVoicechatRateLimitRequest,
+  ): Promise<AdminUserActivitySummary> {
+    return fetchJson(
+      `/api/dashboard/admin/website-usage/user/${encodeURIComponent(userId)}/voicechat-rate-limit`,
+      {
+        method: 'PATCH',
+        headers: { ...adminAuthHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+    );
+  },
+
+  setAdminUserApiRateLimit(
+    userId: string,
+    body: AdminSetApiRateLimitRequest,
+  ): Promise<AdminUserActivitySummary> {
+    return fetchJson(
+      `/api/dashboard/admin/website-usage/user/${encodeURIComponent(userId)}/api-rate-limit`,
+      {
+        method: 'PATCH',
+        headers: { ...adminAuthHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+    );
   },
 
   getAdminUserRecentActivity(

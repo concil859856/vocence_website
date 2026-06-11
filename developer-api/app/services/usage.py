@@ -35,42 +35,60 @@ async def enforce_rate_limit(conn: aiosqlite.Connection, user_id: str, _legacy_o
     if not API_RATE_LIMIT_ENABLED:
         return
 
-    # Per-user exemption: any non-revoked key with rate_limit_rpm = NULL
-    # opts the whole account out of the per-minute cap. Use this for
-    # trusted accounts where the operator has explicitly removed the
-    # limit from the DB rather than picking a numeric ceiling.
-    exempt_row = await (
+    # Admin override at the USER level (Jun 2026 — for enterprise /
+    # sales accounts). When set on auth_users.api_rate_limit_rpm,
+    # this WINS over per-key rate_limit_rpm and the env default.
+    #   * non-NULL > 0  → exact cap for the whole account
+    #   * non-NULL = 0  → uncapped (skip bucket bookkeeping)
+    #   * NULL          → fall through to the per-key resolution below
+    user_override_row = await (
         await conn.execute(
-            """
-            SELECT 1
-            FROM api_keys
-            WHERE user_id = ?
-              AND revoked_at IS NULL
-              AND rate_limit_rpm IS NULL
-            LIMIT 1
-            """,
+            "SELECT api_rate_limit_rpm FROM auth_users WHERE id = ?",
             (user_id,),
         )
     ).fetchone()
-    if exempt_row is not None:
-        return
+    if user_override_row is not None and user_override_row["api_rate_limit_rpm"] is not None:
+        override = int(user_override_row["api_rate_limit_rpm"])
+        if override <= 0:
+            return  # admin-granted uncapped
+        rpm = override
+    else:
+        # Per-user exemption: any non-revoked key with rate_limit_rpm = NULL
+        # opts the whole account out of the per-minute cap. Use this for
+        # trusted accounts where the operator has explicitly removed the
+        # limit from the DB rather than picking a numeric ceiling.
+        exempt_row = await (
+            await conn.execute(
+                """
+                SELECT 1
+                FROM api_keys
+                WHERE user_id = ?
+                  AND revoked_at IS NULL
+                  AND rate_limit_rpm IS NULL
+                LIMIT 1
+                """,
+                (user_id,),
+            )
+        ).fetchone()
+        if exempt_row is not None:
+            return
 
-    # Effective cap = max(rate_limit_rpm) across the user's non-revoked
-    # keys, falling back to the global default when no key has an
-    # explicit override. One short SELECT per call; SQLite eats it.
-    cap_row = await (
-        await conn.execute(
-            """
-            SELECT MAX(rate_limit_rpm) AS rpm
-            FROM api_keys
-            WHERE user_id = ?
-              AND revoked_at IS NULL
-              AND rate_limit_rpm IS NOT NULL
-            """,
-            (user_id,),
-        )
-    ).fetchone()
-    rpm = int(cap_row["rpm"]) if cap_row and cap_row["rpm"] is not None else API_RATE_LIMIT_REQUESTS_PER_MINUTE
+        # Effective cap = max(rate_limit_rpm) across the user's non-revoked
+        # keys, falling back to the global default when no key has an
+        # explicit override. One short SELECT per call; SQLite eats it.
+        cap_row = await (
+            await conn.execute(
+                """
+                SELECT MAX(rate_limit_rpm) AS rpm
+                FROM api_keys
+                WHERE user_id = ?
+                  AND revoked_at IS NULL
+                  AND rate_limit_rpm IS NOT NULL
+                """,
+                (user_id,),
+            )
+        ).fetchone()
+        rpm = int(cap_row["rpm"]) if cap_row and cap_row["rpm"] is not None else API_RATE_LIMIT_REQUESTS_PER_MINUTE
 
     row = await (
         await conn.execute(
