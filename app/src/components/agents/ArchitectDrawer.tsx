@@ -78,12 +78,20 @@ export function ArchitectDrawer({ open, onClose, current, onApply }: Props) {
   // 3 lines an overflow-y scroller takes over. Mirrors ChatGPT's
   // composer — input feels lightweight while one-liner, expands when
   // the user actually needs space.
+  //
+  // overflow-y is set IMPERATIVELY here (not as a Tailwind class)
+  // because some browsers reserve scrollbar gutter on ``overflow-y:
+  // auto`` even when content fits, which produces a phantom scrollbar
+  // on the very first line. We toggle to ``auto`` only once content
+  // actually exceeds the cap; ``hidden`` otherwise.
   useEffect(() => {
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = '0px';                    // collapse to measure
     const MAX_PX = 5.25 * 16;                   // ~3 lines
-    el.style.height = `${Math.min(el.scrollHeight, MAX_PX)}px`;
+    const needed = el.scrollHeight;
+    el.style.height = `${Math.min(needed, MAX_PX)}px`;
+    el.style.overflowY = needed > MAX_PX ? 'auto' : 'hidden';
   }, [input]);
 
   useEffect(() => {
@@ -376,7 +384,7 @@ export function ArchitectDrawer({ open, onClose, current, onApply }: Props) {
             placeholder="Ask anything, or describe a change…"
             disabled={busy}
             rows={1}
-            className="flex-1 bg-white/[0.04] border border-white/10 rounded-2xl px-4 py-2 text-sm text-white placeholder:text-[#666] focus:outline-none focus:border-[#DFFF00]/40 disabled:opacity-50 resize-none leading-snug max-h-[5.25rem] overflow-y-auto"
+            className="flex-1 bg-white/[0.04] border border-white/10 rounded-2xl px-4 py-2 text-sm text-white placeholder:text-[#666] focus:outline-none focus:border-[#DFFF00]/40 disabled:opacity-50 resize-none leading-snug max-h-[5.25rem]"
           />
           <button
             type="submit"
