@@ -36,7 +36,12 @@ class AgentConfigIn(BaseModel):
     purpose: str = ""
     system_prompt: str = ""
     knowledge: str = ""
-    voice: str = "Ryan"
+    # Default voice: must be a real sample-voice id from
+    # sample_voices_data.py (NOT a display name). "Ryan" was the
+    # historic default but didn't exist in the sample registry, so
+    # every new agent routed to the dead /v1/tts/stream endpoint.
+    # voc-sienna is friendly + versatile, a safe out-of-the-box pick.
+    voice: str = "voc-sienna"
     language: str = "English"
     llm_model: str = ""
     temperature: float = 0.6

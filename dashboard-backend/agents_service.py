@@ -402,20 +402,43 @@ that are.
 
 VOICES — every agent picks ONE voice. Four sources:
 
-  1. Sample voices (default).  A curated bank including Ryan, Olivia, \
-Ethan, Cherry, Dylan, Abigail and more. Fast to start with.
-  2. Designed voices.  Created from a text description (e.g. "warm \
-middle-aged female narrator with British accent"). Saved to the user's \
-account; selectable per agent.
-  3. Cloned voices.  Upload a 5-15 second sample clip and Vocence clones \
-that voice. YES — users CAN clone real human voices (their own voice, or \
-someone else's IF they hold the rights or have explicit permission). \
-Consent confirmation is required: a checkbox attesting ownership / rights, \
-no impersonation of public figures, celebrities, or anyone whose rights \
-the user doesn't hold. The flow lives in the Studio's Voice Clone tab.
-  4. Community voices.  Voices published by other users via the "Submit \
-voice" flow, with the same consent checkbox. Browsable in the voice \
-picker.
+  1. Sample voices (default).  A curated bank built into the platform. \
+2. Designed voices.  Created from a text description. 3. Cloned voices \
+from a 5-15 s sample (consent required — see below). 4. Community voices \
+shared by other users.
+
+  CRITICAL: when you propose ``voice``, you MUST use an EXACT id from \
+the catalog below. NEVER invent or use display names like "Ryan" or \
+"Olivia" — they are not valid ids and will break the agent. If unsure, \
+pick from this curated default set:
+
+    design-luna       Mysterious, ethereal female
+    design-aria       Bright, energetic female
+    design-aurora     Soft, dreamy female
+    design-marcus     Authoritative, mature male
+    design-kai        Smooth, friendly male
+    design-rafael     Charismatic, expressive male
+    voc-sienna        Vibrant, engaging female
+    voc-nora          Easy, conversational female
+    voc-eliza         Polished, anchor-style female
+    voc-jasper        Warm, friendly storytelling male
+    voc-felix         Friendly, conversational male
+    voc-atlas         Deep, commanding male
+    voc-magnus        Clean, deep narrator
+    char-friendly-ai-assistant   Pleasant, helpful assistant
+
+  Default pick for general-purpose agents when the user hasn't expressed \
+a preference: ``voc-sienna`` (versatile, friendly). For deeper / more \
+serious agents: ``design-marcus`` or ``voc-atlas``. For warm / storytelling \
+agents: ``voc-jasper`` or ``design-aria``.
+
+  Cloning real human voices: YES — users CAN clone real human voices \
+(their own, or someone else's IF they hold the rights or have explicit \
+permission). Consent confirmation is required: a checkbox attesting \
+ownership / rights, no impersonation of public figures, celebrities, or \
+anyone whose rights the user doesn't hold. The flow lives in the Studio's \
+Voice Clone tab. Cloned voices show up in the picker under the user's \
+account.
 
 AGENT TYPES — two flavours:
   • "knowledge"  - conversational. Answers questions, has dialogue, fed \
@@ -910,7 +933,9 @@ def _normalize_draft(obj: dict) -> dict:
         "purpose": str(cfg.get("purpose") or "").strip()[:2000],
         "system_prompt": str(cfg.get("system_prompt") or "").strip()[:8000],
         "knowledge": str(cfg.get("knowledge") or "").strip()[:16000],
-        "voice": str(cfg.get("voice") or "Ryan").strip()[:32] or "Ryan",
+        # See routers/agents.AgentConfigIn.voice for why "Ryan" was wrong
+        # and voc-sienna is the safe default.
+        "voice": str(cfg.get("voice") or "voc-sienna").strip()[:32] or "voc-sienna",
         "language": str(cfg.get("language") or "English").strip()[:32] or "English",
         "llm_model": str(cfg.get("llm_model") or "").strip()[:160],
         "temperature": float(cfg.get("temperature") or 0.6),

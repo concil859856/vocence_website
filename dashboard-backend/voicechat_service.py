@@ -434,27 +434,76 @@ async def maybe_summarize_conversation(conversation: list[ChatMessage]) -> bool:
         sum_user = f"Conversation excerpt:\n{transcript}\n\nProduce the summary."
 
     # Summarization runs during voice chat (blocks the turn while we
-    # compress old history), so latency matters. Groq's small/fast
-    # 8B-instant is ideal — compression doesn't need a 70B model and
-    # the 8B is ~3× cheaper + ~2× faster. Falls through to the global
-    # default when Groq isn't configured.
-    from llm_client import groq_llm_configured
-    summary_model: str | None = None
-    if groq_llm_configured():
-        summary_model = f"groq:{os.environ.get('GROQ_SUMMARY_MODEL') or 'llama-3.1-8b-instant'}"
+    # compress old history), so latency matters. Two prior versions
+    # missed the mark:
+    #   * Groq llama-3.1-8b-instant was fast (~30 ms) but 8B is too
+    #     small to preserve the per-user facts that make the bot feel
+    #     like it remembers you ("user is in Berlin and works on RAG"
+    #     compresses to "user mentioned AI"). Result: bot felt
+    #     context-blind after the first summary.
+    #   * Bumping the Groq model up to 70B was an obvious next step
+    #     but added a second vendor dependency on the hot path.
+    # Cerebras llama-3.3-70b is the right balance: ~50-80ms on
+    # Cerebras's wafer-scale hardware (still well under the 1-2 s the
+    # OLD path consumed), the same provider as the main voice LLM
+    # (one less integration to keep healthy), and 70B preserves the
+    # details that drive perceived continuity. Override per-deploy
+    # with VOICECHAT_SUMMARY_MODEL=cerebras:<model> or groq:<model>.
+    # Model MUST exist on whichever provider you point at. The previous
+    # default ``llama-3.3-70b`` returned 404 on this account's Cerebras
+    # catalog (which only serves ``gpt-oss-120b`` + ``zai-glm-4.7``);
+    # summarization silently no-op'd for weeks because ``chat_complete``
+    # raises on 404 and the caller's except just skips the turn. Verify
+    # availability with
+    #   curl -H "Authorization: Bearer $KEY" https://api.cerebras.ai/v1/models
+    # before changing CEREBRAS_SUMMARY_MODEL.
+    #
+    # Routing policy: Cerebras gpt-oss-120b first (fastest available
+    # summarizer on this account), fall back to xAI Grok's fastest
+    # non-reasoning variant when Cerebras 404s / 429s / errors.
+    # NEVER falls through to Groq — that's an explicit product
+    # decision (one less provider on the hot path, Grok is faster
+    # anyway for our use case). Set VOICECHAT_SUMMARY_MODEL to a
+    # ``cerebras:...`` / ``xai:...`` / ``grok:...`` id to override.
+    from llm_client import cerebras_llm_configured, xai_llm_configured
+    override = (os.environ.get("VOICECHAT_SUMMARY_MODEL") or "").strip()
+    if override:
+        summary_chain: list[str] = [override]
+    else:
+        summary_chain = []
+        if cerebras_llm_configured():
+            summary_chain.append(
+                f"cerebras:{os.environ.get('CEREBRAS_SUMMARY_MODEL') or 'gpt-oss-120b'}"
+            )
+        if xai_llm_configured():
+            summary_chain.append(
+                f"xai:{os.environ.get('XAI_SUMMARY_MODEL') or 'grok-4.20-0309-non-reasoning'}"
+            )
 
-    try:
-        new_summary = await chat_complete(
-            messages=[
-                {"role": "system", "content": sum_system},
-                {"role": "user", "content": sum_user},
-            ],
-            temperature=0.3,
-            max_tokens=400,
-            model=summary_model,
+    new_summary = ""
+    last_err: Exception | None = None
+    for m in summary_chain or [None]:  # ``[None]`` = let chat_complete pick default routing
+        try:
+            new_summary = await chat_complete(
+                messages=[
+                    {"role": "system", "content": sum_system},
+                    {"role": "user", "content": sum_user},
+                ],
+                temperature=0.3,
+                max_tokens=400,
+                model=m,
+            )
+            if new_summary and new_summary.strip():
+                break
+        except Exception as exc:  # noqa: BLE001
+            last_err = exc
+            _log.info("summarizer %s failed (%s); trying next", m, exc)
+            continue
+    if not (new_summary and new_summary.strip()):
+        _log.warning(
+            "conversation summarization failed on all models; leaving history as-is "
+            "(last error: %s)", last_err,
         )
-    except Exception as exc:  # noqa: BLE001
-        _log.warning("conversation summarization failed; leaving history as-is: %s", exc)
         return False
 
     new_summary = (new_summary or "").strip()
@@ -1530,10 +1579,19 @@ async def stream_designed_voice_tts(
 
 def voice_uses_clone_service(voice: str | None) -> bool:
     """Whether a voice value will route to the cloned-voice service
-    (qwen3-clone-streaming) vs the qwen3 built-in TTS. Used by the
-    router so it can spin up the right kind of TtsWsWarmer before any
-    chunk is dispatched."""
-    return parse_designed_voice_id(voice) is not None or is_sample_voice(voice)
+    (``/v1/voice-clone/stream``) vs the legacy qwen3 built-in TTS
+    (``/v1/tts/stream``).
+
+    The legacy qwen3-native TTS endpoint is gone on the deployed
+    ``fast-tts-streaming:latest`` image — ``stream_tts_for_voice`` now
+    routes designed voices, known sample voices, AND unknown voices
+    (via a voc-sienna fallback, logged as a warning) through the clone
+    path. So this returns True for every voice now, including None.
+
+    Kept as a function (rather than inlining True) because there are
+    multiple callers, and if the legacy path ever comes back we want
+    one place to flip the rule."""
+    return True
 
 
 # Kill-switch for the TTS pre-warmer. Default ON (=1) so the latency
@@ -1628,9 +1686,27 @@ async def stream_tts_for_voice(
     if is_sample_voice(voice):
         async for chunk in stream_voice_clone_tts(text, voice or "", language=language, warmer=warmer):
             yield chunk
-    else:
-        async for chunk in stream_qwen3_tts(text, voice=voice, warmer=warmer):
-            yield chunk
+        return
+
+    # Else branch: legacy Qwen3-native speaker path. The deployed
+    # ``fast-tts-streaming:latest`` image no longer registers
+    # ``/v1/tts/stream`` — only the clone endpoint. Calling it produces
+    # WSServerHandshakeError(404) and the user hears nothing. If we
+    # land here with an UNKNOWN voice id (the architect proposed
+    # "Ryan", the user pasted a legacy speaker name, etc.), fall
+    # forward to the clone path with a safe default voice instead of
+    # blowing up the turn. Log loudly so we notice drift without the
+    # user having to report it.
+    fallback_voice = "voc-sienna"
+    _log.warning(
+        "stream_tts_for_voice: voice=%r is neither a designed voice "
+        "(dv:<id>) nor a known sample id — falling back to %r via the "
+        "clone path. Likely the agent's voice field is stale or was "
+        "set to a display name instead of a sample-voice id.",
+        voice, fallback_voice,
+    )
+    async for chunk in stream_voice_clone_tts(text, fallback_voice, language=language, warmer=warmer):
+        yield chunk
 
 
 def _qwen3_tts_ws_url_and_headers() -> tuple[str, dict]:
