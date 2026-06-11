@@ -359,6 +359,13 @@ class AdminUserActivitySummary(BaseModel):
     # multi-key state we don't surface in this summary).
     api_rate_limit_rpm: int | None = None
     api_rate_limit_rpm_effective: int
+    # Per-user override for the API WS surface (voice agent /
+    # /v1/agents/.../session, TTS streaming, STT streaming). Both
+    # nullable. 0 = uncapped.
+    api_ws_opens_per_minute: int | None = None
+    api_ws_concurrent: int | None = None
+    api_ws_opens_per_minute_effective: int
+    api_ws_concurrent_effective: int
 
 
 class AdminSetVoicechatRateLimitIn(BaseModel):
@@ -383,6 +390,23 @@ class AdminSetApiRateLimitIn(BaseModel):
     Send {rpm: N} for a custom N requests-per-minute cap for the user.
     """
     rpm: int | None = None
+    reason: str = ""
+
+
+class AdminSetApiWsRateLimitIn(BaseModel):
+    """Request body for PATCH /admin/website-usage/user/{id}/api-ws-rate-limit.
+
+    Covers the WebSocket surface on the Developer API: voice agent
+    sessions, TTS streaming, STT streaming. Both fields nullable:
+
+      * ``opens_per_minute=null`` / ``concurrent=null`` → reset to platform
+        defaults (10/min, 5 concurrent).
+      * ``opens_per_minute=0``                          → no open-rate cap.
+      * ``concurrent=0``                                → no concurrent cap.
+      * ``opens_per_minute=N``, ``concurrent=M``        → custom caps.
+    """
+    opens_per_minute: int | None = None
+    concurrent: int | None = None
     reason: str = ""
 
 

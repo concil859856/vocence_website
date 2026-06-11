@@ -1,31 +1,49 @@
 """Client for the ``vocence/turn-detection`` pod.
 
-Wraps both WebSocket endpoints behind a tidy Python API:
+Wraps both turn-detection endpoints behind small Python APIs:
 
-  • ``SmartTurnStream`` — audio in, probability + end_of_turn events
-    out. Used during a streaming-STT voice turn: every PCM frame is
-    forwarded both to the STT pod AND to a SmartTurnStream so the
-    turn-end ensembler in voicechat_service has the prosody signal.
+  * ``SmartTurnStream`` — audio in, prosody probability ``p_audio`` out
+    over a WebSocket. Used during a streaming voice turn: every PCM
+    frame is forwarded both to the STT pod AND to a SmartTurnStream so
+    the ensembler in voicechat_stream has the prosody signal.
 
-  • ``TurnDetectorStream`` — text in (cumulative streaming transcript),
-    probability + end_of_turn events out. Fed from the STT pod's
-    partial transcripts.
+  * ``TurnDetectorScorer`` — text in, semantic completeness out over
+    HTTP. Re-scored every time the in-progress transcript changes via
+    the pod's BATCH endpoint ``POST /v1/turn-detector/batch``.
+
+Why batch (HTTP) instead of streaming (WS) for the text model?
+    The streaming WS only emits a new probability on a ``>= 0.05``
+    change. Incomplete fragments live in the tiny-p range (0.001-0.05)
+    where every change is suppressed, so ``confidence`` would freeze
+    at a stale HIGH value and incomplete fragments would falsely fire
+    end-of-turn. Verified empirically: the live WS reported
+    ``conf=7.07`` for the partial "I want to know about" while the
+    batch endpoint correctly returned ``conf=0.09`` for the same text.
+    Scoring via batch on every text change gives the EXACT, fresh
+    confidence and adds only ~50 ms per call — well within the
+    decision budget.
+
+Ensembler (pure helpers, no I/O):
+
+  * ``text_completeness(conf)``    — semantic confidence → 0..1 via
+                                      log-sigmoid centred at CONF_MID.
+  * ``completeness(p_audio, conf)`` — weighted blend of text + prosody.
+  * ``required_silence_ms(c)``      — adaptive silence target from
+                                      completeness, in [MIN, MAX] ms.
+  * ``decide_commit(silence_ms, p_audio, conf_text)`` — full fusion;
+                                      returns (commit?, reason, snapshot).
 
 Activation:
-  ``is_configured()`` returns True iff at least one ``turn_detection``
-  pod is currently online in the ops registry. The per-pod API key
-  (the value set on the Ops admin form at deploy time, or the
-  auto-generated one if the field was left blank) is read from the
-  encrypted registry at call time — no dashboard-side env var is
-  required to enable this integration. The voicechat code checks
-  ``is_configured()`` before opening these streams so we never block
-  a turn on a pod that isn't deployed.
+    ``is_configured()`` returns True iff at least one ``turn_detection``
+    pod is currently online in the ops registry. The voicechat code
+    checks this before opening either client so we never block a turn
+    on a pod that isn't deployed.
 
 Failure semantics:
-  Both streams are **best-effort** signals. If a stream errors or
-  times out, the voicechat ensembler should fall back to the other
-  signals (client-side Silero silence + STT pod's own VAD events).
-  We never raise into the voice turn — we log + close.
+    Both clients are **best-effort** signals. If a stream errors or
+    times out, the voicechat ensembler degrades gracefully (drops the
+    prosody contribution or the text contribution), it never raises
+    into the voice turn — we log + close.
 """
 
 from __future__ import annotations
@@ -33,7 +51,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
+from dataclasses import dataclass
 from typing import Any
 
 import aiohttp
@@ -42,13 +62,74 @@ import aiohttp
 _log = logging.getLogger(__name__)
 
 
-# Connection timeouts — turn detection is on the hot voice-turn path,
-# so we cap both connect and inactivity tightly. Anything over 1s
-# means the pod is too slow to be useful; better to skip the signal
-# than block the turn.
+# ---------------------------------------------------------------------------
+# Connection knobs
+# ---------------------------------------------------------------------------
+
+# Turn detection is on the hot voice-turn path, so we cap both connect
+# and inactivity tightly. Anything over 1s means the pod is too slow to
+# be useful; better to skip the signal than block the turn.
 _CONNECT_TIMEOUT_SEC = float(os.environ.get("TD_CLIENT_CONNECT_TIMEOUT_SEC") or "0.5")
 _SOCK_READ_TIMEOUT_SEC = float(os.environ.get("TD_CLIENT_SOCK_READ_TIMEOUT_SEC") or "5.0")
+# HTTP batch text-scoring timeout — the pod runs SmolLM v2 on CPU; one
+# call is typically ~30-80 ms. 800 ms gives plenty of headroom while
+# keeping the worst case bounded.
+_BATCH_TIMEOUT_SEC = float(os.environ.get("TD_BATCH_TIMEOUT_SEC") or "0.8")
 
+
+# ---------------------------------------------------------------------------
+# Fusion knobs — env-overrideable, defaults from the mic_proxy demo
+# ---------------------------------------------------------------------------
+#
+# All knobs from the working stt-streaming demo. See
+# ``examples/TURN_DETECTION.md`` in that repo for the derivation. The
+# weighted-completeness + adaptive-silence model replaces the legacy
+# OR-of-thresholds ensembler (which falsely cut users off mid-sentence
+# because the audio model saturates near 1.0 at every pause).
+
+# Weight of semantic completeness vs prosody in the fused score.
+# Semantics dominates because Smart-Turn saturates at every pause; its
+# value is mostly as a VETO (see AUDIO_CONTINUE below), not as a level.
+W_TEXT = float(os.environ.get("W_TEXT", "0.85"))
+W_AUDIO = float(os.environ.get("W_AUDIO", "0.15"))
+
+# Confidence value that maps to completeness=0.5. The web demo's
+# tuning of CONF_MID=6.0 prioritises accuracy over latency — the
+# resulting wait windows feel sluggish (~1.6 s on confident endings)
+# but the rate of mid-thought cut-offs is very low. We tried CONF_MID=3.0
+# briefly to chase Vapi-tier latency; reverted to the demo's 6.0 after
+# A/B testing showed it cut users off ("How are we doing?" → committed
+# at 353 ms before the user had really finished). Tune via env var per
+# deployment if a specific agent needs tighter feel.
+CONF_MID = float(os.environ.get("CONF_MID", "6.0"))
+TEXT_SLOPE = float(os.environ.get("TEXT_SLOPE", "1.6"))  # log-sigmoid steepness
+
+# Adaptive silence window. Complete-looking turn → MIN; uncertain → MAX.
+# MAX_DELAY is also the hard backstop — even at completeness=0 the turn
+# ends after MAX_DELAY ms of silence so a hung detector can't freeze
+# the bot.
+#
+# Reverted from MIN=300/MAX=2500 to the demo's MIN=500/MAX=4000 after
+# A/B testing showed the shorter window felt twitchy — UltraVAD's
+# uv_p=0.4 threshold combined with MIN_DELAY=300 fired commits while
+# the user was still mid-sentence ("How are we doing?" → committed at
+# 353 ms). The demo's 500/4000 is a known-good baseline that the user
+# reported feeling natural in side-by-side comparisons. Tune via env
+# vars per deployment if a specific agent needs tighter feel.
+MIN_DELAY_MS = int(os.environ.get("MIN_DELAY_MS", "500"))
+MAX_DELAY_MS = int(os.environ.get("MAX_DELAY_MS", "4000"))
+
+# Prosody veto threshold. While the audio model strongly hears
+# "still-speaking" intonation (p < AUDIO_CONTINUE), hold the turn open
+# regardless of the text score — until the MAX_DELAY backstop. This is
+# STT-independent insurance against garbled ASR making an incomplete
+# clause look complete.
+AUDIO_CONTINUE = float(os.environ.get("AUDIO_CONTINUE", "0.25"))
+
+
+# ---------------------------------------------------------------------------
+# Pod registry helpers
+# ---------------------------------------------------------------------------
 
 def is_configured() -> bool:
     """True when at least one turn-detection pod is registered + online.
@@ -66,14 +147,11 @@ def is_configured() -> bool:
 
 
 async def _pick_pod() -> tuple[str, str] | None:
-    """Pick a healthy turn-detection pod for a streaming session.
+    """Pick a healthy turn-detection pod.
 
-    Returns ``(ws_base_url, api_key)`` or ``None`` if no online pod is
-    available — caller must handle ``None`` gracefully.
-
-    The API key is the per-pod value the operator set on the Ops admin
-    page at deploy time (or the auto-generated one if the field was
-    blank), decrypted from the ops registry."""
+    Returns ``(ws_base_url, api_key)`` — for the HTTP batch path the
+    WS scheme is rewritten to HTTP by the caller. Returns ``None`` if
+    no online pod is available."""
     from ops import pool as ops_pool
     try:
         snap = ops_pool.snapshot()
@@ -89,25 +167,30 @@ async def _pick_pod() -> tuple[str, str] | None:
     return None
 
 
+def _ws_to_http(base: str) -> str:
+    return base.replace("wss://", "https://").replace("ws://", "http://")
+
+
 # ---------------------------------------------------------------------------
-# Smart Turn (audio) stream wrapper
+# Smart Turn (audio prosody) — WebSocket stream
 # ---------------------------------------------------------------------------
 
 class SmartTurnStream:
     """Async-context manager over a single Smart Turn WS session.
 
+    Forwards PCM frames to the pod and exposes the latest
+    ``last_p_end_of_turn`` (the prosody-derived probability) for the
+    ensembler to read. The pod sends a ``probability`` event every
+    ``emit_every_ms`` (default 150 ms) by sliding a ``window_ms`` of
+    rolling audio under the model.
+
     Usage:
 
-        async with SmartTurnStream(window_ms=4000) as st:
-            await st.start()
-            async for frame in audio_frames:
-                await st.send_pcm(frame)
-                if st.last_p_end_of_turn > 0.85:
-                    break
-
-    The stream owns its own background read task that drains events
-    from the pod and keeps ``last_p_end_of_turn`` + ``last_event``
-    fresh. Callers poll those properties from their own event loop.
+        async with SmartTurnStream() as st:
+            if await st.start():
+                async for frame in audio_frames:
+                    await st.send_pcm(frame)
+                    p_audio = st.last_p_end_of_turn
     """
 
     def __init__(self, *, sample_rate: int = 16000, window_ms: int = 4000,
@@ -118,9 +201,9 @@ class SmartTurnStream:
         self._session: aiohttp.ClientSession | None = None
         self._ws: aiohttp.ClientWebSocketResponse | None = None
         self._reader_task: asyncio.Task | None = None
+        self._keepalive_task: asyncio.Task | None = None
         self.last_p_end_of_turn: float = 0.0
         self.last_event: dict[str, Any] | None = None
-        self.fired_end_of_turn: bool = False
         self._ready = asyncio.Event()
 
     async def __aenter__(self) -> "SmartTurnStream":
@@ -130,10 +213,8 @@ class SmartTurnStream:
         await self.close()
 
     async def start(self) -> bool:
-        """Connect to a turn-detection pod and send the ``start`` frame.
-        Returns ``True`` on success. Returns ``False`` when the pod is
-        unavailable or the handshake fails — caller should treat the
-        signal as unavailable and proceed without it."""
+        """Connect, send the start frame, spawn the reader + keepalive.
+        Returns False if no pod is available or the handshake fails."""
         picked = await _pick_pod()
         if picked is None:
             return False
@@ -147,7 +228,7 @@ class SmartTurnStream:
             self._session = aiohttp.ClientSession(timeout=timeout)
             self._ws = await self._session.ws_connect(
                 f"{base}/v1/smart-turn",
-                headers={"X-API-Key": api_key},
+                headers={"X-API-Key": api_key} if api_key else {},
             )
             await self._ws.send_json({
                 "type": "start",
@@ -156,9 +237,13 @@ class SmartTurnStream:
                 "window_ms": self.window_ms,
                 "emit_every_ms": self.emit_every_ms,
             })
-            # Background reader keeps draining the pod's events until
-            # close() or remote disconnect.
             self._reader_task = asyncio.create_task(self._reader_loop())
+            # The pod idle-closes after 60 s of no message. A normal
+            # voice session keeps PCM flowing continuously, but a
+            # mid-turn long silence (LLM thinking, user paused while
+            # bot mute-gate is active) can stop frames long enough to
+            # trigger the close. Ping every 20 s defensively.
+            self._keepalive_task = asyncio.create_task(self._keepalive_loop())
             return True
         except Exception as exc:  # noqa: BLE001
             _log.warning("smart_turn connect failed: %s", exc)
@@ -166,8 +251,6 @@ class SmartTurnStream:
             return False
 
     async def send_pcm(self, pcm16_bytes: bytes) -> None:
-        """Forward one PCM chunk to the pod. Silently no-ops if the
-        stream is closed — caller doesn't need to check."""
         ws = self._ws
         if ws is None or ws.closed:
             return
@@ -178,17 +261,30 @@ class SmartTurnStream:
             await self.close()
 
     async def reset(self) -> None:
-        """Clear the rolling window — call when a new utterance starts
-        after a commit."""
+        """Clear the rolling window — call when a new turn starts after
+        a commit so the previous utterance doesn't bleed into the next."""
         ws = self._ws
         if ws is None or ws.closed:
             return
         try:
             await ws.send_json({"type": "reset"})
             self.last_p_end_of_turn = 0.0
-            self.fired_end_of_turn = False
         except Exception as exc:  # noqa: BLE001
             _log.warning("smart_turn reset failed: %s", exc)
+
+    async def _keepalive_loop(self) -> None:
+        try:
+            while True:
+                await asyncio.sleep(20)
+                ws = self._ws
+                if ws is None or ws.closed:
+                    return
+                try:
+                    await ws.send_json({"type": "ping", "ts": 0})
+                except Exception:  # noqa: BLE001
+                    return
+        except asyncio.CancelledError:
+            raise
 
     async def _reader_loop(self) -> None:
         ws = self._ws
@@ -204,16 +300,9 @@ class SmartTurnStream:
                 t = obj.get("type")
                 if t == "ready":
                     self._ready.set()
-                elif t == "probability":
+                elif t == "probability" or t == "end_of_turn":
                     self.last_event = obj
                     self.last_p_end_of_turn = float(obj.get("p_end_of_turn", 0.0))
-                elif t == "end_of_turn":
-                    self.last_event = obj
-                    self.last_p_end_of_turn = float(obj.get("p_end_of_turn", 0.0))
-                    self.fired_end_of_turn = True
-                # ``error`` events from the pod surface in the log so
-                # operators can diagnose; we don't propagate to the
-                # caller because best-effort = swallow.
                 elif t == "error":
                     _log.warning("smart_turn pod error: %s", obj)
         except asyncio.CancelledError:
@@ -222,13 +311,14 @@ class SmartTurnStream:
             _log.warning("smart_turn reader errored: %s", exc)
 
     async def close(self) -> None:
-        if self._reader_task is not None:
-            self._reader_task.cancel()
-            try:
-                await self._reader_task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
-            self._reader_task = None
+        for task in (self._reader_task, self._keepalive_task):
+            if task is not None:
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
+        self._reader_task = self._keepalive_task = None
         if self._ws is not None:
             try:
                 if not self._ws.closed:
@@ -246,41 +336,40 @@ class SmartTurnStream:
 
 
 # ---------------------------------------------------------------------------
-# Turn Detector (text) stream wrapper — same shape, different inputs
+# Turn Detector (text semantics) — HTTP batch scorer
 # ---------------------------------------------------------------------------
 
-class TurnDetectorStream:
-    """Text-based EOU stream. Fed from STT partials.
+@dataclass
+class TextScore:
+    """One scoring result from ``POST /v1/turn-detector/batch``."""
+    p_end_of_turn: float
+    confidence: float            # = p_end_of_turn / per-language threshold
+    language_threshold: float    # diagnostic; ensembler uses ``confidence``
 
-    Same pattern as ``SmartTurnStream`` but with text tokens instead
-    of audio frames. Pass the cumulative in-progress transcript to
-    ``send_token`` each time a new partial arrives from the STT pod.
+
+class TurnDetectorScorer:
+    """HTTP batch client for the text-EOU model.
+
+    Single ``aiohttp.ClientSession`` per voice turn, reused across all
+    score calls. Stateless from the pod's perspective — every call is
+    a fresh ``{history: [], in_progress: "..."}`` POST. We don't pass
+    the conversation history because the demo proved the model scores
+    accurately on the current turn's text alone, and keeping history
+    out of the request lets us cache nothing and skip a serialisation
+    step.
+
+    Use ``score(text)`` for one-off calls. The ``score_loop()`` helper
+    polls a getter every 80 ms and only POSTs when the text actually
+    changes — that's how voicechat_stream consumes it.
     """
 
-    def __init__(self, *, history: list[dict[str, str]] | None = None,
-                 language: str = "en") -> None:
-        self.history = history or []
-        self.language = language
+    def __init__(self) -> None:
         self._session: aiohttp.ClientSession | None = None
-        self._ws: aiohttp.ClientWebSocketResponse | None = None
-        self._reader_task: asyncio.Task | None = None
-        self.last_p_end_of_turn: float = 0.0
-        # Cross-language-comparable signal from the pod: confidence =
-        # p_end_of_turn / language_threshold. ``>= 1.0`` means "the
-        # model thinks the turn is over for this language." Older pod
-        # images (pre-multilingual switch) don't send this field — we
-        # store ``0.0`` then so the ensembler can detect "no signal" and
-        # fall back to raw ``p_end_of_turn`` comparisons.
-        self.last_confidence: float = 0.0
-        # Per-language threshold the pod used to compute ``last_confidence``.
-        # Surfaced for diagnostics; the ensembler uses ``last_confidence``
-        # directly rather than re-applying the threshold itself.
-        self.last_language_threshold: float = 0.0
-        self.last_event: dict[str, Any] | None = None
-        self.fired_end_of_turn: bool = False
-        self._prob_wait: asyncio.Event | None = None
+        self._http_base: str | None = None
+        self._api_key: str = ""
+        self.last_score: TextScore = TextScore(0.0, 0.0, 0.0)
 
-    async def __aenter__(self) -> "TurnDetectorStream":
+    async def __aenter__(self) -> "TurnDetectorScorer":
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
@@ -290,149 +379,45 @@ class TurnDetectorStream:
         picked = await _pick_pod()
         if picked is None:
             return False
-        base, api_key = picked
-        timeout = aiohttp.ClientTimeout(
-            total=None,
-            sock_connect=_CONNECT_TIMEOUT_SEC,
-            sock_read=_SOCK_READ_TIMEOUT_SEC,
-        )
+        ws_base, api_key = picked
+        self._http_base = _ws_to_http(ws_base)
+        self._api_key = api_key
         try:
-            self._session = aiohttp.ClientSession(timeout=timeout)
-            self._ws = await self._session.ws_connect(
-                f"{base}/v1/turn-detector",
-                headers={"X-API-Key": api_key},
+            self._session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=_BATCH_TIMEOUT_SEC),
             )
-            await self._ws.send_json({
-                "type": "start",
-                "history": self.history,
-                "language": self.language,
-            })
-            self._reader_task = asyncio.create_task(self._reader_loop())
             return True
         except Exception as exc:  # noqa: BLE001
-            _log.warning("turn_detector connect failed: %s", exc)
-            await self.close()
+            _log.warning("turn_detector_scorer init failed: %s", exc)
             return False
 
-    async def send_token(self, cumulative_text: str, *, is_final: bool = False) -> None:
-        """Forward the cumulative in-progress transcript. The pod's
-        protocol expects ``text`` to be cumulative (not a delta) —
-        replacing each time means the model always sees the full
-        current state."""
-        ws = self._ws
-        if ws is None or ws.closed:
-            return
-        if not cumulative_text.strip():
-            return
-        try:
-            await ws.send_json({
-                "type": "token", "text": cumulative_text, "is_final": is_final,
-            })
-        except Exception as exc:  # noqa: BLE001
-            _log.warning("turn_detector send_token failed: %s", exc)
-            await self.close()
+    async def score(self, text: str) -> TextScore | None:
+        """POST ``text`` to the batch endpoint and return the score.
 
-    async def commit(self, content: str) -> None:
-        """Promote the current in-progress utterance to history; the
-        next ``send_token`` starts a fresh utterance."""
-        ws = self._ws
-        if ws is None or ws.closed:
-            return
-        try:
-            await ws.send_json({"type": "commit", "content": content})
-            self.last_p_end_of_turn = 0.0
-            self.last_confidence = 0.0
-            self.fired_end_of_turn = False
-        except Exception as exc:  # noqa: BLE001
-            _log.warning("turn_detector commit failed: %s", exc)
-
-    async def refresh_probability(
-        self,
-        cumulative_text: str,
-        *,
-        timeout: float = 0.12,
-    ) -> float | None:
-        """Re-score the current transcript after a pause.
-
-        Streaming partials stop while the user is silent, so the last
-        cached ``last_p_end_of_turn`` can be stale. LiveKit's agents
-        framework runs a fresh ``predict_end_of_turn`` at each VAD
-        silence boundary — we mirror that by pushing the frozen
-        transcript and waiting for the next ``probability`` event.
-        """
-        ws = self._ws
-        if ws is None or ws.closed or not cumulative_text.strip():
+        Returns ``None`` on transport / pod errors (caller keeps the
+        previous ``last_score`` unchanged in that case)."""
+        if not text.strip() or self._session is None or self._http_base is None:
             return None
-        self._prob_wait = asyncio.Event()
-        await self.send_token(cumulative_text)
+        headers = {"X-API-Key": self._api_key} if self._api_key else {}
         try:
-            await asyncio.wait_for(self._prob_wait.wait(), timeout=timeout)
-        except asyncio.TimeoutError:
-            pass
-        finally:
-            self._prob_wait = None
-        return self.last_p_end_of_turn
-
-    def _notify_probability(self) -> None:
-        if self._prob_wait is not None:
-            self._prob_wait.set()
-
-    async def _reader_loop(self) -> None:
-        ws = self._ws
-        assert ws is not None
-        try:
-            async for msg in ws:
-                if msg.type != aiohttp.WSMsgType.TEXT:
-                    continue
-                try:
-                    obj = json.loads(msg.data)
-                except json.JSONDecodeError:
-                    continue
-                t = obj.get("type")
-                if t == "probability":
-                    self.last_event = obj
-                    self.last_p_end_of_turn = float(obj.get("p_end_of_turn", 0.0))
-                    # ``confidence`` + ``language_threshold`` are only
-                    # emitted by the multilingual pod. Old pod images
-                    # omit them → fall back to 0.0 (ensembler interprets
-                    # 0.0 as "no signal" and uses raw ``p`` instead).
-                    self.last_confidence = float(obj.get("confidence", 0.0))
-                    self.last_language_threshold = float(
-                        obj.get("language_threshold", 0.0)
-                    )
-                    self._notify_probability()
-                elif t == "end_of_turn":
-                    self.last_event = obj
-                    self.last_p_end_of_turn = float(obj.get("p_end_of_turn", 0.0))
-                    self.last_confidence = float(obj.get("confidence", 0.0))
-                    self.last_language_threshold = float(
-                        obj.get("language_threshold", 0.0)
-                    )
-                    self.fired_end_of_turn = True
-                    self._notify_probability()
-                elif t == "error":
-                    _log.warning("turn_detector pod error: %s", obj)
-        except asyncio.CancelledError:
-            raise
+            async with self._session.post(
+                f"{self._http_base}/v1/turn-detector/batch",
+                headers=headers,
+                json={"history": [], "in_progress": text},
+            ) as r:
+                d = await r.json()
         except Exception as exc:  # noqa: BLE001
-            _log.warning("turn_detector reader errored: %s", exc)
+            _log.debug("turn_detector_scorer.score failed: %s", exc)
+            return None
+        score = TextScore(
+            p_end_of_turn=float(d.get("p_end_of_turn", 0.0) or 0.0),
+            confidence=float(d.get("confidence", 0.0) or 0.0),
+            language_threshold=float(d.get("language_threshold", 0.0) or 0.0),
+        )
+        self.last_score = score
+        return score
 
     async def close(self) -> None:
-        if self._reader_task is not None:
-            self._reader_task.cancel()
-            try:
-                await self._reader_task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
-            self._reader_task = None
-        if self._ws is not None:
-            try:
-                if not self._ws.closed:
-                    await self._ws.send_json({"type": "close"})
-                    await self._ws.close()
-            except Exception:  # noqa: BLE001
-                pass
-            self._ws = None
         if self._session is not None:
             try:
                 await self._session.close()
@@ -442,196 +427,129 @@ class TurnDetectorStream:
 
 
 # ---------------------------------------------------------------------------
-# Ensembler — pure helper, no I/O
+# Fusion — pure helpers
 # ---------------------------------------------------------------------------
 
-# Default weights for ``combine_eou``. Text/semantic completeness is a
-# stronger signal than audio prosody for distinguishing "user paused
-# mid-thought" from "user finished" — a confident text-EOU is hard to
-# fake, while prosody alone fires on every breath. So we lean on
-# turn-detector heavier than smart-turn.
-_DEFAULT_SMART_WEIGHT = 0.35
-_DEFAULT_TD_WEIGHT = 0.65
+def _sigmoid(x: float) -> float:
+    if x <= -60:
+        return 0.0
+    if x >= 60:
+        return 1.0
+    return 1.0 / (1.0 + math.exp(-x))
 
 
-def combine_eou(
-    smart_turn_p: float,
-    turn_detector_p: float,
-    *,
-    smart_weight: float = _DEFAULT_SMART_WEIGHT,
-    td_weight: float = _DEFAULT_TD_WEIGHT,
-) -> float:
-    """Weighted blend of the two EOU signals. Returns a probability
-    in [0, 1]. ``smart_weight + td_weight`` should equal 1.0 — pass
-    different values to tune which model dominates."""
-    return smart_weight * float(smart_turn_p) + td_weight * float(turn_detector_p)
+def text_completeness(confidence: float) -> float:
+    """Map turn-detector ``confidence`` to a 0..1 semantic-completeness
+    score via a log-sigmoid centred at CONF_MID.
 
-
-# Thresholds for the LEGACY raw-probability code path (when the pod
-# image is the old English-only build that doesn't emit ``confidence``).
-# These are interpreted against the raw model output and only make sense
-# for the English-only SmolLM model, which has its uniform 0..1 scale.
-_TD_UNLIKELY = float(os.environ.get("VOC_TD_UNLIKELY_THRESHOLD", "0.55"))
-_TD_HIGH = float(os.environ.get("VOC_TD_HIGH_THRESHOLD", "0.85"))
-# Thresholds for the MULTILINGUAL pod's ``confidence`` field. Confidence
-# is normalized as ``p_eou / per_language_threshold``, so ``>= 1.0`` is
-# "model fires" for that language regardless of which one. Empirically
-# (characterization across 14 langs):
-#   * "Confident EOU" (text_confident path) starts around 5× threshold.
-#     Complete sentences typically land at 15-200× threshold.
-#   * "Definitely not done" stays at < 1× threshold (raw p below the
-#     calibration point). Trail-offs / dangling preps cluster at <0.5×.
-_TD_CONF_UNLIKELY = float(os.environ.get("VOC_TD_CONF_UNLIKELY", "1.0"))
-_TD_CONF_HIGH = float(os.environ.get("VOC_TD_CONF_HIGH", "5.0"))
-_PROSODY_ASSIST_MIN_TD = float(os.environ.get("VOC_PROSODY_ASSIST_MIN_TD", "0.10"))
-_PROSODY_ASSIST_SHAVE_MS = int(os.environ.get("VOC_PROSODY_ASSIST_SHAVE_MS", "200"))
-
-
-def compute_required_silence_ms(
-    *,
-    turn_detector_p: float,
-    smart_turn_p: float = 0.0,
-    text_eou_available: bool = True,
-    min_endpointing_delay_ms: int = 500,
-    max_endpointing_delay_ms: int = 6000,
-    unlikely_threshold: float | None = None,
-    high_threshold: float | None = None,
-    turn_detector_confidence: float = 0.0,
-) -> tuple[int, str]:
-    """How much post-speech silence is required before committing.
-
-    When ``turn_detector_confidence`` is > 0 (the multilingual pod
-    emits it), we use that instead of raw ``turn_detector_p``. The raw
-    value is calibrated per-language on the multilingual model — DE
-    "complete" scores ~0.09 while EN "complete" scores ~0.93 — so a
-    global threshold against raw ``p`` would silently break non-English.
-    Confidence (= p / per-language threshold) normalises this so a
-    single set of cutoffs works for all 14 supported languages.
-
-    When confidence is 0 (old pod image, or no language metadata
-    available), we fall back to the raw-``p`` thresholds for backwards
-    compatibility.
+    Examples (with default CONF_MID=6.0, TEXT_SLOPE=1.6):
+      conf=0.09  ->  0.07   ("I want to know about")
+      conf=1.0   ->  0.25   (model's bare threshold; barely complete)
+      conf=6.0   ->  0.50
+      conf=20    ->  0.68   (solid clause)
+      conf=48    ->  0.79   ("thank you" — unmistakably done)
     """
-    use_confidence = turn_detector_confidence > 0.0
-    if use_confidence:
-        unlikely = _TD_CONF_UNLIKELY
-        high = _TD_CONF_HIGH
-        td_signal = turn_detector_confidence
-    else:
-        unlikely = _TD_UNLIKELY if unlikely_threshold is None else unlikely_threshold
-        high = _TD_HIGH if high_threshold is None else high_threshold
-        td_signal = turn_detector_p
-
-    if not text_eou_available:
-        span = max_endpointing_delay_ms - min_endpointing_delay_ms
-        required = min_endpointing_delay_ms + int(span * (1.0 - float(smart_turn_p)))
-        rule = "prosody_scaled"
-        if smart_turn_p >= 0.85:
-            required = min(required, min_endpointing_delay_ms + 400)
-            rule = "prosody_only_confident"
-        return required, rule
-
-    if td_signal < unlikely:
-        return max_endpointing_delay_ms, "text_unlikely"
-
-    if td_signal >= high:
-        required = min_endpointing_delay_ms
-        rule = "text_confident"
-    else:
-        span = max_endpointing_delay_ms - min_endpointing_delay_ms
-        t = (td_signal - unlikely) / max(high - unlikely, 1e-6)
-        t = max(0.0, min(1.0, t))
-        required = int(max_endpointing_delay_ms - t * span)
-        rule = "text_scaled"
-
-    if (
-        smart_turn_p >= 0.85
-        and td_signal >= unlikely + _PROSODY_ASSIST_MIN_TD
-    ):
-        required = max(min_endpointing_delay_ms, required - _PROSODY_ASSIST_SHAVE_MS)
-        if rule == "text_scaled":
-            rule = "text_scaled_prosody_assist"
-
-    return required, rule
+    if confidence <= 0.0:
+        return 0.0
+    return _sigmoid((math.log(confidence) - math.log(CONF_MID)) / TEXT_SLOPE)
 
 
-def should_commit_turn(
+def completeness(*, p_audio: float, conf_text: float) -> float:
+    """Weighted fusion of prosody + semantic completeness, clamped 0..1."""
+    text_c = text_completeness(conf_text)
+    c = W_TEXT * text_c + W_AUDIO * float(p_audio)
+    return max(0.0, min(1.0, c))
+
+
+def required_silence_ms(c: float) -> int:
+    """Adaptive silence target. More complete → shorter wait.
+
+      c=0   -> MAX_DELAY (hard backstop)
+      c=1   -> MIN_DELAY (fast commit)
+      c=0.5 -> midpoint
+    """
+    c = max(0.0, min(1.0, c))
+    span = MAX_DELAY_MS - MIN_DELAY_MS
+    return int(MAX_DELAY_MS - span * c)
+
+
+@dataclass
+class CommitDecision:
+    """Snapshot returned by :func:`decide_commit`. ``rule`` mirrors the
+    demo's ``reason`` label — useful in logs to see which signal drove
+    the cut-off:
+
+      ``"silence"`` — neither model was confident; the MAX_DELAY wait
+                      elapsed (or just the adaptive target).
+      ``"text"``    — semantics dominated the decision.
+      ``"audio"``   — prosody dominated.
+      ``"hold_veto"`` — silence target hit but prosody veto held the
+                        turn open (caller continues; not a commit).
+      ``""``        — silence target not reached.
+    """
+    should_commit: bool
+    rule: str
+    text_c: float
+    audio_c: float
+    combined: float
+    required_ms: int
+
+
+def decide_commit(
     *,
     silence_ms: int,
-    smart_turn_p: float,
-    turn_detector_p: float,
-    min_endpointing_delay_ms: int = 500,
-    max_endpointing_delay_ms: int = 6000,
-    text_eou_available: bool = True,
-    unlikely_threshold: float | None = None,
-    high_threshold: float | None = None,
-    turn_detector_confidence: float = 0.0,
-) -> tuple[bool, str]:
-    """Decide whether the user's turn is over.
+    p_audio: float,
+    conf_text: float,
+) -> CommitDecision:
+    """Full fusion: decide whether to end the user's turn now.
 
-    Follows the well-established LiveKit / Pipecat pattern:
-      * VAD silence is the trigger — never commit while the user is
-        clearly still speaking (``silence_ms < min_endpointing_delay``).
-      * Turn-detector probability modulates the wait window:
-          - high EOU confidence (≥ ``eou_threshold``)  → commit at
-            ``min_endpointing_delay`` (fast reply)
-          - low EOU confidence                          → wait longer,
-            linearly extending toward ``max_endpointing_delay``
-      * Hard cap: commit at ``max_endpointing_delay`` regardless,
-        so a hung detector never freezes the bot.
+    Mirrors ``decision_watch`` in the working stt-streaming demo:
 
-    ``silence_ms`` is the duration of contiguous silence since the
-    user last spoke, measured by the STT pod's server-side VAD
-    (``vad_silence`` events). Browser-side Silero is no longer the
-    authoritative source — we use the STT pod's VAD so a single
-    component owns the silence calculation.
-
-    ``smart_turn_p`` is the latest probability from the audio EOU
-    model (Pipecat Smart Turn v3, prosody / intonation).
-    ``turn_detector_p`` is the latest probability from the text EOU
-    model (LiveKit Turn Detector v2, semantic completeness).
-    Combined via :func:`combine_eou` (weighted blend that favours
-    text-EOU; ``max()`` was too liberal — either model firing was
-    enough to commit, even when the other strongly disagreed, so
-    a noisy prosody read on a mid-thought pause would interrupt).
-
-    ``eou_threshold`` defaults to 0.75 (up from LiveKit's 0.5; we
-    started at 0.65 and raised it again after observing the Turn
-    Detector returning 0.6-0.7 on grammatical-but-incomplete partials
-    like "I want to go to the store" — high enough to fast-commit
-    even though the user wasn't done). With weighted blending and a
-    0.75 threshold, BOTH signals have to be reasonably confident
-    before we cut off.
-
-    ``max_endpointing_delay_ms`` defaults to 6 s (matching LiveKit's
-    default). Earlier we ran at 12 s on the theory that long thinking
-    pauses shouldn't get cut off, but in practice users have already
-    given up by the 5-second mark — a hung TD pod or a truly silent
-    text_unlikely partial that sits there for 12 s reads as "the bot
-    froze." 6 s is the longest worst-case wait that still feels alive.
-    The fast paths (text_confident, text_scaled) already commit much
-    sooner when the signal is clear, so the cap only matters in the
-    pathological case.
-
-    Returns ``(should_commit, rule_fired)``. The second item is a
-    short string identifying which rule fired — useful for logging
-    when tuning the thresholds in production.
+      1. Combine text completeness (semantics) and ``p_audio`` (prosody)
+         into a 0..1 ``combined`` score (semantics weighted higher).
+      2. Map combined → adaptive ``required_ms`` silence target.
+      3. Fire commit when ``silence_ms >= required_ms``, UNLESS:
+         - prosody strongly hears still-speaking (``p_audio <
+           AUDIO_CONTINUE``) AND we're not yet at the MAX_DELAY hard
+           backstop → hold the turn open (``rule='hold_veto'``).
     """
-    if silence_ms < min_endpointing_delay_ms:
-        return False, ""
-    if silence_ms >= max_endpointing_delay_ms:
-        return True, "hard_cap"
+    text_c = text_completeness(conf_text)
+    audio_c = float(p_audio)
+    combined = max(0.0, min(1.0, W_TEXT * text_c + W_AUDIO * audio_c))
+    req_ms = required_silence_ms(combined)
 
-    required, rule = compute_required_silence_ms(
-        turn_detector_p=turn_detector_p,
-        smart_turn_p=smart_turn_p,
-        text_eou_available=text_eou_available,
-        min_endpointing_delay_ms=min_endpointing_delay_ms,
-        max_endpointing_delay_ms=max_endpointing_delay_ms,
-        unlikely_threshold=unlikely_threshold,
-        high_threshold=high_threshold,
-        turn_detector_confidence=turn_detector_confidence,
-    )
-    if silence_ms >= required:
-        return True, rule
-    return False, ""
+    if silence_ms < req_ms:
+        return CommitDecision(False, "", text_c, audio_c, combined, req_ms)
+
+    # Prosody veto — STT-independent insurance.
+    if audio_c < AUDIO_CONTINUE and silence_ms < MAX_DELAY_MS:
+        return CommitDecision(False, "hold_veto", text_c, audio_c, combined, req_ms)
+
+    if combined < 0.5:
+        rule = "silence"
+    elif W_TEXT * text_c >= W_AUDIO * audio_c:
+        rule = "text"
+    else:
+        rule = "audio"
+    return CommitDecision(True, rule, text_c, audio_c, combined, req_ms)
+
+
+__all__ = [
+    "is_configured",
+    "SmartTurnStream",
+    "TurnDetectorScorer",
+    "TextScore",
+    "text_completeness",
+    "completeness",
+    "required_silence_ms",
+    "decide_commit",
+    "CommitDecision",
+    # Knobs exposed for tests / introspection
+    "W_TEXT",
+    "W_AUDIO",
+    "CONF_MID",
+    "TEXT_SLOPE",
+    "MIN_DELAY_MS",
+    "MAX_DELAY_MS",
+    "AUDIO_CONTINUE",
+]

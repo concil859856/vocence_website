@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Edit(/workspace/_turn-detection/**)",
+      "Write(/workspace/_turn-detection/**)",
+      "Bash(git -C /workspace/_turn-detection *)",
+      "Bash(cd /workspace/_turn-detection && git *)"
+    ]
+  }
+}

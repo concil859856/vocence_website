@@ -93,10 +93,76 @@ WS_CLOSE_UPSTREAM = 4502
 # pipeline footprint. In-memory (per process); fine for a single
 # dev-api instance, but a Redis-backed counter is needed when scaling
 # horizontally so the counts stay consistent across replicas.
+#
+# Admins can override these per-user via the website-usage admin page
+# — see ``auth_users.api_ws_opens_per_minute`` /
+# ``auth_users.api_ws_concurrent`` and the ``_resolve_ws_limits`` cache
+# below. The constants here are platform defaults applied when no
+# override is set.
 MAX_CONCURRENT_SESSIONS_PER_ACCOUNT = 5
 MAX_SESSION_OPENS_PER_MINUTE_PER_ACCOUNT = 10
 _concurrent_sessions: dict[str, int] = {}  # user_id → active count
 _session_opens: dict[str, list[float]] = {}  # user_id → recent open timestamps
+
+# Per-user WS-limit cache. Entry: (opens_per_min, concurrent, expires_monotonic).
+# Avoids a DB read on every connect. Admin endpoint should call
+# ``invalidate_ws_limit_cache(user_id)`` after writing an override so
+# the new value is effective on the next connection without waiting
+# for the 60 s TTL.
+_WS_LIMIT_CACHE_TTL_S = 60.0
+_ws_limit_cache: dict[str, tuple[int, int, float]] = {}
+
+
+def invalidate_ws_limit_cache(user_id: str | None = None) -> None:
+    """Evict cached per-user WS limits. Called by the dashboard's
+    admin endpoint after a write so the new override takes effect on
+    the next session-open (no stale grace). Pass None to flush the
+    whole cache."""
+    if user_id is None:
+        _ws_limit_cache.clear()
+        return
+    _ws_limit_cache.pop(user_id, None)
+
+
+async def _resolve_ws_limits(user_id: str) -> tuple[int, int]:
+    """Returns (opens_per_min, concurrent) for the account. Reads
+    ``auth_users`` overrides with a 60 s cache. Failure modes fall
+    back to platform defaults — we never block a connection because
+    the override lookup hiccuped.
+
+    A value of 0 in either column means "uncapped" — callers should
+    treat ``opens_per_min <= 0`` and ``concurrent <= 0`` as 'skip this
+    check entirely'."""
+    from time import monotonic
+    now_mono = monotonic()
+    cached = _ws_limit_cache.get(user_id)
+    if cached and cached[2] > now_mono:
+        return cached[0], cached[1]
+
+    opens = MAX_SESSION_OPENS_PER_MINUTE_PER_ACCOUNT
+    concurrent = MAX_CONCURRENT_SESSIONS_PER_ACCOUNT
+    try:
+        conn = await get_db()
+        try:
+            row = await (await conn.execute(
+                "SELECT api_ws_opens_per_minute, api_ws_concurrent "
+                "FROM auth_users WHERE id = ?",
+                (user_id,),
+            )).fetchone()
+            if row is not None:
+                o = row["api_ws_opens_per_minute"]
+                c = row["api_ws_concurrent"]
+                if o is not None:
+                    opens = int(o)
+                if c is not None:
+                    concurrent = int(c)
+        finally:
+            await conn.close()
+    except Exception:
+        pass
+
+    _ws_limit_cache[user_id] = (opens, concurrent, now_mono + _WS_LIMIT_CACHE_TTL_S)
+    return opens, concurrent
 
 # Bound the audio uplink to something reasonable. A 60s WAV at 24kHz/16-bit
 # mono is ~3MB; base64-encoded, ~4MB. Anything beyond is almost certainly
@@ -212,17 +278,26 @@ async def _relay_frames(
         return
 
 
-def _check_open_rate(user_id: str) -> bool:
+async def _check_open_rate(user_id: str) -> bool:
     """Cap how often a single account can open new sessions. Without
     this, a leaked key (or just multiple keys on one account) could
     flood our voice pipeline with new sessions, exhausting upstream
-    slots. Per-account so additional keys can't multiply the budget."""
+    slots. Per-account so additional keys can't multiply the budget.
+
+    Returns True when the open is allowed (and bumps the bucket).
+    Honors per-user override at ``auth_users.api_ws_opens_per_minute``
+    — when set to 0, returns True unconditionally (admin-granted
+    unlimited)."""
+    opens_limit, _concurrent = await _resolve_ws_limits(user_id)
+    if opens_limit <= 0:
+        # Admin-granted unlimited — don't even bookkeep the bucket.
+        return True
     now = time.time()
     bucket = _session_opens.setdefault(user_id, [])
     cutoff = now - 60.0
     while bucket and bucket[0] < cutoff:
         bucket.pop(0)
-    if len(bucket) >= MAX_SESSION_OPENS_PER_MINUTE_PER_ACCOUNT:
+    if len(bucket) >= opens_limit:
         return False
     bucket.append(now)
     return True
@@ -298,12 +373,15 @@ async def agent_session(ws: WebSocket, agent_id: str) -> None:
 
     # 3. Rate limit: per-ACCOUNT open-rate AND concurrent-session cap.
     #    Per-account (not per-key) so a user can't multiply their quota
-    #    by spinning up extra keys.
-    if not _check_open_rate(user_id):
+    #    by spinning up extra keys. Both caps honor the per-user
+    #    overrides at auth_users.api_ws_opens_per_minute /
+    #    auth_users.api_ws_concurrent (set via admin UI). 0 = uncapped.
+    opens_limit, concurrent_limit = await _resolve_ws_limits(user_id)
+    if not await _check_open_rate(user_id):
         await ws.send_json({
             "type": "error",
             "code": "rate_limited",
-            "message": f"Too many sessions opened. Limit: {MAX_SESSION_OPENS_PER_MINUTE_PER_ACCOUNT}/min per account.",
+            "message": f"Too many sessions opened. Limit: {opens_limit}/min per account.",
         })
         await ws.close(code=WS_CLOSE_RATE_LIMIT)
         return
@@ -314,11 +392,11 @@ async def agent_session(ws: WebSocket, agent_id: str) -> None:
     # connects can all pass the check while awaiting ownership, then
     # all bump the counter past the cap. With the reserve-first
     # pattern we release the slot on any subsequent failure path.
-    if _concurrent_sessions.get(user_id, 0) >= MAX_CONCURRENT_SESSIONS_PER_ACCOUNT:
+    if concurrent_limit > 0 and _concurrent_sessions.get(user_id, 0) >= concurrent_limit:
         await ws.send_json({
             "type": "error",
             "code": "concurrent_limit",
-            "message": f"Too many concurrent sessions. Limit: {MAX_CONCURRENT_SESSIONS_PER_ACCOUNT} per account.",
+            "message": f"Too many concurrent sessions. Limit: {concurrent_limit} per account.",
         })
         await ws.close(code=WS_CLOSE_RATE_LIMIT)
         return

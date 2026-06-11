@@ -1016,6 +1016,22 @@ async def ensure_tables() -> None:
             "api_rate_limit_rpm",
             "api_rate_limit_rpm INTEGER",
         )
+        # Per-user Developer-API WebSocket-session caps. Cover the
+        # voice agent (/v1/agents/{id}/session), TTS streaming
+        # (/v1/voices/{id}/stream), and STT streaming (/v1/stt/stream).
+        # Both NULL = use platform defaults (MAX_SESSION_OPENS_PER_MINUTE
+        # _PER_ACCOUNT=10, MAX_CONCURRENT_SESSIONS_PER_ACCOUNT=5). 0 =
+        # uncapped (skip the per-account checks entirely).
+        await _ensure_column(
+            conn, "auth_users",
+            "api_ws_opens_per_minute",
+            "api_ws_opens_per_minute INTEGER",
+        )
+        await _ensure_column(
+            conn, "auth_users",
+            "api_ws_concurrent",
+            "api_ws_concurrent INTEGER",
+        )
         await conn.execute("UPDATE auth_users SET plan_code = COALESCE(plan_code, 'normal')")
         await conn.execute("UPDATE auth_users SET plan_status = COALESCE(plan_status, 'active')")
         await conn.execute("UPDATE auth_users SET updated_at = COALESCE(updated_at, created_at, datetime('now'))")

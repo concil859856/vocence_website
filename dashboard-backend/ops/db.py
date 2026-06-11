@@ -45,7 +45,9 @@ SERVICE_NAMES = (
     "dubbing",
     # New voice-agent-pipeline pods (see VOICE_AGENT_PLATFORM_SPEC.md):
     "asr_streaming_rt",      # Parakeet TDT streaming STT
-    "turn_detection",        # Smart Turn + LiveKit Turn Detector ensemble
+    "turn_detection",        # Smart Turn + LiveKit Turn Detector ensemble (fallback)
+    "ultravad",              # UltraVAD 8B end-of-turn — primary turn decider
+    "denoiser_streaming",    # DeepFilterNet 3 streaming noise removal (per-agent opt-in)
     "knowledge_ingestion",   # Per-agent RAG / vector store
 )
 

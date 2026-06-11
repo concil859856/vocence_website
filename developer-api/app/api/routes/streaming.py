@@ -22,6 +22,7 @@ import aiohttp
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.api.routes.agents import (
+    _resolve_ws_limits,
     INNER_WS_MAX_MSG_SIZE,
     MAX_CONCURRENT_SESSIONS_PER_ACCOUNT,
     MAX_SESSION_OPENS_PER_MINUTE_PER_ACCOUNT,
@@ -201,20 +202,20 @@ async def _auth_and_reserve(
 
     user_id = str(auth_ctx["user_id"])
 
-    if not _check_open_rate(user_id):
+    # Per-account caps (honor admin override at auth_users.api_ws_*).
+    opens_limit, concurrent_limit = await _resolve_ws_limits(user_id)
+    if not await _check_open_rate(user_id):
         await _send_error_safe(
             ws, "rate_limited",
-            f"Too many sessions opened. Limit: "
-            f"{MAX_SESSION_OPENS_PER_MINUTE_PER_ACCOUNT}/min per account.",
+            f"Too many sessions opened. Limit: {opens_limit}/min per account.",
         )
         await ws.close(code=WS_CLOSE_RATE_LIMIT)
         return None
 
-    if _concurrent_sessions.get(user_id, 0) >= MAX_CONCURRENT_SESSIONS_PER_ACCOUNT:
+    if concurrent_limit > 0 and _concurrent_sessions.get(user_id, 0) >= concurrent_limit:
         await _send_error_safe(
             ws, "concurrent_limit",
-            f"Too many concurrent sessions. Limit: "
-            f"{MAX_CONCURRENT_SESSIONS_PER_ACCOUNT} per account.",
+            f"Too many concurrent sessions. Limit: {concurrent_limit} per account.",
         )
         await ws.close(code=WS_CLOSE_RATE_LIMIT)
         return None

@@ -15,8 +15,6 @@ import { StudioPlayerBar } from './components/StudioPlayerBar';
 // avoids a second useVoiceChat running in parallel with the active
 // call surface.
 import { Toaster } from './components/ui/sonner';
-import { AgentsComingSoon } from './components/AgentsComingSoon';
-import { useHasVoiceChatAccess } from './lib/voicechatAccess';
 
 // Route-level code splitting: heavy pages load only when visited (named exports → default for lazy)
 const Overview = lazy(() => import('./pages/Overview').then((m) => ({ default: m.Overview })));
@@ -65,15 +63,6 @@ function PageFallback() {
   );
 }
 
-// Temporary launch gate: agents are gated to the allowlist in
-// lib/voicechatAccess.ts. Non-allowlisted users see AgentsComingSoon
-// on any /studio/agents/* route. Remove this wrapper (and the
-// VocenceBot gate) once the features are publicly launched.
-function AgentRouteGate({ children }: { children: React.ReactNode }) {
-  const hasAccess = useHasVoiceChatAccess();
-  return hasAccess ? <>{children}</> : <AgentsComingSoon />;
-}
-
 function AppContent() {
   return (
     <AuthProvider>
@@ -102,10 +91,10 @@ function AppContent() {
                   /admin/ops lives here (NOT /studio/ops) so admin surfaces
                   share a namespace. Non-admins discover nothing. */}
               <Route path="/admin/ops" element={<AdminGate><AdminOps /></AdminGate>} />
-              <Route path="/studio/agents" element={<AgentRouteGate><AgentsList /></AgentRouteGate>} />
-              <Route path="/studio/agents/new" element={<AgentRouteGate><AgentBuilder /></AgentRouteGate>} />
-              <Route path="/studio/agents/:id/runs/:runId" element={<AgentRouteGate><AgentRunViewer /></AgentRouteGate>} />
-              <Route path="/studio/agents/:id" element={<AgentRouteGate><AgentDetail /></AgentRouteGate>} />
+              <Route path="/studio/agents" element={<AgentsList />} />
+              <Route path="/studio/agents/new" element={<AgentBuilder />} />
+              <Route path="/studio/agents/:id/runs/:runId" element={<AgentRunViewer />} />
+              <Route path="/studio/agents/:id" element={<AgentDetail />} />
               <Route path="/studio/:view" element={<Studio />} />
               <Route path="/docs" element={<Navigate to="/docs/getting-started" replace />} />
               <Route path="/docs/:section" element={<Docs />} />

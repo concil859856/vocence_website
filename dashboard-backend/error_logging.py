@@ -57,6 +57,25 @@ def configure_logging() -> None:
     logging.getLogger("routers").setLevel(level)
     logging.getLogger("studio_tts_service").setLevel(level)
 
+    # Attach a stderr handler to the root logger if NOTHING has yet.
+    # Without this any module using ``logging.getLogger(__name__)``
+    # (voicechat_stream, voicechat_service, turn_detection_client,
+    # ops/*) silently drops every INFO log — only WARNING+ leaks via
+    # Python's last-resort handler. That made per-turn ensembler
+    # tracing (turn_metrics, TTFT/TTFA, etc.) invisible even though
+    # this function "set the level to INFO."
+    # Guarded by a marker attribute so test fixtures / re-runs don't
+    # accumulate duplicate handlers.
+    if not any(getattr(h, "_dashboard_root_handler", False) for h in root.handlers):
+        handler = logging.StreamHandler()
+        handler.setLevel(level)
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)s %(name)s: %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        ))
+        handler._dashboard_root_handler = True  # type: ignore[attr-defined]
+        root.addHandler(handler)
+
     # Mute access logs for /api/dashboard/* (frontend polls these every couple of seconds).
     access = logging.getLogger("uvicorn.access")
     if not any(isinstance(f, _DashboardAccessFilter) for f in access.filters):

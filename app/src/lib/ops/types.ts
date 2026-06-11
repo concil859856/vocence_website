@@ -12,7 +12,9 @@ export type ServiceName =
   | 'noise_remover'
   // New voice-agent-pipeline pods (see VOICE_AGENT_PLATFORM_SPEC.md):
   | 'asr_streaming_rt'      // Parakeet TDT streaming STT (built by 4090 agent)
-  | 'turn_detection'        // Smart Turn v3 + LiveKit Turn Detector v2 ensemble
+  | 'turn_detection'        // Smart Turn v3 + LiveKit Turn Detector v2 (fusion fallback)
+  | 'ultravad'              // UltraVAD 8B EOU — primary turn decider (ULTRAVAD_POD_SPEC.md)
+  | 'denoiser_streaming'    // DeepFilterNet 3 streaming noise removal (per-agent opt-in)
   | 'knowledge_ingestion';  // Per-agent RAG: PDF/URL/text → BGE embeddings → LanceDB
 
 export type ServerStatus = 'pending' | 'ready' | 'unreachable' | 'removed';
@@ -173,7 +175,9 @@ export const SERVICE_LABELS: Record<ServiceName, string> = {
   stt: 'Speech-to-Text',
   noise_remover: 'Noise Remover',
   asr_streaming_rt: 'Streaming STT',
-  turn_detection: 'Turn Detection',
+  turn_detection: 'Turn Detection (Fusion)',
+  ultravad: 'UltraVAD',
+  denoiser_streaming: 'Denoiser (Streaming)',
   knowledge_ingestion: 'Knowledge',
 };
 
@@ -191,6 +195,8 @@ export const DEFAULT_IMAGES: Record<ServiceName, string> = {
   noise_remover: 'vocence/voice-dubbing:latest',
   asr_streaming_rt: 'vocence/stt-streaming:latest',
   turn_detection: 'vocence/turn-detection:latest',
+  ultravad: 'vocence/ultravad:latest',
+  denoiser_streaming: 'vocence/denoiser-streaming:latest',
   knowledge_ingestion: 'vocence/knowledge-ingestion:latest',
 };
 
@@ -208,6 +214,8 @@ export const DEFAULT_PORTS: Record<ServiceName, number> = {
   // so existing hosts can keep both during the migration window.
   asr_streaming_rt: 8117,
   turn_detection: 8119,
+  ultravad: 8121,
+  denoiser_streaming: 8122,
   knowledge_ingestion: 8118,
 };
 

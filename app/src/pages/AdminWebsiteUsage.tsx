@@ -303,14 +303,16 @@ export function AdminWebsiteUsage() {
                   <span
                     className={`rounded-lg px-2 py-1 ${
                       userSummary.voicechat_rate_limit_turns !== null ||
-                      userSummary.api_rate_limit_rpm !== null
+                      userSummary.api_rate_limit_rpm !== null ||
+                      userSummary.api_ws_opens_per_minute !== null ||
+                      userSummary.api_ws_concurrent !== null
                         ? 'bg-[#DFFF00]/15 border border-[#DFFF00]/30 text-[#DFFF00]'
                         : 'bg-black/30 text-gray-400'
                     }`}
-                    title="Voice / API rate limits"
+                    title="Voice chat / Developer API (REST) / Developer API (WS) rate limits"
                   >
                     <Gauge size={11} className="inline mr-1 -mt-0.5" />
-                    Voice: {formatVoicechatRate(userSummary)} · API: {formatApiRate(userSummary)}
+                    Voice: {formatVoicechatRate(userSummary)} · API: {formatApiRate(userSummary)} · WS: {formatApiWsRate(userSummary)}
                   </span>
                 </div>
               </div>
@@ -1144,6 +1146,16 @@ function formatApiRate(s: AdminUserActivitySummary): string {
   return `${r.toLocaleString()} rpm`;
 }
 
+function formatApiWsRate(s: AdminUserActivitySummary): string {
+  const o = s.api_ws_opens_per_minute_effective;
+  const c = s.api_ws_concurrent_effective;
+  if (typeof o !== 'number' || typeof c !== 'number') return '—';
+  if (o <= 0 && c <= 0) return 'unlimited';
+  const opensStr = o <= 0 ? '∞' : `${o}/min`;
+  const concStr  = c <= 0 ? '∞' : `${c}`;
+  return `${opensStr} · ${concStr} conc`;
+}
+
 interface RateLimitModalProps {
   summary: AdminUserActivitySummary;
   onClose: () => void;
@@ -1170,7 +1182,7 @@ function RateLimitModal({ summary, onClose, onUpdated }: RateLimitModalProps) {
     String(summary.voicechat_rate_limit_window_sec ?? summary.voicechat_rate_limit_window_sec_effective ?? 3600),
   );
 
-  // API — same shape.
+  // API REST — same shape.
   const initialApiMode: Mode =
     summary.api_rate_limit_rpm === null ? 'default'
     : summary.api_rate_limit_rpm === 0 ? 'unlimited'
@@ -1178,6 +1190,23 @@ function RateLimitModal({ summary, onClose, onUpdated }: RateLimitModalProps) {
   const [apiMode, setApiMode] = useState<Mode>(initialApiMode);
   const [apiRpm, setApiRpm] = useState<string>(
     String(summary.api_rate_limit_rpm ?? summary.api_rate_limit_rpm_effective ?? 4),
+  );
+
+  // API WS surface — voice agent, TTS streaming, STT streaming. Both
+  // dimensions (opens-per-minute + concurrent) treated as one mode
+  // since admins almost always want to lift both together.
+  const initialWsMode: Mode =
+    summary.api_ws_opens_per_minute === null && summary.api_ws_concurrent === null
+      ? 'default'
+      : (summary.api_ws_opens_per_minute === 0 || summary.api_ws_concurrent === 0)
+        ? 'unlimited'
+        : 'custom';
+  const [wsMode, setWsMode] = useState<Mode>(initialWsMode);
+  const [wsOpens, setWsOpens] = useState<string>(
+    String(summary.api_ws_opens_per_minute ?? summary.api_ws_opens_per_minute_effective ?? 10),
+  );
+  const [wsConcurrent, setWsConcurrent] = useState<string>(
+    String(summary.api_ws_concurrent ?? summary.api_ws_concurrent_effective ?? 5),
   );
 
   const [reason, setReason] = useState('');
@@ -1196,14 +1225,21 @@ function RateLimitModal({ summary, onClose, onUpdated }: RateLimitModalProps) {
         apiMode === 'default'   ? { rpm: null }
         : apiMode === 'unlimited' ? { rpm: 0 }
         : { rpm: parseInt(apiRpm, 10) };
+      const wsPayload =
+        wsMode === 'default'   ? { opens_per_minute: null, concurrent: null }
+        : wsMode === 'unlimited' ? { opens_per_minute: 0, concurrent: 0 }
+        : { opens_per_minute: parseInt(wsOpens, 10), concurrent: parseInt(wsConcurrent, 10) };
 
-      // Two PATCH calls because the endpoints are independent. Sequential
-      // so we can keep the second's response as the authoritative summary.
+      // Three independent PATCH calls — sequential so we can keep
+      // the last response as the authoritative summary.
       let next = await dashboardApi.setAdminUserVoicechatRateLimit(summary.user_id, {
         ...voicePayload, reason: reason || undefined,
       });
       next = await dashboardApi.setAdminUserApiRateLimit(summary.user_id, {
         ...apiPayload, reason: reason || undefined,
+      });
+      next = await dashboardApi.setAdminUserApiWsRateLimit(summary.user_id, {
+        ...wsPayload, reason: reason || undefined,
       });
       onUpdated(next);
       onClose();
@@ -1298,6 +1334,47 @@ function RateLimitModal({ summary, onClose, onUpdated }: RateLimitModalProps) {
                 placeholder="rpm" className="w-24 bg-black/30 border border-white/10 rounded px-2 py-1 text-sm text-white"
               />
               <span className="text-sm text-gray-400 self-center">requests / minute</span>
+            </div>
+          )}
+        </div>
+
+        {/* API WS section — voice agent + TTS streaming + STT streaming */}
+        <div className="space-y-2 mb-5">
+          <h3 className="text-xs font-semibold text-white uppercase tracking-wider">
+            API voice agent + streaming
+          </h3>
+          <p className="text-[10px] text-gray-500 leading-snug">
+            WS endpoints: <code>/v1/agents/.../session</code>, <code>/v1/voices/.../stream</code>, <code>/v1/stt/stream</code>
+          </p>
+          {(['default', 'unlimited', 'custom'] as const).map((m) => (
+            <label key={m} className="flex items-center gap-2 text-sm text-gray-200 cursor-pointer">
+              <input
+                type="radio"
+                checked={wsMode === m}
+                onChange={() => setWsMode(m)}
+                className="accent-[#DFFF00]"
+              />
+              <span className="capitalize">{m}</span>
+              {m === 'default' && (
+                <span className="text-[11px] text-gray-500">
+                  ({summary.api_ws_opens_per_minute_effective}/min · {summary.api_ws_concurrent_effective} concurrent)
+                </span>
+              )}
+            </label>
+          ))}
+          {wsMode === 'custom' && (
+            <div className="flex flex-wrap gap-2 mt-2 ml-6 items-center">
+              <input
+                type="number" min="1" value={wsOpens} onChange={(e) => setWsOpens(e.target.value)}
+                placeholder="opens" className="w-20 bg-black/30 border border-white/10 rounded px-2 py-1 text-sm text-white"
+              />
+              <span className="text-sm text-gray-400">opens / min</span>
+              <span className="text-sm text-gray-600">·</span>
+              <input
+                type="number" min="1" value={wsConcurrent} onChange={(e) => setWsConcurrent(e.target.value)}
+                placeholder="conc" className="w-20 bg-black/30 border border-white/10 rounded px-2 py-1 text-sm text-white"
+              />
+              <span className="text-sm text-gray-400">concurrent</span>
             </div>
           )}
         </div>

@@ -19,7 +19,7 @@ import { toast } from 'sonner';
 /** Set to ``true`` when voice agents are ready for users. While
  *  ``false`` the helper below shows a toast + returns true (= "blocked,
  *  caller should bail"). */
-export const VOICE_AGENTS_LIVE = false;
+export const VOICE_AGENTS_LIVE = true;
 
 
 /**

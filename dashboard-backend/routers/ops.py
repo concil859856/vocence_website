@@ -368,6 +368,8 @@ async def deploy_pod(body: PodDeployIn, _: str = Depends(require_admin_unlocked)
             # the matching value as the header.
             "asr_streaming_rt": "ASR_API_KEY",
             "turn_detection": "TD_API_KEY",
+            "ultravad": "ULTRAVAD_API_KEY",
+            "denoiser_streaming": "DENOISER_API_KEY",
             "knowledge_ingestion": "KN_API_KEY",
         }.get(body.service)
         if env_key_for_service:
@@ -390,6 +392,10 @@ async def deploy_pod(body: PodDeployIn, _: str = Depends(require_admin_unlocked)
             # we migrate Studio + voicechat to the new pod.
             "asr_streaming_rt": 8117,
             "turn_detection": 8119,
+            # See ULTRAVAD_POD_SPEC.md and DENOISER_STREAMING_POD_SPEC.md.
+            # Ports picked to not collide with anything above.
+            "ultravad": 8121,
+            "denoiser_streaming": 8122,
             "knowledge_ingestion": 8118,
         }.get(body.service, body.port)
 
@@ -504,6 +510,8 @@ async def update_pod_endpoint(pod_id: int, _: str = Depends(require_admin_unlock
             "dubbing": "NOISE_REMOVER_API_KEY",
             "asr_streaming_rt": "ASR_API_KEY",
             "turn_detection": "TD_API_KEY",
+            "ultravad": "ULTRAVAD_API_KEY",
+            "denoiser_streaming": "DENOISER_API_KEY",
             "knowledge_ingestion": "KN_API_KEY",
         }.get(pod["service"])
         if env_key_for_service and api_key:
@@ -519,6 +527,8 @@ async def update_pod_endpoint(pod_id: int, _: str = Depends(require_admin_unlock
             "dubbing": 8116,
             "asr_streaming_rt": 8117,
             "turn_detection": 8119,
+            "ultravad": 8121,
+            "denoiser_streaming": 8122,
             "knowledge_ingestion": 8118,
         }.get(pod["service"], int(pod["port"]))
 

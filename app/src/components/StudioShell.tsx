@@ -4,7 +4,6 @@ import { AlertTriangle, Eye, EyeOff, Home } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { studioNavSections, studioSidebarItems, STUDIO_HELP_ITEM, type StudioView, type StudioNavItem } from '../studio/studioNav';
 import { ActiveJobsPill } from './ActiveJobsPill';
-import { useHasVoiceChatAccess } from '../lib/voicechatAccess';
 
 const LOW_CREDIT_THRESHOLD = 50;
 
@@ -26,17 +25,7 @@ export function StudioShell({ activeView, children, mainClassName = '' }: Props)
     if (typeof window === 'undefined') return;
     localStorage.setItem('vocence_show_credits', showCredits ? '1' : '0');
   }, [showCredits]);
-  // Agents is admin-only until publicly launched, drop the item from
-  // the sidebar entirely for non-admins so they don't see it.
-  const hasAgentsAccess = useHasVoiceChatAccess();
-  const visibleSections = studioNavSections
-    .map((section) => ({
-      ...section,
-      items: hasAgentsAccess
-        ? section.items
-        : section.items.filter((item) => item.id !== 'agents'),
-    }))
-    .filter((section) => section.items.length > 0);
+  const visibleSections = studioNavSections;
 
   /** Route handler shared between desktop + mobile rows. External items
    *  (Help → Discord) open in a new tab; internal items use react-router. */
@@ -132,7 +121,6 @@ export function StudioShell({ activeView, children, mainClassName = '' }: Props)
           <div className="flex gap-1 min-w-max px-1">
             {[...studioSidebarItems, STUDIO_HELP_ITEM]
               .filter((item) => !item.disabled)
-              .filter((item) => hasAgentsAccess || item.id !== 'agents')
               .map((item) => (
                 <button
                   key={item.id}

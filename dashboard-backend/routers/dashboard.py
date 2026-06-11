@@ -39,6 +39,7 @@ from schemas import (
     AdminPaymentRow,
     AdminTtsHistoryRow,
     AdminSetApiRateLimitIn,
+    AdminSetApiWsRateLimitIn,
     AdminSetVoicechatRateLimitIn,
     AdminUserActivitySummary,
     BlocklistAddRequest,
@@ -1262,7 +1263,8 @@ async def admin_website_usage_user_summary(
                 """
                 SELECT id, email, name, credits, plan_code, plan_status, created_at, last_login_at,
                        voicechat_rate_limit_turns, voicechat_rate_limit_window_sec,
-                       api_rate_limit_rpm
+                       api_rate_limit_rpm,
+                       api_ws_opens_per_minute, api_ws_concurrent
                 FROM auth_users WHERE id = ?
                 """,
                 (user_id,),
@@ -1305,6 +1307,13 @@ async def admin_website_usage_user_summary(
     # routers/auth.py to match the developer-api's mirror constant.
     api_default = int(os.environ.get("API_RATE_LIMIT_REQUESTS_PER_MINUTE") or "4")
     api_rpm = urow["api_rate_limit_rpm"]
+    # Developer-API WS surface defaults — mirror the constants on the
+    # developer-api side (see app/api/routes/agents.py). If we ever
+    # bump those defaults, update both. 10/min, 5 concurrent.
+    api_ws_opens_default = 10
+    api_ws_concurrent_default = 5
+    api_ws_opens = urow["api_ws_opens_per_minute"]
+    api_ws_conc = urow["api_ws_concurrent"]
     return AdminUserActivitySummary(
         user_id=urow["id"],
         email=urow["email"],
@@ -1329,6 +1338,14 @@ async def admin_website_usage_user_summary(
         api_rate_limit_rpm=int(api_rpm) if api_rpm is not None else None,
         api_rate_limit_rpm_effective=(
             int(api_rpm) if api_rpm is not None else api_default
+        ),
+        api_ws_opens_per_minute=int(api_ws_opens) if api_ws_opens is not None else None,
+        api_ws_concurrent=int(api_ws_conc) if api_ws_conc is not None else None,
+        api_ws_opens_per_minute_effective=(
+            int(api_ws_opens) if api_ws_opens is not None else api_ws_opens_default
+        ),
+        api_ws_concurrent_effective=(
+            int(api_ws_conc) if api_ws_conc is not None else api_ws_concurrent_default
         ),
     )
 
@@ -1474,6 +1491,92 @@ async def admin_set_api_rate_limit(
         await conn.commit()
     finally:
         await conn.close()
+
+    return await admin_website_usage_user_summary(user_id=user_id, _=admin_email)
+
+
+@router.patch(
+    "/admin/website-usage/user/{user_id}/api-ws-rate-limit",
+    response_model=AdminUserActivitySummary,
+)
+async def admin_set_api_ws_rate_limit(
+    user_id: str,
+    body: AdminSetApiWsRateLimitIn,
+    admin_email: str = Depends(require_admin_session),
+) -> AdminUserActivitySummary:
+    """Admin override for the Developer API WS surface caps:
+      * ``opens_per_minute`` — how many new session opens / min / account
+      * ``concurrent``       — max concurrent sessions / account
+
+    Covers the voice agent (``WS /v1/agents/{id}/session``), TTS
+    streaming (``WS /v1/voices/{id}/stream``), and STT streaming
+    (``WS /v1/stt/stream``). Sharing one bucket since they all open
+    long-lived WS sessions.
+
+    Either field NULL → reset to platform default; 0 → uncapped.
+    Writes auth_users.api_ws_*, logs to admin_audit_log, asks the
+    developer-api to evict its WS-limit cache (cross-process eviction
+    is best-effort — failure means the new value just takes effect on
+    the 60 s TTL refresh)."""
+    await ensure_tables()
+
+    def _coerce(v: int | None, name: str, hi: int) -> int | None:
+        if v is None:
+            return None
+        if v < 0 or v > hi:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{name} must be between 0 and {hi:,} (0 means uncapped)",
+            )
+        return v
+    opens = _coerce(body.opens_per_minute, "opens_per_minute", 100_000)
+    concurrent = _coerce(body.concurrent, "concurrent", 10_000)
+    reason = (body.reason or "").strip()[:500]
+
+    conn = await get_connection()
+    try:
+        prior = await (await conn.execute(
+            "SELECT api_ws_opens_per_minute, api_ws_concurrent "
+            "FROM auth_users WHERE id = ?",
+            (user_id,),
+        )).fetchone()
+        if prior is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        await conn.execute(
+            "UPDATE auth_users SET api_ws_opens_per_minute = ?, "
+            "api_ws_concurrent = ?, updated_at = datetime('now') "
+            "WHERE id = ?",
+            (opens, concurrent, user_id),
+        )
+        await log_admin_action(
+            conn,
+            admin_email=admin_email,
+            action="set_api_ws_rate_limit",
+            target_type="user",
+            target_id=user_id,
+            metadata={
+                "from": {
+                    "opens_per_minute": prior["api_ws_opens_per_minute"],
+                    "concurrent": prior["api_ws_concurrent"],
+                },
+                "to": {"opens_per_minute": opens, "concurrent": concurrent},
+                "reason": reason,
+            },
+        )
+        await conn.commit()
+    finally:
+        await conn.close()
+
+    # Try to evict the developer-api process's WS-limit cache so the
+    # new value is effective on the next connect. Cross-process import
+    # only works if the developer-api shares the same Python process
+    # (single-binary deploys); otherwise it's a no-op and the override
+    # takes effect on the 60 s TTL refresh, which is fine.
+    try:
+        from app.api.routes.agents import invalidate_ws_limit_cache  # type: ignore
+        invalidate_ws_limit_cache(user_id)
+    except Exception:
+        pass
 
     return await admin_website_usage_user_summary(user_id=user_id, _=admin_email)
 

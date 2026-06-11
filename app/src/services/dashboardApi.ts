@@ -513,6 +513,12 @@ export interface AdminUserActivitySummary {
    *  env apply. 0 = uncapped. */
   api_rate_limit_rpm: number | null;
   api_rate_limit_rpm_effective: number;
+  /** Per-user override for the API WS surface (voice agent, TTS
+   *  streaming, STT streaming). 0 = uncapped on that axis. */
+  api_ws_opens_per_minute: number | null;
+  api_ws_concurrent: number | null;
+  api_ws_opens_per_minute_effective: number;
+  api_ws_concurrent_effective: number;
 }
 
 export interface AdminSetVoicechatRateLimitRequest {
@@ -523,6 +529,12 @@ export interface AdminSetVoicechatRateLimitRequest {
 
 export interface AdminSetApiRateLimitRequest {
   rpm: number | null;
+  reason?: string;
+}
+
+export interface AdminSetApiWsRateLimitRequest {
+  opens_per_minute: number | null;
+  concurrent: number | null;
   reason?: string;
 }
 
@@ -711,6 +723,20 @@ export const dashboardApi = {
   ): Promise<AdminUserActivitySummary> {
     return fetchJson(
       `/api/dashboard/admin/website-usage/user/${encodeURIComponent(userId)}/api-rate-limit`,
+      {
+        method: 'PATCH',
+        headers: { ...adminAuthHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+    );
+  },
+
+  setAdminUserApiWsRateLimit(
+    userId: string,
+    body: AdminSetApiWsRateLimitRequest,
+  ): Promise<AdminUserActivitySummary> {
+    return fetchJson(
+      `/api/dashboard/admin/website-usage/user/${encodeURIComponent(userId)}/api-ws-rate-limit`,
       {
         method: 'PATCH',
         headers: { ...adminAuthHeaders(), 'Content-Type': 'application/json' },

@@ -253,6 +253,11 @@ class VoiceAgentBilling:
                 new_balance = await atomic_deduct_credits(
                     conn, user_id=self.user_id, cost=delta
                 )
+                # Commit before close — see comment in ``_deduct_once``.
+                # Without this, the reconciliation UPDATE is rolled back
+                # and the user's balance stays untouched even though the
+                # transaction-log row records the deduction.
+                await conn.commit()
                 if new_balance is not None:
                     self._total_charged += delta
             finally:
@@ -287,12 +292,24 @@ class VoiceAgentBilling:
         return self._total_charged
 
     async def _deduct_once(self, cost: int) -> int | None:
-        """Atomic deduction. Returns new balance or None if exhausted."""
+        """Atomic deduction. Returns new balance or None if exhausted.
+
+        CRITICAL: aiosqlite connections use Python's default isolation
+        level (deferred), so the UPDATE inside ``atomic_deduct_credits``
+        runs in an implicit transaction that gets ROLLED BACK when the
+        connection closes without an explicit commit. Skipping the
+        commit here is exactly what caused the "voice agent doesn't
+        deduct credits" bug — the transaction row still got written
+        (separate connection, did commit) but ``auth_users.credits``
+        never moved. Always commit before close.
+        """
         conn = await get_connection()
         try:
-            return await atomic_deduct_credits(
+            new_balance = await atomic_deduct_credits(
                 conn, user_id=self.user_id, cost=cost
             )
+            await conn.commit()
+            return new_balance
         finally:
             await conn.close()
 

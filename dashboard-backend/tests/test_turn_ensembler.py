@@ -1,165 +1,171 @@
-"""Unit tests for the EOU ensembler + streaming session helpers."""
+"""Unit tests for the EOU ensembler + streaming session helpers.
+
+The ensembler is now the same one the working stt-streaming demo uses:
+a text-weighted completeness score that sets an adaptive required-silence
+in [MIN_DELAY_MS, MAX_DELAY_MS], with a prosody veto that holds the turn
+open while smart-turn strongly hears still-speaking intonation.
+
+See ``turn_detection_client.py`` for the math, knobs, and the bug-fix
+history that drove the rewrite.
+"""
 
 from __future__ import annotations
 
 import asyncio
-from typing import Awaitable, Callable
 
 import pytest
 
 from turn_detection_client import (
-    combine_eou,
-    compute_required_silence_ms,
-    should_commit_turn,
+    AUDIO_CONTINUE,
+    CONF_MID,
+    MAX_DELAY_MS,
+    MIN_DELAY_MS,
+    completeness,
+    decide_commit,
+    required_silence_ms,
+    text_completeness,
 )
 
 
-def test_below_min_endpointing_no_commit() -> None:
-    commit, _ = should_commit_turn(
-        silence_ms=200, smart_turn_p=0.9, turn_detector_p=0.9,
-    )
-    assert not commit
+# ---------------------------------------------------------------------------
+# Pure-math helpers
+# ---------------------------------------------------------------------------
+
+def test_text_completeness_centered_at_conf_mid() -> None:
+    """conf == CONF_MID must map exactly to 0.5 — that's how the sigmoid
+    is centred. Knob tuning leans on this anchor."""
+    assert text_completeness(CONF_MID) == pytest.approx(0.5, abs=1e-6)
 
 
-def test_above_hard_cap_commits_regardless_of_eou() -> None:
-    commit, rule = should_commit_turn(
-        silence_ms=13_000, smart_turn_p=0.0, turn_detector_p=0.0,
-    )
-    assert commit
-    assert rule == "hard_cap"
+def test_text_completeness_monotonic() -> None:
+    """Higher confidence → higher completeness, monotonically. The
+    sigmoid saturates SLOWLY (log-space) by design — conf=100 only
+    reaches ~0.85, conf=10_000 reaches ~0.99. That's intentional: a
+    barely-complete clause (conf=1) shouldn't be much above a very
+    complete one (conf=20)."""
+    values = [text_completeness(c) for c in (0.01, 0.1, 1.0, CONF_MID, 20.0, 1000.0)]
+    assert all(a < b for a, b in zip(values, values[1:]))
+    # Bounded in [0, 1].
+    assert 0.0 <= values[0] < 0.1
+    assert 0.9 < values[-1] <= 1.0
 
 
-def test_text_confident_commits_at_min_delay() -> None:
-    commit, rule = should_commit_turn(
-        silence_ms=600, smart_turn_p=0.3, turn_detector_p=0.9,
-    )
-    assert commit
-    assert rule == "text_confident"
+def test_text_completeness_zero_or_negative_is_zero() -> None:
+    """Defensive: an empty / never-scored confidence is 0.0 and must
+    not blow up the log inside the sigmoid."""
+    assert text_completeness(0.0) == 0.0
+    assert text_completeness(-1.0) == 0.0
 
 
-def test_text_unlikely_waits_for_max_delay() -> None:
-    required, rule = compute_required_silence_ms(
-        turn_detector_p=0.2, smart_turn_p=0.95,
-    )
-    assert rule == "text_unlikely"
-    assert required == 6_000
+def test_completeness_weights_text_heavier() -> None:
+    """Same numeric value for both inputs should still lean text-heavy.
 
-    commit, _ = should_commit_turn(
-        silence_ms=required - 100, smart_turn_p=0.95, turn_detector_p=0.2,
-    )
-    assert not commit
-
-    commit, rule = should_commit_turn(
-        silence_ms=required, smart_turn_p=0.95, turn_detector_p=0.2,
-    )
-    assert commit
-    assert rule in ("text_unlikely", "hard_cap")
+    Smart-Turn saturates near 1.0 at every pause, so weighting it
+    equally would falsely fast-fire on every breath — semantics has to
+    dominate at the decision point."""
+    # At conf=CONF_MID (text_c=0.5), p_audio=0.5 → blended ~0.5.
+    # Bump only one of them and see which moves the score more.
+    base = completeness(p_audio=0.5, conf_text=CONF_MID)
+    bump_text = completeness(p_audio=0.5, conf_text=CONF_MID * 4)   # text up
+    bump_audio = completeness(p_audio=0.9, conf_text=CONF_MID)      # audio up
+    assert (bump_text - base) > (bump_audio - base)
 
 
-def test_prosody_alone_cannot_override_low_text_eou() -> None:
-    """High smart-turn + low text-EOU must not fast-commit."""
-    commit, rule = should_commit_turn(
-        silence_ms=2000, smart_turn_p=0.95, turn_detector_p=0.2,
-    )
-    assert not commit
-    assert rule == ""
+def test_required_silence_endpoints() -> None:
+    """c=0 -> MAX_DELAY (hard backstop); c=1 -> MIN_DELAY (fast commit)."""
+    assert required_silence_ms(0.0) == MAX_DELAY_MS
+    assert required_silence_ms(1.0) == MIN_DELAY_MS
+    # Midpoint is between the two.
+    mid = required_silence_ms(0.5)
+    assert MIN_DELAY_MS < mid < MAX_DELAY_MS
 
 
-def test_borderline_text_waits_longer_than_min() -> None:
-    required, rule = compute_required_silence_ms(
-        turn_detector_p=0.65, smart_turn_p=0.3,
-    )
-    assert rule == "text_scaled"
-    assert required > 500
-    commit, _ = should_commit_turn(
-        silence_ms=required - 100,
-        smart_turn_p=0.3,
-        turn_detector_p=0.65,
-    )
-    assert not commit
-    commit, rule = should_commit_turn(
-        silence_ms=required + 50,
-        smart_turn_p=0.3,
-        turn_detector_p=0.65,
-    )
-    assert commit
-    assert rule == "text_scaled"
-
-
-def test_combine_eou_default_weights() -> None:
-    assert combine_eou(1.0, 0.0) == pytest.approx(0.35)
-    assert combine_eou(0.0, 1.0) == pytest.approx(0.65)
+def test_required_silence_monotonic_decreasing() -> None:
+    """More complete -> shorter wait."""
+    samples = [required_silence_ms(c) for c in (0.0, 0.2, 0.5, 0.8, 1.0)]
+    assert all(a >= b for a, b in zip(samples, samples[1:]))
 
 
 # ---------------------------------------------------------------------------
-# Confidence-based path — multilingual pod (>= v0.2)
+# decide_commit — the full fusion
 # ---------------------------------------------------------------------------
 
-def test_confidence_signal_supersedes_raw_p_when_present() -> None:
-    """When the pod emits ``confidence``, the ensembler must use that
-    instead of raw ``turn_detector_p``. Without this, multilingual
-    deployments silently regress: e.g. German "complete" raw p ~0.09
-    would never cross the 0.85 raw threshold even though confidence
-    is ~15× (decisively complete).
-    """
-    # German complete sentence: raw p=0.09 (would fail old text_unlikely
-    # check), confidence=15.0 (well above _TD_CONF_HIGH=5.0 → text_confident).
-    required, rule = compute_required_silence_ms(
-        turn_detector_p=0.09, turn_detector_confidence=15.0,
-    )
-    assert rule == "text_confident"
-    assert required == 500  # min_endpointing_delay_ms
-
-    commit, rule = should_commit_turn(
-        silence_ms=600, smart_turn_p=0.3,
-        turn_detector_p=0.09, turn_detector_confidence=15.0,
-    )
-    assert commit
-    assert rule == "text_confident"
+def test_below_required_silence_no_commit() -> None:
+    """Even a confident-looking turn must wait at least the adaptive
+    required-silence target."""
+    d = decide_commit(silence_ms=100, p_audio=0.95, conf_text=50.0)
+    assert d.should_commit is False
+    assert d.rule == ""
+    assert d.required_ms >= MIN_DELAY_MS
 
 
-def test_confidence_unlikely_holds_long() -> None:
-    """Confidence < 1.0 → model says NOT done → wait max_endpointing."""
-    required, rule = compute_required_silence_ms(
-        turn_detector_p=0.0001, turn_detector_confidence=0.05,
-    )
-    assert rule == "text_unlikely"
-    assert required == 6_000
+def test_clearly_complete_commits_well_under_max() -> None:
+    """High conf + high p_audio → completeness ~0.8 → required ~1.2s
+    (well below the 4s backstop, much faster than text_unlikely).
+
+    Note: text_completeness asymptotes slowly by design, so even
+    'unmistakably done' clauses (conf=48-50) land at text_c~0.79 and
+    completeness~0.81 — required~1.2s. Demo doc §6.5 worked example."""
+    d = decide_commit(silence_ms=2000, p_audio=0.95, conf_text=50.0)
+    assert d.should_commit is True
+    assert d.rule in ("text", "audio")
+    # 1.2s is "clearly done — commit fast" relative to the 4s backstop.
+    assert d.required_ms < 2000
+    assert d.required_ms < MAX_DELAY_MS // 2
 
 
-def test_confidence_borderline_scales() -> None:
-    """Confidence between 1.0 and 5.0 → linear scaling, somewhere
-    between min and max delay."""
-    required, rule = compute_required_silence_ms(
-        turn_detector_p=0.4, turn_detector_confidence=3.0,
-    )
-    assert rule == "text_scaled"
-    assert 500 < required < 6000
+def test_low_completeness_holds_until_backstop() -> None:
+    """Both signals weak → wait grows close to MAX_DELAY, then commits
+    with rule='silence' (no model was confident; the wait elapsed)."""
+    # Both inputs near zero → combined ~0 → required ~= MAX_DELAY.
+    sil_short = required_silence_ms(0.0) - 200   # 200 ms below the cap
+    d_short = decide_commit(silence_ms=sil_short, p_audio=0.0, conf_text=0.05)
+    assert d_short.should_commit is False
+    d_at_cap = decide_commit(silence_ms=MAX_DELAY_MS, p_audio=0.0, conf_text=0.05)
+    assert d_at_cap.should_commit is True
+    assert d_at_cap.rule == "silence"
 
 
-def test_old_pod_no_confidence_falls_back_to_raw_p() -> None:
-    """When ``turn_detector_confidence`` is 0 (old EN-only pod image
-    that doesn't emit the field), we must fall back to the raw-p
-    rules so existing deployments keep behaving as they did before
-    the multilingual switch."""
-    # turn_detector_confidence defaults to 0.0 — should use raw-p path.
-    required, rule = compute_required_silence_ms(
-        turn_detector_p=0.9, smart_turn_p=0.3,
-    )
-    assert rule == "text_confident"
-    assert required == 500
+def test_prosody_veto_holds_complete_text() -> None:
+    """If smart-turn strongly hears still-speaking (p_audio <
+    AUDIO_CONTINUE) the turn must hold even when the text looks done,
+    until the MAX_DELAY backstop. STT-independent insurance against
+    garbled ASR making an incomplete clause look complete.
+
+    Veto only kicks in once silence has already reached the adaptive
+    required-target — before that the rule is just '' (not yet)."""
+    veto = AUDIO_CONTINUE / 2
+    # Pick a silence value past the required-target. With conf=50 and
+    # p_audio=veto (~0.12), required is ~1.5s; sit at 1.6s.
+    sil = required_silence_ms(completeness(p_audio=veto, conf_text=50.0)) + 100
+    d = decide_commit(silence_ms=sil, p_audio=veto, conf_text=50.0)
+    assert d.should_commit is False
+    assert d.rule == "hold_veto"
 
 
-def test_prosody_only_mode_when_text_unavailable() -> None:
-    commit, rule = should_commit_turn(
-        silence_ms=1000,
-        smart_turn_p=0.9,
-        turn_detector_p=0.0,
-        text_eou_available=False,
-    )
-    assert commit
-    assert rule == "prosody_only_confident"
+def test_prosody_veto_lifts_at_backstop() -> None:
+    """Even with the veto active, MAX_DELAY is the hard backstop —
+    a hung detector must never freeze the bot."""
+    veto = AUDIO_CONTINUE / 2
+    d = decide_commit(silence_ms=MAX_DELAY_MS, p_audio=veto, conf_text=50.0)
+    assert d.should_commit is True
+    # combined here will be high (text dominates, weighted ~0.85 * ~0.8)
+    # so the rule will land on "text" — not on "silence".
+    assert d.rule in ("text", "silence")
 
+
+def test_no_signal_at_all_uses_max_delay() -> None:
+    """Both models silent (TD pod offline, smart-turn offline) →
+    completeness=0 → wait the full MAX_DELAY → commit reason 'silence'."""
+    d = decide_commit(silence_ms=MAX_DELAY_MS + 100, p_audio=0.0, conf_text=0.0)
+    assert d.should_commit is True
+    assert d.rule == "silence"
+    assert d.required_ms == MAX_DELAY_MS
+
+
+# ---------------------------------------------------------------------------
+# _SignalState — running_transcript + silence_ms
+# ---------------------------------------------------------------------------
 
 def test_running_transcript_concatenates_segments() -> None:
     from voicechat_stream import _SignalState
@@ -184,9 +190,27 @@ def test_running_transcript_skips_empty_segments() -> None:
     assert state.running_transcript() == "hello world"
 
 
+def test_silence_clock_starts_from_construction() -> None:
+    """Without any speech evidence, the silence clock measures wall-clock
+    since the state was constructed."""
+    from voicechat_stream import _SignalState
+
+    state = _SignalState()
+    # Brand-new state: silence_ms should be near zero (test runs in <50 ms).
+    assert state.silence_ms() < 100
+
+
+# ---------------------------------------------------------------------------
+# _pump_stt — pod auto-finals must not end the streaming turn
+# ---------------------------------------------------------------------------
+
 @pytest.mark.asyncio
 async def test_pod_final_does_not_end_turn() -> None:
-    """Regression: pod auto-finals must not end the streaming turn."""
+    """Regression: the STT pod auto-emits ``final`` after its internal
+    ~800 ms silence threshold. That's NOT turn-end — the ensembler
+    decides. We must keep accumulating across pod finals so a long
+    monologue with natural pauses doesn't end up as just the first
+    segment."""
     import json as _json
 
     class FakeMsg:

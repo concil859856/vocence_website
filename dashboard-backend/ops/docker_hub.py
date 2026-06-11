@@ -123,15 +123,26 @@ async def fetch_latest_digest(image: str) -> DigestInfo | None:
                     _log.warning("docker_hub: %s returned %s", cache_key, resp.status)
                 else:
                     data = await resp.json()
-                    # Prefer amd64 manifest; fall back to first.
-                    images = data.get("images") or []
-                    amd64 = next((i for i in images if i.get("architecture") == "amd64"), None)
-                    picked = amd64 or (images[0] if images else None)
-                    if picked and picked.get("digest"):
+                    # Use the TOP-LEVEL manifest-list digest, NOT the per-arch
+                    # `images[].digest` underneath it. `docker pull` records the
+                    # manifest-list digest in `RepoDigests` (see ops/ssh.py
+                    # docker_pull / docker_image_digest), and that's what gets
+                    # stored on `pod.image_digest`. If we compared against the
+                    # amd64 platform-specific digest instead, every multi-arch
+                    # image would falsely report "update available" forever.
+                    top_digest = (data.get("digest") or "").strip()
+                    if not top_digest:
+                        # Older / single-arch tag responses sometimes omit the
+                        # top-level digest. Fall back to amd64 then first entry.
+                        images = data.get("images") or []
+                        amd64 = next((i for i in images if i.get("architecture") == "amd64"), None)
+                        picked = amd64 or (images[0] if images else None)
+                        top_digest = str(picked.get("digest") or "") if picked else ""
+                    if top_digest:
                         info = DigestInfo(
-                            digest=picked["digest"],
+                            digest=top_digest,
                             last_updated=str(data.get("last_updated") or ""),
-                            architecture=str(picked.get("architecture") or "amd64"),
+                            architecture="manifest-list",
                         )
     except aiohttp.ClientError as e:
         _log.warning("docker_hub: %s request failed: %s", cache_key, e)
