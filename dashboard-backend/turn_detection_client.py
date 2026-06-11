@@ -117,7 +117,7 @@ TEXT_SLOPE = float(os.environ.get("TEXT_SLOPE", "1.6"))  # log-sigmoid steepness
 # reported feeling natural in side-by-side comparisons. Tune via env
 # vars per deployment if a specific agent needs tighter feel.
 MIN_DELAY_MS = int(os.environ.get("MIN_DELAY_MS", "500"))
-MAX_DELAY_MS = int(os.environ.get("MAX_DELAY_MS", "4000"))
+MAX_DELAY_MS = int(os.environ.get("MAX_DELAY_MS", "3000"))
 
 # Prosody veto threshold. While the audio model strongly hears
 # "still-speaking" intonation (p < AUDIO_CONTINUE), hold the turn open
