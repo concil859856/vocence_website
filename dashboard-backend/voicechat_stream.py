@@ -152,7 +152,7 @@ class StreamingTurnSession:
         # Per-agent voice-pipeline config (see AgentConfigIn).
         denoise_enabled: bool = False,
         turn_decider: str = "fusion",
-        ultravad_threshold: float = 0.4,
+        ultravad_threshold: float = 0.55,
         # Optional STT pod WS prewarmed at session-open. When present,
         # _open_stt adopts it instead of cold-connecting — saves the
         # full TLS + WS handshake + STT-pod-ready round trip (~200–500

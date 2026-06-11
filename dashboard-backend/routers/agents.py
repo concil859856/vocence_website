@@ -67,9 +67,12 @@ class AgentConfigIn(BaseModel):
     # Turn + LiveKit ensembler. See ULTRAVAD_POD_SPEC.md.
     turn_decider: str = "ultravad"  # "ultravad" | "fusion"
     # Threshold the UltraVAD primary path uses to fire commit. Range
-    # [0, 1]; demo's "good start" is 0.4. Higher = more conservative
-    # (waits for stronger model confidence), lower = more eager.
-    ultravad_threshold: float = 0.4
+    # [0, 1]; higher = more conservative (waits for stronger model
+    # confidence, lets brief mid-sentence pauses through), lower =
+    # more eager (snappier but more likely to cut mid-utterance).
+    # 0.55 trades ~200 ms of end-of-turn latency for noticeably
+    # fewer "agent cut me off mid-sentence" complaints.
+    ultravad_threshold: float = 0.55
 
 
 class AgentCreateIn(BaseModel):
