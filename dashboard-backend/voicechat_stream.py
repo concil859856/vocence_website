@@ -339,55 +339,47 @@ class StreamingTurnSession:
         return True
 
     async def _open_stt(self) -> bool:
-        # Fast path: adopt a socket the session layer opened in the
-        # background while the greeting was playing. The session layer
-        # opened JUST the WS — no `start` config sent yet — so the pod
-        # is in its pre-start state and hasn't been drifting on idle
-        # silence. We send `start` with this turn's language and wait
-        # for `ready` just like the cold path, but we skip the slow
-        # TLS + WS upgrade.
+        # Fast path: adopt a socket the session layer prewarmed during
+        # the greeting. The prewarm already sent ``start`` and got
+        # ``ready`` AND has been pumping silence frames to keep the
+        # pod's inference path warm. By the time we get here, the
+        # pod is hot — first partial / vad_speech event arrives in
+        # tens of ms instead of seconds. We just take ownership; no
+        # WS messages to send, no round-trip to wait on.
         pw = self._prewarmed_stt
         self._prewarmed_stt = None
         if pw is not None:
             pw_ws = pw.get("ws")
-            if pw_ws is not None and not pw_ws.closed:
-                try:
-                    await pw_ws.send_json({
-                        "type": "start",
-                        "language": self._language,
-                        "sample_rate": 16000,
-                        "encoding": "pcm_s16le",
-                        "enable_partials": True,
-                        "vad_events": True,
-                    })
-                    ready_msg = await asyncio.wait_for(pw_ws.receive(), timeout=10.0)
-                    if ready_msg.type != aiohttp.WSMsgType.TEXT:
-                        raise RuntimeError("STT adopt: ready missing")
-                    data = json.loads(ready_msg.data)
-                    if data.get("type") != "ready":
-                        raise RuntimeError(f"STT adopt: first msg not ready: {data}")
-                    self._stt_pod_cm = pw["pod_cm"]
-                    self._stt_session = pw["session"]
-                    self._stt_ws = pw_ws
-                    _log.info(
-                        "[stream] trace session=%s phase=stt_adopted_prewarm lang=%r",
-                        self._session_id, self._language,
-                    )
-                    return True
-                except Exception as exc:  # noqa: BLE001
-                    _log.info(
-                        "[stream] stt prewarm adoption failed (%s) — cold-opening",
-                        exc,
-                    )
-            # Adoption failed (socket closed or `start` exchange
-            # errored). Release resources, then fall through to a
-            # fresh cold-open.
+            pw_lang = pw.get("language")
+            if (
+                pw_ws is not None
+                and not pw_ws.closed
+                and pw_lang == self._language
+            ):
+                self._stt_pod_cm = pw["pod_cm"]
+                self._stt_session = pw["session"]
+                self._stt_ws = pw_ws
+                _log.info(
+                    "[stream] trace session=%s phase=stt_adopted_prewarm lang=%r",
+                    self._session_id, self._language,
+                )
+                return True
+            # Mismatch or socket died — release resources, then
+            # cold-open. Logs the reason so we know which case fired.
             with suppress(Exception):
-                await pw_ws.close()  # type: ignore[union-attr]
+                if pw_ws is not None:
+                    await pw_ws.close()
             with suppress(Exception):
                 await pw["session"].close()
             with suppress(Exception):
                 await pw["pod_cm"].__aexit__(None, None, None)
+            _log.info(
+                "[stream] trace session=%s phase=stt_prewarm_unused "
+                "reason=%s pw_lang=%r want=%r",
+                self._session_id,
+                "lang_mismatch" if pw_lang != self._language else "socket_closed",
+                pw_lang, self._language,
+            )
 
         from ops import pool as gpu_pool
         try:

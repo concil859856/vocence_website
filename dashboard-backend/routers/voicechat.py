@@ -944,22 +944,39 @@ async def voicechat_session(
         # the time the user finishes their first turn.
         session_tts_warmer.schedule_prewarm()
 
-    # ── STT pod prewarm ───────────────────────────────────────────────
-    # Open the STT pod WS in the background, in parallel with the
-    # greeting. We DO NOT send the ``start`` config here — only the
-    # raw connection (TLS + WS upgrade) is established. The reason:
-    # the pod's session clock starts at ``start`` and its model
-    # state drifts if we then leave it idle for seconds while the
-    # greeting plays. Result was a broken first turn (single partial
-    # 'Okay.', final 'Hey.' for a sentence the user actually said
-    # in full).
+    # ── STT pod prewarm (silence-pump) ────────────────────────────────
+    # Two observed truths drive this design:
+    #   1. The pod has a server-side "waiting for ``start``" timeout
+    #      (~10 s). We can't open the WS and stall — the pod errors
+    #      out with bad_request:start_message_timeout.
+    #   2. Even after a successful cold-open, the FIRST inference
+    #      against a cold pod is slow enough that the partial /
+    #      vad_speech events arrive after the silence backstop has
+    #      already fired. Result: a sentence the user spoke in full
+    #      gets transcribed as the first two words ("What is the
+    #      voice design" → "What is").
     #
-    # Instead, the first StreamingTurnSession adopts the open
-    # socket and sends ``start`` just-in-time, right before frames
-    # flow. Saves the TLS+upgrade (~150–250 ms) on the first turn
-    # without giving the pod stale state to operate on.
+    # Fix: send ``start`` immediately (so the pod doesn't time out),
+    # then pump 20 ms silence frames continuously until the first
+    # user turn arrives. The pod sees a steady stream of "silence
+    # speech" — its model weights are loaded, its inference path is
+    # warm, its VAD is running. When real frames arrive (after
+    # adoption) the pipeline is already hot and partials emit
+    # immediately, the way they do on the 2nd+ turns today.
+    #
+    # The prewarm task and the StreamingTurnSession coordinate via
+    # ``prewarm_adopt_event``: the main loop sets it on stream_start,
+    # the pump loop sees it and exits, then the bundle is handed off
+    # for adoption with no concurrent writers.
     prewarmed_stt: dict[str, Any] | None = None
     prewarm_stt_task: asyncio.Task | None = None
+    prewarm_adopt_event = asyncio.Event()
+    # The pod's ``start.language`` is set HERE during prewarm. For
+    # the adoption to be safe, the per-turn language has to match;
+    # _open_stt's adopt path falls back to a cold-open on mismatch.
+    # Logos → "auto"; paid agent → its configured language. Either
+    # way it's stable for the session.
+    prewarm_stt_language = agent_language if agent_language else "auto"
 
     async def _prewarm_stt() -> None:
         nonlocal prewarmed_stt
@@ -986,20 +1003,57 @@ async def voicechat_session(
                 timeout=aiohttp.ClientWSTimeout(ws_close=15),
                 max_msg_size=2 * 1024 * 1024,
             )
-            # Deliberately do NOT send ``start`` — the adoption path in
-            # StreamingTurnSession._open_stt sends it with the actual
-            # per-turn language and immediately follows with frames.
-            prewarmed_stt = {
-                "pod_cm": pod_cm,
-                "session": sess,
-                "ws": ws,
-            }
+            # Send ``start`` immediately so the pod doesn't time out.
+            await ws.send_json({
+                "type": "start",
+                "language": prewarm_stt_language,
+                "sample_rate": 16000,
+                "encoding": "pcm_s16le",
+                "enable_partials": True,
+                "vad_events": True,
+            })
+            ready_msg = await asyncio.wait_for(ws.receive(), timeout=10.0)
+            if ready_msg.type != aiohttp.WSMsgType.TEXT:
+                raise RuntimeError("STT prewarm: ready missing")
+            data = json.loads(ready_msg.data)
+            if data.get("type") != "ready":
+                raise RuntimeError(f"STT prewarm: first msg not ready: {data}")
             _log.info(
-                "[stream] trace session=%s phase=stt_prewarmed (socket-only)",
-                session_id,
+                "[stream] trace session=%s phase=stt_prewarmed lang=%r",
+                session_id, prewarm_stt_language,
             )
-            # Ownership transferred to the slot — skip the local cleanup.
-            pod_cm = sess = ws = None
+
+            # Silence-pump loop. 20 ms frame @ 16 kHz mono s16le =
+            # 640 zero bytes. Pumping at ~20 ms wall-clock keeps the
+            # pod's inference path active (and its server-side idle
+            # timer reset) until adoption fires. We periodically
+            # await the adopt event so the loop exits promptly.
+            silence_frame = bytes(640)
+            while not prewarm_adopt_event.is_set():
+                if ws.closed:
+                    return
+                try:
+                    await ws.send_bytes(silence_frame)
+                except Exception:
+                    return
+                try:
+                    await asyncio.wait_for(
+                        prewarm_adopt_event.wait(), timeout=0.02
+                    )
+                    break  # adoption signal — fall through to hand off
+                except asyncio.TimeoutError:
+                    continue
+
+            # Hand off the warm WS. From here on, the StreamingTurnSession
+            # owns the WS; this task exits without touching it.
+            if not ws.closed:
+                prewarmed_stt = {
+                    "pod_cm": pod_cm,
+                    "session": sess,
+                    "ws": ws,
+                    "language": prewarm_stt_language,
+                }
+                pod_cm = sess = ws = None  # ownership transferred
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -1420,16 +1474,38 @@ async def voicechat_session(
             # function). Defaults match AgentConfigIn so an unconfigured
             # agent keeps current production behavior.
             _agent_cfg = (agent_ctx and agent_ctx.get("config")) or {}
-            # Consume the prewarmed STT slot only on stream_start —
-            # text/voice modes don't open the streaming STT WS, so
-            # passing the bundle to them would orphan it. We don't
-            # block on the prewarm task: if it's not done yet,
-            # `prewarmed_stt` is None here and _open_stt falls back
-            # to its existing cold-open path. Waiting would add
-            # latency back exactly when the user is fastest (no
-            # greeting playing → near-immediate stream_start).
+            # Consume the prewarmed STT slot only on stream_start.
+            # The prewarm task is pumping silence into the WS to keep
+            # the pod's inference path warm; we MUST signal it to stop
+            # before adopting the WS, otherwise the silence pump and
+            # the new turn's _forward_frames would race for write
+            # ownership of the same socket.
+            #
+            # Protocol:
+            #   1. Set ``prewarm_adopt_event`` — pump loop breaks.
+            #   2. Await ``prewarm_stt_task`` so the slot is filled and
+            #      the silence-pump task has actually exited (no more
+            #      writes will land on this WS from the prewarm side).
+            #   3. Read + clear ``prewarmed_stt``.
+            # We cap the wait so a stuck prewarm task can't block
+            # turn-start; on timeout we discard and cold-open.
             adopted_prewarm_stt: dict | None = None
             if payload.get("type") == "stream_start":
+                if prewarm_stt_task is not None and not prewarm_stt_task.done():
+                    prewarm_adopt_event.set()
+                    try:
+                        await asyncio.wait_for(
+                            asyncio.shield(prewarm_stt_task), timeout=0.5
+                        )
+                    except asyncio.TimeoutError:
+                        _log.info(
+                            "[stream] trace session=%s phase=stt_prewarm_handoff_timeout "
+                            "(falling back to cold-open)", session_id,
+                        )
+                        # Don't cancel — let the task finish naturally
+                        # and clean up its own resources; we just
+                        # won't adopt.
+                        prewarmed_stt = None
                 adopted_prewarm_stt = prewarmed_stt
                 prewarmed_stt = None
             current_turn = asyncio.create_task(
