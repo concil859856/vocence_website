@@ -58,9 +58,9 @@ IDLE_TIMEOUT_SEC = int(os.environ.get("VOICE_AGENT_IDLE_TIMEOUT_SEC", "60"))
 # user has had Logos chat for this many seconds, the billing loop fires
 # REASON_FREE_TIME_UP and the WS handler interrupts whatever's happening
 # to play a farewell + close. Push paid agents into Studio for longer
-# sessions. Env-override per deployment; default 2 minutes per user spec.
+# sessions. Env-override per deployment; default 3 minutes.
 LOGOS_FREE_MAX_SESSION_SEC = int(
-    os.environ.get("LOGOS_FREE_MAX_SESSION_SEC", "120")
+    os.environ.get("LOGOS_FREE_MAX_SESSION_SEC", "180")
 )
 
 

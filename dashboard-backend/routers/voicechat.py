@@ -545,7 +545,7 @@ async def voicechat_session(
         one handler. REASON_EXHAUSTED can't fire in free mode (no
         deductions)."""
 
-        # Logos (free) hit its 2-min cap. Special-case: interrupt
+        # Logos (free) hit its free-time cap. Special-case: interrupt
         # whatever's happening, have the assistant SPEAK a farewell
         # (so the user hears it rather than just seeing a close
         # banner), then close cleanly. The visible system-message
@@ -560,7 +560,20 @@ async def voicechat_session(
             #    call time.
             with suppress(Exception):
                 await _cancel_current()
-            # 2. Speak the farewell as a NORMAL assistant turn:
+            # 2. Reset the client's per-turn state with an explicit
+            #    ``cancelled`` envelope. Without this the previous
+            #    turn's ``audioStartedForTurnRef`` may still be true
+            #    (no turn_end fired, the agent was barge-in'd mid-
+            #    speech), and when the farewell's binary frames
+            #    arrive the player's "first audio of turn" branch
+            #    won't trigger ``startRevealTimer()`` — symptom: the
+            #    farewell plays but no text appears in the chat
+            #    bubble. The cancelled handler clears
+            #    audioStartedForTurnRef, revealStateRef, and
+            #    currentBotMsgIdRef, so the farewell paces correctly.
+            with suppress(Exception):
+                await ws.send_json({"type": "cancelled"})
+            # 3. Speak the farewell as a NORMAL assistant turn:
             #    token → audio_meta → audio bytes. The chat bubble
             #    paces with the audio (no early flash) and there's
             #    exactly one bubble.
@@ -568,7 +581,7 @@ async def voicechat_session(
                 await _speak_pretext(farewell)
             with suppress(Exception):
                 await ws.send_json({"type": "turn_end"})
-            # 3. Now signal teardown. No ``message`` field — the
+            # 4. Now signal teardown. No ``message`` field — the
             #    farewell already showed up as the assistant turn
             #    above; this event just tells the UI to close the
             #    call (drop the mic / flip the button back to Start).
@@ -577,7 +590,7 @@ async def voicechat_session(
                     "type": "session_timeout",
                     "code": "free_time_up",
                 })
-            # 4. Close the WS gracefully. 4408 (same code paid agents
+            # 5. Close the WS gracefully. 4408 (same code paid agents
             #    use for max_duration) signals "policy ended this
             #    session" — the frontend already handles 4408 as a
             #    natural-end, not an error.
@@ -614,7 +627,7 @@ async def voicechat_session(
             await ws.close(code=close_code)
 
 
-    # Spoken when a Logos session hits the 2-min free cap. Written in
+    # Spoken when a Logos session hits the free-time cap. Written in
     # Logos's voice style (warm, contractions, short sentences — see
     # voicechat_knowledge.SYSTEM_PROMPT). Reads naturally when the
     # TTS pipeline reads it aloud.
@@ -644,7 +657,7 @@ async def voicechat_session(
         on_session_end=_on_session_end,
         on_deduct=_on_billing_deduct,
         free_mode=not paid_agent,
-        # Logos (free) sessions get a tight 2-min cap. Paid agents
+        # Logos (free) sessions get a tight free-time cap. Paid agents
         # ignore this — None means "no extra limit, just use the
         # platform MAX_SESSION_SEC of 30 min".
         free_max_sec=float(LOGOS_FREE_MAX_SESSION_SEC) if not paid_agent else None,

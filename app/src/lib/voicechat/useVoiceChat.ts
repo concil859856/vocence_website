@@ -609,18 +609,14 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
               },
             ]);
           }
-          // Tear down the mic/VAD so the call button flips back to
-          // Start. setState('idle') alone doesn't do this — the
-          // `listening` ref stays true and the button still shows
-          // the red "end call" square. The WS will close right
-          // after this event; we just need to mirror that locally.
-          if (vadRef.current) {
-            void vadRef.current.destroy();
-            vadRef.current = null;
-          }
-          setListening(false);
-          setMicLevel(0);
-          setState('idle');
+          // Auto-click the end-call button: mirror EXACTLY what
+          // VocenceBot.handleMicClick does when the user taps the
+          // red square — stopListening tears down the VAD, mic
+          // level, listening flag, and resets state to idle. The
+          // backend has already closed the WS, so the cancel() the
+          // button-click also calls is a no-op here (server already
+          // cancelled the turn) and we skip it.
+          stopListening();
           break;
         }
         case 'billing_exhausted': {
