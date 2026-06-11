@@ -321,7 +321,19 @@ export function ArchitectDrawer({ open, onClose, current, onApply }: Props) {
         </header>
 
         <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-3">
-          {messages.map((m) => (
+          {messages.map((m) => {
+            // The architect bubble may be empty for a beat between
+            // "send" and the first streamed token (high-reasoning
+            // gpt-5 can take 20-60 s to start emitting). While the
+            // bubble is empty AND we're still busy, render the
+            // floating dots INSIDE the bubble — that single shape
+            // serves as both the "thinking" indicator and the future
+            // home for the tokens. The instant the first token lands,
+            // text replaces the dots in the same bubble, no flicker
+            // and no double rendering.
+            const isPendingArchitect =
+              m.role === 'architect' && !m.text && busy;
+            return (
             <div key={m.id} className={`flex flex-col ${m.role === 'user' ? 'items-end' : 'items-start'}`}>
               <div
                 className={`max-w-[85%] rounded-2xl px-3.5 py-2 text-sm leading-snug whitespace-pre-wrap break-words ${
@@ -330,7 +342,18 @@ export function ArchitectDrawer({ open, onClose, current, onApply }: Props) {
                     : 'bg-white/[0.06] text-white border border-white/10'
                 }`}
               >
-                {m.text}
+                {isPendingArchitect ? (
+                  <span
+                    className="inline-flex items-center gap-1.5 py-0.5"
+                    aria-label="thinking"
+                  >
+                    <span className="architect-dot" />
+                    <span className="architect-dot" style={{ animationDelay: '160ms' }} />
+                    <span className="architect-dot" style={{ animationDelay: '320ms' }} />
+                  </span>
+                ) : (
+                  m.text
+                )}
               </div>
               {m.role === 'architect' && (m.proposed || m.applied) && (
                 <div className="mt-2 max-w-[85%]">
@@ -357,18 +380,8 @@ export function ArchitectDrawer({ open, onClose, current, onApply }: Props) {
                 </div>
               )}
             </div>
-          ))}
-          {busy && (
-            <div className="flex justify-start">
-              <div className="bg-white/[0.06] border border-white/10 rounded-2xl px-3.5 py-3 text-sm">
-                <span className="inline-flex items-center gap-1.5" aria-label="thinking">
-                  <span className="architect-dot" />
-                  <span className="architect-dot" style={{ animationDelay: '160ms' }} />
-                  <span className="architect-dot" style={{ animationDelay: '320ms' }} />
-                </span>
-              </div>
-            </div>
-          )}
+            );
+          })}
           {error && <div className="text-xs text-red-300">{error}</div>}
         </div>
 
