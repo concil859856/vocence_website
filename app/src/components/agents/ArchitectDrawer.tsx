@@ -42,6 +42,13 @@ interface ChatMsg {
    *  edit the user can apply. Cleared after the user clicks Apply,
    *  so the button doesn't linger as a confusing artefact. */
   proposed?: Proposed | null;
+  /** True between the ``proposed_starting`` server event (the model
+   *  committed to calling propose_changes) and the ``proposed`` event
+   *  (full args parsed). During this window we render the Apply
+   *  button disabled with a "preparing…" hint, so the user sees that
+   *  a change is on the way instead of watching tokens stream into
+   *  the void. */
+  proposing?: boolean;
   /** True once the user has clicked Apply on this turn's proposal. */
   applied?: boolean;
 }
@@ -198,6 +205,17 @@ export function ArchitectDrawer({ open, onClose, current, onApply }: Props) {
               m.id === architectMsgId ? { ...m, text: (m.text || '') + evt.delta } : m,
             ),
           );
+        } else if (evt.type === 'proposed_starting') {
+          // Mid-stream — model has committed to a tool call but args
+          // are still streaming. Flip the bubble's ``proposing`` flag
+          // so the Apply card materializes immediately in a disabled
+          // "preparing…" state. The user knows a change is on the
+          // way without waiting for the full args blob.
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === architectMsgId ? { ...m, proposing: true } : m,
+            ),
+          );
         } else if (evt.type === 'proposed') {
           proposedAttached = {
             name: evt.data.name,
@@ -207,7 +225,9 @@ export function ArchitectDrawer({ open, onClose, current, onApply }: Props) {
           };
           setMessages((prev) =>
             prev.map((m) =>
-              m.id === architectMsgId ? { ...m, proposed: proposedAttached } : m,
+              m.id === architectMsgId
+                ? { ...m, proposed: proposedAttached, proposing: false }
+                : m,
             ),
           );
         } else if (evt.type === 'error') {
@@ -363,9 +383,18 @@ export function ArchitectDrawer({ open, onClose, current, onApply }: Props) {
                   m.text
                 )}
               </div>
-              {m.role === 'architect' && (m.proposed || m.applied) && (
+              {m.role === 'architect' && (m.proposed || m.proposing || m.applied) && (
                 <div className="mt-2 max-w-[85%]">
-                  {m.proposed && !m.applied ? (
+                  {m.proposing && !m.proposed && !m.applied ? (
+                    // Mid-stream: model committed to a proposal but args
+                    // are still streaming. Show a disabled placeholder
+                    // so the user has a visible signal a change is on
+                    // the way.
+                    <div className="inline-flex items-center gap-2 rounded-xl border border-[#DFFF00]/30 bg-[#DFFF00]/[0.06] px-3.5 py-2 text-xs font-semibold text-[#DFFF00]/70 cursor-default select-none">
+                      <Loader2 size={13} className="animate-spin" />
+                      Preparing changes…
+                    </div>
+                  ) : m.proposed && !m.applied ? (
                     <button
                       type="button"
                       onClick={() => applyProposed(m.id)}
@@ -374,11 +403,11 @@ export function ArchitectDrawer({ open, onClose, current, onApply }: Props) {
                       <Check size={13} />
                       Apply changes
                     </button>
-                  ) : (
+                  ) : m.applied ? (
                     <div className="inline-flex items-center gap-1.5 rounded-xl border border-[#DFFF00]/30 bg-[#DFFF00]/[0.08] px-2.5 py-1 text-[11px] font-semibold text-[#DFFF00]/90">
                       <Check size={11} /> Applied
                     </div>
-                  )}
+                  ) : null}
                 </div>
               )}
             </div>

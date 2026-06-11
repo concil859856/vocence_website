@@ -1766,6 +1766,13 @@ async def _stream_chat_with_tools_once(
     # protocol fragments ``function.arguments`` across many chunks; we
     # concatenate them in arrival order.
     tool_calls_accum: dict[int, dict[str, str]] = {}
+    # Indices for which we've already emitted ``tool_call_started`` so
+    # we don't fire it once per argument chunk. The signal lets the UI
+    # render an "Apply (preparing…)" affordance the moment the model
+    # commits to calling a tool, instead of waiting for the full
+    # arguments string to finish streaming (which can take seconds for
+    # large structured outputs).
+    tool_call_started_signaled: set[int] = set()
     finish_reason: str | None = None
 
     timeout = aiohttp.ClientTimeout(total=None, sock_connect=15, sock_read=60)
@@ -1814,7 +1821,11 @@ async def _stream_chat_with_tools_once(
                         if ttft_ms is None:
                             ttft_ms = int((time.monotonic() - t0) * 1000)
                         yield {"type": "content", "text": content}
-                    # Tool-call deltas — accumulate, don't emit yet.
+                    # Tool-call deltas — accumulate, don't emit the full
+                    # call yet, but DO signal the moment we first see a
+                    # tool name + id so the UI can render an
+                    # "Apply (preparing…)" affordance while arguments
+                    # are still streaming in.
                     for tcd in (delta.get("tool_calls") or []):
                         idx = int(tcd.get("index", 0))
                         acc = tool_calls_accum.setdefault(idx, {"id": "", "name": "", "arguments": ""})
@@ -1826,6 +1837,20 @@ async def _stream_chat_with_tools_once(
                         args_chunk = fn.get("arguments")
                         if isinstance(args_chunk, str):
                             acc["arguments"] += args_chunk
+                        # First-sighting signal: yield once per index as
+                        # soon as we have BOTH name and id populated.
+                        # Skip if already signaled — accumulated args
+                        # chunks would otherwise re-fire this every
+                        # delta.
+                        if (
+                            idx not in tool_call_started_signaled
+                            and acc.get("name") and acc.get("id")
+                        ):
+                            tool_call_started_signaled.add(idx)
+                            yield {
+                                "type": "tool_call_started",
+                                "tool_call": {"id": acc["id"], "name": acc["name"]},
+                            }
                 log_status = "ok"
     except Exception as exc:
         err = str(exc)

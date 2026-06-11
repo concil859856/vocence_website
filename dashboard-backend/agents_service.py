@@ -764,6 +764,16 @@ async def chat_with_architect_stream(
             etype = evt.get("type")
             if etype == "content":
                 yield {"type": "token", "delta": evt.get("text", "")}
+            elif etype == "tool_call_started":
+                # Early signal — the model has committed to calling a
+                # tool. Arguments are still streaming. The frontend
+                # uses this to render an "Apply (preparing…)" disabled
+                # affordance so the user knows a change is on the way
+                # instead of waiting in the dark for the full args
+                # blob to finish.
+                tc = evt.get("tool_call") or {}
+                if tc.get("name") == "propose_changes":
+                    yield {"type": "proposed_starting"}
             elif etype == "tool_call":
                 tc = evt.get("tool_call") or {}
                 if tc.get("name") != "propose_changes":

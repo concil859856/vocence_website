@@ -319,6 +319,11 @@ export const agentCustomToolsApi = {
 
 export type ArchitectStreamEvent =
   | { type: 'token'; delta: string }
+  /** Early signal: the model has committed to calling propose_changes but
+   *  arguments are still streaming. Render the Apply button disabled in a
+   *  "preparing…" state. The corresponding ``proposed`` event will arrive
+   *  later with the full validated payload. */
+  | { type: 'proposed_starting' }
   | { type: 'proposed'; data: { name: string; type: AgentType; config: AgentConfig; summary?: string } }
   | { type: 'done' }
   | { type: 'error'; message: string };
