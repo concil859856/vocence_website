@@ -60,10 +60,18 @@ export function ArchitectDrawer({ open, onClose, current, onApply }: Props) {
     {
       id: newId(),
       role: 'architect',
+      // Opening message — sets expectations for the full surface the
+      // architect can drive (name, type, voice, prompt, language,
+      // temperature) AND surfaces the two adjacent features the user
+      // owns manually (knowledge file/text, custom webhook tools), so
+      // they're not surprised those exist later. Keep it short, the
+      // builder UI itself is the better reference.
       text:
-        "Hey, I'm here to help you design or refine your agent. Tell me what " +
-        "you're building, or ask me anything about how to set it up. I won't " +
-        "change anything until you say so.",
+        "Hey — I'll help you design your agent. Tell me what you're " +
+        "building and I'll handle the name, voice, system prompt, tone, " +
+        "and other settings. Knowledge and custom tools are added " +
+        "separately in the builder once the base is set up. Nothing " +
+        "applies until you click Apply.",
     },
   ]);
   const [input, setInput] = useState('');
@@ -362,15 +370,9 @@ export function ArchitectDrawer({ open, onClose, current, onApply }: Props) {
                       type="button"
                       onClick={() => applyProposed(m.id)}
                       className="inline-flex items-center gap-2 rounded-xl bg-[#DFFF00] text-[#07080A] px-3.5 py-2 text-xs font-semibold hover:brightness-110 shadow-[0_0_24px_-8px_rgba(223,255,0,0.55)]"
-                      title={m.proposed.summary || 'Apply the proposed changes to your draft'}
                     >
                       <Check size={13} />
                       Apply changes
-                      {m.proposed.summary ? (
-                        <span className="ml-1 font-medium opacity-70 truncate max-w-[180px]">
-                          · {m.proposed.summary}
-                        </span>
-                      ) : null}
                     </button>
                   ) : (
                     <div className="inline-flex items-center gap-1.5 rounded-xl border border-[#DFFF00]/30 bg-[#DFFF00]/[0.08] px-2.5 py-1 text-[11px] font-semibold text-[#DFFF00]/90">

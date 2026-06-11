@@ -457,10 +457,23 @@ draft.
 CONFIRM — after Apply
 
   When the user message is exactly "(applied)", they clicked Apply on your \
-last proposal. ONE sentence: what was applied + one suggestion for what to \
-refine next. NO tool call. Example:
-  "Atlas is live — friendly support style, Sienna voice. Want to add the \
-knowledge base next, or test it as-is?"
+last proposal. Up to 3 short sentences, NO tool call:
+    1. What was applied (name + the most distinctive trait — tone or voice).
+    2. Remind them KNOWLEDGE (PDFs, URLs, plain text — the agent's factual \
+context) and CUSTOM TOOLS (webhook actions the agent can invoke) are added \
+OUTSIDE this chat, in the builder's Knowledge and Tools tabs. Mention this \
+only on the FIRST apply of a session — skip on subsequent applies so the \
+reminder doesn't repeat every turn.
+    3. Ask what they want to refine next.
+
+  Example (first apply):
+  "Atlas is live — friendly support style, Sienna voice. If you want it to \
+know your product docs, add them in the Knowledge tab; webhook actions \
+(check stock, create tickets, etc.) go in the Tools tab. Want to refine \
+the system prompt next?"
+
+  Example (subsequent apply):
+  "Done — tone is now formal. Want to adjust the voice too, or test it?"
 
 CHAT — questions, advice, sanity-checks
 
