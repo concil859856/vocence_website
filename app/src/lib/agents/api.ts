@@ -111,6 +111,30 @@ export const agentsApi = {
     );
   },
 
+  /** Streamed WAV URL — pass to <audio src> with
+   *  ``crossOrigin="use-credentials"`` so the cookie session reaches
+   *  the backend, then the audio element can range-fetch as the
+   *  user seeks. Doesn't need the token argument (cookie does auth)
+   *  but we keep the parameter for parity with the other helpers
+   *  so callers don't accidentally forget about auth at all. */
+  callAudioUrl(_token: string, agentId: string, sessionId: string): string {
+    return (
+      `${API_BASE_URL}/dashboard/agents/${encodeURIComponent(agentId)}` +
+      `/calls/${encodeURIComponent(sessionId)}/audio`
+    );
+  },
+
+  async getCallTranscript(
+    token: string,
+    agentId: string,
+    sessionId: string,
+  ): Promise<{ session_id: string; agent_id: string; turns: { role: 'user' | 'assistant'; text: string }[] }> {
+    return jsonFetch(
+      `${API_BASE_URL}/dashboard/agents/${encodeURIComponent(agentId)}/calls/${encodeURIComponent(sessionId)}/transcript`,
+      { method: 'GET', headers: authHeaders(token) },
+    );
+  },
+
   async draft(token: string, body: AgentDraftRequest): Promise<AgentDraftResponse> {
     return jsonFetch(`${API_BASE_URL}/dashboard/agents/draft`, {
       method: 'POST',

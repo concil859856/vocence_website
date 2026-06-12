@@ -159,6 +159,12 @@ class StreamingTurnSession:
         # ms) on the user's first turn. Dict shape:
         # {"pod_cm", "session", "ws", "language"}.
         prewarmed_stt: dict | None = None,
+        # Optional CallRecorder (from call_recorder.py). When set, the
+        # user-leg PCM frames forwarded to STT are also teed into the
+        # recorder's left channel. Mute-gate-dropped and pre-denoise
+        # frames are NOT captured — the recording reflects what STT
+        # actually heard.
+        call_recorder: Any | None = None,
     ) -> None:
         self._client_ws = client_ws
         self._language = language or "auto"
@@ -205,6 +211,10 @@ class StreamingTurnSession:
         self._closed = asyncio.Event()
         # Stashed at construction, consumed (or discarded) in _open_stt.
         self._prewarmed_stt = prewarmed_stt
+        # Recorder lives for the SESSION (multiple turns), so storing
+        # by reference is intentional — multiple StreamingTurnSession
+        # instances over one call all push into the same recorder.
+        self._call_recorder = call_recorder
 
     # -----------------------------------------------------------------
     # Lifecycle
@@ -525,6 +535,12 @@ class StreamingTurnSession:
                 out_frames = [frame]
 
             for f in out_frames:
+                # Tee to the recorder FIRST (before STT) — captures the
+                # exact bytes STT will see, including denoise output if
+                # enabled. Cheap; the recorder's push_user is a list
+                # append + counter bump.
+                if self._call_recorder is not None:
+                    self._call_recorder.push_user(f)
                 if self._stt_ws is not None and not self._stt_ws.closed:
                     try:
                         await self._stt_ws.send_bytes(f)

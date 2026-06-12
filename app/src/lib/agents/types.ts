@@ -42,6 +42,11 @@ export interface AgentConfig {
    *  → silent start; the agent waits for the user to speak first.
    *  Max 500 chars to keep the greeting natural. */
   first_message?: string;
+  /** When true, both legs of voice sessions are recorded to a stereo
+   *  WAV (left=user, right=agent) and surface on the Calls tab as a
+   *  player + download. Off by default — the agent owner explicitly
+   *  opts in. Mirrors AgentConfigIn.record_enabled on the backend. */
+  record_enabled?: boolean;
 }
 
 export interface Agent {

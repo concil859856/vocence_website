@@ -11,8 +11,10 @@ import json
 import logging
 from typing import Any, Optional
 
+import os
+
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 import agent_knowledge
@@ -73,6 +75,13 @@ class AgentConfigIn(BaseModel):
     # 0.55 trades ~200 ms of end-of-turn latency for noticeably
     # fewer "agent cut me off mid-sentence" complaints.
     ultravad_threshold: float = 0.55
+    # Per-agent recording opt-in. When true, the voicechat session
+    # tees both legs (user + agent PCM) to a stereo WAV stored under
+    # data/recordings/{user_id}/{session_id}.wav and writes the path
+    # into voice_call_logs.recording_path so the Calls tab can
+    # surface a download. Off by default for privacy — owners
+    # explicitly turn it on in agent settings.
+    record_enabled: bool = False
 
 
 class AgentCreateIn(BaseModel):
@@ -622,6 +631,98 @@ async def get_agent_analytics(
             "p50_turn_latency_ms": p50_latency,
             "p50_ttft_ms": p50_ttft,
             "p50_ttfa_ms": p50_ttfa,
+        }
+    finally:
+        await conn.close()
+
+
+@router.get("/{agent_id}/calls/{session_id}/audio")
+async def download_call_audio(
+    agent_id: str,
+    session_id: str,
+    user_id: str = Depends(require_auth),
+):
+    """Stream the stereo WAV (left=user, right=agent) for a recorded
+    call. 404 when recording was disabled / failed, 403 when the call
+    belongs to a different agent (i.e. wrong URL — defense-in-depth
+    against the session_id being treated as a bearer)."""
+    await _ensure_agent_owned(agent_id, user_id)
+    conn = await get_connection()
+    try:
+        row = await (await conn.execute(
+            """
+            SELECT recording_path
+            FROM voice_call_logs
+            WHERE session_id = ? AND agent_id = ? AND user_id = ?
+            """,
+            (session_id, agent_id, user_id),
+        )).fetchone()
+    finally:
+        await conn.close()
+    if not row or not row[0]:
+        raise HTTPException(status_code=404, detail="recording not found")
+    path = str(row[0])
+    if not os.path.exists(path):
+        # The DB row lied — file deleted out-of-band. Return 404 so
+        # the UI can hide the download button on next refresh.
+        raise HTTPException(status_code=404, detail="recording file missing")
+    # FileResponse handles HEAD + Range requests so the browser's
+    # <audio> element can seek through long calls without
+    # downloading the whole file.
+    return FileResponse(
+        path,
+        media_type="audio/wav",
+        filename=f"{session_id}.wav",
+    )
+
+
+@router.get("/{agent_id}/calls/{session_id}/transcript")
+async def download_call_transcript(
+    agent_id: str,
+    session_id: str,
+    user_id: str = Depends(require_auth),
+) -> dict:
+    """Per-turn transcript for one call, derived from the per-turn
+    rows in studio_voicechat_history. Returned as JSON so the
+    Calls tab can render a Discord-style chat view inline; the
+    caller can also stringify it and Save As .json to download."""
+    await _ensure_agent_owned(agent_id, user_id)
+    conn = await get_connection()
+    try:
+        # Ownership pinning: the session_id MUST belong to this
+        # agent + user. Otherwise return 404 (not 403) so we don't
+        # leak existence of someone else's session_id.
+        owned = await (await conn.execute(
+            """
+            SELECT 1 FROM voice_call_logs
+            WHERE session_id = ? AND agent_id = ? AND user_id = ?
+            """,
+            (session_id, agent_id, user_id),
+        )).fetchone()
+        if not owned:
+            raise HTTPException(status_code=404, detail="call not found")
+        rows = await (await conn.execute(
+            """
+            SELECT user_text, bot_text, latency_ms, ttft_ms, ttfa_ms,
+                   created_at, error
+            FROM studio_voicechat_history
+            WHERE session_id = ?
+            ORDER BY id ASC
+            """,
+            (session_id,),
+        )).fetchall()
+        turns = []
+        for r in rows:
+            user_text = (r[0] or "").strip()
+            bot_text = (r[1] or "").strip()
+            if user_text:
+                turns.append({"role": "user", "text": user_text})
+            if bot_text:
+                turns.append({"role": "assistant", "text": bot_text})
+        return {
+            "session_id": session_id,
+            "agent_id": agent_id,
+            "turns": turns,
         }
     finally:
         await conn.close()

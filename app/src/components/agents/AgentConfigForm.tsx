@@ -283,6 +283,20 @@ export function AgentConfigForm({ name, type, config, availableModels, onChange,
             className="w-full bg-[#07080A] border border-white/15 rounded-lg px-3 py-2 text-[13px] text-white placeholder:text-[#666] focus:outline-none focus:border-[#DFFF00]/40 resize-y font-mono"
           />
         </Field>
+        <Field
+          label="Record calls"
+          hint="When on, both the user's mic and the agent's reply are saved as a stereo WAV per session. Plays + downloads from the Calls tab. Off by default for privacy."
+        >
+          <label className="inline-flex items-center gap-2 text-sm text-white/80 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={!!config.record_enabled}
+              onChange={(e) => onChange({ config: { record_enabled: e.target.checked } })}
+              className="h-4 w-4 rounded border-white/20 bg-[#07080A] text-[#DFFF00] focus:ring-[#DFFF00]/40"
+            />
+            <span>Record calls to this agent</span>
+          </label>
+        </Field>
       </Section>
 
       {/* Knowledge */}

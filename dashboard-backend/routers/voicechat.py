@@ -72,6 +72,7 @@ from voicechat_service import (
     VOICECHAT_EXTRA_SYSTEM_PROMPT,
 )
 import agent_tools_service
+from call_recorder import CallRecorder, recording_path_for
 from llm_client import stream_chat_with_tools
 
 # Tool calling: cap how many LLM↔tool round-trips a single turn can do.
@@ -592,6 +593,14 @@ async def voicechat_session(
     _session_end_reason = "user_hangup"
     _session_turn_count = 0
 
+    # Optional stereo recording. Started here so push_user from
+    # the streaming session and push_agent from _speak_pretext /
+    # TTS path can both tee frames into the same recorder. Gated
+    # on the agent's record_enabled flag — Logos (no agent_ctx)
+    # never records. The session-close finally block awaits its
+    # close() and uses the returned (path, bytes) for the call log.
+    call_recorder: CallRecorder | None = None
+
     # ── Session watchdog + (paid agents only) per-minute billing ──────
     # A ``VoiceAgentBilling`` instance always exists for every session —
     # paid voice agents get the real billing loop; the free Vocence
@@ -828,6 +837,26 @@ async def voicechat_session(
         enabled_tools_set: set[str] | None = {str(t) for t in agent_enabled_tools_cfg if isinstance(t, str)}
     else:
         enabled_tools_set = None  # None means "all available"
+
+    # Start the call recorder if the agent has it enabled. Logos
+    # (no agent_ctx → free assistant, no privacy contract with the
+    # caller) never records. Recorder is best-effort: any error
+    # during capture is swallowed and recording_path stays NULL on
+    # the call log row.
+    record_enabled_for_session = bool(
+        agent_ctx
+        and isinstance(agent_ctx.get("config"), dict)
+        and agent_ctx["config"].get("record_enabled")
+    )
+    if record_enabled_for_session:
+        call_recorder = CallRecorder(
+            path=recording_path_for(auth_user_id, session_id),
+        )
+        call_recorder.start()
+        _log.info(
+            "[stream] trace session=%s phase=recording_started path=%s",
+            session_id, call_recorder._path,  # noqa: SLF001 — log only
+        )
     # Compute the builtin spec list once. Custom tools are loaded
     # per-turn (the user can rebind them mid-session), but their
     # purpose hints are added below if any are bound at session-start.
@@ -1347,6 +1376,8 @@ async def voicechat_session(
             ):
                 if chunk.kind == "audio" and isinstance(chunk.payload, (bytes, bytearray)):
                     payload = chunk.payload if isinstance(chunk.payload, bytes) else bytes(chunk.payload)
+                    if call_recorder is not None:
+                        call_recorder.push_agent(payload)
                     with suppress(Exception):
                         await ws.send_bytes(payload)
                 elif chunk.kind == "error":
@@ -1625,6 +1656,7 @@ async def voicechat_session(
                     turn_decider=str(_agent_cfg.get("turn_decider", "fusion")),
                     ultravad_threshold=float(_agent_cfg.get("ultravad_threshold", 0.55)),
                     prewarmed_stt=adopted_prewarm_stt,
+                    call_recorder=call_recorder,
                 )
             )
             # The idle clock is anchored to "agent stopped talking".
@@ -1687,6 +1719,26 @@ async def voicechat_session(
         with suppress(Exception):
             await billing.stop()
 
+        # Flush the call recorder to disk (if any). Best-effort —
+        # the helper swallows IO errors and returns (None, 0), which
+        # we'll write into the log row as a NULL recording_path.
+        # Done BEFORE _log_call_session so the recording_path lands
+        # in the same INSERT, not a follow-up UPDATE.
+        recording_path_persisted: str | None = None
+        recording_bytes_persisted: int | None = None
+        if call_recorder is not None:
+            try:
+                _rec_path, _rec_bytes = await call_recorder.close()
+                if _rec_path and _rec_bytes > 0:
+                    recording_path_persisted = _rec_path
+                    recording_bytes_persisted = _rec_bytes
+                    _log.info(
+                        "[stream] trace session=%s phase=recording_flushed path=%s bytes=%d",
+                        session_id, _rec_path, _rec_bytes,
+                    )
+            except Exception:
+                _log.debug("recorder close raised (non-fatal)", exc_info=False)
+
         # Persist a session-level row to voice_call_logs. Drives the
         # per-agent Analytics + Calls dashboard. Aggregated metrics
         # (turn count, char totals) are derived from
@@ -1707,6 +1759,8 @@ async def voicechat_session(
                 ended_at_iso=_utcnow_iso(),
                 duration_ms=int((time.perf_counter() - _session_open_perf) * 1000),
                 end_reason=_session_end_reason,
+                recording_path=recording_path_persisted,
+                recording_bytes=recording_bytes_persisted,
             )
 
 
@@ -1738,6 +1792,12 @@ async def _run_turn(
     # text/voice modes (segmented STT, no upstream WS to adopt) —
     # caller closes it in that case.
     prewarmed_stt: dict | None = None,
+    # Optional stereo recorder. When non-None, every TTS PCM chunk
+    # we ship to the client is also teed to the recorder's agent
+    # leg. User leg is captured one layer up in
+    # StreamingTurnSession._forward_frames (post-mute-gate,
+    # post-denoise) — the recorder threads through there too.
+    call_recorder: CallRecorder | None = None,
 ) -> None:
     mode = payload.get("type")
     started = time.perf_counter()
@@ -1815,6 +1875,7 @@ async def _run_turn(
                 turn_decider=turn_decider,
                 ultravad_threshold=ultravad_threshold,
                 prewarmed_stt=prewarmed_stt,
+                call_recorder=call_recorder,
             )
             _t_session_start = time.perf_counter()
             _log.info(
@@ -2600,6 +2661,8 @@ async def _run_turn(
                                 # Avoid an extra ~2 KB copy when payload is
                                 # already bytes — only convert if bytearray.
                                 payload = chunk.payload if isinstance(chunk.payload, bytes) else bytes(chunk.payload)
+                                if call_recorder is not None:
+                                    call_recorder.push_agent(payload)
                                 await ws.send_bytes(payload)
                                 frames += 1
                                 bytes_sent += len(payload)

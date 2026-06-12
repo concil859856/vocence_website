@@ -11,8 +11,8 @@
  * the recording pipeline.
  */
 
-import { useEffect, useState } from 'react';
-import { Loader2, Phone, AlertCircle } from 'lucide-react';
+import { Fragment, useEffect, useState } from 'react';
+import { Loader2, Phone, AlertCircle, Play, FileText, X, Download } from 'lucide-react';
 import { agentsApi } from '../../lib/agents/api';
 import type { AgentCall, AnalyticsRange, CallEndReason } from '../../lib/agents/types';
 
@@ -68,6 +68,12 @@ export function AgentCallsTab({ agentId, token }: Props) {
   const [calls, setCalls] = useState<AgentCall[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Session_id of the call whose transcript modal is currently open.
+  // Null when no modal is showing.
+  const [openTranscriptFor, setOpenTranscriptFor] = useState<string | null>(null);
+  // Session_id whose audio player is expanded inline. We keep audio
+  // inline (vs a modal) so the user can keep scanning the table.
+  const [playingFor, setPlayingFor] = useState<string | null>(null);
 
   useEffect(() => {
     if (!token) return;
@@ -137,34 +143,199 @@ export function AgentCallsTab({ agentId, token }: Props) {
                 <th className="px-4 py-3 font-medium">Duration</th>
                 <th className="px-4 py-3 font-medium">Turns</th>
                 <th className="px-4 py-3 font-medium">Ended</th>
-                <th className="px-4 py-3 font-medium text-right">Recording</th>
+                <th className="px-4 py-3 font-medium text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-white/5">
               {calls.map((c) => {
                 const pres = REASON_PRESENTATION[c.end_reason] ?? REASON_PRESENTATION.unknown;
+                const playing = playingFor === c.session_id;
+                const audioUrl = c.has_recording && token
+                  ? agentsApi.callAudioUrl(token, agentId, c.session_id)
+                  : null;
                 return (
-                  <tr key={c.session_id} className="hover:bg-white/[0.02]">
-                    <td className="px-4 py-3 text-white/80" title={c.started_at}>
-                      {formatRelative(c.started_at)}
-                    </td>
-                    <td className="px-4 py-3 text-white/80">{formatDuration(c.duration_ms)}</td>
-                    <td className="px-4 py-3 text-white/60">{c.turn_count}</td>
-                    <td className="px-4 py-3">
-                      <span className={`px-2 py-0.5 rounded-full text-xs ${pres.chip}`}>
-                        {pres.label}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-right text-xs text-white/40">
-                      {c.has_recording ? 'available' : 'off'}
-                    </td>
-                  </tr>
+                  <Fragment key={c.session_id}>
+                    <tr className="hover:bg-white/[0.02]">
+                      <td className="px-4 py-3 text-white/80" title={c.started_at}>
+                        {formatRelative(c.started_at)}
+                      </td>
+                      <td className="px-4 py-3 text-white/80">{formatDuration(c.duration_ms)}</td>
+                      <td className="px-4 py-3 text-white/60">{c.turn_count}</td>
+                      <td className="px-4 py-3">
+                        <span className={`px-2 py-0.5 rounded-full text-xs ${pres.chip}`}>
+                          {pres.label}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <div className="inline-flex items-center gap-1">
+                          {audioUrl ? (
+                            <button
+                              type="button"
+                              onClick={() => setPlayingFor(playing ? null : c.session_id)}
+                              className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs text-white/70 hover:bg-white/10 hover:text-white"
+                              title="Play recording"
+                            >
+                              <Play size={12} /> Play
+                            </button>
+                          ) : (
+                            <span className="text-xs text-white/30 px-2">No recording</span>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => setOpenTranscriptFor(c.session_id)}
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs text-white/70 hover:bg-white/10 hover:text-white"
+                            title="View transcript"
+                          >
+                            <FileText size={12} /> Transcript
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                    {playing && audioUrl && (
+                      <tr className="bg-white/[0.015]">
+                        <td colSpan={5} className="px-4 py-3">
+                          {/* crossOrigin="use-credentials" → the
+                              vocence_session cookie reaches the
+                              backend audio endpoint and require_auth
+                              accepts it. Without this, the browser
+                              would request the audio anonymously
+                              and the server would 401. */}
+                          <audio
+                            controls
+                            crossOrigin="use-credentials"
+                            src={audioUrl}
+                            className="w-full"
+                          />
+                          <div className="mt-2 text-right">
+                            <a
+                              href={audioUrl}
+                              download={`${c.session_id}.wav`}
+                              className="inline-flex items-center gap-1 text-xs text-white/60 hover:text-white"
+                            >
+                              <Download size={12} /> Download WAV
+                            </a>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
                 );
               })}
             </tbody>
           </table>
         </div>
       )}
+
+      {openTranscriptFor && (
+        <TranscriptModal
+          agentId={agentId}
+          sessionId={openTranscriptFor}
+          token={token}
+          onClose={() => setOpenTranscriptFor(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+interface TranscriptModalProps {
+  agentId: string;
+  sessionId: string;
+  token: string | null;
+  onClose: () => void;
+}
+
+function TranscriptModal({ agentId, sessionId, token, onClose }: TranscriptModalProps) {
+  const [turns, setTurns] = useState<{ role: 'user' | 'assistant'; text: string }[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+    agentsApi.getCallTranscript(token, agentId, sessionId)
+      .then((res) => { if (!cancelled) setTurns(res.turns); })
+      .catch((err) => { if (!cancelled) setError(err?.message ?? 'failed to load transcript'); });
+    return () => { cancelled = true; };
+  }, [agentId, sessionId, token]);
+
+  const downloadJson = () => {
+    if (!turns) return;
+    const blob = new Blob(
+      [JSON.stringify({ session_id: sessionId, turns }, null, 2)],
+      { type: 'application/json' },
+    );
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${sessionId}.transcript.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+      <div className="bg-[#0E1014] border border-white/10 rounded-2xl max-w-2xl w-full max-h-[80vh] flex flex-col">
+        <div className="px-5 py-3 border-b border-white/10 flex items-center justify-between">
+          <div>
+            <div className="text-sm font-semibold text-white">Call transcript</div>
+            <div className="text-[11px] text-white/40 mt-0.5">{sessionId}</div>
+          </div>
+          <div className="flex items-center gap-1">
+            {turns && turns.length > 0 && (
+              <button
+                type="button"
+                onClick={downloadJson}
+                className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs text-white/70 hover:bg-white/10 hover:text-white"
+              >
+                <Download size={12} /> JSON
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onClose}
+              className="p-1.5 rounded-md text-white/60 hover:bg-white/10 hover:text-white"
+            >
+              <X size={16} />
+            </button>
+          </div>
+        </div>
+        <div className="px-5 py-4 overflow-y-auto flex-1">
+          {error && (
+            <div className="text-sm text-red-300 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
+              {error}
+            </div>
+          )}
+          {!error && turns === null && (
+            <div className="flex items-center text-white/40 text-sm">
+              <Loader2 className="animate-spin mr-2" size={14} /> Loading…
+            </div>
+          )}
+          {!error && turns && turns.length === 0 && (
+            <div className="text-sm text-white/40">No spoken turns in this call.</div>
+          )}
+          {!error && turns && turns.length > 0 && (
+            <div className="space-y-3">
+              {turns.map((t, i) => (
+                <div
+                  key={i}
+                  className={`text-sm leading-relaxed ${
+                    t.role === 'user' ? 'text-white/90' : 'text-[#DFFF00]/90'
+                  }`}
+                >
+                  <span className={`text-[10px] uppercase tracking-wider mr-2 ${
+                    t.role === 'user' ? 'text-white/40' : 'text-[#DFFF00]/60'
+                  }`}>
+                    {t.role}
+                  </span>
+                  {t.text}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
