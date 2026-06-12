@@ -1399,6 +1399,27 @@ async def voicechat_session(
         conversation.append(
             ChatMessage(role="assistant", content=agent_first_message)
         )
+        # Record the greeting as a synthetic per-turn row so it
+        # appears in the call transcript + session replay alongside
+        # real turns. Without this the greeting is in the LLM's
+        # context but invisible to the user reviewing the call
+        # after the fact ("did my agent actually say hello?").
+        # user_text is empty because the greeting precedes any
+        # user speech; mode='greeting' distinguishes it from
+        # voice/text turns in case anyone queries by mode later.
+        with suppress(Exception):
+            await _record_turn(
+                user_id=auth_user_id,
+                user_text="",
+                bot_text=agent_first_message,
+                mode="greeting",
+                latency_ms=0,
+                ttft_ms=0,
+                ttfa_ms=None,
+                error=None,
+                session_id=session_id,
+                agent_id=agent_id,
+            )
         current_turn = asyncio.create_task(
             _speak_pretext(agent_first_message), name="first_message"
         )
