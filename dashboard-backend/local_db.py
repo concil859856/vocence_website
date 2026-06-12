@@ -1181,6 +1181,17 @@ async def _ensure_transcript_fts(conn: aiosqlite.Connection) -> None:
         return
 
     # ── Step 2: drop + commit ──────────────────────────────────────
+    # FTS5 virtual tables come with 4-5 shadow tables (suffixes
+    # _data, _idx, _docsize, _config, plus _content for non-external
+    # mode). DROP TABLE on the virtual table SHOULD cascade — but if
+    # the prior session crashed mid-drop or hit the shadow-table
+    # lingering bug we've already seen, those shadows can survive
+    # and trip a "table already exists" on the next CREATE.
+    #
+    # Belt + suspenders: after dropping the virtual table itself,
+    # we also try DROP TABLE IF EXISTS on every known shadow
+    # suffix. No-op when the shadows are already gone; cleans up
+    # the rare case when they aren't.
     _log.info(
         "ensure_tables: rebuilding studio_voicechat_history_fts (%s, src=%d)",
         rebuild_reason, src_count,
@@ -1191,14 +1202,28 @@ async def _ensure_transcript_fts(conn: aiosqlite.Connection) -> None:
             "DROP TRIGGER IF EXISTS studio_voicechat_history_fts_ad",
             "DROP TRIGGER IF EXISTS studio_voicechat_history_fts_au",
             "DROP TABLE IF EXISTS studio_voicechat_history_fts",
+            "DROP TABLE IF EXISTS studio_voicechat_history_fts_data",
+            "DROP TABLE IF EXISTS studio_voicechat_history_fts_idx",
+            "DROP TABLE IF EXISTS studio_voicechat_history_fts_docsize",
+            "DROP TABLE IF EXISTS studio_voicechat_history_fts_content",
+            "DROP TABLE IF EXISTS studio_voicechat_history_fts_config",
         ):
-            await conn.execute(stmt)
+            try:
+                await conn.execute(stmt)
+            except Exception:
+                # Per-statement guard so one stuck shadow doesn't
+                # abort the rest of the cleanup.
+                pass
         await conn.commit()
     except Exception:
         _log.exception("ensure_tables: FTS drop step failed")
         return
 
     # ── Step 3: create + commit ────────────────────────────────────
+    # No IF NOT EXISTS on the CREATE — if step 2 didn't fully clean
+    # up and the table still appears in sqlite_master, we want a
+    # LOUD error here instead of a silent no-op that bites at
+    # search time. The exception handler below logs the traceback.
     try:
         await conn.execute(_FTS_CREATE_SQL)
         await conn.commit()
