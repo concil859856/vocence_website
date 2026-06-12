@@ -61,6 +61,16 @@ METRIC_RETENTION_DAYS = int(os.environ.get("OPS_METRIC_RETENTION_DAYS") or "30")
 CALL_RECORDING_RETENTION_DAYS = int(
     os.environ.get("OPS_CALL_RECORDING_RETENTION_DAYS") or "30"
 )
+# Webhook delivery loop poll interval. Short by default so call.ended
+# events surface to customer endpoints within a few seconds of the
+# call ending. Tunable per deployment — bump up if you operate
+# thousands of agents and need to control DB load.
+WEBHOOK_DELIVERY_INTERVAL_S = float(
+    os.environ.get("OPS_WEBHOOK_DELIVERY_INTERVAL_S") or "3"
+)
+WEBHOOK_DELIVERY_BATCH_SIZE = int(
+    os.environ.get("OPS_WEBHOOK_DELIVERY_BATCH_SIZE") or "32"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -504,6 +514,35 @@ async def _update_detector_once() -> None:
 # Cleanup loop (retention of per-minute metrics)
 # ---------------------------------------------------------------------------
 
+async def webhook_delivery_loop() -> None:
+    """Drain ``webhook_deliveries`` rows on a tight cadence. Lighter
+    than the cleanup loop because each tick may do real HTTP work —
+    the function inside handles its own backoff per delivery, so
+    repeated empty ticks are cheap (one SELECT each)."""
+    _log.info(
+        "ops.webhook_delivery_loop: starting (interval=%ss batch=%d)",
+        WEBHOOK_DELIVERY_INTERVAL_S, WEBHOOK_DELIVERY_BATCH_SIZE,
+    )
+    # Import inside the loop so the rest of ops/pollers stays light
+    # and unit tests that don't touch webhooks don't drag in aiohttp.
+    from webhooks_service import deliver_pending_webhooks
+    while True:
+        try:
+            attempted, delivered, failed = await deliver_pending_webhooks(
+                WEBHOOK_DELIVERY_BATCH_SIZE
+            )
+            if attempted:
+                _log.info(
+                    "ops.webhook_delivery_loop: attempted=%d delivered=%d failed=%d",
+                    attempted, delivered, failed,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _log.exception("webhook_delivery_loop: unhandled error")
+        await asyncio.sleep(WEBHOOK_DELIVERY_INTERVAL_S)
+
+
 async def cleanup_loop() -> None:
     _log.info(
         "ops.cleanup_loop: starting (interval=%ds, metric_retention=%dd, recording_retention=%dd)",
@@ -564,6 +603,7 @@ async def start_pollers() -> None:
     _TASKS.append(asyncio.create_task(metrics_poller(), name="ops.metrics_poller"))
     _TASKS.append(asyncio.create_task(update_detector_loop(), name="ops.update_detector"))
     _TASKS.append(asyncio.create_task(cleanup_loop(), name="ops.cleanup_loop"))
+    _TASKS.append(asyncio.create_task(webhook_delivery_loop(), name="ops.webhook_delivery_loop"))
     _log.info("ops: started %d background pollers", len(_TASKS))
 
 

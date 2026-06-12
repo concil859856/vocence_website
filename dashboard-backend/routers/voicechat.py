@@ -1755,6 +1755,8 @@ async def voicechat_session(
         _agent_name_snapshot = (
             agent_ctx.get("name") if isinstance(agent_ctx, dict) else None
         )
+        _call_ended_at_iso = _utcnow_iso()
+        _call_duration_ms = int((time.perf_counter() - _session_open_perf) * 1000)
         with suppress(Exception):
             await _log_call_session(
                 session_id=session_id,
@@ -1762,13 +1764,46 @@ async def voicechat_session(
                 agent_id=agent_id,
                 agent_name=_agent_name_snapshot,
                 started_at_iso=_session_started_iso,
-                ended_at_iso=_utcnow_iso(),
-                duration_ms=int((time.perf_counter() - _session_open_perf) * 1000),
+                ended_at_iso=_call_ended_at_iso,
+                duration_ms=_call_duration_ms,
                 end_reason=_session_end_reason,
                 recording_path=recording_path_persisted,
                 recording_bucket=recording_bucket_persisted,
                 recording_bytes=recording_bytes_persisted,
             )
+
+        # Fan-out a ``call.ended`` event to every webhook registered
+        # on this agent. No-op for Logos (agent_id None — Logos
+        # has no owner, can't subscribe to its own events) and for
+        # agents with zero webhooks. The delivery happens out-of-
+        # band on the webhook poller; this enqueue is just an
+        # INSERT, so it never blocks the WS close path.
+        if agent_id:
+            from webhooks_service import enqueue_event
+            with suppress(Exception):
+                await enqueue_event(
+                    agent_id=agent_id,
+                    event_type="call.ended",
+                    payload={
+                        "event": "call.ended",
+                        "session_id": session_id,
+                        "agent_id": agent_id,
+                        "agent_name": _agent_name_snapshot,
+                        "started_at": _session_started_iso,
+                        "ended_at": _call_ended_at_iso,
+                        "duration_ms": _call_duration_ms,
+                        "end_reason": _session_end_reason,
+                        "recording": (
+                            {
+                                "bucket": recording_bucket_persisted,
+                                "key": recording_path_persisted,
+                                "bytes": recording_bytes_persisted,
+                            }
+                            if recording_path_persisted
+                            else None
+                        ),
+                    },
+                )
 
 
 async def _run_turn(

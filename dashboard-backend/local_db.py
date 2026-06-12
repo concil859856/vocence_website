@@ -584,6 +584,53 @@ SCHEMA_SQL = [
         FOREIGN KEY (session_id) REFERENCES voice_call_logs(session_id) ON DELETE CASCADE
     )
     """,
+    # Webhook destinations for one agent. The owner registers a URL
+    # + (optional) custom secret; we sign every delivery with
+    # HMAC-SHA256 in the format the vocence-sdk's
+    # ``webhooks.verify()`` helper expects:
+    #   X-Vocence-Timestamp: <unix-ts>
+    #   X-Vocence-Signature: v1=base64(HMAC-SHA256(secret, "v1.{ts}." + body))
+    # ``events_json`` is a JSON array of subscribed event names
+    # (e.g. ``["call.ended"]``); ``["*"]`` subscribes to everything.
+    """
+    CREATE TABLE IF NOT EXISTS agent_webhooks (
+        id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,                   -- denormalized for fast owner check
+        url TEXT NOT NULL,
+        secret TEXT NOT NULL,                    -- 32+ hex chars
+        events_json TEXT NOT NULL DEFAULT '["*"]',
+        active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
+    )
+    """,
+    # Outbound webhook delivery queue + history. Enqueued at event
+    # time, drained by ops.webhook_delivery_loop. Retries with
+    # exponential backoff capped at MAX_ATTEMPTS; status drives the
+    # "recent deliveries" UI on the Webhooks tab.
+    """
+    CREATE TABLE IF NOT EXISTS webhook_deliveries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        webhook_id TEXT NOT NULL,
+        event_type TEXT NOT NULL,                -- e.g. "call.ended"
+        payload_json TEXT NOT NULL,              -- the body we'll POST
+        -- "pending" → not yet attempted
+        -- "delivering" → in flight (set just before POST to prevent
+        --   another worker double-dispatching the same row)
+        -- "delivered" → 2xx received
+        -- "failed" → ran out of attempts
+        status TEXT NOT NULL DEFAULT 'pending',
+        attempt INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at TEXT NOT NULL DEFAULT (datetime('now')),
+        last_status_code INTEGER,
+        last_error TEXT,
+        last_attempted_at TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (webhook_id) REFERENCES agent_webhooks(id) ON DELETE CASCADE
+    )
+    """,
     # CLI device-code login flow (RFC 8628-ish). The CLI obtains a
     # device_code + user_code, opens the user_code page in the browser,
     # and polls the device_code endpoint until the user approves. On

@@ -26,12 +26,13 @@ import { AgentKnowledgePanel } from '../../components/agents/AgentKnowledgePanel
 import { AgentEmbedTokensPanel } from '../../components/agents/AgentEmbedTokensPanel';
 import { AgentCallsTab } from '../../components/agents/AgentCallsTab';
 import { AgentAnalyticsTab } from '../../components/agents/AgentAnalyticsTab';
+import { AgentWebhooksTab } from '../../components/agents/AgentWebhooksTab';
 import { useAuth } from '../../contexts/AuthContext';
 import { agentsApi, getStoredToken } from '../../lib/agents/api';
 import { avatarGradientPairFor } from '../../data/sampleVoices';
 import type { Agent, AgentConfig, AgentRun, AgentType } from '../../lib/agents/types';
 
-type Tab = 'call' | 'chat' | 'runs' | 'calls' | 'analytics' | 'settings';
+type Tab = 'call' | 'chat' | 'runs' | 'calls' | 'analytics' | 'webhooks' | 'settings';
 
 const STATUS_DOT: Record<Agent['status'], string> = {
   active: 'bg-emerald-400',
@@ -175,6 +176,7 @@ export function AgentDetail() {
     // state cleanly when there are no rows.
     { id: 'calls', label: 'Calls', show: true },
     { id: 'analytics', label: 'Analytics', show: true },
+    { id: 'webhooks', label: 'Webhooks', show: true },
     { id: 'settings', label: 'Settings', show: true },
   ];
 
@@ -408,6 +410,9 @@ export function AgentDetail() {
         )}
         {activeTab === 'analytics' && (
           <AgentAnalyticsTab agentId={agent.id} token={token} />
+        )}
+        {activeTab === 'webhooks' && (
+          <AgentWebhooksTab agentId={agent.id} token={token} />
         )}
         {activeTab === 'settings' && (
           <SettingsTab

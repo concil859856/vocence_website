@@ -15,9 +15,12 @@ import type {
   AgentDraftResponse,
   AgentRun,
   AgentType,
+  AgentWebhook,
+  AgentWebhookCreated,
   AnalyticsRange,
   ArchitectChatRequest,
   ArchitectChatResponse,
+  WebhookDelivery,
 } from './types';
 
 function authHeaders(token: string | null): HeadersInit {
@@ -147,6 +150,51 @@ export const agentsApi = {
     return jsonFetch(
       `${API_BASE_URL}/dashboard/agents/${encodeURIComponent(agentId)}/calls/${encodeURIComponent(sessionId)}/recording`,
       { method: 'DELETE', headers: authHeaders(token) },
+    );
+  },
+
+  // ───── Webhooks ──────────────────────────────────────────────────
+  async listWebhooks(token: string, agentId: string): Promise<{ webhooks: AgentWebhook[] }> {
+    return jsonFetch(
+      `${API_BASE_URL}/dashboard/agents/${encodeURIComponent(agentId)}/webhooks`,
+      { method: 'GET', headers: authHeaders(token) },
+    );
+  },
+
+  async createWebhook(
+    token: string,
+    agentId: string,
+    body: { url: string; events?: string[] },
+  ): Promise<{ webhook: AgentWebhookCreated }> {
+    return jsonFetch(
+      `${API_BASE_URL}/dashboard/agents/${encodeURIComponent(agentId)}/webhooks`,
+      { method: 'POST', headers: authHeaders(token), body: JSON.stringify(body) },
+    );
+  },
+
+  async deleteWebhook(token: string, agentId: string, webhookId: string): Promise<{ ok: true }> {
+    return jsonFetch(
+      `${API_BASE_URL}/dashboard/agents/${encodeURIComponent(agentId)}/webhooks/${encodeURIComponent(webhookId)}`,
+      { method: 'DELETE', headers: authHeaders(token) },
+    );
+  },
+
+  async listWebhookDeliveries(
+    token: string,
+    agentId: string,
+    webhookId: string,
+    limit = 20,
+  ): Promise<{ deliveries: WebhookDelivery[] }> {
+    return jsonFetch(
+      `${API_BASE_URL}/dashboard/agents/${encodeURIComponent(agentId)}/webhooks/${encodeURIComponent(webhookId)}/deliveries?limit=${limit}`,
+      { method: 'GET', headers: authHeaders(token) },
+    );
+  },
+
+  async testWebhook(token: string, agentId: string, webhookId: string): Promise<{ ok: true }> {
+    return jsonFetch(
+      `${API_BASE_URL}/dashboard/agents/${encodeURIComponent(agentId)}/webhooks/${encodeURIComponent(webhookId)}/test`,
+      { method: 'POST', headers: authHeaders(token) },
     );
   },
 

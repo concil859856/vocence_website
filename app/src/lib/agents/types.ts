@@ -137,6 +137,37 @@ export interface ArchitectChatResponse {
  *     for the Agent Architect to draft from). Those auto-open the
  *     Architect drawer instead of direct prefill.
  */
+// ─── Webhooks ────────────────────────────────────────────────────────
+// Customers register a URL per agent; we POST signed events
+// (call.ended, etc.). The `secret` field is plaintext ONCE on
+// creation and omitted from list responses afterwards.
+
+export interface AgentWebhook {
+  id: string;
+  url: string;
+  events: string[];     // ["*"] = all events
+  active: boolean;
+  created_at: string;
+}
+
+export interface AgentWebhookCreated extends AgentWebhook {
+  // Only present in the POST /webhooks response. Surface once,
+  // never store, never display again — caller's responsibility.
+  secret: string;
+}
+
+export interface WebhookDelivery {
+  id: number;
+  event_type: string;
+  status: 'pending' | 'delivering' | 'delivered' | 'failed';
+  attempt: number;
+  last_status_code: number | null;
+  last_error: string | null;
+  last_attempted_at: string | null;
+  next_attempt_at: string;
+  created_at: string;
+}
+
 // ─── Call history + analytics ────────────────────────────────────────
 // One entry per voice-agent WS session. `has_recording` is the
 // frontend-facing form of the backend's nullable recording_path —

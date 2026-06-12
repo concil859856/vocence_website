@@ -736,6 +736,132 @@ async def delete_call_recording(
         await conn.close()
 
 
+class WebhookCreateIn(BaseModel):
+    url: str = Field(min_length=8, max_length=2048)
+    events: Optional[list[str]] = None  # default in service layer: ["*"]
+
+
+@router.get("/{agent_id}/webhooks")
+async def list_agent_webhooks(
+    agent_id: str,
+    user_id: str = Depends(require_auth),
+) -> dict:
+    """All webhooks subscribed to events on this agent. Secrets are
+    NOT returned — they're shown once at creation time."""
+    await _ensure_agent_owned(agent_id, user_id)
+    from webhooks_service import list_webhooks_for_agent
+    return {"webhooks": await list_webhooks_for_agent(agent_id, user_id)}
+
+
+@router.post("/{agent_id}/webhooks")
+async def create_agent_webhook(
+    agent_id: str,
+    body: WebhookCreateIn,
+    user_id: str = Depends(require_auth),
+) -> dict:
+    """Register a new webhook URL. Response includes the plaintext
+    ``secret`` — the caller MUST show this to the user once and
+    never again (subsequent list() calls omit it)."""
+    await _ensure_agent_owned(agent_id, user_id)
+    from webhooks_service import create_webhook
+    try:
+        wh = await create_webhook(
+            agent_id=agent_id,
+            user_id=user_id,
+            url=body.url,
+            events=body.events,
+        )
+    except ValueError as exc:
+        # SSRF guard / bad scheme — surface the reason so the UI can
+        # show "this URL was rejected because …".
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"webhook": wh}
+
+
+@router.delete("/{agent_id}/webhooks/{webhook_id}")
+async def delete_agent_webhook(
+    agent_id: str,
+    webhook_id: str,
+    user_id: str = Depends(require_auth),
+) -> dict:
+    await _ensure_agent_owned(agent_id, user_id)
+    from webhooks_service import delete_webhook
+    ok = await delete_webhook(webhook_id, user_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="webhook not found")
+    return {"ok": True}
+
+
+@router.get("/{agent_id}/webhooks/{webhook_id}/deliveries")
+async def list_agent_webhook_deliveries(
+    agent_id: str,
+    webhook_id: str,
+    limit: int = 20,
+    user_id: str = Depends(require_auth),
+) -> dict:
+    """Last N delivery attempts for one webhook. Surfaces status,
+    HTTP code, and last error so the customer can debug their
+    endpoint without reading our logs."""
+    await _ensure_agent_owned(agent_id, user_id)
+    # Owner check on the webhook itself — agent_owned + webhook
+    # belongs-to-agent prevents IDOR on a webhook id guess.
+    conn = await get_connection()
+    try:
+        row = await (await conn.execute(
+            "SELECT 1 FROM agent_webhooks WHERE id = ? AND agent_id = ? AND user_id = ?",
+            (webhook_id, agent_id, user_id),
+        )).fetchone()
+    finally:
+        await conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="webhook not found")
+    from webhooks_service import list_recent_deliveries
+    return {"deliveries": await list_recent_deliveries(webhook_id, limit=limit)}
+
+
+@router.post("/{agent_id}/webhooks/{webhook_id}/test")
+async def test_agent_webhook(
+    agent_id: str,
+    webhook_id: str,
+    user_id: str = Depends(require_auth),
+) -> dict:
+    """Enqueue a synthetic ``webhook.test`` event so the customer
+    can verify wiring + signature handling without waiting for a
+    real call. Delivery happens on the next poller tick."""
+    await _ensure_agent_owned(agent_id, user_id)
+    conn = await get_connection()
+    try:
+        row = await (await conn.execute(
+            "SELECT 1 FROM agent_webhooks WHERE id = ? AND agent_id = ? AND user_id = ?",
+            (webhook_id, agent_id, user_id),
+        )).fetchone()
+    finally:
+        await conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="webhook not found")
+    # Insert one delivery row directly for this single webhook
+    # (vs the agent fan-out path) — test events shouldn't reach
+    # OTHER webhooks on the same agent.
+    import json as _json
+    body = _json.dumps({
+        "event": "webhook.test",
+        "agent_id": agent_id,
+        "webhook_id": webhook_id,
+        "message": "If you can read this, signature verification passed.",
+    }, separators=(",", ":"))
+    conn = await get_connection()
+    try:
+        await conn.execute(
+            "INSERT INTO webhook_deliveries (webhook_id, event_type, payload_json) "
+            "VALUES (?, ?, ?)",
+            (webhook_id, "webhook.test", body),
+        )
+        await conn.commit()
+    finally:
+        await conn.close()
+    return {"ok": True}
+
+
 @router.get("/{agent_id}/calls/{session_id}/transcript")
 async def download_call_transcript(
     agent_id: str,
