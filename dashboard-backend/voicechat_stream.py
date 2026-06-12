@@ -585,6 +585,38 @@ class StreamingTurnSession:
                 text = (data.get("text") or "").strip()
                 if not text:
                     continue
+                # Partial-reset guard: some STT pod builds emit a
+                # NEW shorter partial (without first sending a
+                # ``final``) when their internal segmenter rolls
+                # to a fresh chunk. Naively overwriting
+                # ``partial_text`` with the shorter string would
+                # drop everything the user said earlier in the
+                # same continuous utterance — exactly the
+                # "front of the caption disappears as I keep
+                # talking" symptom reported.
+                #
+                # Heuristic: if the new partial is shorter than
+                # the one we already have AND the old partial
+                # doesn't end with the new one (i.e. the new
+                # text is NOT just a re-tokenization of the
+                # tail), treat the previous partial as an
+                # implicit final and accumulate it before
+                # adopting the new one. running_transcript()
+                # then includes both, so neither the live caption
+                # nor the stored transcript can lose the head of
+                # the utterance.
+                prev = self._state.partial_text
+                if (
+                    prev
+                    and len(text) < len(prev)
+                    and not prev.lower().endswith(text.lower())
+                ):
+                    self._state.finals_accumulated.append(prev)
+                    _log.info(
+                        "[stream] trace session=%s phase=stt_implicit_final "
+                        "prev=%r new=%r",
+                        self._session_id, prev[:120], text[:120],
+                    )
                 self._state.partial_text = text
                 self._mark_voice()
                 running = self._state.running_transcript()

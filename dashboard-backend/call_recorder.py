@@ -80,15 +80,42 @@ class CallRecorder:
     def __init__(self, *, user_id: str, session_id: str) -> None:
         self._user_id = user_id
         self._session_id = session_id
-        # (started_at_monotonic_offset_ms, bytes) tuples for each leg.
-        # `bytes` is raw s16le PCM at SAMPLE_RATE (decimation for the
-        # agent leg happens at push time, so storage is already
-        # canonical 16 kHz). List avoids quadratic concat costs on
-        # long calls.
+        # User leg: (started_at_monotonic_offset_ms, bytes). User
+        # PCM arrives at real-time speed from the mic, so the push
+        # timestamps already line up with what the human ear heard.
         self._user_chunks: list[tuple[int, bytes]] = []
-        self._agent_chunks: list[tuple[int, bytes]] = []
         self._user_total_bytes = 0
-        self._agent_total_bytes = 0
+
+        # Agent leg: more complex because TTS streams FASTER than
+        # real-time (the pod synthesises a 5-second sentence in
+        # ~0.7s and we push all those frames immediately). Naively
+        # appending those frames to the recorder timeline produces a
+        # mix where the recording contains audio the user never
+        # actually heard — exactly the user's barge-in-but-agent-
+        # keeps-talking-in-the-recording bug.
+        #
+        # The fix is to buffer agent PCM as it's pushed but commit
+        # to the timeline only as the CLIENT signals playback. The
+        # client sends ``client_audio_started`` when its worklet
+        # first hits the speakers and ``client_audio_settled`` (or
+        # the server sees a ``cancel``) when playback ends. Between
+        # those events we know real-time elapsed; we keep only
+        # ``elapsed_ms × BYTES_PER_MS`` of the buffered agent PCM
+        # and discard the tail (audio that was buffered server-side
+        # but never reached the user).
+        #
+        # _agent_pending_buffer accumulates pushes for the CURRENT
+        # turn until a stop signal arrives. _agent_segments are
+        # (start_offset_ms, pcm_bytes) for windows that DID play;
+        # they're flattened into the right leg of the stereo WAV
+        # on close.
+        self._agent_pending_buffer: bytearray = bytearray()
+        self._agent_segments: list[tuple[int, bytes]] = []
+        # Set on client_audio_started; cleared on settled / cancel.
+        # When set, holds the recorder offset (ms from session
+        # start) at which the user first heard audio for this turn.
+        self._agent_playback_start_ms: int | None = None
+
         self._t0: float = 0.0
         self._started = False
         self._closed = False
@@ -122,9 +149,15 @@ class CallRecorder:
 
         Input is 24 kHz mono s16le (TTS pod's canonical output).
         Decimated 2:3 to 16 kHz so it matches the user side and the
-        WAV file's single rate. TTS chunks are 40 ms = 960 samples
-        which is divisible by 3, so the decimation phase always
-        aligns per chunk — no carrying state across calls.
+        WAV file's single rate.
+
+        The chunk goes into a PENDING buffer, not directly into the
+        timeline. The buffer drains into a timeline segment when
+        ``notify_agent_playback_stopped`` fires — at that point we
+        know how much wall-clock the user actually heard and trim
+        the buffer to that duration. Audio that was synthesized but
+        never played (because the user barged in, the WS closed
+        early, etc.) is dropped.
         """
         if not self.started or not pcm:
             return
@@ -132,10 +165,60 @@ class CallRecorder:
             decimated = self._decimate_24k_to_16k(bytes(pcm))
             if not decimated:
                 return
-            self._agent_chunks.append((self._now_ms(), decimated))
-            self._agent_total_bytes += len(decimated)
+            self._agent_pending_buffer.extend(decimated)
         except Exception:
             _log.debug("recorder: push_agent swallowed", exc_info=False)
+
+    def notify_agent_playback_started(self) -> None:
+        """Mark the start of a CLIENT-side playback window. Anchors
+        the agent timeline at the current recorder offset so the
+        segment we eventually commit lines up with what the user
+        heard. Idempotent — a flapping client_audio_started doesn't
+        reset us mid-playback.
+
+        Called from the voicechat router on receipt of
+        ``client_audio_started`` from the client.
+        """
+        if not self.started or self._agent_playback_start_ms is not None:
+            return
+        self._agent_playback_start_ms = self._now_ms()
+
+    def notify_agent_playback_stopped(self) -> None:
+        """Close the current playback window. The buffered agent
+        PCM is trimmed to ``(now - playback_start) × BYTES_PER_MS``
+        bytes — the volume of audio that could have reached the
+        speakers in the elapsed wall-clock. Anything beyond is
+        dropped (= the TTS audio that was synthesised faster than
+        real-time and buffered server-side but never played).
+
+        Called from the voicechat router on receipt of either
+        ``client_audio_settled`` (normal end-of-utterance) or
+        ``cancel`` (user barge-in). Both produce the same correct
+        behaviour: the recording only contains what the user heard.
+        """
+        if not self.started or self._agent_playback_start_ms is None:
+            return
+        elapsed_ms = self._now_ms() - self._agent_playback_start_ms
+        if elapsed_ms < 0:
+            elapsed_ms = 0
+        max_played_bytes = elapsed_ms * BYTES_PER_MS
+        # Even byte boundary for s16le.
+        if max_played_bytes & 1:
+            max_played_bytes -= 1
+
+        # The pending buffer was cleared by the previous
+        # notify_stopped (or starts at 0 for the first turn), so
+        # index 0 is the first byte of the current turn's audio.
+        # The client plays in order from there; we keep only the
+        # prefix that fits in the elapsed wall-clock.
+        playable = bytes(self._agent_pending_buffer[:max_played_bytes])
+        if playable:
+            self._agent_segments.append(
+                (self._agent_playback_start_ms, playable)
+            )
+
+        self._agent_pending_buffer = bytearray()
+        self._agent_playback_start_ms = None
 
     @staticmethod
     def _decimate_24k_to_16k(pcm_s16le_24k: bytes) -> bytes:
@@ -162,9 +245,22 @@ class CallRecorder:
         """
         if self._closed:
             return (None, None, 0)
+
+        # Flush any pending agent playback window BEFORE flipping
+        # _closed. notify_agent_playback_stopped() bails when
+        # ``started`` is False, and ``started`` reads
+        # ``_started and not _closed`` — so we have to do the
+        # flush while ``started`` is still True. Otherwise the
+        # last utterance of a session that ended mid-playback
+        # (WS closed before client_audio_settled arrived) would
+        # be silently dropped from the recording.
+        if self._agent_playback_start_ms is not None:
+            self.notify_agent_playback_stopped()
+
         self._closed = True
 
-        if self._user_total_bytes == 0 and self._agent_total_bytes == 0:
+        agent_total = sum(len(seg[1]) for seg in self._agent_segments)
+        if self._user_total_bytes == 0 and agent_total == 0:
             # Brand-new session that disconnected before any audio
             # flowed. Nothing to upload.
             return (None, None, 0)
@@ -174,7 +270,7 @@ class CallRecorder:
             # legs can be tens of MB and we don't want to stall the
             # event loop while serializing them.
             user_mono = await asyncio.to_thread(self._flatten, self._user_chunks)
-            agent_mono = await asyncio.to_thread(self._flatten, self._agent_chunks)
+            agent_mono = await asyncio.to_thread(self._flatten, self._agent_segments)
 
             # Pad the shorter leg with silence so both arrays have
             # the same sample count — required for interleave.

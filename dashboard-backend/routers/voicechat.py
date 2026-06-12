@@ -1505,11 +1505,16 @@ async def voicechat_session(
                 )
                 # User intent: take the floor. Don't wait for the
                 # client_audio_settled round-trip to clear the gate.
-                # If settled is lost in flight (Bug #1 in the audit),
-                # the gate would stay set up to GATE_MAX_HOLD_S
-                # seconds and the user's next utterance would be
-                # silently dropped.
                 _gate_clear_from_client()
+                # Close the recorder's agent playback window NOW so
+                # the recording's right channel stops at the moment
+                # the user barged in. Without this, the recorder
+                # would still hold the rest of the buffered TTS
+                # (synthesised faster than real-time → already in
+                # the buffer) and the WAV would include audio the
+                # user never actually heard.
+                if call_recorder is not None:
+                    call_recorder.notify_agent_playback_stopped()
                 await _cancel_current()
                 try:
                     await ws.send_json({"type": "cancelled"})
@@ -1524,11 +1529,22 @@ async def voicechat_session(
             # ``client_audio_settled`` when the queue drains naturally
             # or the barge-in fade completes. We never get the gate
             # timing wrong now because we aren't guessing it.
+            #
+            # The same signals also drive the recorder's
+            # agent-playback window: started/settled bracket the
+            # time the user heard audio, so the recorder can keep
+            # only the bytes that fit in that window and drop
+            # whatever the TTS pod synthesised ahead but never
+            # reached the speakers.
             if mtype == "client_audio_started":
                 _gate_set_from_client()
+                if call_recorder is not None:
+                    call_recorder.notify_agent_playback_started()
                 continue
             if mtype == "client_audio_settled":
                 _gate_clear_from_client()
+                if call_recorder is not None:
+                    call_recorder.notify_agent_playback_stopped()
                 continue
 
             # ``stream_commit`` belongs INSIDE an active stream session

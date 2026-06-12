@@ -214,13 +214,24 @@ export function StudioVoiceAgentSpotlight() {
     const last = messages[messages.length - 1];
     if (last?.role !== 'system') return;
     if (!TERMINAL_SYSTEM_KINDS.has(last.systemKind ?? '')) return;
-    // Stop everything client-side right away, mic off, WS torn down.
-    cancel();
+    // Stop the mic immediately — there's nothing the user can do
+    // to keep this call alive anyway. We do NOT call cancel() here
+    // because for ``free_time_up`` the agent is still speaking
+    // the spoken farewell ("Alright, the time's up…") and the
+    // cancel signal would tear the audio pipeline down mid-word.
     stopListening();
-    // Defer the demo-reset so the system bubble lingers a beat.
-    const t = window.setTimeout(() => setLive(false), 3000);
+    // How long to wait before flipping ``live=false`` (which
+    // unmounts useVoiceChat's audio player). For terminal kinds
+    // that DON'T speak a farewell (max_duration, idle_timeout,
+    // billing_exhausted) the previous 3 s lingering window was
+    // fine. ``free_time_up`` speaks the LOGOS_FAREWELL_MESSAGE —
+    // ~250 chars, roughly 12 s of TTS — so we hold the player
+    // open long enough for the whole sentence to drain. Cap is
+    // generous (20 s) so a slower-speech farewell still fits.
+    const ms = last.systemKind === 'free_time_up' ? 20000 : 3000;
+    const t = window.setTimeout(() => setLive(false), ms);
     return () => window.clearTimeout(t);
-  }, [messages, live, cancel, stopListening]);
+  }, [messages, live, stopListening]);
 
   const statusLabel = !live
     ? 'live'
