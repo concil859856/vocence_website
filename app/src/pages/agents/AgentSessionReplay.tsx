@@ -140,7 +140,11 @@ export function AgentSessionReplay() {
 
   // Track metadata for the global player. Stable per (agent, call)
   // so playAt() from transcript clicks can hit the "same track →
-  // just seek" fast path on the second + clicks.
+  // just seek" fast path on the second + clicks. ``durationSec``
+  // is critical: the player uses it to render the progress bar
+  // at the target offset on the very first frame after a
+  // transcript-row click, instead of flashing at 0:00 while the
+  // audio's loadedmetadata is in flight.
   const trackMeta = useMemo(() => {
     if (!agentId || !sessionId || !call || !agent) return null;
     return {
@@ -148,6 +152,7 @@ export function AgentSessionReplay() {
       sessionId,
       title: `Call · ${agent.name}`,
       subtitle: `${Math.round(call.duration_ms / 1000)}s · ${call.turn_count} turn${call.turn_count === 1 ? '' : 's'}`,
+      durationSec: call.duration_ms / 1000,
     };
   }, [agentId, sessionId, call, agent]);
 

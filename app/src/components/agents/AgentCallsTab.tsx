@@ -228,6 +228,7 @@ export function AgentCallsTab({ agentId, agentName, token }: Props) {
                                 sessionId: c.session_id,
                                 title: agentName ? `Call · ${agentName}` : 'Call recording',
                                 subtitle: `${formatDuration(c.duration_ms)} · ${formatRelative(c.started_at)}`,
+                                durationSec: c.duration_ms / 1000,
                               })}
                               disabled={callPlayer.status === 'loading' && callPlayer.loadedSessionId === c.session_id}
                               className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs hover:bg-white/10 ${

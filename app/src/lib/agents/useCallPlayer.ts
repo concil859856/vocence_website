@@ -31,6 +31,12 @@ export interface CallTrackMeta {
    *  title + src — calls from the same agent end up with a stable
    *  visual identity automatically. */
   image?: string;
+  /** Pre-known total duration in seconds. Forwarded to the player
+   *  so playAt() can paint the bar at the target offset on the
+   *  first frame — without it, a click-to-seek-from-cold flashes
+   *  the bar at 0:00 before snapping to the target. Pass
+   *  ``call.duration_ms / 1000``. */
+  durationSec?: number;
 }
 
 type Status = 'idle' | 'loading' | 'error';
@@ -50,6 +56,7 @@ export function useCallPlayer(token: string | null) {
       title: meta.title,
       subtitle: meta.subtitle,
       image: meta.image,
+      durationHintSec: meta.durationSec,
       // The download endpoint is its own URL; we don't pass it here
       // because Track.downloadFilename triggers a fetch-based download
       // path in the player that would re-fetch the presigned URL after

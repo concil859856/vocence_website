@@ -9,6 +9,14 @@ export interface Track {
   /** Set for user-generated audio (TTS/STT/clone/voice-design results, history items).
    *  When present, the StudioPlayerBar exposes a Download button. Demo samples omit this. */
   downloadFilename?: string;
+  /** Caller's known duration in seconds, used to paint the progress
+   *  bar correctly while the real ``loadedmetadata`` is still in
+   *  flight. Without this, ``playAt(track, 42)`` would flash the
+   *  bar at 0:00 (duration unknown → pct=0) before snapping to
+   *  the target offset once metadata arrives. Optional — pass it
+   *  when you know the duration up front (e.g. call recordings
+   *  have ``call.duration_ms`` on the row already). */
+  durationHintSec?: number;
 }
 
 type RepeatMode = 'off' | 'all' | 'one';
@@ -264,8 +272,11 @@ export function StudioPlayerProvider({ children }: { children: ReactNode }) {
       }
       return;
     }
-    // Different track — load it, then defer the seek until
-    // loadedmetadata fires (currentTime is meaningless before then).
+    // Different track — load it, then defer the audio-element
+    // seek until loadedmetadata fires (currentTime is meaningless
+    // before then). Optimistically paint the UI at the target
+    // offset so we don't flash 0:00 → target. The actual audio
+    // currentTime catches up once metadata lands.
     el.pause();
     el.src = t.src;
     el.currentTime = 0;
@@ -273,7 +284,15 @@ export function StudioPlayerProvider({ children }: { children: ReactNode }) {
     setQueue([t]);
     setQueueIndex(0);
     setQueueSource(null);
-    setProgress(0);
+    // Optimistic UI paint: progress=target, duration=hint (when
+    // provided). The progress bar percentage = progress/duration,
+    // so both have to land in one render or the bar still flashes.
+    // Once timeupdate fires after the deferred seek, these snap
+    // to the real audio-element values.
+    setProgress(safeSec);
+    if (t.durationHintSec && t.durationHintSec > 0) {
+      setDuration(t.durationHintSec);
+    }
     const onMeta = () => {
       el.currentTime = Math.min(safeSec, el.duration || safeSec);
       setProgress(el.currentTime);
