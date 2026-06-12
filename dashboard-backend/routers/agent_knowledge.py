@@ -65,8 +65,24 @@ def _ensure_kn_available() -> None:
 
 @router.get("/sources")
 async def list_sources(agent_id: str, user_id: str = Depends(require_auth)) -> dict:
+    """List ingested knowledge sources for one agent. When the
+    knowledge ingestion pod isn't configured on this deployment we
+    return an EMPTY LIST (200) rather than 503. Reasons:
+
+    1. The UI polls this endpoint on every settings page open, so
+       a 503 floods the error log with the same line per render
+       (visible in the user's deployment log spam).
+    2. "Feature not configured" and "configured but the user has
+       no sources yet" produce the same UX — empty section. The
+       UI shouldn't have to special-case the 503.
+
+    Mutating endpoints (ingest_*, delete_source) still 503 so the
+    user gets a clear error if they actually try to USE the
+    feature when it's unconfigured.
+    """
     await _require_agent_owner(agent_id, user_id)
-    _ensure_kn_available()
+    if not knowledge_client.is_configured():
+        return {"sources": []}
     try:
         return await knowledge_client.list_sources(agent_id)
     except Exception as exc:  # noqa: BLE001

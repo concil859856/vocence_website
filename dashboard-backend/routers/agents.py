@@ -728,28 +728,36 @@ async def search_agent_calls(
     user_id: str = Depends(require_auth),
 ) -> dict:
     """Full-text search over per-turn transcripts for one agent.
-    Returns matching call rows + a snippet of the highest-ranked
-    match per call so the UI can render "this is what was said"
-    inline. One query, one round trip.
+    Returns one row per matching call with the best-ranked
+    snippet for that call. One round trip.
 
-    ``q`` is normalized into an FTS5 MATCH expression: every salient
-    token is quoted as a literal phrase (so a stray AND/OR/NEAR
-    can't break the parser) and OR-joined. Short / stop-word tokens
-    are dropped so single-character queries don't return everything.
+    Token cleanup:
+      * keep alphanumerics + dashes, lowercase
+      * drop runs shorter than 2 chars
+      * dedup, cap at 12 tokens
+
+    Each surviving token is wrapped in double quotes (FTS5 phrase
+    syntax) and OR-joined so a stray AND/OR/NEAR in the user's
+    query can't break the parser. Token order doesn't matter
+    because the MATCH is an OR.
+
+    Query shape — we use a CTE + ROW_NUMBER() instead of a bare
+    GROUP BY because the documented "bare column with MIN/MAX
+    aggregate" rule in SQLite is only reliable for stored columns
+    — for function-call columns like ``snippet(...)`` the binding
+    isn't guaranteed. ROW_NUMBER() picks exactly the row we want
+    (lowest bm25 per session) and we take its snippet directly.
     """
     await _ensure_agent_owned(agent_id, user_id)
     days = _range_clause(range)
     limit = max(1, min(int(limit), 200))
 
-    # Token cleanup. Same shape as the RAG path in agent_knowledge —
-    # keep alphanumerics + dashes, drop runs shorter than 2 chars.
     import re as _re
     tokens = [
         t.lower()
         for t in _re.findall(r"[A-Za-z][A-Za-z0-9_-]+", q or "")
         if len(t) >= 2
     ]
-    # Dedup + cap, mirror agent_knowledge's policy.
     seen: set[str] = set()
     uniq: list[str] = []
     for t in tokens:
@@ -762,41 +770,60 @@ async def search_agent_calls(
     if not uniq:
         return {"query": q, "range": range, "results": []}
     match_expr = " OR ".join('"' + t.replace('"', '""') + '"' for t in uniq)
+    _log.info(
+        "[calls.search] agent=%s user=%s q=%r match=%r range=%dd",
+        agent_id, user_id, q[:120], match_expr[:200], days,
+    )
 
     conn = await get_connection()
     try:
-        # MATCH on FTS, JOIN to voice_call_logs for ownership + range
-        # filter, group by session_id so each call appears once. Pick
-        # the highest-rank user_text/bot_text snippet per session via
-        # MIN(bm25(...)) — the user reads ONE line per call, so
-        # showing the strongest match wins. snippet() args mirror
-        # the FTS5 docs: highlight tags, ellipsis, 32 token window.
         cursor = await conn.execute(
             """
+            WITH ranked AS (
+                SELECT
+                    t.session_id AS session_id,
+                    bm25(studio_voicechat_history_fts) AS rank,
+                    snippet(
+                        studio_voicechat_history_fts,
+                        -1,
+                        '<mark>',
+                        '</mark>',
+                        '…',
+                        32
+                    ) AS hit,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY t.session_id
+                        ORDER BY bm25(studio_voicechat_history_fts) ASC
+                    ) AS rn
+                FROM studio_voicechat_history_fts
+                JOIN studio_voicechat_history t
+                    ON t.id = studio_voicechat_history_fts.rowid
+                WHERE studio_voicechat_history_fts MATCH ?
+            )
             SELECT
                 c.session_id,
                 c.started_at,
                 c.duration_ms,
                 c.end_reason,
                 c.turn_count,
-                MIN(bm25(studio_voicechat_history_fts)) AS rank,
-                snippet(studio_voicechat_history_fts, -1, '<mark>', '</mark>', '…', 32) AS hit
-            FROM studio_voicechat_history_fts
-            JOIN studio_voicechat_history t
-                ON t.id = studio_voicechat_history_fts.rowid
-            JOIN voice_call_logs c
-                ON c.session_id = t.session_id
-            WHERE studio_voicechat_history_fts MATCH ?
+                r.rank,
+                r.hit
+            FROM ranked r
+            JOIN voice_call_logs c ON c.session_id = r.session_id
+            WHERE r.rn = 1
               AND c.agent_id = ?
               AND c.user_id = ?
               AND c.started_at >= datetime('now', ?)
-            GROUP BY c.session_id
-            ORDER BY rank ASC
+            ORDER BY r.rank ASC
             LIMIT ?
             """,
             (match_expr, agent_id, user_id, f"-{days} days", limit),
         )
         rows = await cursor.fetchall()
+        _log.info(
+            "[calls.search] agent=%s match=%r → %d results",
+            agent_id, match_expr[:80], len(rows),
+        )
         results = [
             {
                 "session_id": r[0],
