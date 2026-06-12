@@ -265,6 +265,100 @@ class CallRecorder:
             w.writeframes(stereo_pcm)
 
 
+async def sweep_expired_recordings(retention_days: int) -> tuple[int, int]:
+    """Delete WAV files older than ``retention_days`` and NULL their
+    rows in ``voice_call_logs``. Returns ``(files_unlinked, rows_updated)``.
+
+    Idempotent — safe to call any number of times. Tolerates files
+    that are already gone (FileNotFoundError swallowed). On disk-IO
+    errors per row we keep the row's ``recording_path`` intact so the
+    next sweep retries; we don't NULL the column until the file is
+    actually gone or already missing, so the UI's "play" button stays
+    accurate.
+
+    The order is:
+        1. SELECT rows with non-NULL recording_path older than the
+           cutoff.
+        2. Per row: unlink file (tolerating FileNotFoundError).
+        3. Per row that succeeded at step 2: UPDATE row to NULL
+           recording_path + recording_bytes.
+
+    If step 2 fails for a row, that row is left alone — the next sweep
+    cycle will retry. If we crash between step 2 and step 3 for some
+    row, the next sweep notices the path is still on the row and
+    re-unlinks (which fast-succeeds via FileNotFoundError → swallow).
+    Net: never deletes the wrong file, never leaves a dangling
+    pointer on the UI forever.
+    """
+    # Inline import — sweep_expired_recordings is called from the
+    # cleanup_loop in ops.pollers, which keeps its dependency surface
+    # narrow. The local_db import is heavy (registers SQL setup) so
+    # we defer it.
+    from local_db import get_connection
+
+    if retention_days <= 0:
+        return (0, 0)
+
+    files_unlinked = 0
+    rows_updated = 0
+    conn = await get_connection()
+    try:
+        rows = await (await conn.execute(
+            """
+            SELECT session_id, recording_path
+            FROM voice_call_logs
+            WHERE recording_path IS NOT NULL
+              AND started_at < datetime('now', ?)
+            """,
+            (f"-{retention_days} days",),
+        )).fetchall()
+
+        # Collect session_ids that we successfully cleared on disk so
+        # we can batch the UPDATE. Keeping the SELECT, file IO, and
+        # UPDATE in distinct phases avoids holding a write lock while
+        # doing filesystem work.
+        cleared_session_ids: list[str] = []
+        for r in rows:
+            session_id = str(r[0])
+            path = str(r[1] or "")
+            if not path:
+                continue
+            try:
+                os.unlink(path)
+                files_unlinked += 1
+                cleared_session_ids.append(session_id)
+            except FileNotFoundError:
+                # Already gone; treat as success so the column gets
+                # NULLed and we stop trying. The UI's "no recording"
+                # path takes over from here.
+                cleared_session_ids.append(session_id)
+            except OSError as exc:
+                # Permissions or disk error — leave the row alone,
+                # next sweep retries. Log noisily so an oncall
+                # notices a sustained failure.
+                _log.warning(
+                    "recording sweep: unlink failed for session=%s path=%s: %s "
+                    "(will retry next cycle)",
+                    session_id, path, exc,
+                )
+
+        if cleared_session_ids:
+            placeholders = ",".join(["?"] * len(cleared_session_ids))
+            await conn.execute(
+                f"""
+                UPDATE voice_call_logs
+                SET recording_path = NULL, recording_bytes = NULL
+                WHERE session_id IN ({placeholders})
+                """,
+                cleared_session_ids,
+            )
+            await conn.commit()
+            rows_updated = len(cleared_session_ids)
+    finally:
+        await conn.close()
+    return (files_unlinked, rows_updated)
+
+
 def recording_path_for(user_id: str, session_id: str, root: str | None = None) -> str:
     """Standard layout: ``data/recordings/{user_id}/{session_id}.wav``.
 

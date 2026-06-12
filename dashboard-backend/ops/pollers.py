@@ -54,6 +54,13 @@ RESTART_GRACE_S = float(os.environ.get("OPS_RESTART_GRACE_S") or "60")
 DEPLOY_GRACE_S = float(os.environ.get("OPS_DEPLOY_GRACE_S") or "300")
 
 METRIC_RETENTION_DAYS = int(os.environ.get("OPS_METRIC_RETENTION_DAYS") or "30")
+# How long to keep voice-call recordings on disk. After this, the
+# cleanup_loop unlinks the WAV and NULLs recording_path/recording_bytes
+# on the voice_call_logs row (the log row itself stays — analytics are
+# computed from those, not the audio). Default 30 days.
+CALL_RECORDING_RETENTION_DAYS = int(
+    os.environ.get("OPS_CALL_RECORDING_RETENTION_DAYS") or "30"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -498,7 +505,10 @@ async def _update_detector_once() -> None:
 # ---------------------------------------------------------------------------
 
 async def cleanup_loop() -> None:
-    _log.info("ops.cleanup_loop: starting (interval=%ds)", CLEANUP_INTERVAL_S)
+    _log.info(
+        "ops.cleanup_loop: starting (interval=%ds, metric_retention=%dd, recording_retention=%dd)",
+        CLEANUP_INTERVAL_S, METRIC_RETENTION_DAYS, CALL_RECORDING_RETENTION_DAYS,
+    )
     while True:
         try:
             deleted = await db.trim_old_minute_metrics(METRIC_RETENTION_DAYS)
@@ -507,7 +517,29 @@ async def cleanup_loop() -> None:
         except asyncio.CancelledError:
             raise
         except Exception:
-            _log.exception("cleanup_loop: unhandled error")
+            _log.exception("cleanup_loop: unhandled error (metric trim)")
+
+        # Voice-call recording retention. The call log row itself
+        # stays (analytics rely on it); only the WAV file + the
+        # path/bytes columns are cleared. Local import so this
+        # module's startup cost stays the same when recordings are
+        # never used.
+        try:
+            from call_recorder import sweep_expired_recordings
+            files_unlinked, rows_updated = await sweep_expired_recordings(
+                CALL_RECORDING_RETENTION_DAYS
+            )
+            if files_unlinked or rows_updated:
+                _log.info(
+                    "ops.cleanup_loop: swept %d recording files (%d row updates) "
+                    "older than %d days",
+                    files_unlinked, rows_updated, CALL_RECORDING_RETENTION_DAYS,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _log.exception("cleanup_loop: unhandled error (recording sweep)")
+
         await asyncio.sleep(CLEANUP_INTERVAL_S)
 
 
