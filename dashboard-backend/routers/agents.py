@@ -781,7 +781,8 @@ async def search_agent_calls(
             """
             WITH ranked AS (
                 SELECT
-                    t.session_id AS session_id,
+                    session_id,
+                    agent_id,
                     bm25(studio_voicechat_history_fts) AS rank,
                     snippet(
                         studio_voicechat_history_fts,
@@ -792,13 +793,12 @@ async def search_agent_calls(
                         32
                     ) AS hit,
                     ROW_NUMBER() OVER (
-                        PARTITION BY t.session_id
+                        PARTITION BY session_id
                         ORDER BY bm25(studio_voicechat_history_fts) ASC
                     ) AS rn
                 FROM studio_voicechat_history_fts
-                JOIN studio_voicechat_history t
-                    ON t.id = studio_voicechat_history_fts.rowid
                 WHERE studio_voicechat_history_fts MATCH ?
+                  AND agent_id = ?
             )
             SELECT
                 c.session_id,
@@ -811,7 +811,6 @@ async def search_agent_calls(
             FROM ranked r
             JOIN voice_call_logs c ON c.session_id = r.session_id
             WHERE r.rn = 1
-              AND c.agent_id = ?
               AND c.user_id = ?
               AND c.started_at >= datetime('now', ?)
             ORDER BY r.rank ASC
@@ -820,9 +819,19 @@ async def search_agent_calls(
             (match_expr, agent_id, user_id, f"-{days} days", limit),
         )
         rows = await cursor.fetchall()
+        # Also probe the FTS index directly so we can tell whether a
+        # 0-result is "no FTS hits at all" vs "hits but JOIN to
+        # voice_call_logs filtered them all out". The cost is one
+        # COUNT — negligible — and saves another diagnostic round.
+        cursor2 = await conn.execute(
+            "SELECT COUNT(*) FROM studio_voicechat_history_fts "
+            "WHERE studio_voicechat_history_fts MATCH ? AND agent_id = ?",
+            (match_expr, agent_id),
+        )
+        raw_hits = int((await cursor2.fetchone())[0] or 0)
         _log.info(
-            "[calls.search] agent=%s match=%r → %d results",
-            agent_id, match_expr[:80], len(rows),
+            "[calls.search] agent=%s match=%r → %d results (fts raw=%d)",
+            agent_id, match_expr[:80], len(rows), raw_hits,
         )
         results = [
             {

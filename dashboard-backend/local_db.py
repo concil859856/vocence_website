@@ -6,6 +6,7 @@ users, plans, credits, blog posts, studio history, and payments live here.
 """
 
 import json
+import logging
 import os
 import uuid
 import hashlib
@@ -15,6 +16,9 @@ from typing import Any
 
 import aiosqlite
 import asyncpg
+
+
+_log = logging.getLogger(__name__)
 
 # Default: data/website.db next to dashboard-backend
 DATA_DIR = Path(__file__).resolve().parent / "data"
@@ -1128,22 +1132,69 @@ async def ensure_tables() -> None:
             # by the connection driver if it happened.
             pass
 
-        # Drop the OLD external-content FTS table + triggers from a
-        # prior build before SCHEMA_SQL runs. Detected by reading
-        # the CREATE statement out of sqlite_master and looking
-        # for the ``content='studio_voicechat_history'`` option.
-        # We can safely recreate without data loss because the
-        # source rows in studio_voicechat_history are untouched —
-        # the backfill below repopulates from there.
+        # Detect + drop a STALE transcript FTS table from a prior
+        # build (external-content shape, or partially populated
+        # for any other reason). The decision is logged at INFO so
+        # ops can confirm the migration actually ran — silent
+        # except: pass on the old code masked a real failure.
+        #
+        # Drop-criteria:
+        #   1. The stored CREATE statement still mentions
+        #      ``content=`` (old external-content layout that
+        #      doesn't index reliably on every sqlite build).
+        #   2. OR the FTS row count is non-trivially less than the
+        #      source row count, which means the index is stale
+        #      AND incremental backfill probably won't fix it (rowid
+        #      collisions etc.). In that case dropping + rebuilding
+        #      is cheaper than reasoning about what's missing.
         try:
             cur = await conn.execute(
                 "SELECT sql FROM sqlite_master "
                 "WHERE type='table' AND name='studio_voicechat_history_fts'"
             )
-            existing = await cur.fetchone()
-            existing_sql = (existing["sql"] if existing else "") or ""
-            if "content='studio_voicechat_history'" in existing_sql or "content=\"studio_voicechat_history\"" in existing_sql:
-                # External-content shape — drop + recreate as regular FTS.
+            row = await cur.fetchone()
+            existing_sql = ""
+            if row is not None:
+                # aiosqlite Row supports indexing by column name OR ordinal.
+                try:
+                    existing_sql = row["sql"] or ""
+                except (KeyError, IndexError):
+                    existing_sql = row[0] or ""
+
+            needs_drop = False
+            drop_reason = ""
+
+            if existing_sql and "content=" in existing_sql.lower():
+                needs_drop = True
+                drop_reason = "external-content shape"
+
+            if not needs_drop and existing_sql:
+                # Compare counts to spot a stale index. We do this
+                # only if the table already exists — fresh installs
+                # skip the count check (everything is empty).
+                cur = await conn.execute(
+                    "SELECT COUNT(*) FROM studio_voicechat_history_fts"
+                )
+                fts_rows = int((await cur.fetchone())[0] or 0)
+                cur = await conn.execute(
+                    "SELECT COUNT(*) FROM studio_voicechat_history"
+                )
+                src_rows = int((await cur.fetchone())[0] or 0)
+                # If <50% of source rows are indexed AND there's
+                # meaningful source data, the index is dead enough
+                # to scrap. (50% is a safety margin against tiny
+                # races; tightens automatically as data grows.)
+                if src_rows > 5 and fts_rows < src_rows // 2:
+                    needs_drop = True
+                    drop_reason = (
+                        f"stale: fts={fts_rows} src={src_rows}"
+                    )
+
+            if needs_drop:
+                _log.info(
+                    "ensure_tables: rebuilding studio_voicechat_history_fts (%s)",
+                    drop_reason,
+                )
                 for stmt in (
                     "DROP TRIGGER IF EXISTS studio_voicechat_history_fts_ai",
                     "DROP TRIGGER IF EXISTS studio_voicechat_history_fts_ad",
@@ -1151,30 +1202,28 @@ async def ensure_tables() -> None:
                     "DROP TABLE IF EXISTS studio_voicechat_history_fts",
                 ):
                     await conn.execute(stmt)
+                await conn.commit()
         except Exception:
-            # Best-effort migration. If something goes wrong here,
-            # the CREATE IF NOT EXISTS below leaves the existing
-            # (possibly broken) table in place; search will return
-            # empty until a manual fix.
-            pass
+            _log.exception(
+                "ensure_tables: transcript-fts migration check failed (non-fatal)"
+            )
 
         for statement in SCHEMA_SQL:
             await conn.execute(statement)
 
-        # Backfill the transcript FTS index. Now that the table is
-        # regular FTS5 (not external content), the trigger only
-        # mirrors NEW inserts — historical rows have to be copied
-        # explicitly. INSERT INTO ... SELECT is the cleanest and
-        # works on every sqlite build.
+        # Backfill the transcript FTS index from the source table.
+        # ``INSERT INTO ... SELECT`` is cleanest and works on every
+        # sqlite build that has FTS5 at all. WHERE NOT IN keeps it
+        # idempotent so re-runs are no-ops.
         try:
             cur = await conn.execute(
                 "SELECT COUNT(*) FROM studio_voicechat_history_fts"
             )
-            fts_rows = (await cur.fetchone())[0]
+            fts_rows = int((await cur.fetchone())[0] or 0)
             cur = await conn.execute(
                 "SELECT COUNT(*) FROM studio_voicechat_history"
             )
-            src_rows = (await cur.fetchone())[0]
+            src_rows = int((await cur.fetchone())[0] or 0)
             if fts_rows < src_rows:
                 await conn.execute(
                     """
@@ -1192,11 +1241,21 @@ async def ensure_tables() -> None:
                     """
                 )
                 await conn.commit()
+                _log.info(
+                    "ensure_tables: backfilled transcript FTS index "
+                    "(was %d → source has %d)",
+                    fts_rows, src_rows,
+                )
+            else:
+                _log.info(
+                    "ensure_tables: transcript FTS index up-to-date "
+                    "(fts=%d src=%d)",
+                    fts_rows, src_rows,
+                )
         except Exception:
-            # FTS5 might not be available in some sqlite builds.
-            # Search will degrade to empty results in that case;
-            # everything else keeps working.
-            pass
+            _log.exception(
+                "ensure_tables: transcript-fts backfill failed (non-fatal)"
+            )
 
         await _ensure_column(conn, "auth_users", "plan_code", "plan_code TEXT")
         await _ensure_column(conn, "auth_users", "plan_status", "plan_status TEXT")
