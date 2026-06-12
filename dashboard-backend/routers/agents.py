@@ -777,73 +777,102 @@ async def search_agent_calls(
 
     conn = await get_connection()
     try:
+        # Step 1 — raw FTS pass. bm25() and snippet() are FTS5
+        # auxiliary functions that ONLY work when the query
+        # references the FTS table directly with a MATCH constraint;
+        # SQLite rejects them with "unable to use function bm25 in
+        # the requested context" when they appear inside an OVER()
+        # window or a sub-CTE that gets flattened. So we keep this
+        # query flat: just MATCH + agent_id, ORDER BY bm25, LIMIT a
+        # generous bucket. Per-session dedup happens in Python
+        # (cheap; ranks come back sorted, first wins).
         cursor = await conn.execute(
             """
-            WITH ranked AS (
-                SELECT
-                    session_id,
-                    agent_id,
-                    bm25(studio_voicechat_history_fts) AS rank,
-                    snippet(
-                        studio_voicechat_history_fts,
-                        -1,
-                        '<mark>',
-                        '</mark>',
-                        '…',
-                        32
-                    ) AS hit,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY session_id
-                        ORDER BY bm25(studio_voicechat_history_fts) ASC
-                    ) AS rn
-                FROM studio_voicechat_history_fts
-                WHERE studio_voicechat_history_fts MATCH ?
-                  AND agent_id = ?
-            )
             SELECT
-                c.session_id,
-                c.started_at,
-                c.duration_ms,
-                c.end_reason,
-                c.turn_count,
-                r.rank,
-                r.hit
-            FROM ranked r
-            JOIN voice_call_logs c ON c.session_id = r.session_id
-            WHERE r.rn = 1
-              AND c.user_id = ?
-              AND c.started_at >= datetime('now', ?)
-            ORDER BY r.rank ASC
-            LIMIT ?
+                session_id,
+                bm25(studio_voicechat_history_fts) AS rank,
+                snippet(
+                    studio_voicechat_history_fts,
+                    -1,
+                    '<mark>',
+                    '</mark>',
+                    '…',
+                    32
+                ) AS hit
+            FROM studio_voicechat_history_fts
+            WHERE studio_voicechat_history_fts MATCH ?
+              AND agent_id = ?
+            ORDER BY rank ASC
+            LIMIT 500
             """,
-            (match_expr, agent_id, user_id, f"-{days} days", limit),
-        )
-        rows = await cursor.fetchall()
-        # Also probe the FTS index directly so we can tell whether a
-        # 0-result is "no FTS hits at all" vs "hits but JOIN to
-        # voice_call_logs filtered them all out". The cost is one
-        # COUNT — negligible — and saves another diagnostic round.
-        cursor2 = await conn.execute(
-            "SELECT COUNT(*) FROM studio_voicechat_history_fts "
-            "WHERE studio_voicechat_history_fts MATCH ? AND agent_id = ?",
             (match_expr, agent_id),
         )
-        raw_hits = int((await cursor2.fetchone())[0] or 0)
-        _log.info(
-            "[calls.search] agent=%s match=%r → %d results (fts raw=%d)",
-            agent_id, match_expr[:80], len(rows), raw_hits,
+        raw_rows = await cursor.fetchall()
+
+        # Dedup by session_id. Rows are sorted by rank ASC so the
+        # first occurrence per session is the best match.
+        per_session: dict[str, tuple[float, str]] = {}
+        session_order: list[str] = []
+        for r in raw_rows:
+            sid = r[0]
+            if sid in per_session:
+                continue
+            per_session[sid] = (float(r[1] or 0.0), r[2] or "")
+            session_order.append(sid)
+            if len(session_order) >= limit:
+                break
+
+        if not session_order:
+            _log.info(
+                "[calls.search] agent=%s match=%r → 0 results (fts raw=0)",
+                agent_id, match_expr[:80],
+            )
+            return {"query": q, "range": range, "results": []}
+
+        # Step 2 — pull voice_call_logs metadata for the matched
+        # sessions with the ownership + range filter applied. One
+        # IN clause; ordering preserved by rebuilding from
+        # session_order after the fetch.
+        placeholders = ",".join(["?"] * len(session_order))
+        cursor = await conn.execute(
+            f"""
+            SELECT session_id, started_at, duration_ms, end_reason, turn_count
+            FROM voice_call_logs
+            WHERE session_id IN ({placeholders})
+              AND agent_id = ?
+              AND user_id = ?
+              AND started_at >= datetime('now', ?)
+            """,
+            (*session_order, agent_id, user_id, f"-{days} days"),
         )
-        results = [
-            {
-                "session_id": r[0],
-                "started_at": r[1],
-                "duration_ms": int(r[2] or 0),
-                "end_reason": r[3] or "unknown",
-                "turn_count": int(r[4] or 0),
-                "snippet": r[6] or "",
-            }
-            for r in rows
-        ]
+        meta_rows = await cursor.fetchall()
+        meta_by_sid = {r[0]: r for r in meta_rows}
+
+        # Diagnostic: the gap between raw FTS hits and final
+        # results pinpoints whether 0 means "FTS didn't find it"
+        # vs "voice_call_logs filter dropped it".
+        results = []
+        for sid in session_order:
+            m = meta_by_sid.get(sid)
+            if not m:
+                continue
+            rank, hit = per_session[sid]
+            results.append(
+                {
+                    "session_id": m[0],
+                    "started_at": m[1],
+                    "duration_ms": int(m[2] or 0),
+                    "end_reason": m[3] or "unknown",
+                    "turn_count": int(m[4] or 0),
+                    "snippet": hit,
+                }
+            )
+        _log.info(
+            "[calls.search] agent=%s match=%r → %d results "
+            "(fts sessions=%d, post-filter=%d)",
+            agent_id, match_expr[:80], len(results),
+            len(session_order), len(results),
+        )
         return {"query": q, "range": range, "results": results}
     finally:
         await conn.close()

@@ -149,6 +149,11 @@ async def test_migration_recovers_broken_external_content_state(tmp_path):
         )
 
         # The exact queries the user tried in production must hit.
+        # We exercise BOTH the basic MATCH (does FTS see them?) AND
+        # the actual production query shape with bm25/snippet,
+        # because the auxiliary functions can be rejected even when
+        # MATCH alone works — exactly the "unable to use function
+        # bm25 in the requested context" failure mode.
         for term in ("love", "chutes", "websearch"):
             cur = await conn.execute(
                 "SELECT COUNT(*) FROM studio_voicechat_history_fts "
@@ -157,6 +162,32 @@ async def test_migration_recovers_broken_external_content_state(tmp_path):
             )
             hits = (await cur.fetchone())[0]
             assert hits > 0, f"search for {term!r} returned 0 hits"
+
+            # Same shape as the production /calls/search endpoint:
+            # bm25() + snippet() in the SELECT, MATCH in WHERE,
+            # ORDER BY rank. If SQLite rejects bm25 here, the
+            # endpoint would 500 with the exact OperationalError
+            # the user just hit.
+            cur = await conn.execute(
+                """
+                SELECT
+                    session_id,
+                    bm25(studio_voicechat_history_fts) AS rank,
+                    snippet(studio_voicechat_history_fts, -1,
+                            '<mark>', '</mark>', '…', 32) AS hit
+                FROM studio_voicechat_history_fts
+                WHERE studio_voicechat_history_fts MATCH ?
+                ORDER BY rank ASC
+                LIMIT 10
+                """,
+                (f'"{term}"',),
+            )
+            ranked = await cur.fetchall()
+            assert len(ranked) > 0, f"bm25+snippet returned no rows for {term!r}"
+            assert "<mark>" in (ranked[0]["hit"] or ""), (
+                f"snippet for {term!r} missing <mark> highlight: "
+                f"{ranked[0]['hit']!r}"
+            )
 
         # Triggers fire on a fresh INSERT so future per-turn writes
         # from _record_turn land in the index without another
