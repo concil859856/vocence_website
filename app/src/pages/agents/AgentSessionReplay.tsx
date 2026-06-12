@@ -236,7 +236,6 @@ export function AgentSessionReplay() {
                       Stereo recording
                     </div>
                     <div className="text-xs text-white/60 mt-0.5">
-                      Left: user · Right: agent ·{' '}
                       Click a turn below to jump to it
                     </div>
                   </div>
