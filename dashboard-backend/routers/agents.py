@@ -639,16 +639,30 @@ async def download_call_audio(
     agent_id: str,
     session_id: str,
     download: bool = False,
+    json: bool = False,
     user_id: str = Depends(require_auth),
 ):
-    """Authorize, then 302 to a short-lived presigned URL on the
-    object store. The browser's ``<audio>`` element follows the
-    redirect and uses Range requests directly against R2 (or
-    Hippius) — no bandwidth flowing through us during playback.
+    """Authorize the request, then either:
 
-    ``download=true`` appends a ``Content-Disposition: attachment``
-    header to the presigned URL so the explicit Download button
-    saves the file instead of streaming inline.
+    - ``json=true`` → return ``{"url": "<presigned>"}`` so the
+      frontend can fetch this endpoint with cookie auth, read the
+      URL, and set it directly on ``<audio src>``. This is the
+      path the in-page player uses — 302-redirecting an
+      ``<audio crossOrigin="use-credentials">`` request to a
+      different origin (R2) trips CORS-with-credentials because R2
+      doesn't return our ``Access-Control-Allow-Origin`` headers
+      on the redirect target. JSON sidesteps it: the audio loads
+      anonymously from R2 with presigned-query-string auth.
+
+    - default → 302 to the presigned URL. Used by the
+      ``<a href download>`` link in the UI: full-page navigation
+      sends cookies same-site / with the session cookie, the
+      browser follows the redirect natively, and the
+      ``Content-Disposition: attachment`` header (added when
+      ``download=true``) triggers the save dialog.
+
+    Both paths share the same auth + DB lookup; only the response
+    representation differs.
     """
     await _ensure_agent_owned(agent_id, user_id)
     conn = await get_connection()
@@ -674,9 +688,8 @@ async def download_call_audio(
     )
     if not url:
         raise HTTPException(status_code=502, detail="object store unavailable")
-    # 302 (not 307) so the browser actually follows; <audio src=...>
-    # handles 302 transparently. The presigned URL carries its own
-    # auth via signed query params, so no cookie needs to reach R2.
+    if json:
+        return {"url": url}
     return RedirectResponse(url=url, status_code=302)
 
 

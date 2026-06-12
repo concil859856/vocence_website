@@ -187,7 +187,7 @@ export function AgentCallsTab({ agentId, token }: Props) {
               {calls.map((c) => {
                 const pres = REASON_PRESENTATION[c.end_reason] ?? REASON_PRESENTATION.unknown;
                 const playing = playingFor === c.session_id;
-                const audioUrl = c.has_recording && token
+                const downloadUrl = c.has_recording && token
                   ? agentsApi.callAudioUrl(token, agentId, c.session_id)
                   : null;
                 return (
@@ -205,7 +205,7 @@ export function AgentCallsTab({ agentId, token }: Props) {
                       </td>
                       <td className="px-4 py-3 text-right">
                         <div className="inline-flex items-center gap-1">
-                          {audioUrl ? (
+                          {downloadUrl ? (
                             <button
                               type="button"
                               onClick={() => setPlayingFor(playing ? null : c.session_id)}
@@ -255,25 +255,26 @@ export function AgentCallsTab({ agentId, token }: Props) {
                         </div>
                       </td>
                     </tr>
-                    {playing && audioUrl && (
+                    {playing && downloadUrl && (
                       <tr className="bg-white/[0.015]">
                         <td colSpan={5} className="px-4 py-3">
-                          {/* The src points at our endpoint which
-                              authorizes (via vocence_session cookie)
-                              and 302-redirects to a presigned R2
-                              URL. ``crossOrigin="use-credentials"``
-                              ensures the cookie is sent on the
-                              initial request; the presigned URL
-                              afterwards needs no auth. */}
-                          <audio
-                            controls
-                            crossOrigin="use-credentials"
-                            src={audioUrl}
-                            className="w-full"
+                          {/* InlineAudioPlayer fetches the presigned
+                              R2 URL via JSON (cookie-auth on our
+                              endpoint) then drops it on <audio src>
+                              with no crossOrigin set. Browser loads
+                              the audio anonymously from R2 — no
+                              CORS-with-credentials issue. The
+                              download link still hits our endpoint
+                              directly because <a download> doesn't
+                              CORS-check. */}
+                          <InlineAudioPlayer
+                            agentId={agentId}
+                            sessionId={c.session_id}
+                            token={token}
                           />
                           <div className="mt-2 text-right">
                             <a
-                              href={`${audioUrl}?download=true`}
+                              href={`${downloadUrl}?download=true`}
                               className="inline-flex items-center gap-1 text-xs text-white/60 hover:text-white"
                             >
                               <Download size={12} /> Download WAV
@@ -301,6 +302,55 @@ export function AgentCallsTab({ agentId, token }: Props) {
       {confirmDialog}
     </div>
   );
+}
+
+// ─── Inline audio player ─────────────────────────────────────────────
+// Wraps the fetch-presigned-URL-then-set-<audio>-src flow into a
+// reusable widget. Shared between the Calls tab inline expand and
+// (in principle) any other surface that needs to play a recording.
+// Loading state covers the "fetching the presigned URL" gap which
+// is normally ~100 ms on a warm backend; an error state surfaces
+// "recording missing" / "object store unavailable" instead of
+// silently broken playback.
+
+interface InlineAudioPlayerProps {
+  agentId: string;
+  sessionId: string;
+  token: string | null;
+}
+
+function InlineAudioPlayer({ agentId, sessionId, token }: InlineAudioPlayerProps) {
+  const [url, setUrl] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+    setError(null);
+    setUrl(null);
+    agentsApi.getCallAudioUrl(token, agentId, sessionId)
+      .then((u) => { if (!cancelled) setUrl(u); })
+      .catch((err) => { if (!cancelled) setError(err?.message ?? 'failed to load recording'); });
+    return () => { cancelled = true; };
+  }, [agentId, sessionId, token]);
+
+  if (error) {
+    return (
+      <div className="text-xs text-red-300 bg-red-500/10 border border-red-500/20 rounded-md px-3 py-2">
+        {error}
+      </div>
+    );
+  }
+  if (!url) {
+    return (
+      <div className="inline-flex items-center text-xs text-white/40">
+        <Loader2 className="animate-spin mr-2" size={12} /> Loading recording…
+      </div>
+    );
+  }
+  // No crossOrigin attribute — presigned R2 URL is its own auth,
+  // and skipping CORS mode lets the browser play directly.
+  return <audio controls src={url} autoPlay className="w-full" />;
 }
 
 interface TranscriptModalProps {

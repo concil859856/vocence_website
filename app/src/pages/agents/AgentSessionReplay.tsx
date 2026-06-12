@@ -132,9 +132,26 @@ export function AgentSessionReplay() {
     return () => { cancelled = true; };
   }, [agentId, sessionId, token]);
 
-  const audioUrl = useMemo(() => {
+  // The download URL hits our endpoint directly (302 → R2, full-page
+  // nav handles cookies + redirect natively). The PLAY URL has to
+  // be a presigned URL fetched via JSON so the <audio> element can
+  // load anonymously from R2 — see InlineAudioPlayer in
+  // AgentCallsTab for the rationale.
+  const downloadUrl = useMemo(() => {
     if (!agentId || !sessionId || !token || !call?.has_recording) return null;
     return agentsApi.callAudioUrl(token, agentId, sessionId);
+  }, [agentId, sessionId, token, call?.has_recording]);
+  const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (!agentId || !sessionId || !token || !call?.has_recording) {
+      setAudioUrl(null);
+      return;
+    }
+    let cancelled = false;
+    agentsApi.getCallAudioUrl(token, agentId, sessionId)
+      .then((u) => { if (!cancelled) setAudioUrl(u); })
+      .catch(() => { if (!cancelled) setAudioUrl(null); });
+    return () => { cancelled = true; };
   }, [agentId, sessionId, token, call?.has_recording]);
 
   const seekToTurn = (turn: ReplayTurn) => {
@@ -195,26 +212,33 @@ export function AgentSessionReplay() {
               </div>
 
               {/* Audio player */}
-              {audioUrl ? (
+              {call.has_recording ? (
                 <div className="mt-5 bg-white/[0.02] border border-white/10 rounded-xl px-4 py-3">
                   <div className="text-[11px] uppercase tracking-wider text-white/40 mb-2">
                     Stereo recording <span className="normal-case text-white/30">(left: user, right: agent)</span>
                   </div>
-                  <audio
-                    ref={audioRef}
-                    controls
-                    crossOrigin="use-credentials"
-                    src={audioUrl}
-                    className="w-full"
-                  />
-                  <div className="mt-2 text-right">
-                    <a
-                      href={`${audioUrl}?download=true`}
-                      className="inline-flex items-center gap-1 text-xs text-white/60 hover:text-white"
-                    >
-                      <Download size={12} /> Download WAV
-                    </a>
-                  </div>
+                  {audioUrl ? (
+                    <audio
+                      ref={audioRef}
+                      controls
+                      src={audioUrl}
+                      className="w-full"
+                    />
+                  ) : (
+                    <div className="inline-flex items-center text-xs text-white/40">
+                      <Loader2 className="animate-spin mr-2" size={12} /> Loading recording…
+                    </div>
+                  )}
+                  {downloadUrl && (
+                    <div className="mt-2 text-right">
+                      <a
+                        href={`${downloadUrl}?download=true`}
+                        className="inline-flex items-center gap-1 text-xs text-white/60 hover:text-white"
+                      >
+                        <Download size={12} /> Download WAV
+                      </a>
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div className="mt-5 bg-white/[0.02] border border-white/10 rounded-xl px-4 py-3 text-xs text-white/40">

@@ -114,17 +114,34 @@ export const agentsApi = {
     );
   },
 
-  /** Streamed WAV URL — pass to <audio src> with
-   *  ``crossOrigin="use-credentials"`` so the cookie session reaches
-   *  the backend, then the audio element can range-fetch as the
-   *  user seeks. Doesn't need the token argument (cookie does auth)
-   *  but we keep the parameter for parity with the other helpers
-   *  so callers don't accidentally forget about auth at all. */
+  /** URL of the audio endpoint — used by the ``<a download>``
+   *  link (full-page nav handles redirects + cookies natively).
+   *  NOT used by ``<audio src>`` directly: see ``getCallAudioUrl``
+   *  for that path. */
   callAudioUrl(_token: string, agentId: string, sessionId: string): string {
     return (
       `${API_BASE_URL}/dashboard/agents/${encodeURIComponent(agentId)}` +
       `/calls/${encodeURIComponent(sessionId)}/audio`
     );
+  },
+
+  /** Fetch the presigned R2 URL for the in-page audio player. Goes
+   *  through our endpoint with cookie auth, then returns the
+   *  presigned URL JSON so we can drop it on ``<audio src>``
+   *  WITHOUT ``crossOrigin="use-credentials"``. The presigned URL
+   *  is its own auth (signed query string); the audio element
+   *  loads anonymously from R2, sidestepping the CORS-with-
+   *  credentials-and-redirect trap. */
+  async getCallAudioUrl(
+    token: string,
+    agentId: string,
+    sessionId: string,
+  ): Promise<string> {
+    const res = await jsonFetch<{ url: string }>(
+      `${API_BASE_URL}/dashboard/agents/${encodeURIComponent(agentId)}/calls/${encodeURIComponent(sessionId)}/audio?json=true`,
+      { method: 'GET', headers: authHeaders(token) },
+    );
+    return res.url;
   },
 
   async getCallTranscript(
