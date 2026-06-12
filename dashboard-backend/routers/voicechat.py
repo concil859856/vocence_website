@@ -1688,7 +1688,24 @@ async def voicechat_session(
                     pass
                 current_turn = None
     finally:
-        await _cancel_current()
+        # ── Session-close cleanup ─────────────────────────────────────
+        # CRITICAL: ``asyncio.CancelledError`` is a ``BaseException``,
+        # NOT an ``Exception``, so plain ``suppress(Exception)`` does
+        # NOT catch it. When Starlette cancels the WS task (normal
+        # client disconnect during long-running cleanup, server
+        # shutdown, etc.), the first awaiting line below would raise
+        # CancelledError and EVERY subsequent step — including the
+        # call-log persistence — would silently skip. That's exactly
+        # how the Calls + Analytics tabs ended up empty after real
+        # sessions: voice_call_logs row never written.
+        #
+        # Every ``await`` in this finally now suppresses both
+        # Exception AND CancelledError so cleanup completes even
+        # under aggressive cancellation. Python 3.10 doesn't
+        # re-raise cancellation on subsequent awaits once it's
+        # been caught, so a single suppress per await is sufficient.
+        with suppress(Exception, asyncio.CancelledError):
+            await _cancel_current()
         _log.info(
             "[stream] trace session=%s phase=session_close duration=%dms",
             session_id, int((time.perf_counter() - _session_open_perf) * 1000),
@@ -1696,30 +1713,30 @@ async def voicechat_session(
         # Release the session-scoped TTS warmer (closes any pre-opened
         # WS so we don't leak a connection against the pod's cap).
         if session_tts_warmer is not None:
-            with suppress(Exception):
+            with suppress(Exception, asyncio.CancelledError):
                 await session_tts_warmer.close()
         # Release any unconsumed STT prewarm — happens when the user
         # disconnects before their first stream_start (greeting then
         # close), or when the prewarm task is still mid-handshake.
         if prewarm_stt_task is not None and not prewarm_stt_task.done():
             prewarm_stt_task.cancel()
-            with suppress(Exception):
+            with suppress(Exception, asyncio.CancelledError):
                 await asyncio.wait_for(prewarm_stt_task, timeout=1.0)
         if prewarmed_stt is not None:
             pw = prewarmed_stt
             prewarmed_stt = None
-            with suppress(Exception):
+            with suppress(Exception, asyncio.CancelledError):
                 await pw["ws"].close()
-            with suppress(Exception):
+            with suppress(Exception, asyncio.CancelledError):
                 await pw["session"].close()
-            with suppress(Exception):
+            with suppress(Exception, asyncio.CancelledError):
                 await pw["pod_cm"].__aexit__(None, None, None)
         # Stop the watchdog/billing loop. Runs even on
         # WebSocketDisconnect / cancellation so the user gets
         # correctly charged for the time they actually used (paid
         # agents) or no-op'd cleanly (free Assistant). The
         # MIN_CHARGE_SEC floor is enforced inside stop().
-        with suppress(Exception):
+        with suppress(Exception, asyncio.CancelledError):
             await billing.stop()
 
         # Flush the call recorder to the object store (if any).
@@ -1742,7 +1759,9 @@ async def voicechat_session(
                         "bucket=%s key=%s bytes=%d",
                         session_id, _rec_bucket, _rec_key, _rec_bytes,
                     )
-            except Exception:
+            except (Exception, asyncio.CancelledError):
+                # Same reason as the other suppress sites in this
+                # finally — CancelledError isn't an Exception in 3.10+.
                 _log.debug("recorder close raised (non-fatal)", exc_info=False)
 
         # Persist a session-level row to voice_call_logs. Drives the
@@ -1757,8 +1776,15 @@ async def voicechat_session(
         )
         _call_ended_at_iso = _utcnow_iso()
         _call_duration_ms = int((time.perf_counter() - _session_open_perf) * 1000)
-        with suppress(Exception):
-            await _log_call_session(
+        # Persist the call-log row under asyncio.shield so a parent
+        # cancellation can't kill the INSERT half-way. The DB write
+        # is fast (single SQLite INSERT OR REPLACE) and idempotent,
+        # so even under WS-disconnect storms it completes cleanly.
+        # Combined with the broader suppress() we still tolerate
+        # a true crash here — the void is the Calls/Analytics row,
+        # which we'd rather not lose.
+        with suppress(Exception, asyncio.CancelledError):
+            await asyncio.shield(_log_call_session(
                 session_id=session_id,
                 user_id=auth_user_id,
                 agent_id=agent_id,
@@ -1770,7 +1796,7 @@ async def voicechat_session(
                 recording_path=recording_path_persisted,
                 recording_bucket=recording_bucket_persisted,
                 recording_bytes=recording_bytes_persisted,
-            )
+            ))
 
         # Fan-out a ``call.ended`` event to every webhook registered
         # on this agent. No-op for Logos (agent_id None — Logos
@@ -1780,8 +1806,8 @@ async def voicechat_session(
         # INSERT, so it never blocks the WS close path.
         if agent_id:
             from webhooks_service import enqueue_event
-            with suppress(Exception):
-                await enqueue_event(
+            with suppress(Exception, asyncio.CancelledError):
+                await asyncio.shield(enqueue_event(
                     agent_id=agent_id,
                     event_type="call.ended",
                     payload={
@@ -1803,7 +1829,7 @@ async def voicechat_session(
                             else None
                         ),
                     },
-                )
+                ))
 
 
 async def _run_turn(
