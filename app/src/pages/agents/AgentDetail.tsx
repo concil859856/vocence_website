@@ -406,7 +406,7 @@ export function AgentDetail() {
           </div>
         )}
         {activeTab === 'calls' && (
-          <AgentCallsTab agentId={agent.id} token={token} />
+          <AgentCallsTab agentId={agent.id} agentName={agent.name} token={token} />
         )}
         {activeTab === 'analytics' && (
           <AgentAnalyticsTab agentId={agent.id} token={token} />

@@ -1407,19 +1407,22 @@ async def voicechat_session(
         # user_text is empty because the greeting precedes any
         # user speech; mode='greeting' distinguishes it from
         # voice/text turns in case anyone queries by mode later.
-        with suppress(Exception):
-            await _record_turn(
-                user_id=auth_user_id,
-                user_text="",
-                bot_text=agent_first_message,
-                mode="greeting",
-                latency_ms=0,
-                ttft_ms=0,
-                ttfa_ms=None,
-                error=None,
-                session_id=session_id,
-                agent_id=agent_id,
-            )
+        # SKIP for Logos (agent_id=None) — the Calls/Replay
+        # surfaces don't render Logos sessions anyway.
+        if agent_id:
+            with suppress(Exception):
+                await _record_turn(
+                    user_id=auth_user_id,
+                    user_text="",
+                    bot_text=agent_first_message,
+                    mode="greeting",
+                    latency_ms=0,
+                    ttft_ms=0,
+                    ttfa_ms=None,
+                    error=None,
+                    session_id=session_id,
+                    agent_id=agent_id,
+                )
         current_turn = asyncio.create_task(
             _speak_pretext(agent_first_message), name="first_message"
         )
@@ -1792,32 +1795,41 @@ async def voicechat_session(
         # already wrote — by the time we get here, _cancel_current()
         # above has awaited all in-flight turns, so those writes are
         # durable.
+        #
+        # SKIP for Logos (agent_id is None). Logos is the free
+        # in-product assistant — it has no owner, so there's no
+        # Calls / Analytics surface to populate, and we don't want
+        # to retain transcripts of those throwaway sessions for
+        # privacy. The per-turn rows in studio_voicechat_history
+        # are still written (used for billing reconciliation /
+        # debugging logs), but the session-level row is not.
         _agent_name_snapshot = (
             agent_ctx.get("name") if isinstance(agent_ctx, dict) else None
         )
         _call_ended_at_iso = _utcnow_iso()
         _call_duration_ms = int((time.perf_counter() - _session_open_perf) * 1000)
-        # Persist the call-log row under asyncio.shield so a parent
-        # cancellation can't kill the INSERT half-way. The DB write
-        # is fast (single SQLite INSERT OR REPLACE) and idempotent,
-        # so even under WS-disconnect storms it completes cleanly.
-        # Combined with the broader suppress() we still tolerate
-        # a true crash here — the void is the Calls/Analytics row,
-        # which we'd rather not lose.
-        with suppress(Exception, asyncio.CancelledError):
-            await asyncio.shield(_log_call_session(
-                session_id=session_id,
-                user_id=auth_user_id,
-                agent_id=agent_id,
-                agent_name=_agent_name_snapshot,
-                started_at_iso=_session_started_iso,
-                ended_at_iso=_call_ended_at_iso,
-                duration_ms=_call_duration_ms,
-                end_reason=_session_end_reason,
-                recording_path=recording_path_persisted,
-                recording_bucket=recording_bucket_persisted,
-                recording_bytes=recording_bytes_persisted,
-            ))
+        if agent_id:
+            # Persist the call-log row under asyncio.shield so a parent
+            # cancellation can't kill the INSERT half-way. The DB write
+            # is fast (single SQLite INSERT OR REPLACE) and idempotent,
+            # so even under WS-disconnect storms it completes cleanly.
+            # Combined with the broader suppress() we still tolerate
+            # a true crash here — the void is the Calls/Analytics row,
+            # which we'd rather not lose.
+            with suppress(Exception, asyncio.CancelledError):
+                await asyncio.shield(_log_call_session(
+                    session_id=session_id,
+                    user_id=auth_user_id,
+                    agent_id=agent_id,
+                    agent_name=_agent_name_snapshot,
+                    started_at_iso=_session_started_iso,
+                    ended_at_iso=_call_ended_at_iso,
+                    duration_ms=_call_duration_ms,
+                    end_reason=_session_end_reason,
+                    recording_path=recording_path_persisted,
+                    recording_bucket=recording_bucket_persisted,
+                    recording_bytes=recording_bytes_persisted,
+                ))
 
         # Fan-out a ``call.ended`` event to every webhook registered
         # on this agent. No-op for Logos (agent_id None — Logos

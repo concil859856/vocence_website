@@ -31,6 +31,16 @@ interface StudioPlayerState {
   resume: () => void;
   stop: () => void;
   seek: (pct: number) => void;
+  /** Seek directly to an absolute offset in seconds. Used by surfaces
+   *  that know the offset they want (call transcript click → "play
+   *  this turn") and shouldn't have to convert to percent. Safe to
+   *  call before metadata loads — the seek is deferred until the
+   *  next loadedmetadata event in that case. */
+  seekToSeconds: (sec: number) => void;
+  /** Convenience: load a track AND start playback at an offset, in
+   *  one call. If the requested track is already the loaded one, we
+   *  just seek + resume instead of restarting. */
+  playAt: (track: Track, startSec: number) => void;
   setVolume: (v: number) => void;
   next: () => void;
   prev: () => void;
@@ -210,6 +220,70 @@ export function StudioPlayerProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const seekToSeconds = useCallback((sec: number) => {
+    const el = audioRef.current;
+    if (!el) return;
+    const safeSec = Math.max(0, sec);
+    if (el.duration && el.duration > 0) {
+      // Metadata already loaded — seek immediately.
+      el.currentTime = Math.min(safeSec, el.duration);
+      setProgress(el.currentTime);
+      return;
+    }
+    // Metadata not ready yet (likely a fresh play() that hasn't
+    // resolved loadedmetadata). Defer the seek to the next
+    // loadedmetadata event, fire once, then clean up.
+    const onMeta = () => {
+      el.currentTime = Math.min(safeSec, el.duration || safeSec);
+      setProgress(el.currentTime);
+      el.removeEventListener('loadedmetadata', onMeta);
+    };
+    el.addEventListener('loadedmetadata', onMeta);
+  }, []);
+
+  const playAt = useCallback((t: Track, startSec: number) => {
+    const el = audioRef.current;
+    if (!el) return;
+    const safeSec = Math.max(0, startSec);
+    // Same track already loaded → just seek + resume; no re-fetch.
+    if (track && track.src === t.src) {
+      if (el.duration && el.duration > 0) {
+        el.currentTime = Math.min(safeSec, el.duration);
+        setProgress(el.currentTime);
+      } else {
+        const onMeta = () => {
+          el.currentTime = Math.min(safeSec, el.duration || safeSec);
+          setProgress(el.currentTime);
+          el.removeEventListener('loadedmetadata', onMeta);
+        };
+        el.addEventListener('loadedmetadata', onMeta);
+      }
+      if (!playing) {
+        el.play().catch(() => {});
+        setPlaying(true);
+      }
+      return;
+    }
+    // Different track — load it, then defer the seek until
+    // loadedmetadata fires (currentTime is meaningless before then).
+    el.pause();
+    el.src = t.src;
+    el.currentTime = 0;
+    setTrack(t);
+    setQueue([t]);
+    setQueueIndex(0);
+    setQueueSource(null);
+    setProgress(0);
+    const onMeta = () => {
+      el.currentTime = Math.min(safeSec, el.duration || safeSec);
+      setProgress(el.currentTime);
+      el.removeEventListener('loadedmetadata', onMeta);
+    };
+    el.addEventListener('loadedmetadata', onMeta);
+    el.play().catch(() => {});
+    setPlaying(true);
+  }, [track, playing]);
+
   const setVolumeVal = useCallback((v: number) => {
     const el = audioRef.current;
     if (el) el.volume = v;
@@ -270,7 +344,8 @@ export function StudioPlayerProvider({ children }: { children: ReactNode }) {
     <StudioPlayerContext.Provider value={{
       track, playing, progress, duration,
       queue, queueIndex, shuffle, repeat, queueSource,
-      play, playQueue, pause, resume, stop, seek, setVolume: setVolumeVal,
+      play, playQueue, pause, resume, stop, seek, seekToSeconds, playAt,
+      setVolume: setVolumeVal,
       next, prev, toggleShuffle, toggleRepeat,
     }}>
       {children}

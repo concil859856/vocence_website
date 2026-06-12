@@ -11,12 +11,14 @@
  * the recording pipeline.
  */
 
-import { Fragment, useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Loader2, Phone, AlertCircle, Play, FileText, X, Download, Trash2, ExternalLink } from 'lucide-react';
+import { Loader2, Phone, AlertCircle, Play, FileText, X, Trash2, ExternalLink } from 'lucide-react';
 import { agentsApi } from '../../lib/agents/api';
 import type { AgentCall, AnalyticsRange, CallEndReason } from '../../lib/agents/types';
 import { useConfirm } from '../../hooks/useConfirm';
+import { useCallPlayer } from '../../lib/agents/useCallPlayer';
+import { useStudioPlayer } from '../../contexts/StudioPlayerContext';
 
 const RANGE_OPTIONS: { id: AnalyticsRange; label: string }[] = [
   { id: '24h', label: '24h' },
@@ -62,10 +64,11 @@ function formatRelative(iso: string): string {
 
 interface Props {
   agentId: string;
+  agentName?: string;
   token: string | null;
 }
 
-export function AgentCallsTab({ agentId, token }: Props) {
+export function AgentCallsTab({ agentId, agentName, token }: Props) {
   const [range, setRange] = useState<AnalyticsRange>('30d');
   const [calls, setCalls] = useState<AgentCall[]>([]);
   const [loading, setLoading] = useState(true);
@@ -73,10 +76,15 @@ export function AgentCallsTab({ agentId, token }: Props) {
   // Session_id of the call whose transcript modal is currently open.
   // Null when no modal is showing.
   const [openTranscriptFor, setOpenTranscriptFor] = useState<string | null>(null);
-  // The call currently loaded in the docked bottom player. One
-  // global player, music-player style — clicking Play on a
-  // different row swaps the source. Null = no player visible.
-  const [playingCall, setPlayingCall] = useState<AgentCall | null>(null);
+  // Hand-off to the global StudioPlayerBar. ``loadedSessionId``
+  // tells us which row's Play button should be highlighted as
+  // "currently loaded" without needing the global player to expose
+  // its own per-call identity.
+  const callPlayer = useCallPlayer(token);
+  // Direct access only used for the "stop player when its track is
+  // deleted" tear-down. Playback is exclusively driven through
+  // callPlayer so the JSON-presigned-URL fetch stays in one place.
+  const studioPlayer = useStudioPlayer();
   // Session_id currently being deleted (POST in flight). Disables
   // the trash button to prevent double-fires.
   const [deletingFor, setDeletingFor] = useState<string | null>(null);
@@ -104,8 +112,11 @@ export function AgentCallsTab({ agentId, token }: Props) {
             : c,
         ),
       );
-      // Stop the bottom player if it was loaded with this call.
-      if (playingCall?.session_id === sessionId) setPlayingCall(null);
+      // If this call was currently loaded in the global player,
+      // stop it so the dock doesn't keep a now-gone track on screen.
+      if (callPlayer.loadedSessionId === sessionId) {
+        studioPlayer.stop();
+      }
     } catch (err) {
       setError((err as Error)?.message ?? 'failed to delete recording');
     } finally {
@@ -126,10 +137,12 @@ export function AgentCallsTab({ agentId, token }: Props) {
   }, [agentId, token, range]);
 
   return (
-    // pb-28 reserves room so the bottom-docked player never covers
-    // the last row in the table. The dock itself is fixed-positioned
-    // so it survives scrolling.
-    <div className={`space-y-4 ${playingCall ? 'pb-28' : ''}`}>
+    // pb-28 reserves room so the global StudioPlayerBar (mounted
+    // once in App.tsx) never covers the last row. The dock is
+    // ~80px tall + a 20px margin so 28 is comfortable. Always
+    // applied because the player can appear / disappear from
+    // elsewhere in the app and we don't want layout shift.
+    <div className="space-y-4 pb-28">
       {/* Range selector */}
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <h2 className="text-base font-semibold text-white">Calls</h2>
@@ -190,11 +203,11 @@ export function AgentCallsTab({ agentId, token }: Props) {
             <tbody className="divide-y divide-white/5">
               {calls.map((c) => {
                 const pres = REASON_PRESENTATION[c.end_reason] ?? REASON_PRESENTATION.unknown;
-                const playing = playingCall?.session_id === c.session_id;
+                const isLoaded = callPlayer.loadedSessionId === c.session_id;
                 const hasRecording = c.has_recording && !!token;
                 return (
                   <Fragment key={c.session_id}>
-                    <tr className={`hover:bg-white/[0.02] ${playing ? 'bg-white/[0.03]' : ''}`}>
+                    <tr className={`hover:bg-white/[0.02] ${isLoaded ? 'bg-white/[0.03]' : ''}`}>
                       <td className="px-4 py-3 text-white/80" title={c.started_at}>
                         {formatRelative(c.started_at)}
                       </td>
@@ -210,15 +223,26 @@ export function AgentCallsTab({ agentId, token }: Props) {
                           {hasRecording ? (
                             <button
                               type="button"
-                              onClick={() => setPlayingCall(playing ? null : c)}
+                              onClick={() => void callPlayer.play({
+                                agentId,
+                                sessionId: c.session_id,
+                                title: agentName ? `Call · ${agentName}` : 'Call recording',
+                                subtitle: `${formatDuration(c.duration_ms)} · ${formatRelative(c.started_at)}`,
+                              })}
+                              disabled={callPlayer.status === 'loading' && callPlayer.loadedSessionId === c.session_id}
                               className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs hover:bg-white/10 ${
-                                playing
+                                isLoaded
                                   ? 'text-[#DFFF00] bg-[#DFFF00]/10'
                                   : 'text-white/70 hover:text-white'
                               }`}
-                              title={playing ? 'Loaded in player' : 'Play in bottom player'}
+                              title={isLoaded ? 'Loaded in player' : 'Play in bottom player'}
                             >
-                              <Play size={12} /> Play
+                              {callPlayer.status === 'loading' && callPlayer.loadedSessionId !== c.session_id ? (
+                                <Loader2 size={12} className="animate-spin" />
+                              ) : (
+                                <Play size={12} />
+                              )}
+                              Play
                             </button>
                           ) : (
                             <span className="text-xs text-white/30 px-2">No recording</span>
@@ -277,143 +301,14 @@ export function AgentCallsTab({ agentId, token }: Props) {
           onClose={() => setOpenTranscriptFor(null)}
         />
       )}
-      {playingCall && (
-        <BottomPlayer
-          agentId={agentId}
-          call={playingCall}
-          token={token}
-          onClose={() => setPlayingCall(null)}
-        />
-      )}
       {confirmDialog}
     </div>
   );
 }
 
-// ─── Bottom-docked audio player ──────────────────────────────────────
-// One player per tab, music-player style: fixed at the bottom of
-// the viewport, swaps source when the user clicks Play on a
-// different row. Persists across scrolling. The component owns the
-// presigned-URL fetch, the <audio> element, and a Close affordance.
-//
-// We re-fetch the URL on every call change (vs caching) because
-// presigned URLs are short-lived (~1h TTL) — fetching fresh each
-// time avoids edge cases where a long-lingering player suddenly
-// 403s mid-listen.
-
-interface BottomPlayerProps {
-  agentId: string;
-  call: AgentCall;
-  token: string | null;
-  onClose: () => void;
-}
-
-function BottomPlayer({ agentId, call, token, onClose }: BottomPlayerProps) {
-  const [url, setUrl] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  // Surfaces "your browser blocked autoplay, click play manually"
-  // when the .play() promise rejects. Chrome sometimes does this
-  // even after a user gesture if the audio is cross-origin and
-  // mounts in a different tick.
-  const [autoplayBlocked, setAutoplayBlocked] = useState(false);
-  const audioRef = useRef<HTMLAudioElement>(null);
-
-  // Fetch the presigned URL whenever the loaded call changes.
-  useEffect(() => {
-    if (!token) return;
-    let cancelled = false;
-    setError(null);
-    setUrl(null);
-    setAutoplayBlocked(false);
-    agentsApi.getCallAudioUrl(token, agentId, call.session_id)
-      .then((u) => { if (!cancelled) setUrl(u); })
-      .catch((err) => { if (!cancelled) setError(err?.message ?? 'failed to load recording'); });
-    return () => { cancelled = true; };
-  }, [agentId, call.session_id, token]);
-
-  // Programmatic play when the URL lands. autoPlay attribute alone
-  // is unreliable on Chrome/Safari after async URL fetches — by the
-  // time src is set the user-gesture context can be lost.
-  useEffect(() => {
-    if (!url || !audioRef.current) return;
-    const el = audioRef.current;
-    const tryPlay = el.play();
-    if (tryPlay && typeof tryPlay.catch === 'function') {
-      tryPlay.catch(() => setAutoplayBlocked(true));
-    }
-  }, [url]);
-
-  const downloadUrl = token ? agentsApi.callAudioUrl(token, agentId, call.session_id) : null;
-
-  return (
-    // z-[60] beats both the ActiveJobsPill (z-40) and the mobile
-    // bottom nav (z-50) so the player is always on top. lg:left-64
-    // offsets past the desktop sidebar so the dock doesn't visually
-    // run UNDER it — on mobile the sidebar collapses so we span
-    // edge-to-edge.
-    <div className="fixed bottom-0 left-0 right-0 lg:left-64 z-[60] bg-[#0E1014]/95 backdrop-blur border-t border-white/10 px-4 py-3 shadow-2xl">
-      <div className="max-w-6xl mx-auto flex items-center gap-4">
-        {/* Metadata column — call identity so the user knows what's
-            loaded when they have multiple agents open. */}
-        <div className="shrink-0 min-w-[160px]">
-          <div className="text-[11px] uppercase tracking-wider text-[#DFFF00]/80">Now playing</div>
-          <div className="text-sm text-white truncate" title={call.session_id}>
-            Call · {formatDuration(call.duration_ms)}
-          </div>
-          <div className="text-[11px] text-white/40 truncate" title={call.started_at}>
-            {formatRelative(call.started_at)} · {call.turn_count} turn{call.turn_count === 1 ? '' : 's'}
-          </div>
-        </div>
-
-        {/* Audio element fills the remaining width. Loading + error
-            states render inline so the dock height stays stable. */}
-        <div className="flex-1 min-w-0">
-          {error && (
-            <div className="text-xs text-red-300">{error}</div>
-          )}
-          {!error && !url && (
-            <div className="inline-flex items-center text-xs text-white/40">
-              <Loader2 className="animate-spin mr-2" size={12} /> Loading recording…
-            </div>
-          )}
-          {!error && url && (
-            <>
-              {/* No crossOrigin — presigned R2 URL is its own auth,
-                  skipping CORS mode lets the browser play directly. */}
-              <audio ref={audioRef} controls src={url} className="w-full h-9" />
-              {autoplayBlocked && (
-                <div className="text-[10px] text-amber-300/80 mt-1">
-                  Browser blocked autoplay — click ▶ to start.
-                </div>
-              )}
-            </>
-          )}
-        </div>
-
-        {/* Actions */}
-        <div className="shrink-0 flex items-center gap-1">
-          {downloadUrl && (
-            <a
-              href={`${downloadUrl}?download=true`}
-              className="inline-flex items-center gap-1 px-2 py-1.5 rounded-md text-xs text-white/60 hover:bg-white/10 hover:text-white"
-              title="Download WAV"
-            >
-              <Download size={12} />
-            </a>
-          )}
-          <button
-            type="button"
-            onClick={onClose}
-            className="inline-flex items-center gap-1 px-2 py-1.5 rounded-md text-xs text-white/60 hover:bg-white/10 hover:text-white"
-            title="Close player"
-          >
-            <X size={14} />
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
+// Bottom-docked player is now the global StudioPlayerBar (mounted
+// in App.tsx). useCallPlayer encapsulates the JSON-presigned-URL
+// fetch and hands the resulting Track over to the global context.
 
 interface TranscriptModalProps {
   agentId: string;
