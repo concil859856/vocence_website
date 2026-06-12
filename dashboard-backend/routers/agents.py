@@ -11,10 +11,8 @@ import json
 import logging
 from typing import Any, Optional
 
-import os
-
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 import agent_knowledge
@@ -640,18 +638,24 @@ async def get_agent_analytics(
 async def download_call_audio(
     agent_id: str,
     session_id: str,
+    download: bool = False,
     user_id: str = Depends(require_auth),
 ):
-    """Stream the stereo WAV (left=user, right=agent) for a recorded
-    call. 404 when recording was disabled / failed, 403 when the call
-    belongs to a different agent (i.e. wrong URL — defense-in-depth
-    against the session_id being treated as a bearer)."""
+    """Authorize, then 302 to a short-lived presigned URL on the
+    object store. The browser's ``<audio>`` element follows the
+    redirect and uses Range requests directly against R2 (or
+    Hippius) — no bandwidth flowing through us during playback.
+
+    ``download=true`` appends a ``Content-Disposition: attachment``
+    header to the presigned URL so the explicit Download button
+    saves the file instead of streaming inline.
+    """
     await _ensure_agent_owned(agent_id, user_id)
     conn = await get_connection()
     try:
         row = await (await conn.execute(
             """
-            SELECT recording_path
+            SELECT recording_bucket, recording_path
             FROM voice_call_logs
             WHERE session_id = ? AND agent_id = ? AND user_id = ?
             """,
@@ -659,21 +663,21 @@ async def download_call_audio(
         )).fetchone()
     finally:
         await conn.close()
-    if not row or not row[0]:
+    if not row or not row[0] or not row[1]:
         raise HTTPException(status_code=404, detail="recording not found")
-    path = str(row[0])
-    if not os.path.exists(path):
-        # The DB row lied — file deleted out-of-band. Return 404 so
-        # the UI can hide the download button on next refresh.
-        raise HTTPException(status_code=404, detail="recording file missing")
-    # FileResponse handles HEAD + Range requests so the browser's
-    # <audio> element can seek through long calls without
-    # downloading the whole file.
-    return FileResponse(
-        path,
-        media_type="audio/wav",
-        filename=f"{session_id}.wav",
+    bucket, key = str(row[0]), str(row[1])
+    from studio_tts_service import presigned_call_recording_url
+    url = presigned_call_recording_url(
+        bucket,
+        key,
+        download_filename=f"{session_id}.wav" if download else None,
     )
+    if not url:
+        raise HTTPException(status_code=502, detail="object store unavailable")
+    # 302 (not 307) so the browser actually follows; <audio src=...>
+    # handles 302 transparently. The presigned URL carries its own
+    # auth via signed query params, so no cookie needs to reach R2.
+    return RedirectResponse(url=url, status_code=302)
 
 
 @router.delete("/{agent_id}/calls/{session_id}/recording")
@@ -682,42 +686,46 @@ async def delete_call_recording(
     session_id: str,
     user_id: str = Depends(require_auth),
 ) -> dict:
-    """Immediately purge a single call's WAV. Owner-only, takes
-    effect before the next retention sweep. The voice_call_logs row
-    itself is preserved so analytics totals don't shift retroactively
-    — same policy as the sweep. Idempotent: deleting a call whose
-    recording is already gone returns 200 with ``deleted=False``."""
+    """Immediately purge one call's recording object from the bucket
+    and NULL the pointers on the voice_call_logs row. Owner-only,
+    takes effect before the next retention sweep. The log row
+    itself is preserved so analytics totals don't shift
+    retroactively — same policy as the sweep. Idempotent: returns
+    200 with ``deleted=False`` when the recording was already gone."""
     await _ensure_agent_owned(agent_id, user_id)
     conn = await get_connection()
     try:
         row = await (await conn.execute(
             """
-            SELECT recording_path FROM voice_call_logs
+            SELECT recording_bucket, recording_path FROM voice_call_logs
             WHERE session_id = ? AND agent_id = ? AND user_id = ?
             """,
             (session_id, agent_id, user_id),
         )).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="call not found")
-        path = row[0]
-        already_gone = path is None
-        if path:
-            try:
-                if os.path.exists(path):
-                    os.unlink(path)
-            except OSError as exc:
+        bucket = row[0]
+        key = row[1]
+        already_gone = bucket is None or key is None
+        if not already_gone:
+            from studio_tts_service import delete_call_recording_object
+            ok = await asyncio.to_thread(
+                delete_call_recording_object, str(bucket), str(key),
+            )
+            if not ok:
                 # Same trade-off the sweep makes: surface the failure
-                # to the caller so the UI can retry / show an error
-                # rather than silently NULLing the column while the
-                # file persists.
+                # so the UI can retry rather than silently NULLing
+                # while the object persists.
                 raise HTTPException(
-                    status_code=500,
-                    detail=f"failed to delete recording: {exc}",
+                    status_code=502,
+                    detail="object store unavailable; try again",
                 )
             await conn.execute(
                 """
                 UPDATE voice_call_logs
-                SET recording_path = NULL, recording_bytes = NULL
+                SET recording_path = NULL,
+                    recording_bucket = NULL,
+                    recording_bytes = NULL
                 WHERE session_id = ?
                 """,
                 (session_id,),

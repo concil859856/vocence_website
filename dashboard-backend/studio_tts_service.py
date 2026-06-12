@@ -1188,6 +1188,86 @@ def upload_wav_preview(user_id: str, preview_token: str, variant: str, wav_bytes
     return bucket, key, expires_at
 
 
+# ---------------------------------------------------------------------------
+# Call-recording helpers (stereo WAVs from voice agent sessions)
+#
+# Layout: ``{user_id}/call-recordings/{session_id}.wav`` in the active
+# bucket (R2 by default). Key is deterministic — session_id is server-
+# issued + unique — so uploads are idempotent and the audio endpoint
+# can build the presigned URL straight from session_id without an
+# extra round trip.
+# ---------------------------------------------------------------------------
+
+CALL_RECORDING_SUBDIR = "call-recordings"
+
+
+def upload_call_recording_wav(
+    user_id: str,
+    session_id: str,
+    wav_bytes: bytes,
+) -> tuple[str, str]:
+    """Upload one session's stereo WAV to the active object store.
+    Returns ``(bucket, key)``. Object stays until the retention sweep
+    or a manual delete removes it via ``delete_call_recording_object``.
+    """
+    bucket = _active_bucket()
+    client = _minio_client()
+    ensure_bucket(client, bucket)
+    key = f"{user_id}/{CALL_RECORDING_SUBDIR}/{session_id}.wav"
+    client.put_object(
+        bucket,
+        key,
+        BytesIO(wav_bytes),
+        length=len(wav_bytes),
+        content_type="audio/wav",
+    )
+    return bucket, key
+
+
+def delete_call_recording_object(bucket: str, key: str) -> bool:
+    """Remove a single recording object. Returns True on success or
+    when the object was already gone (idempotent); False on a real
+    bucket error so the caller can leave the DB row's pointer intact
+    and retry on the next pass."""
+    try:
+        _minio_client().remove_object(bucket, key)
+        return True
+    except Exception:
+        # MinIO's remove_object swallows "not found" by default — a
+        # raised exception here means something else (auth, bucket
+        # missing, transient network). Caller should NOT clear the
+        # DB pointer; next sweep will retry.
+        return False
+
+
+def presigned_call_recording_url(
+    bucket: str,
+    key: str,
+    expires_seconds: int = 3600,
+    *,
+    download_filename: str | None = None,
+) -> str | None:
+    """One-hour presigned GET URL for a recording. The browser's
+    ``<audio>`` element follows the URL with normal Range requests so
+    seek works. ``download_filename`` adds a Content-Disposition
+    header for the explicit download button."""
+    try:
+        client = _minio_client()
+        headers: dict[str, str] = {}
+        if download_filename:
+            headers["response-content-disposition"] = (
+                f'attachment; filename="{download_filename}"'
+            )
+        return client.presigned_get_object(
+            bucket,
+            key,
+            expires=timedelta(seconds=expires_seconds),
+            response_headers=headers or None,
+        )
+    except Exception:
+        return None
+
+
 def upload_wav_to_hippius(user_id: str, wav_bytes: bytes, subdir: str = "") -> tuple[str, str, datetime]:
     """Upload WAV bytes to the active bucket (R2 or Hippius). Returns (bucket, key, expires_at).
 

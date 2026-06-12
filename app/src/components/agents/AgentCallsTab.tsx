@@ -250,12 +250,13 @@ export function AgentCallsTab({ agentId, token }: Props) {
                     {playing && audioUrl && (
                       <tr className="bg-white/[0.015]">
                         <td colSpan={5} className="px-4 py-3">
-                          {/* crossOrigin="use-credentials" → the
-                              vocence_session cookie reaches the
-                              backend audio endpoint and require_auth
-                              accepts it. Without this, the browser
-                              would request the audio anonymously
-                              and the server would 401. */}
+                          {/* The src points at our endpoint which
+                              authorizes (via vocence_session cookie)
+                              and 302-redirects to a presigned R2
+                              URL. ``crossOrigin="use-credentials"``
+                              ensures the cookie is sent on the
+                              initial request; the presigned URL
+                              afterwards needs no auth. */}
                           <audio
                             controls
                             crossOrigin="use-credentials"
@@ -264,8 +265,7 @@ export function AgentCallsTab({ agentId, token }: Props) {
                           />
                           <div className="mt-2 text-right">
                             <a
-                              href={audioUrl}
-                              download={`${c.session_id}.wav`}
+                              href={`${audioUrl}?download=true`}
                               className="inline-flex items-center gap-1 text-xs text-white/60 hover:text-white"
                             >
                               <Download size={12} /> Download WAV

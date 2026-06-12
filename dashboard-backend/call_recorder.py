@@ -5,49 +5,48 @@ and the agent's PCM frames (the bytes the server is about to ship to
 the client's audio worklet) get teed here. On close we write a single
 stereo WAV: left channel = user, right channel = agent.
 
-Design notes
+Storage
+-------
+- WAV bytes built in memory at session close, then uploaded to the
+  active object store (Cloudflare R2 by default; Hippius S3 as the
+  legacy fallback). Same client + same bucket as the rest of the
+  audio artifacts (TTS outputs, voice clones, etc.).
+- Key layout: ``{user_id}/call-recordings/{session_id}.wav`` —
+  deterministic, server-issued, idempotent. The audio endpoint
+  builds a presigned GET URL straight from the session_id.
+- We hold raw PCM bytes in two ``bytearray``s during the call and
+  upload once at close. A 30-minute call at 16 kHz mono s16le is
+  ~57 MB per leg before stereo interleave — RAM cost is real but
+  bounded. If a deployment needs hour-long calls, swap to a
+  rolling multipart upload (deferred).
+
+Frame rate
+----------
+- WAV is canonical 16 kHz mono s16le per channel. User PCM arrives
+  natively at 16 kHz (frontend worklet decimates 48 kHz → 16 kHz
+  before WS). Agent PCM arrives at 24 kHz (TTS pod's canonical
+  output rate). The recorder decimates agent frames 2:3 internally
+  (TTS frames are 40 ms = 960 samples, divisible by 3, so phase
+  always aligns per frame — no cross-chunk state to carry).
+  Aliasing for TTS speech is inaudible at the review level.
+
+Failure mode
 ------------
-- One file per WS session. Path is set by the caller (typically
-  ``data/recordings/{user_id}/{session_id}.wav``).
-- Both sides land in monotonic time order, but they DON'T arrive at
-  the same rate. The user mic streams ~50 frames/sec continuously;
-  the agent only produces audio during TTS bursts. We resolve this
-  by stamping every chunk with ``time.monotonic()`` at receipt and
-  mixing on close — empty slots become silence.
-- Frame rate normalization: WAV is canonical 16 kHz mono s16le per
-  channel. User PCM arrives natively at 16 kHz (frontend worklet
-  decimates 48 kHz → 16 kHz before WS). Agent PCM arrives at 24 kHz
-  (TTS pod's canonical output rate). The recorder decimates agent
-  frames 2:3 internally (TTS frames are 40 ms = 960 samples,
-  divisible by 3, so phase always aligns per frame — no cross-chunk
-  state to carry). Aliasing for TTS speech (energy under ~6 kHz,
-  Nyquist of the 16 kHz target is 8 kHz) is inaudible for a
-  review-the-call recording. The on-disk file is ~64 KB/sec —
-  small enough that we don't need Opus.
-- We hold raw bytes in two ``bytearray``s during the call and write
-  the WAV header + interleaved samples once at close. A 30-minute
-  call at 16 kHz mono s16le is ~57 MB per side — RAM cost is real
-  but bounded. If a deployment needs hour-long calls, swap to a
-  rolling file write (deferred).
-- No compression. WAV is the universal lingua franca; the customer
-  downloads exactly what they get without losing fidelity to a
-  follow-up transcode.
-- Failure mode: any error during capture is swallowed (recording is
-  best-effort; we never want to kill a live call because of a
-  bookkeeping bug). The session-close path checks ``had_error`` to
-  decide whether to write a row with ``recording_path`` or leave it
-  NULL.
+Any error during capture is swallowed (recording is best-effort; we
+never want to kill a live call because of a bookkeeping bug). The
+session-close path checks the returned (bucket, key, size) tuple —
+on (None, None, 0) we leave ``recording_path`` NULL on the call log
+row and the UI just shows "No recording".
 """
 
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
-import os
 import struct
 import time
 import wave
-from pathlib import Path
 
 
 _log = logging.getLogger(__name__)
@@ -68,22 +67,24 @@ class CallRecorder:
 
     Lifecycle:
 
-        rec = CallRecorder(path="...")
+        rec = CallRecorder(user_id="...", session_id="...")
         rec.start()                                  # at session_open
         rec.push_user(pcm_bytes)                     # in _forward_frames
-        rec.push_agent(pcm_bytes_at_16k_mono_s16le)  # before ws.send_bytes
-        path, size = await rec.close()               # in session_close
+        rec.push_agent(pcm_bytes_at_24k_mono_s16le)  # before ws.send_bytes
+        bucket, key, size = await rec.close()        # in session_close
 
-    All methods are thread-safe via an asyncio.Lock — the recorder
-    sits between the WS receive loop and the WS send loop, both of
-    which mutate the buffers from different tasks.
+    All methods are safe to call from multiple tasks — push_* are
+    list-appends only and close() is one-shot via the _closed flag.
     """
 
-    def __init__(self, *, path: str) -> None:
-        self._path = path
+    def __init__(self, *, user_id: str, session_id: str) -> None:
+        self._user_id = user_id
+        self._session_id = session_id
         # (started_at_monotonic_offset_ms, bytes) tuples for each leg.
-        # `bytes` is raw s16le PCM. We collect in a list to avoid
-        # quadratic concat costs on long calls.
+        # `bytes` is raw s16le PCM at SAMPLE_RATE (decimation for the
+        # agent leg happens at push time, so storage is already
+        # canonical 16 kHz). List avoids quadratic concat costs on
+        # long calls.
         self._user_chunks: list[tuple[int, bytes]] = []
         self._agent_chunks: list[tuple[int, bytes]] = []
         self._user_total_bytes = 0
@@ -91,7 +92,6 @@ class CallRecorder:
         self._t0: float = 0.0
         self._started = False
         self._closed = False
-        self._lock = asyncio.Lock()
 
     def start(self) -> None:
         """Anchor the recording clock. Called once per session_open."""
@@ -143,10 +143,6 @@ class CallRecorder:
         24 kHz → 16 kHz ratio. The samples we drop carry frequencies
         above 8 kHz; for TTS speech content the audible artifact is
         negligible compared to what Opus / mp3 would mask anyway."""
-        # struct over the whole buffer once, then slice; avoids
-        # per-sample Python iteration for the common path. Length
-        # has to be a multiple of 2 (s16le) — caller frames are
-        # guaranteed by TTS frame size, but be defensive.
         n_in = len(pcm_s16le_24k) // SAMPLE_WIDTH_BYTES
         if n_in == 0:
             return b""
@@ -154,29 +150,29 @@ class CallRecorder:
         kept = [s for i, s in enumerate(samples) if i % 3 != 2]
         return struct.pack(f"<{len(kept)}h", *kept)
 
-    async def close(self) -> tuple[str | None, int]:
-        """Flush the two legs to disk as a stereo WAV. Returns
-        (path, bytes_written), or (None, 0) if nothing was captured
-        or writing failed (in which case the caller leaves
-        recording_path NULL).
+    async def close(self) -> tuple[str | None, str | None, int]:
+        """Build the stereo WAV in memory and upload to object
+        storage. Returns ``(bucket, key, bytes_written)`` so the
+        caller can persist all three on the voice_call_logs row.
+        Returns ``(None, None, 0)`` if nothing was captured or
+        the upload failed — caller treats it as "no recording".
 
         Call exactly once per session, in the session_close finally
         block. Subsequent calls are no-ops.
         """
         if self._closed:
-            return (None, 0)
+            return (None, None, 0)
         self._closed = True
 
         if self._user_total_bytes == 0 and self._agent_total_bytes == 0:
             # Brand-new session that disconnected before any audio
-            # flowed. No file to write.
-            return (None, 0)
+            # flowed. Nothing to upload.
+            return (None, None, 0)
 
         try:
-            # Build a flat time-anchored mono buffer per leg, then
-            # interleave to stereo. Off-thread because both can be
-            # tens of MB and we don't want to stall the event loop
-            # serializing them.
+            # Build interleaved stereo PCM off-thread because both
+            # legs can be tens of MB and we don't want to stall the
+            # event loop while serializing them.
             user_mono = await asyncio.to_thread(self._flatten, self._user_chunks)
             agent_mono = await asyncio.to_thread(self._flatten, self._agent_chunks)
 
@@ -191,19 +187,26 @@ class CallRecorder:
             interleaved = await asyncio.to_thread(
                 self._interleave_stereo, user_mono, agent_mono
             )
+            wav_bytes = await asyncio.to_thread(self._build_wav_bytes, interleaved)
 
-            # Write to disk under an .inprogress suffix then rename
-            # atomically so a half-written file can't be served if
-            # the process crashes between write + close.
-            Path(self._path).parent.mkdir(parents=True, exist_ok=True)
-            tmp = self._path + ".inprogress"
-            await asyncio.to_thread(self._write_wav, tmp, interleaved)
-            os.replace(tmp, self._path)
-            size = os.path.getsize(self._path)
-            return (self._path, size)
+            # Upload off-thread — MinIO's put_object is blocking, so
+            # calling it directly in the event loop would stall every
+            # other WS session on this worker until R2 accepts the
+            # bytes. Local import keeps studio_tts_service out of the
+            # cold-start path for deployments that don't use voice
+            # agents at all.
+            from studio_tts_service import upload_call_recording_wav
+            bucket, key = await asyncio.to_thread(
+                upload_call_recording_wav,
+                self._user_id, self._session_id, wav_bytes,
+            )
+            return (bucket, key, len(wav_bytes))
         except Exception:
-            _log.exception("recorder: close failed (non-fatal, recording_path will be NULL)")
-            return (None, 0)
+            _log.exception(
+                "recorder: close failed (non-fatal, recording_path will be NULL) "
+                "session=%s", self._session_id,
+            )
+            return (None, None, 0)
 
     # ------------------------------------------------------------------
     # Internals
@@ -243,69 +246,60 @@ class CallRecorder:
         stereo s16le buffer (L0, R0, L1, R1, …)."""
         if len(left) != len(right):
             raise ValueError("stereo interleave requires equal mono lengths")
-        # Each sample is 2 bytes (s16le). Use struct.unpack/pack for
-        # clarity; for big calls this gets called once at close so
-        # the perf is fine.
         n = len(left) // SAMPLE_WIDTH_BYTES
         L = struct.unpack(f"<{n}h", left)
         R = struct.unpack(f"<{n}h", right)
         out = bytearray(n * 2 * SAMPLE_WIDTH_BYTES)
-        # Use struct.pack_into to avoid building a large Python list.
         fmt = "<2h"
         for i in range(n):
             struct.pack_into(fmt, out, i * 4, L[i], R[i])
         return bytes(out)
 
     @staticmethod
-    def _write_wav(path: str, stereo_pcm: bytes) -> None:
-        with wave.open(path, "wb") as w:
+    def _build_wav_bytes(stereo_pcm: bytes) -> bytes:
+        """Wrap stereo PCM in a WAV header and return the full byte
+        blob ready for upload."""
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as w:
             w.setnchannels(2)
             w.setsampwidth(SAMPLE_WIDTH_BYTES)
             w.setframerate(SAMPLE_RATE)
             w.writeframes(stereo_pcm)
+        return buf.getvalue()
 
 
 async def sweep_expired_recordings(retention_days: int) -> tuple[int, int]:
-    """Delete WAV files older than ``retention_days`` and NULL their
-    rows in ``voice_call_logs``. Returns ``(files_unlinked, rows_updated)``.
+    """Delete recording objects older than ``retention_days`` and
+    NULL their pointers on ``voice_call_logs``. Returns
+    ``(objects_removed, rows_updated)``.
 
-    Idempotent — safe to call any number of times. Tolerates files
-    that are already gone (FileNotFoundError swallowed). On disk-IO
-    errors per row we keep the row's ``recording_path`` intact so the
-    next sweep retries; we don't NULL the column until the file is
-    actually gone or already missing, so the UI's "play" button stays
-    accurate.
+    Idempotent — safe to call any number of times. Per-row order:
 
-    The order is:
         1. SELECT rows with non-NULL recording_path older than the
            cutoff.
-        2. Per row: unlink file (tolerating FileNotFoundError).
+        2. Per row: remove_object from the bucket (tolerating "not
+           found" silently, since MinIO treats it as no-op).
         3. Per row that succeeded at step 2: UPDATE row to NULL
-           recording_path + recording_bytes.
+           recording_path + recording_bucket + recording_bytes.
 
-    If step 2 fails for a row, that row is left alone — the next sweep
-    cycle will retry. If we crash between step 2 and step 3 for some
-    row, the next sweep notices the path is still on the row and
-    re-unlinks (which fast-succeeds via FileNotFoundError → swallow).
-    Net: never deletes the wrong file, never leaves a dangling
-    pointer on the UI forever.
+    If step 2 errors (auth / network / bucket missing), the row is
+    left alone — the next sweep retries. If we crash between step 2
+    and step 3, the next sweep re-removes (no-op since the object is
+    already gone) and then NULLs the columns. Net: never leaves a
+    dangling pointer on the UI beyond one sweep cycle.
     """
-    # Inline import — sweep_expired_recordings is called from the
-    # cleanup_loop in ops.pollers, which keeps its dependency surface
-    # narrow. The local_db import is heavy (registers SQL setup) so
-    # we defer it.
     from local_db import get_connection
+    from studio_tts_service import delete_call_recording_object
 
     if retention_days <= 0:
         return (0, 0)
 
-    files_unlinked = 0
-    rows_updated = 0
+    objects_removed = 0
     conn = await get_connection()
     try:
         rows = await (await conn.execute(
             """
-            SELECT session_id, recording_path
+            SELECT session_id, recording_bucket, recording_path
             FROM voice_call_logs
             WHERE recording_path IS NOT NULL
               AND started_at < datetime('now', ?)
@@ -313,33 +307,33 @@ async def sweep_expired_recordings(retention_days: int) -> tuple[int, int]:
             (f"-{retention_days} days",),
         )).fetchall()
 
-        # Collect session_ids that we successfully cleared on disk so
-        # we can batch the UPDATE. Keeping the SELECT, file IO, and
-        # UPDATE in distinct phases avoids holding a write lock while
-        # doing filesystem work.
+        # Run object deletes off-thread (MinIO is blocking) and
+        # collect session_ids that succeeded so we can batch the
+        # UPDATE. Iterating one-by-one in the executor would multiply
+        # the latency on a big sweep — but a sweep big enough to
+        # matter is unusual (hourly cadence), so keep the simple loop.
         cleared_session_ids: list[str] = []
         for r in rows:
             session_id = str(r[0])
-            path = str(r[1] or "")
-            if not path:
+            bucket = str(r[1] or "")
+            key = str(r[2] or "")
+            if not bucket or not key:
+                # Row from before the R2 migration (filesystem path).
+                # The local file is gone post-redeploy — clear the
+                # pointer and move on so the UI stops trying to play it.
+                cleared_session_ids.append(session_id)
                 continue
-            try:
-                os.unlink(path)
-                files_unlinked += 1
+            ok = await asyncio.to_thread(
+                delete_call_recording_object, bucket, key
+            )
+            if ok:
+                objects_removed += 1
                 cleared_session_ids.append(session_id)
-            except FileNotFoundError:
-                # Already gone; treat as success so the column gets
-                # NULLed and we stop trying. The UI's "no recording"
-                # path takes over from here.
-                cleared_session_ids.append(session_id)
-            except OSError as exc:
-                # Permissions or disk error — leave the row alone,
-                # next sweep retries. Log noisily so an oncall
-                # notices a sustained failure.
+            else:
                 _log.warning(
-                    "recording sweep: unlink failed for session=%s path=%s: %s "
-                    "(will retry next cycle)",
-                    session_id, path, exc,
+                    "recording sweep: remove_object failed for session=%s "
+                    "bucket=%s key=%s (will retry next cycle)",
+                    session_id, bucket, key,
                 )
 
         if cleared_session_ids:
@@ -347,28 +341,14 @@ async def sweep_expired_recordings(retention_days: int) -> tuple[int, int]:
             await conn.execute(
                 f"""
                 UPDATE voice_call_logs
-                SET recording_path = NULL, recording_bytes = NULL
+                SET recording_path = NULL,
+                    recording_bucket = NULL,
+                    recording_bytes = NULL
                 WHERE session_id IN ({placeholders})
                 """,
                 cleared_session_ids,
             )
             await conn.commit()
-            rows_updated = len(cleared_session_ids)
     finally:
         await conn.close()
-    return (files_unlinked, rows_updated)
-
-
-def recording_path_for(user_id: str, session_id: str, root: str | None = None) -> str:
-    """Standard layout: ``data/recordings/{user_id}/{session_id}.wav``.
-
-    Caller can override ``root`` for tests. The default is relative
-    to the dashboard-backend process CWD, which matches how
-    LanceDB / SQLite are sited today.
-    """
-    base = root or os.environ.get("CALL_RECORDINGS_DIR") or "data/recordings"
-    # Sanitize: the IDs are server-issued so no traversal risk in
-    # practice, but be defensive in case the path layout changes.
-    safe_user = user_id.replace("/", "_").replace("..", "_")
-    safe_sess = session_id.replace("/", "_").replace("..", "_")
-    return str(Path(base) / safe_user / f"{safe_sess}.wav")
+    return (objects_removed, len(cleared_session_ids))

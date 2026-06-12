@@ -72,7 +72,7 @@ from voicechat_service import (
     VOICECHAT_EXTRA_SYSTEM_PROMPT,
 )
 import agent_tools_service
-from call_recorder import CallRecorder, recording_path_for
+from call_recorder import CallRecorder
 from llm_client import stream_chat_with_tools
 
 # Tool calling: cap how many LLM↔tool round-trips a single turn can do.
@@ -212,6 +212,7 @@ async def _log_call_session(
     duration_ms: int,
     end_reason: str,
     recording_path: str | None = None,
+    recording_bucket: str | None = None,
     recording_bytes: int | None = None,
 ) -> None:
     """Persist a session-level row to ``voice_call_logs`` once a voice
@@ -248,8 +249,8 @@ async def _log_call_session(
                 INSERT OR REPLACE INTO voice_call_logs
                 (session_id, user_id, agent_id, agent_name, started_at, ended_at,
                  duration_ms, end_reason, turn_count, user_chars, agent_chars,
-                 recording_path, recording_bytes)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 recording_path, recording_bucket, recording_bytes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     session_id,
@@ -264,6 +265,7 @@ async def _log_call_session(
                     user_chars,
                     agent_chars,
                     recording_path,
+                    recording_bucket,
                     recording_bytes,
                 ),
             )
@@ -850,12 +852,13 @@ async def voicechat_session(
     )
     if record_enabled_for_session:
         call_recorder = CallRecorder(
-            path=recording_path_for(auth_user_id, session_id),
+            user_id=auth_user_id,
+            session_id=session_id,
         )
         call_recorder.start()
         _log.info(
-            "[stream] trace session=%s phase=recording_started path=%s",
-            session_id, call_recorder._path,  # noqa: SLF001 — log only
+            "[stream] trace session=%s phase=recording_started destination=object_store",
+            session_id,
         )
     # Compute the builtin spec list once. Custom tools are loaded
     # per-turn (the user can rebind them mid-session), but their
@@ -1719,22 +1722,25 @@ async def voicechat_session(
         with suppress(Exception):
             await billing.stop()
 
-        # Flush the call recorder to disk (if any). Best-effort —
-        # the helper swallows IO errors and returns (None, 0), which
-        # we'll write into the log row as a NULL recording_path.
-        # Done BEFORE _log_call_session so the recording_path lands
-        # in the same INSERT, not a follow-up UPDATE.
+        # Flush the call recorder to the object store (if any).
+        # Best-effort — helper swallows errors and returns
+        # (None, None, 0), which we persist as NULL columns on the
+        # log row. Done BEFORE _log_call_session so bucket + key
+        # land in the same INSERT, not a follow-up UPDATE.
+        recording_bucket_persisted: str | None = None
         recording_path_persisted: str | None = None
         recording_bytes_persisted: int | None = None
         if call_recorder is not None:
             try:
-                _rec_path, _rec_bytes = await call_recorder.close()
-                if _rec_path and _rec_bytes > 0:
-                    recording_path_persisted = _rec_path
+                _rec_bucket, _rec_key, _rec_bytes = await call_recorder.close()
+                if _rec_key and _rec_bytes > 0:
+                    recording_bucket_persisted = _rec_bucket
+                    recording_path_persisted = _rec_key
                     recording_bytes_persisted = _rec_bytes
                     _log.info(
-                        "[stream] trace session=%s phase=recording_flushed path=%s bytes=%d",
-                        session_id, _rec_path, _rec_bytes,
+                        "[stream] trace session=%s phase=recording_uploaded "
+                        "bucket=%s key=%s bytes=%d",
+                        session_id, _rec_bucket, _rec_key, _rec_bytes,
                     )
             except Exception:
                 _log.debug("recorder close raised (non-fatal)", exc_info=False)
@@ -1760,6 +1766,7 @@ async def voicechat_session(
                 duration_ms=int((time.perf_counter() - _session_open_perf) * 1000),
                 end_reason=_session_end_reason,
                 recording_path=recording_path_persisted,
+                recording_bucket=recording_bucket_persisted,
                 recording_bytes=recording_bytes_persisted,
             )
 

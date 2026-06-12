@@ -1079,6 +1079,17 @@ async def ensure_tables() -> None:
             "api_ws_concurrent",
             "api_ws_concurrent INTEGER",
         )
+        # voice_call_logs.recording_bucket — added after the table
+        # first shipped because we initially stored a local filesystem
+        # path and migrated to object storage (R2 / Hippius). Old rows
+        # (filesystem-era) will have NULL here; the audio endpoint
+        # treats those as "no longer accessible" since the disk path
+        # has been wiped, which is correct.
+        await _ensure_column(
+            conn, "voice_call_logs",
+            "recording_bucket",
+            "recording_bucket TEXT",
+        )
         await conn.execute("UPDATE auth_users SET plan_code = COALESCE(plan_code, 'normal')")
         await conn.execute("UPDATE auth_users SET plan_status = COALESCE(plan_status, 'active')")
         await conn.execute("UPDATE auth_users SET updated_at = COALESCE(updated_at, created_at, datetime('now'))")
