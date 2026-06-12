@@ -896,12 +896,16 @@ INDEX_SQL = [
         tokenize = 'porter unicode61'
     )
     """,
-    # Full-text index over per-turn voice-agent transcripts. External-
-    # content mode (``content='studio_voicechat_history'``) means the
-    # FTS table doesn't duplicate the text — it indexes the columns
-    # in place, pointed at by content_rowid. Triggers below keep it
-    # in sync on every INSERT / UPDATE / DELETE so writers (the
-    # _record_turn path) don't have to know about FTS.
+    # Full-text index over per-turn voice-agent transcripts. We use
+    # a REGULAR (content-bearing) FTS5 table — same pattern as
+    # ``agent_knowledge_chunks`` — instead of external content for
+    # reliability: the external-content + trigger setup was failing
+    # to populate on some sqlite builds, and the ~1 KB-per-call
+    # disk overhead of duplicating the user/bot text is negligible
+    # next to the audio + recordings we already store.
+    #
+    # The triggers below mirror INSERT / UPDATE / DELETE so writers
+    # (the _record_turn path) don't have to know about FTS.
     """
     CREATE VIRTUAL TABLE IF NOT EXISTS studio_voicechat_history_fts
     USING fts5(
@@ -909,40 +913,38 @@ INDEX_SQL = [
         bot_text,
         agent_id UNINDEXED,
         session_id UNINDEXED,
-        content='studio_voicechat_history',
-        content_rowid='id',
         tokenize='porter unicode61'
     )
     """,
-    # Sync triggers (external-content + delete pattern is per the
-    # SQLite FTS5 docs). The DELETE/UPDATE triggers post the special
-    # 'delete' command into the FTS table so the index stays
-    # consistent with the source table.
     """
     CREATE TRIGGER IF NOT EXISTS studio_voicechat_history_fts_ai
     AFTER INSERT ON studio_voicechat_history BEGIN
         INSERT INTO studio_voicechat_history_fts
             (rowid, user_text, bot_text, agent_id, session_id)
-        VALUES (new.id, new.user_text, new.bot_text, new.agent_id, new.session_id);
+        VALUES (new.id,
+                COALESCE(new.user_text, ''),
+                COALESCE(new.bot_text, ''),
+                new.agent_id,
+                new.session_id);
     END
     """,
     """
     CREATE TRIGGER IF NOT EXISTS studio_voicechat_history_fts_ad
     AFTER DELETE ON studio_voicechat_history BEGIN
-        INSERT INTO studio_voicechat_history_fts
-            (studio_voicechat_history_fts, rowid, user_text, bot_text, agent_id, session_id)
-        VALUES ('delete', old.id, old.user_text, old.bot_text, old.agent_id, old.session_id);
+        DELETE FROM studio_voicechat_history_fts WHERE rowid = old.id;
     END
     """,
     """
     CREATE TRIGGER IF NOT EXISTS studio_voicechat_history_fts_au
     AFTER UPDATE ON studio_voicechat_history BEGIN
-        INSERT INTO studio_voicechat_history_fts
-            (studio_voicechat_history_fts, rowid, user_text, bot_text, agent_id, session_id)
-        VALUES ('delete', old.id, old.user_text, old.bot_text, old.agent_id, old.session_id);
+        DELETE FROM studio_voicechat_history_fts WHERE rowid = old.id;
         INSERT INTO studio_voicechat_history_fts
             (rowid, user_text, bot_text, agent_id, session_id)
-        VALUES (new.id, new.user_text, new.bot_text, new.agent_id, new.session_id);
+        VALUES (new.id,
+                COALESCE(new.user_text, ''),
+                COALESCE(new.bot_text, ''),
+                new.agent_id,
+                new.session_id);
     END
     """,
     "CREATE INDEX IF NOT EXISTS idx_agent_runs_agent ON agent_runs (agent_id, started_at DESC)",
@@ -1126,17 +1128,44 @@ async def ensure_tables() -> None:
             # by the connection driver if it happened.
             pass
 
+        # Drop the OLD external-content FTS table + triggers from a
+        # prior build before SCHEMA_SQL runs. Detected by reading
+        # the CREATE statement out of sqlite_master and looking
+        # for the ``content='studio_voicechat_history'`` option.
+        # We can safely recreate without data loss because the
+        # source rows in studio_voicechat_history are untouched —
+        # the backfill below repopulates from there.
+        try:
+            cur = await conn.execute(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type='table' AND name='studio_voicechat_history_fts'"
+            )
+            existing = await cur.fetchone()
+            existing_sql = (existing["sql"] if existing else "") or ""
+            if "content='studio_voicechat_history'" in existing_sql or "content=\"studio_voicechat_history\"" in existing_sql:
+                # External-content shape — drop + recreate as regular FTS.
+                for stmt in (
+                    "DROP TRIGGER IF EXISTS studio_voicechat_history_fts_ai",
+                    "DROP TRIGGER IF EXISTS studio_voicechat_history_fts_ad",
+                    "DROP TRIGGER IF EXISTS studio_voicechat_history_fts_au",
+                    "DROP TABLE IF EXISTS studio_voicechat_history_fts",
+                ):
+                    await conn.execute(stmt)
+        except Exception:
+            # Best-effort migration. If something goes wrong here,
+            # the CREATE IF NOT EXISTS below leaves the existing
+            # (possibly broken) table in place; search will return
+            # empty until a manual fix.
+            pass
+
         for statement in SCHEMA_SQL:
             await conn.execute(statement)
 
-        # Backfill the transcript FTS index once if it's empty but
-        # the source table already has rows (i.e. the user upgraded
-        # to a build that has FTS into a DB created before it).
-        # External-content FTS5 supports a bulk rebuild via the
-        # special ``rebuild`` command — cheaper than INSERT … SELECT
-        # because it streams from the source table without going
-        # through the trigger fan-out. No-op when the index is
-        # already populated.
+        # Backfill the transcript FTS index. Now that the table is
+        # regular FTS5 (not external content), the trigger only
+        # mirrors NEW inserts — historical rows have to be copied
+        # explicitly. INSERT INTO ... SELECT is the cleanest and
+        # works on every sqlite build.
         try:
             cur = await conn.execute(
                 "SELECT COUNT(*) FROM studio_voicechat_history_fts"
@@ -1146,11 +1175,23 @@ async def ensure_tables() -> None:
                 "SELECT COUNT(*) FROM studio_voicechat_history"
             )
             src_rows = (await cur.fetchone())[0]
-            if fts_rows == 0 and src_rows > 0:
+            if fts_rows < src_rows:
                 await conn.execute(
-                    "INSERT INTO studio_voicechat_history_fts "
-                    "(studio_voicechat_history_fts) VALUES ('rebuild')"
+                    """
+                    INSERT INTO studio_voicechat_history_fts
+                        (rowid, user_text, bot_text, agent_id, session_id)
+                    SELECT id,
+                           COALESCE(user_text, ''),
+                           COALESCE(bot_text, ''),
+                           agent_id,
+                           session_id
+                    FROM studio_voicechat_history
+                    WHERE id NOT IN (
+                        SELECT rowid FROM studio_voicechat_history_fts
+                    )
+                    """
                 )
+                await conn.commit()
         except Exception:
             # FTS5 might not be available in some sqlite builds.
             # Search will degrade to empty results in that case;
