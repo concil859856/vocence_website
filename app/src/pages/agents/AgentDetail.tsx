@@ -24,12 +24,14 @@ import { AgentConfigForm } from '../../components/agents/AgentConfigForm';
 import { ArchitectDrawer } from '../../components/agents/ArchitectDrawer';
 import { AgentKnowledgePanel } from '../../components/agents/AgentKnowledgePanel';
 import { AgentEmbedTokensPanel } from '../../components/agents/AgentEmbedTokensPanel';
+import { AgentCallsTab } from '../../components/agents/AgentCallsTab';
+import { AgentAnalyticsTab } from '../../components/agents/AgentAnalyticsTab';
 import { useAuth } from '../../contexts/AuthContext';
 import { agentsApi, getStoredToken } from '../../lib/agents/api';
 import { avatarGradientPairFor } from '../../data/sampleVoices';
 import type { Agent, AgentConfig, AgentRun, AgentType } from '../../lib/agents/types';
 
-type Tab = 'call' | 'chat' | 'runs' | 'settings';
+type Tab = 'call' | 'chat' | 'runs' | 'calls' | 'analytics' | 'settings';
 
 const STATUS_DOT: Record<Agent['status'], string> = {
   active: 'bg-emerald-400',
@@ -167,6 +169,12 @@ export function AgentDetail() {
     { id: 'call', label: 'Call', show: agent.type === 'knowledge' },
     { id: 'chat', label: 'Chat', show: agent.type === 'knowledge' },
     { id: 'runs', label: 'Runs', show: agent.type === 'goal' },
+    // Calls + Analytics shown for every agent (regardless of type).
+    // ``voice_call_logs`` is written for goal-agent runs too if they
+    // ever open a voice WS, and the table degrades to an empty
+    // state cleanly when there are no rows.
+    { id: 'calls', label: 'Calls', show: true },
+    { id: 'analytics', label: 'Analytics', show: true },
     { id: 'settings', label: 'Settings', show: true },
   ];
 
@@ -394,6 +402,12 @@ export function AgentDetail() {
               <RunsTab agent={agent} token={token} />
             )}
           </div>
+        )}
+        {activeTab === 'calls' && (
+          <AgentCallsTab agentId={agent.id} token={token} />
+        )}
+        {activeTab === 'analytics' && (
+          <AgentAnalyticsTab agentId={agent.id} token={token} />
         )}
         {activeTab === 'settings' && (
           <SettingsTab

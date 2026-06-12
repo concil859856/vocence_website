@@ -537,6 +537,53 @@ SCHEMA_SQL = [
         FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
     )
     """,
+    # Session-level call log. ONE row per voice-agent session (= one
+    # WebSocket open). Written in the session_close finally block.
+    # Per-turn metrics still live in studio_voicechat_history; this
+    # table captures facts that only make sense at the session level:
+    # how the session ENDED, how long it actually was end-to-end (not
+    # sum-of-turn-latencies), whether it was recorded, the turn count
+    # for drop-rate analysis ("user opened mic, never said anything"
+    # vs "had a real conversation"), and a path to the audio file if
+    # recording was on. Drives the per-agent Analytics + Calls
+    # dashboard.
+    """
+    CREATE TABLE IF NOT EXISTS voice_call_logs (
+        session_id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        agent_id TEXT,                          -- NULL = Logos
+        agent_name TEXT,                        -- snapshot; survives agent rename/delete
+        started_at TEXT NOT NULL,               -- UTC ISO8601
+        ended_at TEXT NOT NULL,
+        duration_ms INTEGER NOT NULL,
+        -- normalized: user_hangup | max_duration | idle_timeout |
+        -- free_time_up | billing_exhausted | error | unknown
+        end_reason TEXT NOT NULL DEFAULT 'unknown',
+        turn_count INTEGER NOT NULL DEFAULT 0,  -- number of completed user turns
+        user_chars INTEGER NOT NULL DEFAULT 0,  -- sum across the call
+        agent_chars INTEGER NOT NULL DEFAULT 0,
+        -- Path to the stereo WAV (left=user, right=agent) under
+        -- data/recordings/. NULL when recording was disabled or
+        -- failed mid-call. Frontend serves this via a streaming
+        -- download endpoint, not directly.
+        recording_path TEXT,
+        recording_bytes INTEGER,
+        FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
+    )
+    """,
+    # Per-call transcript snapshot. Lives in its own table (not on
+    # voice_call_logs above) so the call-list query stays narrow and
+    # fast — we only join in the transcript when the user opens the
+    # detail panel for a single call.
+    """
+    CREATE TABLE IF NOT EXISTS voice_call_transcripts (
+        session_id TEXT PRIMARY KEY,
+        -- JSON: [{"role":"user"|"assistant","text":"...","at_ms":int}, ...]
+        -- ``at_ms`` is monotonic from session start so playback can sync.
+        transcript_json TEXT NOT NULL,
+        FOREIGN KEY (session_id) REFERENCES voice_call_logs(session_id) ON DELETE CASCADE
+    )
+    """,
     # CLI device-code login flow (RFC 8628-ish). The CLI obtains a
     # device_code + user_code, opens the user_code page in the browser,
     # and polls the device_code endpoint until the user approves. On

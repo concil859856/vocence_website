@@ -132,6 +132,59 @@ export interface ArchitectChatResponse {
  *     for the Agent Architect to draft from). Those auto-open the
  *     Architect drawer instead of direct prefill.
  */
+// ─── Call history + analytics ────────────────────────────────────────
+// One entry per voice-agent WS session. `has_recording` is the
+// frontend-facing form of the backend's nullable recording_path —
+// when true the Calls tab can render a play button that streams the
+// stereo WAV via the audio endpoint.
+export type AnalyticsRange = '24h' | '7d' | '30d' | '90d';
+
+export type CallEndReason =
+  | 'user_hangup'
+  | 'max_duration'
+  | 'idle_timeout'
+  | 'free_time_up'
+  | 'billing_exhausted'
+  | 'error'
+  | 'unknown';
+
+export interface AgentCall {
+  session_id: string;
+  started_at: string;       // ISO8601 UTC
+  ended_at: string;
+  duration_ms: number;
+  end_reason: CallEndReason;
+  turn_count: number;
+  user_chars: number;
+  agent_chars: number;
+  has_recording: boolean;
+  recording_bytes: number | null;
+}
+
+export interface AgentAnalytics {
+  range: AnalyticsRange;
+  call_count: number;
+  total_duration_ms: number;
+  avg_duration_ms: number;
+  // Fraction in [0, 1] — calls under 10 s OR zero user turns.
+  drop_rate: number;
+  user_chars: number;
+  agent_chars: number;
+  turn_count: number;
+  // Breakdown of how sessions ended over the window. Keys are
+  // CallEndReason values; absent keys = zero of that reason.
+  end_reasons: Record<string, number>;
+  // Daily call-count series for the sparkline. ``day`` is YYYY-MM-DD
+  // and the array is ordered ascending.
+  daily: { day: string; call_count: number; avg_duration_ms: number }[];
+  // Median per-turn latencies pulled from studio_voicechat_history.
+  // null when there were no completed turns in the window — render
+  // as "—" rather than 0.
+  p50_turn_latency_ms: number | null;
+  p50_ttft_ms: number | null;
+  p50_ttfa_ms: number | null;
+}
+
 export interface AgentTemplate {
   id: string;
   name: string;

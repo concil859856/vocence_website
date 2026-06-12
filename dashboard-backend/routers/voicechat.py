@@ -33,6 +33,11 @@ import logging
 import os
 import random
 import time
+from datetime import datetime, timezone
+
+
+def _utcnow_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 import uuid
 
 import embed_tokens
@@ -193,6 +198,79 @@ def _decode_user_from_token(token: str | None) -> str | None:
         return None
     except Exception:
         return None
+
+
+async def _log_call_session(
+    *,
+    session_id: str,
+    user_id: str,
+    agent_id: str | None,
+    agent_name: str | None,
+    started_at_iso: str,
+    ended_at_iso: str,
+    duration_ms: int,
+    end_reason: str,
+    recording_path: str | None = None,
+    recording_bytes: int | None = None,
+) -> None:
+    """Persist a session-level row to ``voice_call_logs`` once a voice
+    call ends. Turn count + char totals are derived from the per-turn
+    rows in ``studio_voicechat_history`` that already share this
+    session_id, so the row stays consistent with the existing
+    per-turn history without duplicating data.
+
+    Idempotent on session_id (INSERT OR REPLACE) so a reconnect
+    storm or a retried close path can't fail the write.
+
+    Non-fatal — analytics aren't user-visible during the call, and
+    we don't want a SQLite hiccup to spam errors in the WS log.
+    """
+    try:
+        conn = await get_connection()
+        try:
+            row = await (await conn.execute(
+                """
+                SELECT
+                    COALESCE(SUM(LENGTH(COALESCE(user_text, ''))), 0) AS user_chars,
+                    COALESCE(SUM(LENGTH(COALESCE(bot_text, ''))), 0) AS agent_chars,
+                    COUNT(*) AS turn_count
+                FROM studio_voicechat_history
+                WHERE session_id = ?
+                """,
+                (session_id,),
+            )).fetchone()
+            user_chars = int(row[0]) if row else 0
+            agent_chars = int(row[1]) if row else 0
+            turn_count = int(row[2]) if row else 0
+            await conn.execute(
+                """
+                INSERT OR REPLACE INTO voice_call_logs
+                (session_id, user_id, agent_id, agent_name, started_at, ended_at,
+                 duration_ms, end_reason, turn_count, user_chars, agent_chars,
+                 recording_path, recording_bytes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session_id,
+                    user_id,
+                    agent_id,
+                    agent_name,
+                    started_at_iso,
+                    ended_at_iso,
+                    duration_ms,
+                    end_reason,
+                    turn_count,
+                    user_chars,
+                    agent_chars,
+                    recording_path,
+                    recording_bytes,
+                ),
+            )
+            await conn.commit()
+        finally:
+            await conn.close()
+    except Exception:
+        _log.exception("failed to log voice call session (non-fatal)")
 
 
 async def _record_turn(
@@ -499,10 +577,20 @@ async def voicechat_session(
     # risk is gone.
     session_id = f"vc-{uuid.uuid4().hex[:16]}"
     _session_open_perf = time.perf_counter()
+    _session_started_iso = _utcnow_iso()
     _log.info(
         "[stream] trace session=%s phase=session_open auth_user_id=%s agent_id=%s",
         session_id, auth_user_id, agent_id,
     )
+    # Session-end metadata accumulated across the call lifetime and
+    # flushed to voice_call_logs in the session_close finally block.
+    # ``reason`` reflects the LAST signal we saw: client disconnect
+    # (= user_hangup), watchdog auto-end (max_duration / idle_timeout
+    # / free_time_up), billing exhausted, or error. Default
+    # "user_hangup" because if nothing else fires before the WS
+    # closes, the user closed it themselves.
+    _session_end_reason = "user_hangup"
+    _session_turn_count = 0
 
     # ── Session watchdog + (paid agents only) per-minute billing ──────
     # A ``VoiceAgentBilling`` instance always exists for every session —
@@ -544,6 +632,16 @@ async def voicechat_session(
         (balance exhausted, max duration, idle, free-time-up) share
         one handler. REASON_EXHAUSTED can't fire in free mode (no
         deductions)."""
+        nonlocal _session_end_reason
+        # Stash the auto-end reason for the session-close logger to
+        # persist into voice_call_logs. ``reason`` from the billing
+        # loop is one of the REASON_* constants (free_time_up,
+        # max_duration, idle_timeout, exhausted); we map exhausted →
+        # billing_exhausted to match the visible code on the wire.
+        if reason == VoiceAgentBilling.REASON_EXHAUSTED:
+            _session_end_reason = "billing_exhausted"
+        else:
+            _session_end_reason = reason
 
         # Logos (free) hit its free-time cap. Special-case: interrupt
         # whatever's happening, have the assistant SPEAK a farewell
@@ -1588,6 +1686,28 @@ async def voicechat_session(
         # MIN_CHARGE_SEC floor is enforced inside stop().
         with suppress(Exception):
             await billing.stop()
+
+        # Persist a session-level row to voice_call_logs. Drives the
+        # per-agent Analytics + Calls dashboard. Aggregated metrics
+        # (turn count, char totals) are derived from
+        # studio_voicechat_history rows that the per-turn _record_turn
+        # already wrote — by the time we get here, _cancel_current()
+        # above has awaited all in-flight turns, so those writes are
+        # durable.
+        _agent_name_snapshot = (
+            agent_ctx.get("name") if isinstance(agent_ctx, dict) else None
+        )
+        with suppress(Exception):
+            await _log_call_session(
+                session_id=session_id,
+                user_id=auth_user_id,
+                agent_id=agent_id,
+                agent_name=_agent_name_snapshot,
+                started_at_iso=_session_started_iso,
+                ended_at_iso=_utcnow_iso(),
+                duration_ms=int((time.perf_counter() - _session_open_perf) * 1000),
+                end_reason=_session_end_reason,
+            )
 
 
 async def _run_turn(

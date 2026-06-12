@@ -8,11 +8,14 @@ import { API_BASE_URL, withNetworkHint } from '../../services/baseUrl';
 import { authFetch } from '../../services/authFetch';
 import type {
   Agent,
+  AgentAnalytics,
+  AgentCall,
   AgentConfig,
   AgentDraftRequest,
   AgentDraftResponse,
   AgentRun,
   AgentType,
+  AnalyticsRange,
   ArchitectChatRequest,
   ArchitectChatResponse,
 } from './types';
@@ -80,6 +83,32 @@ export const agentsApi = {
       method: 'DELETE',
       headers: authHeaders(token),
     });
+  },
+
+  async listCalls(
+    token: string,
+    id: string,
+    opts: { range?: AnalyticsRange; limit?: number } = {},
+  ): Promise<{ calls: AgentCall[]; range: AnalyticsRange; limit: number }> {
+    const qs = new URLSearchParams();
+    if (opts.range) qs.set('range', opts.range);
+    if (opts.limit) qs.set('limit', String(opts.limit));
+    const suffix = qs.toString() ? `?${qs}` : '';
+    return jsonFetch(
+      `${API_BASE_URL}/dashboard/agents/${encodeURIComponent(id)}/calls${suffix}`,
+      { method: 'GET', headers: authHeaders(token) },
+    );
+  },
+
+  async getAnalytics(
+    token: string,
+    id: string,
+    range: AnalyticsRange = '30d',
+  ): Promise<AgentAnalytics> {
+    return jsonFetch(
+      `${API_BASE_URL}/dashboard/agents/${encodeURIComponent(id)}/analytics?range=${range}`,
+      { method: 'GET', headers: authHeaders(token) },
+    );
   },
 
   async draft(token: string, body: AgentDraftRequest): Promise<AgentDraftResponse> {

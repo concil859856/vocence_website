@@ -1,0 +1,170 @@
+/**
+ * Per-agent call history.
+ *
+ *   • Table of recent calls (newest first) for one agent.
+ *   • Range selector: 24h / 7d / 30d / 90d.
+ *   • Each row shows duration, end reason, turn count.
+ *
+ * Recording playback + transcript download wire up in a follow-up
+ * commit — this tab ships first with the listing + range filter so
+ * the analytics surface is testable end-to-end without waiting for
+ * the recording pipeline.
+ */
+
+import { useEffect, useState } from 'react';
+import { Loader2, Phone, AlertCircle } from 'lucide-react';
+import { agentsApi } from '../../lib/agents/api';
+import type { AgentCall, AnalyticsRange, CallEndReason } from '../../lib/agents/types';
+
+const RANGE_OPTIONS: { id: AnalyticsRange; label: string }[] = [
+  { id: '24h', label: '24h' },
+  { id: '7d', label: '7 days' },
+  { id: '30d', label: '30 days' },
+  { id: '90d', label: '90 days' },
+];
+
+// Human-readable + colour-coded reason labels. The CSS class keeps
+// the chip visually consistent with the rest of the dashboard's
+// muted palette.
+const REASON_PRESENTATION: Record<CallEndReason, { label: string; chip: string }> = {
+  user_hangup:        { label: 'Hung up',     chip: 'bg-white/[0.06] text-white/70' },
+  max_duration:       { label: 'Max length',  chip: 'bg-amber-500/15 text-amber-300' },
+  idle_timeout:       { label: 'Idle timeout', chip: 'bg-amber-500/15 text-amber-300' },
+  free_time_up:       { label: 'Free cap',    chip: 'bg-amber-500/15 text-amber-300' },
+  billing_exhausted:  { label: 'Out of credits', chip: 'bg-red-500/15 text-red-300' },
+  error:              { label: 'Error',       chip: 'bg-red-500/15 text-red-300' },
+  unknown:            { label: 'Unknown',     chip: 'bg-white/[0.06] text-white/50' },
+};
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return '0s';
+  const totalSec = Math.round(ms / 1000);
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return m > 0 ? `${m}m ${s}s` : `${s}s`;
+}
+
+function formatRelative(iso: string): string {
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return iso;
+  const delta = Date.now() - t;
+  const min = Math.round(delta / 60000);
+  if (min < 1)   return 'just now';
+  if (min < 60)  return `${min}m ago`;
+  const hr = Math.round(min / 60);
+  if (hr < 24)   return `${hr}h ago`;
+  const d = Math.round(hr / 24);
+  if (d < 30)    return `${d}d ago`;
+  return new Date(iso).toLocaleDateString();
+}
+
+interface Props {
+  agentId: string;
+  token: string | null;
+}
+
+export function AgentCallsTab({ agentId, token }: Props) {
+  const [range, setRange] = useState<AnalyticsRange>('30d');
+  const [calls, setCalls] = useState<AgentCall[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    agentsApi.listCalls(token, agentId, { range })
+      .then((res) => { if (!cancelled) setCalls(res.calls); })
+      .catch((err) => { if (!cancelled) setError(err?.message ?? 'failed to load calls'); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [agentId, token, range]);
+
+  return (
+    <div className="space-y-4">
+      {/* Range selector */}
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <h2 className="text-base font-semibold text-white">Calls</h2>
+        <div className="flex items-center gap-1 bg-white/[0.04] border border-white/10 rounded-full p-0.5">
+          {RANGE_OPTIONS.map((opt) => (
+            <button
+              key={opt.id}
+              type="button"
+              onClick={() => setRange(opt.id)}
+              className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+                range === opt.id
+                  ? 'bg-white/10 text-white'
+                  : 'text-white/50 hover:text-white/80'
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {loading && (
+        <div className="flex items-center justify-center py-16 text-white/40">
+          <Loader2 className="animate-spin mr-2" size={16} />
+          Loading…
+        </div>
+      )}
+
+      {!loading && error && (
+        <div className="flex items-center gap-2 bg-red-500/10 border border-red-500/20 text-red-300 text-sm rounded-xl px-4 py-3">
+          <AlertCircle size={16} />
+          {error}
+        </div>
+      )}
+
+      {!loading && !error && calls.length === 0 && (
+        <div className="text-center py-16 text-white/40">
+          <Phone size={28} className="mx-auto mb-3 opacity-40" />
+          <div className="text-sm">No calls in the last {RANGE_OPTIONS.find((r) => r.id === range)?.label}.</div>
+          <div className="text-xs mt-1 opacity-60">
+            Calls show up here as soon as users speak to this agent.
+          </div>
+        </div>
+      )}
+
+      {!loading && !error && calls.length > 0 && (
+        <div className="bg-white/[0.02] border border-white/10 rounded-xl overflow-hidden">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-[11px] uppercase tracking-wider text-white/40 border-b border-white/10">
+                <th className="px-4 py-3 font-medium">When</th>
+                <th className="px-4 py-3 font-medium">Duration</th>
+                <th className="px-4 py-3 font-medium">Turns</th>
+                <th className="px-4 py-3 font-medium">Ended</th>
+                <th className="px-4 py-3 font-medium text-right">Recording</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-white/5">
+              {calls.map((c) => {
+                const pres = REASON_PRESENTATION[c.end_reason] ?? REASON_PRESENTATION.unknown;
+                return (
+                  <tr key={c.session_id} className="hover:bg-white/[0.02]">
+                    <td className="px-4 py-3 text-white/80" title={c.started_at}>
+                      {formatRelative(c.started_at)}
+                    </td>
+                    <td className="px-4 py-3 text-white/80">{formatDuration(c.duration_ms)}</td>
+                    <td className="px-4 py-3 text-white/60">{c.turn_count}</td>
+                    <td className="px-4 py-3">
+                      <span className={`px-2 py-0.5 rounded-full text-xs ${pres.chip}`}>
+                        {pres.label}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-right text-xs text-white/40">
+                      {c.has_recording ? 'available' : 'off'}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}

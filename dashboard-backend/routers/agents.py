@@ -431,6 +431,203 @@ async def delete_agent(agent_id: str, user_id: str = Depends(require_auth)) -> d
 
 
 # ---------------------------------------------------------------------------
+# Call history + analytics — voice_call_logs is written at session
+# close in routers/voicechat.py. Per-turn latency rows continue to
+# live in studio_voicechat_history and are joined in here on demand.
+# ---------------------------------------------------------------------------
+
+
+_RANGE_DAYS = {"24h": 1, "7d": 7, "30d": 30, "90d": 90}
+
+
+def _range_clause(range_key: str) -> int:
+    """Map the public range token to a day count. Defaults to 30d on
+    anything unrecognized to keep dashboards from silently breaking
+    when a typo'd query param arrives."""
+    return _RANGE_DAYS.get(range_key, 30)
+
+
+@router.get("/{agent_id}/calls")
+async def list_agent_calls(
+    agent_id: str,
+    range: str = "30d",
+    limit: int = 100,
+    user_id: str = Depends(require_auth),
+) -> dict:
+    """Recent calls for one agent, newest first. Drives the Calls tab
+    in the agent detail page. ``recording_path`` is exposed as a
+    boolean ``has_recording`` (the actual file lives on disk; the
+    frontend hits the dedicated audio endpoint to stream it)."""
+    await _ensure_agent_owned(agent_id, user_id)
+    days = _range_clause(range)
+    limit = max(1, min(int(limit), 500))
+    conn = await get_connection()
+    try:
+        rows = await (await conn.execute(
+            """
+            SELECT session_id, started_at, ended_at, duration_ms, end_reason,
+                   turn_count, user_chars, agent_chars, recording_path,
+                   recording_bytes
+            FROM voice_call_logs
+            WHERE agent_id = ?
+              AND started_at >= datetime('now', ?)
+            ORDER BY started_at DESC
+            LIMIT ?
+            """,
+            (agent_id, f"-{days} days", limit),
+        )).fetchall()
+        calls = [
+            {
+                "session_id": r[0],
+                "started_at": r[1],
+                "ended_at": r[2],
+                "duration_ms": int(r[3] or 0),
+                "end_reason": r[4] or "unknown",
+                "turn_count": int(r[5] or 0),
+                "user_chars": int(r[6] or 0),
+                "agent_chars": int(r[7] or 0),
+                "has_recording": bool(r[8]),
+                "recording_bytes": int(r[9]) if r[9] is not None else None,
+            }
+            for r in rows
+        ]
+        return {"calls": calls, "range": range, "limit": limit}
+    finally:
+        await conn.close()
+
+
+@router.get("/{agent_id}/analytics")
+async def get_agent_analytics(
+    agent_id: str,
+    range: str = "30d",
+    user_id: str = Depends(require_auth),
+) -> dict:
+    """Aggregate stats for the per-agent Analytics tab. Returns:
+
+    - ``call_count``, ``total_duration_ms``, ``avg_duration_ms``
+    - ``drop_rate`` — fraction of calls under 10 s OR zero user turns
+      (the "user opened mic, said nothing" pattern). Surface metric
+      for misconfigured / confusing agents.
+    - End-reason breakdown (which watchdog ended sessions vs the
+      user hanging up themselves).
+    - Daily call count for the last N days (for a sparkline).
+    - Median per-turn latencies (TTFT, TTFA) pulled from
+      studio_voicechat_history.
+
+    All scoped to the agent + date range. Empty result on an unused
+    agent is normal (zero fields, empty arrays); the UI handles it.
+    """
+    await _ensure_agent_owned(agent_id, user_id)
+    days = _range_clause(range)
+    conn = await get_connection()
+    try:
+        # Headline metrics over the window.
+        summary_row = await (await conn.execute(
+            """
+            SELECT
+                COUNT(*) AS call_count,
+                COALESCE(SUM(duration_ms), 0) AS total_duration_ms,
+                COALESCE(AVG(duration_ms), 0) AS avg_duration_ms,
+                COALESCE(SUM(CASE WHEN duration_ms < 10000 OR turn_count = 0
+                                  THEN 1 ELSE 0 END), 0) AS dropped,
+                COALESCE(SUM(user_chars), 0) AS user_chars,
+                COALESCE(SUM(agent_chars), 0) AS agent_chars,
+                COALESCE(SUM(turn_count), 0) AS turn_count
+            FROM voice_call_logs
+            WHERE agent_id = ?
+              AND started_at >= datetime('now', ?)
+            """,
+            (agent_id, f"-{days} days"),
+        )).fetchone()
+        call_count = int(summary_row[0] or 0)
+        total_duration_ms = int(summary_row[1] or 0)
+        avg_duration_ms = int(summary_row[2] or 0)
+        dropped = int(summary_row[3] or 0)
+        drop_rate = (dropped / call_count) if call_count else 0.0
+
+        # End-reason breakdown — gives an at-a-glance "where do sessions
+        # go to die?" view. Iterating the rows is cheaper than seven
+        # one-off SELECTs.
+        end_rows = await (await conn.execute(
+            """
+            SELECT end_reason, COUNT(*) FROM voice_call_logs
+            WHERE agent_id = ?
+              AND started_at >= datetime('now', ?)
+            GROUP BY end_reason
+            """,
+            (agent_id, f"-{days} days"),
+        )).fetchall()
+        end_reasons = {str(r[0] or "unknown"): int(r[1]) for r in end_rows}
+
+        # Daily series for sparklines. SQLite returns YYYY-MM-DD from
+        # date() — the frontend renders these as-is.
+        daily_rows = await (await conn.execute(
+            """
+            SELECT date(started_at) AS day,
+                   COUNT(*) AS calls,
+                   COALESCE(AVG(duration_ms), 0) AS avg_dur
+            FROM voice_call_logs
+            WHERE agent_id = ?
+              AND started_at >= datetime('now', ?)
+            GROUP BY day
+            ORDER BY day ASC
+            """,
+            (agent_id, f"-{days} days"),
+        )).fetchall()
+        daily = [
+            {"day": r[0], "call_count": int(r[1]), "avg_duration_ms": int(r[2] or 0)}
+            for r in daily_rows
+        ]
+
+        # Latency medians from per-turn rows. We compute median via the
+        # window function so a single hour-long noisy session can't
+        # warp the metric the way AVG would.
+        latency_row = await (await conn.execute(
+            """
+            WITH turn_latencies AS (
+                SELECT t.latency_ms, t.ttft_ms, t.ttfa_ms,
+                       ROW_NUMBER() OVER (ORDER BY t.latency_ms) AS r_lat,
+                       ROW_NUMBER() OVER (ORDER BY t.ttft_ms)    AS r_ttft,
+                       ROW_NUMBER() OVER (ORDER BY t.ttfa_ms)    AS r_ttfa,
+                       COUNT(*) OVER ()                          AS n
+                FROM studio_voicechat_history t
+                JOIN voice_call_logs c ON c.session_id = t.session_id
+                WHERE c.agent_id = ?
+                  AND c.started_at >= datetime('now', ?)
+                  AND t.status = 'completed'
+            )
+            SELECT
+                (SELECT latency_ms FROM turn_latencies WHERE r_lat IN (n / 2 + 1) LIMIT 1) AS p50_latency,
+                (SELECT ttft_ms    FROM turn_latencies WHERE r_ttft IN (n / 2 + 1) LIMIT 1) AS p50_ttft,
+                (SELECT ttfa_ms    FROM turn_latencies WHERE r_ttfa IN (n / 2 + 1)
+                                                          AND ttfa_ms IS NOT NULL LIMIT 1) AS p50_ttfa
+            """,
+            (agent_id, f"-{days} days"),
+        )).fetchone()
+        p50_latency = int(latency_row[0]) if latency_row and latency_row[0] is not None else None
+        p50_ttft = int(latency_row[1]) if latency_row and latency_row[1] is not None else None
+        p50_ttfa = int(latency_row[2]) if latency_row and latency_row[2] is not None else None
+
+        return {
+            "range": range,
+            "call_count": call_count,
+            "total_duration_ms": total_duration_ms,
+            "avg_duration_ms": avg_duration_ms,
+            "drop_rate": drop_rate,
+            "user_chars": int(summary_row[4] or 0),
+            "agent_chars": int(summary_row[5] or 0),
+            "turn_count": int(summary_row[6] or 0),
+            "end_reasons": end_reasons,
+            "daily": daily,
+            "p50_turn_latency_ms": p50_latency,
+            "p50_ttft_ms": p50_ttft,
+            "p50_ttfa_ms": p50_ttfa,
+        }
+    finally:
+        await conn.close()
+
+
+# ---------------------------------------------------------------------------
 # Runs
 # ---------------------------------------------------------------------------
 
