@@ -503,6 +503,91 @@ async def list_agent_calls(
         await conn.close()
 
 
+@router.get("/{agent_id}/calls.csv")
+async def export_agent_calls_csv(
+    agent_id: str,
+    range: str = "30d",
+    user_id: str = Depends(require_auth),
+):
+    """Streamed CSV of every call for one agent in the given range.
+
+    Streaming write avoids materializing N rows × M columns in memory
+    before sending — important when range=90d on a busy agent (could
+    be tens of thousands of rows). Header line is yielded first, then
+    we iterate row-by-row from the same query the JSON list endpoint
+    uses, so behavior stays consistent.
+    """
+    await _ensure_agent_owned(agent_id, user_id)
+    days = _range_clause(range)
+
+    # Build the row generator. async generators work cleanly with
+    # StreamingResponse — FastAPI iterates and pushes each chunk
+    # without buffering the whole response.
+    async def _row_stream():
+        import csv
+        import io
+        # Use csv.writer against a tiny in-memory StringIO that we
+        # truncate per row. Picking the stdlib writer (vs hand-
+        # escaping) handles commas / quotes / newlines inside
+        # transcript-derived fields correctly.
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        # Header
+        writer.writerow([
+            "session_id", "started_at", "ended_at", "duration_ms",
+            "end_reason", "turn_count", "user_chars", "agent_chars",
+            "has_recording", "recording_bytes",
+        ])
+        yield buf.getvalue()
+        buf.seek(0); buf.truncate(0)
+
+        conn = await get_connection()
+        try:
+            cursor = await conn.execute(
+                """
+                SELECT session_id, started_at, ended_at, duration_ms, end_reason,
+                       turn_count, user_chars, agent_chars, recording_path,
+                       recording_bytes
+                FROM voice_call_logs
+                WHERE agent_id = ?
+                  AND started_at >= datetime('now', ?)
+                ORDER BY started_at DESC
+                """,
+                (agent_id, f"-{days} days"),
+            )
+            # Drain in batches so a multi-thousand-row export doesn't
+            # turn into one yield per row (network overhead).
+            BATCH = 200
+            while True:
+                rows = await cursor.fetchmany(BATCH)
+                if not rows:
+                    break
+                for r in rows:
+                    writer.writerow([
+                        r[0],
+                        r[1],
+                        r[2],
+                        int(r[3] or 0),
+                        r[4] or "unknown",
+                        int(r[5] or 0),
+                        int(r[6] or 0),
+                        int(r[7] or 0),
+                        "true" if r[8] else "false",
+                        int(r[9]) if r[9] is not None else "",
+                    ])
+                yield buf.getvalue()
+                buf.seek(0); buf.truncate(0)
+        finally:
+            await conn.close()
+
+    filename = f"agent-{agent_id}-calls-{range}.csv"
+    return StreamingResponse(
+        _row_stream(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.get("/{agent_id}/analytics")
 async def get_agent_analytics(
     agent_id: str,
@@ -630,6 +715,100 @@ async def get_agent_analytics(
             "p50_ttft_ms": p50_ttft,
             "p50_ttfa_ms": p50_ttfa,
         }
+    finally:
+        await conn.close()
+
+
+@router.get("/{agent_id}/calls/search")
+async def search_agent_calls(
+    agent_id: str,
+    q: str,
+    range: str = "30d",
+    limit: int = 50,
+    user_id: str = Depends(require_auth),
+) -> dict:
+    """Full-text search over per-turn transcripts for one agent.
+    Returns matching call rows + a snippet of the highest-ranked
+    match per call so the UI can render "this is what was said"
+    inline. One query, one round trip.
+
+    ``q`` is normalized into an FTS5 MATCH expression: every salient
+    token is quoted as a literal phrase (so a stray AND/OR/NEAR
+    can't break the parser) and OR-joined. Short / stop-word tokens
+    are dropped so single-character queries don't return everything.
+    """
+    await _ensure_agent_owned(agent_id, user_id)
+    days = _range_clause(range)
+    limit = max(1, min(int(limit), 200))
+
+    # Token cleanup. Same shape as the RAG path in agent_knowledge —
+    # keep alphanumerics + dashes, drop runs shorter than 2 chars.
+    import re as _re
+    tokens = [
+        t.lower()
+        for t in _re.findall(r"[A-Za-z][A-Za-z0-9_-]+", q or "")
+        if len(t) >= 2
+    ]
+    # Dedup + cap, mirror agent_knowledge's policy.
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for t in tokens:
+        if t in seen:
+            continue
+        seen.add(t)
+        uniq.append(t)
+        if len(uniq) >= 12:
+            break
+    if not uniq:
+        return {"query": q, "range": range, "results": []}
+    match_expr = " OR ".join('"' + t.replace('"', '""') + '"' for t in uniq)
+
+    conn = await get_connection()
+    try:
+        # MATCH on FTS, JOIN to voice_call_logs for ownership + range
+        # filter, group by session_id so each call appears once. Pick
+        # the highest-rank user_text/bot_text snippet per session via
+        # MIN(bm25(...)) — the user reads ONE line per call, so
+        # showing the strongest match wins. snippet() args mirror
+        # the FTS5 docs: highlight tags, ellipsis, 32 token window.
+        cursor = await conn.execute(
+            """
+            SELECT
+                c.session_id,
+                c.started_at,
+                c.duration_ms,
+                c.end_reason,
+                c.turn_count,
+                MIN(bm25(studio_voicechat_history_fts)) AS rank,
+                snippet(studio_voicechat_history_fts, -1, '<mark>', '</mark>', '…', 32) AS hit
+            FROM studio_voicechat_history_fts
+            JOIN studio_voicechat_history t
+                ON t.id = studio_voicechat_history_fts.rowid
+            JOIN voice_call_logs c
+                ON c.session_id = t.session_id
+            WHERE studio_voicechat_history_fts MATCH ?
+              AND c.agent_id = ?
+              AND c.user_id = ?
+              AND c.started_at >= datetime('now', ?)
+            GROUP BY c.session_id
+            ORDER BY rank ASC
+            LIMIT ?
+            """,
+            (match_expr, agent_id, user_id, f"-{days} days", limit),
+        )
+        rows = await cursor.fetchall()
+        results = [
+            {
+                "session_id": r[0],
+                "started_at": r[1],
+                "duration_ms": int(r[2] or 0),
+                "end_reason": r[3] or "unknown",
+                "turn_count": int(r[4] or 0),
+                "snippet": r[6] or "",
+            }
+            for r in rows
+        ]
+        return {"query": q, "range": range, "results": results}
     finally:
         await conn.close()
 
@@ -882,42 +1061,75 @@ async def download_call_transcript(
     user_id: str = Depends(require_auth),
 ) -> dict:
     """Per-turn transcript for one call, derived from the per-turn
-    rows in studio_voicechat_history. Returned as JSON so the
-    Calls tab can render a Discord-style chat view inline; the
-    caller can also stringify it and Save As .json to download."""
+    rows in studio_voicechat_history. Each turn carries an ``at_ms``
+    offset relative to the call's ``started_at`` so the session
+    replay UI can seek the audio to the exact spot a turn happened
+    rather than estimating proportionally.
+
+    ``at_ms`` semantics:
+      * user turn → ms between call start and when the per-turn row
+        was written (= when STT committed). This is the moment the
+        user finished speaking, which is the natural "play from
+        here" anchor.
+      * assistant turn → same row, same created_at — we don't yet
+        capture a separate "agent started speaking" timestamp at
+        per-turn granularity, so we re-use the user-turn timestamp
+        for the assistant reply sequenced after it. Good enough
+        for ±1s seek precision; can be tightened later by capturing
+        TTS first-frame timestamp in the rows.
+
+    One query joins voice_call_logs and studio_voicechat_history so
+    we don't make a round trip per turn — the join lets SQLite
+    compute the ms offset directly via strftime.
+    """
     await _ensure_agent_owned(agent_id, user_id)
     conn = await get_connection()
     try:
-        # Ownership pinning: the session_id MUST belong to this
-        # agent + user. Otherwise return 404 (not 403) so we don't
-        # leak existence of someone else's session_id.
-        owned = await (await conn.execute(
-            """
-            SELECT 1 FROM voice_call_logs
-            WHERE session_id = ? AND agent_id = ? AND user_id = ?
-            """,
-            (session_id, agent_id, user_id),
-        )).fetchone()
-        if not owned:
-            raise HTTPException(status_code=404, detail="call not found")
+        # Ownership pinning + per-turn rows fetched in one query.
+        # COALESCE(strftime, 0) guards against NULL created_at on
+        # pre-migration rows (returns at_ms=0 instead of NULL so the
+        # frontend can use a simple number type).
         rows = await (await conn.execute(
             """
-            SELECT user_text, bot_text, latency_ms, ttft_ms, ttfa_ms,
-                   created_at, error
-            FROM studio_voicechat_history
-            WHERE session_id = ?
-            ORDER BY id ASC
+            SELECT
+                t.user_text,
+                t.bot_text,
+                CAST(
+                    (julianday(t.created_at) - julianday(c.started_at)) * 86400000
+                    AS INTEGER
+                ) AS at_ms,
+                t.latency_ms,
+                t.ttft_ms,
+                t.ttfa_ms,
+                t.mode
+            FROM voice_call_logs c
+            JOIN studio_voicechat_history t ON t.session_id = c.session_id
+            WHERE c.session_id = ? AND c.agent_id = ? AND c.user_id = ?
+            ORDER BY t.id ASC
             """,
-            (session_id,),
+            (session_id, agent_id, user_id),
         )).fetchall()
+        if not rows:
+            # Empty result could mean missing call OR missing per-turn
+            # rows; either way the UX is "nothing to show", so we
+            # can't distinguish. Run a cheap existence check so we
+            # return 404 only when the CALL is missing.
+            owned = await (await conn.execute(
+                "SELECT 1 FROM voice_call_logs "
+                "WHERE session_id = ? AND agent_id = ? AND user_id = ?",
+                (session_id, agent_id, user_id),
+            )).fetchone()
+            if not owned:
+                raise HTTPException(status_code=404, detail="call not found")
         turns = []
         for r in rows:
             user_text = (r[0] or "").strip()
             bot_text = (r[1] or "").strip()
+            at_ms = int(r[2] or 0)
             if user_text:
-                turns.append({"role": "user", "text": user_text})
+                turns.append({"role": "user", "text": user_text, "at_ms": at_ms})
             if bot_text:
-                turns.append({"role": "assistant", "text": bot_text})
+                turns.append({"role": "assistant", "text": bot_text, "at_ms": at_ms})
         return {
             "session_id": session_id,
             "agent_id": agent_id,

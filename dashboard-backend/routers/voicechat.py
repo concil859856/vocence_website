@@ -289,6 +289,15 @@ async def _record_turn(
     session_id: str | None = None,
     agent_id: str | None = None,
 ) -> None:
+    # Apply PII redaction at the storage boundary. The in-memory
+    # ``conversation`` passed to the LLM is NOT touched — the agent
+    # still reacts to what was actually said. Only the durable
+    # transcript surfaces (transcript modal, session replay,
+    # transcript search) see the redacted form. No-op when
+    # VOCENCE_PII_REDACTION is off.
+    from pii_redaction import redact_pii_text
+    safe_user = redact_pii_text(user_text)
+    safe_bot = redact_pii_text(bot_text)
     try:
         conn = await get_connection()
         try:
@@ -302,8 +311,8 @@ async def _record_turn(
                 (
                     user_id,
                     mode,
-                    user_text[:8000],
-                    bot_text[:16000],
+                    safe_user[:8000],
+                    safe_bot[:16000],
                     latency_ms,
                     ttft_ms,
                     ttfa_ms,

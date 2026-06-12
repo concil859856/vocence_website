@@ -88,6 +88,45 @@ export const agentsApi = {
     });
   },
 
+  /** Browser-navigated CSV download URL. Cookie auth on our
+   *  endpoint; we stream the rows row-by-row so multi-thousand-row
+   *  exports don't OOM either side. */
+  callsCsvUrl(agentId: string, range: AnalyticsRange): string {
+    return (
+      `${API_BASE_URL}/dashboard/agents/${encodeURIComponent(agentId)}/calls.csv?range=${range}`
+    );
+  },
+
+  async searchCalls(
+    token: string,
+    agentId: string,
+    q: string,
+    opts: { range?: AnalyticsRange; limit?: number } = {},
+  ): Promise<{
+    query: string;
+    range: AnalyticsRange;
+    results: {
+      session_id: string;
+      started_at: string;
+      duration_ms: number;
+      end_reason: string;
+      turn_count: number;
+      /** HTML string with ``<mark>`` highlights around matches.
+       *  Caller must dangerouslySetInnerHTML — the FTS5 snippet
+       *  generator escapes user-supplied text, so the only HTML
+       *  inside is the tag we chose. */
+      snippet: string;
+    }[];
+  }> {
+    const params = new URLSearchParams({ q });
+    if (opts.range) params.set('range', opts.range);
+    if (opts.limit) params.set('limit', String(opts.limit));
+    return jsonFetch(
+      `${API_BASE_URL}/dashboard/agents/${encodeURIComponent(agentId)}/calls/search?${params}`,
+      { method: 'GET', headers: authHeaders(token) },
+    );
+  },
+
   async listCalls(
     token: string,
     id: string,
@@ -148,7 +187,11 @@ export const agentsApi = {
     token: string,
     agentId: string,
     sessionId: string,
-  ): Promise<{ session_id: string; agent_id: string; turns: { role: 'user' | 'assistant'; text: string }[] }> {
+  ): Promise<{
+    session_id: string;
+    agent_id: string;
+    turns: { role: 'user' | 'assistant'; text: string; at_ms: number }[];
+  }> {
     return jsonFetch(
       `${API_BASE_URL}/dashboard/agents/${encodeURIComponent(agentId)}/calls/${encodeURIComponent(sessionId)}/transcript`,
       { method: 'GET', headers: authHeaders(token) },

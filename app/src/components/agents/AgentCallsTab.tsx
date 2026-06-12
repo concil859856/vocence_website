@@ -13,7 +13,7 @@
 
 import { Fragment, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Loader2, Phone, AlertCircle, Play, FileText, X, Trash2, ExternalLink } from 'lucide-react';
+import { Loader2, Phone, AlertCircle, Play, FileText, X, Trash2, ExternalLink, Download, Search } from 'lucide-react';
 import { agentsApi } from '../../lib/agents/api';
 import type { AgentCall, AnalyticsRange, CallEndReason } from '../../lib/agents/types';
 import { useConfirm } from '../../hooks/useConfirm';
@@ -68,11 +68,27 @@ interface Props {
   token: string | null;
 }
 
+type SearchResult = {
+  session_id: string;
+  started_at: string;
+  duration_ms: number;
+  end_reason: string;
+  turn_count: number;
+  snippet: string;
+};
+
 export function AgentCallsTab({ agentId, agentName, token }: Props) {
   const [range, setRange] = useState<AnalyticsRange>('30d');
   const [calls, setCalls] = useState<AgentCall[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Search state. ``query`` is what the user typed; ``debouncedQuery``
+  // is what we actually send to the backend (debounced 250ms to
+  // avoid spamming the FTS endpoint on every keystroke).
+  const [query, setQuery] = useState('');
+  const [debouncedQuery, setDebouncedQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<SearchResult[] | null>(null);
+  const [searching, setSearching] = useState(false);
   // Session_id of the call whose transcript modal is currently open.
   // Null when no modal is showing.
   const [openTranscriptFor, setOpenTranscriptFor] = useState<string | null>(null);
@@ -136,6 +152,41 @@ export function AgentCallsTab({ agentId, agentName, token }: Props) {
     return () => { cancelled = true; };
   }, [agentId, token, range]);
 
+  // Debounce the search input by 250 ms — typical typing speed
+  // produces a few keystrokes per second, so we don't want to
+  // fire one FTS query per keystroke. The empty-string case
+  // clears results immediately (no debounce) so escaping out of
+  // search feels instant.
+  useEffect(() => {
+    if (!query.trim()) {
+      setDebouncedQuery('');
+      return;
+    }
+    const t = window.setTimeout(() => setDebouncedQuery(query.trim()), 250);
+    return () => window.clearTimeout(t);
+  }, [query]);
+
+  // Run the search whenever the debounced query OR range changes.
+  // Short queries (< 2 chars) are blocked because the backend
+  // would just return empty (its tokenizer drops them too) — no
+  // sense in the round trip.
+  useEffect(() => {
+    if (!token || !debouncedQuery || debouncedQuery.length < 2) {
+      setSearchResults(null);
+      setSearching(false);
+      return;
+    }
+    let cancelled = false;
+    setSearching(true);
+    agentsApi.searchCalls(token, agentId, debouncedQuery, { range })
+      .then((res) => { if (!cancelled) setSearchResults(res.results); })
+      .catch((err) => { if (!cancelled) setError(err?.message ?? 'search failed'); })
+      .finally(() => { if (!cancelled) setSearching(false); });
+    return () => { cancelled = true; };
+  }, [agentId, token, debouncedQuery, range]);
+
+  const inSearchMode = debouncedQuery.length >= 2;
+
   return (
     // pb-28 reserves room so the global StudioPlayerBar (mounted
     // once in App.tsx) never covers the last row. The dock is
@@ -143,28 +194,68 @@ export function AgentCallsTab({ agentId, agentName, token }: Props) {
     // applied because the player can appear / disappear from
     // elsewhere in the app and we don't want layout shift.
     <div className="space-y-4 pb-28">
-      {/* Range selector */}
+      {/* Range selector + CSV export */}
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <h2 className="text-base font-semibold text-white">Calls</h2>
-        <div className="flex items-center gap-1 bg-white/[0.04] border border-white/10 rounded-full p-0.5">
-          {RANGE_OPTIONS.map((opt) => (
-            <button
-              key={opt.id}
-              type="button"
-              onClick={() => setRange(opt.id)}
-              className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
-                range === opt.id
-                  ? 'bg-white/10 text-white'
-                  : 'text-white/50 hover:text-white/80'
-              }`}
+        <div className="flex items-center gap-2">
+          {/* Server streams CSV row-by-row; full-page nav handles
+              the cookie auth + Content-Disposition save. The link
+              is gated on having SOME calls so we don't surface an
+              "Export CSV (empty)" affordance for fresh agents. */}
+          {calls.length > 0 && (
+            <a
+              href={agentsApi.callsCsvUrl(agentId, range)}
+              className="inline-flex items-center gap-1 px-3 py-1 rounded-md text-xs text-white/60 hover:bg-white/10 hover:text-white border border-white/10"
+              title={`Download CSV of all calls in the last ${RANGE_OPTIONS.find((r) => r.id === range)?.label}`}
             >
-              {opt.label}
-            </button>
-          ))}
+              <Download size={12} /> Export CSV
+            </a>
+          )}
+          <div className="flex items-center gap-1 bg-white/[0.04] border border-white/10 rounded-full p-0.5">
+            {RANGE_OPTIONS.map((opt) => (
+              <button
+                key={opt.id}
+                type="button"
+                onClick={() => setRange(opt.id)}
+                className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+                  range === opt.id
+                    ? 'bg-white/10 text-white'
+                    : 'text-white/50 hover:text-white/80'
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
-      {loading && (
+      {/* Search bar — full-text over per-turn transcripts via
+          SQLite FTS5. Empty input falls back to the chronological
+          list; ≥2 chars switches to results view with snippet
+          highlights. */}
+      <div className="relative">
+        <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/30 pointer-events-none" />
+        <input
+          type="search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search transcripts (e.g. refund, cancel, pricing)…"
+          className="w-full bg-white/[0.04] border border-white/10 rounded-lg pl-9 pr-9 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-[#DFFF00]/40"
+        />
+        {query && (
+          <button
+            type="button"
+            onClick={() => setQuery('')}
+            className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded-md text-white/40 hover:bg-white/10 hover:text-white"
+            title="Clear search"
+          >
+            <X size={12} />
+          </button>
+        )}
+      </div>
+
+      {loading && !inSearchMode && (
         <div className="flex items-center justify-center py-16 text-white/40">
           <Loader2 className="animate-spin mr-2" size={16} />
           Loading…
@@ -178,7 +269,49 @@ export function AgentCallsTab({ agentId, agentName, token }: Props) {
         </div>
       )}
 
-      {!loading && !error && calls.length === 0 && (
+      {/* ──── Search results view ──── */}
+      {inSearchMode && searching && (
+        <div className="flex items-center justify-center py-16 text-white/40">
+          <Loader2 className="animate-spin mr-2" size={16} /> Searching…
+        </div>
+      )}
+      {inSearchMode && !searching && searchResults && searchResults.length === 0 && (
+        <div className="text-center py-16 text-white/40">
+          <Search size={28} className="mx-auto mb-3 opacity-40" />
+          <div className="text-sm">No matches for "{debouncedQuery}".</div>
+          <div className="text-xs mt-1 opacity-60">
+            Try a shorter or more common term, or widen the date range.
+          </div>
+        </div>
+      )}
+      {inSearchMode && !searching && searchResults && searchResults.length > 0 && (
+        <div className="bg-white/[0.02] border border-white/10 rounded-xl divide-y divide-white/5">
+          {searchResults.map((r) => (
+            <Link
+              key={r.session_id}
+              to={`/studio/agents/${agentId}/calls/${r.session_id}`}
+              className="block px-4 py-3 hover:bg-white/[0.02]"
+            >
+              <div className="flex items-center gap-3 text-xs text-white/60 mb-1.5">
+                <span>{formatRelative(r.started_at)}</span>
+                <span>·</span>
+                <span>{formatDuration(r.duration_ms)}</span>
+                <span>·</span>
+                <span>{r.turn_count} turn{r.turn_count === 1 ? '' : 's'}</span>
+              </div>
+              {/* The snippet contains <mark>...</mark> from FTS5's
+                  snippet() function. Surrounding text is escaped by
+                  SQLite — only our chosen tag is HTML. */}
+              <div
+                className="text-sm text-white/85 leading-relaxed [&_mark]:bg-[#DFFF00]/30 [&_mark]:text-[#DFFF00] [&_mark]:rounded [&_mark]:px-0.5"
+                dangerouslySetInnerHTML={{ __html: r.snippet }}
+              />
+            </Link>
+          ))}
+        </div>
+      )}
+
+      {!inSearchMode && !loading && !error && calls.length === 0 && (
         <div className="text-center py-16 text-white/40">
           <Phone size={28} className="mx-auto mb-3 opacity-40" />
           <div className="text-sm">No calls in the last {RANGE_OPTIONS.find((r) => r.id === range)?.label}.</div>
@@ -188,7 +321,7 @@ export function AgentCallsTab({ agentId, agentName, token }: Props) {
         </div>
       )}
 
-      {!loading && !error && calls.length > 0 && (
+      {!inSearchMode && !loading && !error && calls.length > 0 && (
         <div className="bg-white/[0.02] border border-white/10 rounded-xl overflow-hidden">
           <table className="w-full text-sm">
             <thead>

@@ -25,14 +25,10 @@ import { useCallPlayer } from '../../lib/agents/useCallPlayer';
 interface ReplayTurn {
   role: 'user' | 'assistant';
   text: string;
-  // Wall-clock timestamp (ISO from per-turn rows). We compute
-  // session-relative offset on render so the timeline aligns to
-  // the call's started_at — durations within a turn (TTFT, TTFA)
-  // come from the per-turn columns.
-  at: string;
-  latency_ms?: number | null;
-  ttft_ms?: number | null;
-  ttfa_ms?: number | null;
+  /** Offset in milliseconds from the call's ``started_at`` to when
+   *  this turn was committed. Backend-derived (see transcript
+   *  endpoint) — replaces the old proportional estimate. */
+  at_ms: number;
 }
 
 const END_REASON_CHIP: Record<CallEndReason, { label: string; chip: string }> = {
@@ -111,19 +107,15 @@ export function AgentSessionReplay() {
         // Transcript endpoint returns {role, text} only. Decorate
         // each turn with a placeholder timestamp = call start +
         // proportional offset. The exact per-turn latencies and
-        // wall-clock timestamps live in studio_voicechat_history
-        // and would need a richer endpoint to expose — that's a
-        // small follow-up; the replay UX is still valuable with
-        // the role+text+order data we have today.
-        const startedAt = found ? new Date(found.started_at).getTime() : Date.now();
-        const totalMs = found?.duration_ms ?? 0;
-        const n = transcriptRes.turns.length;
-        const decorated: ReplayTurn[] = transcriptRes.turns.map((t, i) => ({
+        // Transcript endpoint now returns ``at_ms`` per turn —
+        // backend computes it as julianday(t.created_at) -
+        // julianday(c.started_at) so the timeline is anchored to
+        // the actual moment each turn committed instead of the
+        // proportional estimate we had before. Pixel-perfect seek.
+        const decorated: ReplayTurn[] = transcriptRes.turns.map((t) => ({
           role: t.role,
           text: t.text,
-          at: new Date(
-            startedAt + (n > 0 ? Math.floor((i / n) * totalMs) : 0),
-          ).toISOString(),
+          at_ms: t.at_ms,
         }));
         setTurns(decorated);
       } catch (err) {
@@ -169,10 +161,8 @@ export function AgentSessionReplay() {
   // fast path on repeat clicks (no re-fetch of the presigned URL),
   // so scrubbing through a long call by clicking turns is snappy.
   const playAtTurn = (turn: ReplayTurn) => {
-    if (!trackMeta || !call) return;
-    const startedAt = new Date(call.started_at).getTime();
-    const offsetSec = Math.max(0, new Date(turn.at).getTime() - startedAt) / 1000;
-    void callPlayer.playAt(trackMeta, offsetSec);
+    if (!trackMeta) return;
+    void callPlayer.playAt(trackMeta, Math.max(0, turn.at_ms) / 1000);
   };
 
   if (!agentId || !sessionId) {
@@ -284,8 +274,7 @@ export function AgentSessionReplay() {
                 ) : (
                   <ol className="divide-y divide-white/5">
                     {turns.map((t, i) => {
-                      const startedAt = new Date(call.started_at).getTime();
-                      const offsetSec = Math.max(0, Math.round((new Date(t.at).getTime() - startedAt) / 1000));
+                      const offsetSec = Math.max(0, Math.round(t.at_ms / 1000));
                       const mm = Math.floor(offsetSec / 60);
                       const ss = offsetSec % 60;
                       const seekable = call.has_recording;
