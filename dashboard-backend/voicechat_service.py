@@ -1280,6 +1280,7 @@ async def _stream_clone_via_service(
     language: str | None,
     *,
     warmer: TtsWsWarmer | None = None,
+    pod_pin: "TurnTtsPodPin | None" = None,
 ) -> AsyncIterator[TtsChunk]:
     """Open WS to the qwen3-tts-streaming server and forward meta/binary/end
     frames as TtsChunks. Wire format follows
@@ -1303,21 +1304,30 @@ async def _stream_clone_via_service(
     """
     hash_hex = hashlib.sha256(ref_audio_bytes).hexdigest()
 
-    # Dispatcher: pick a tts_streaming pod from the ops gpu_pool if any
-    # are registered. Falls back to the static QWEN3_TTS_BASE_URL env
-    # when no pods exist (single-server setups still work).
+    # Pod selection:
+    #   * If a turn-scoped pin is provided, reuse its URL/key for every
+    #     sentence in the turn so the voice cloning model stays on a
+    #     single pod (and a single model instance) end-to-end. The pin
+    #     owns the dispatcher's in_flight slot for its whole lifetime;
+    #     we do NOT acquire a fresh pod_cm here in that case.
+    #   * Otherwise dispatch per-call as before. Falls back to the
+    #     static QWEN3_CLONE_BASE_URL env when no pods exist
+    #     (single-server setups still work).
     pod_cm = None
     pod_url: str | None = None
     pod_api_key: str | None = None
-    try:
-        from ops import pool as gpu_pool
-        if gpu_pool.online_pod_count("tts_streaming") > 0:
-            pod_cm = gpu_pool.pick_pod("tts_streaming")
-            pod = await pod_cm.__aenter__()
-            pod_url = pod.url
-            pod_api_key = pod.api_key or None
-    except Exception:
-        pod_cm = None
+    if pod_pin is not None:
+        pod_url, pod_api_key = await pod_pin.ensure()
+    if pod_url is None:
+        try:
+            from ops import pool as gpu_pool
+            if gpu_pool.online_pod_count("tts_streaming") > 0:
+                pod_cm = gpu_pool.pick_pod("tts_streaming")
+                pod = await pod_cm.__aenter__()
+                pod_url = pod.url
+                pod_api_key = pod.api_key or None
+        except Exception:
+            pod_cm = None
 
     try:
         # Build a hash-only `start` payload first if we believe the server has
@@ -1513,6 +1523,66 @@ async def _stream_clone_direct(
     )
 
 
+class TurnTtsPodPin:
+    """Pins a single ``tts_streaming`` pod for the lifetime of one
+    voicechat turn. The voice-cloning model has a per-WS-call "voice
+    settling" phase, AND in multi-pod deployments the dispatcher's
+    least-loaded picker can land consecutive sentences on different
+    pods — both produce audible voice variation between sentences of
+    the same turn ("the agent voice changing hardly, even in the same
+    turn" — the user-reported bug).
+
+    The pin acquires ONE pod context manager at first use and holds it
+    until ``release()``. All sentences in the turn open their per-call
+    WebSocket against this pinned pod's URL, so the pod (and the model
+    instance) stays the same end-to-end. The dispatcher's in_flight
+    counter goes up once at acquire and down once at release — a
+    turn's worth of WSes counts as a single slot for capacity, which
+    is the right unit for voice consistency.
+
+    Single-pod deployments don't benefit from this (only option), and
+    the warmer already pins by URL constant there — the pin is a
+    cheap no-op in that case.
+    """
+
+    def __init__(self, service: str = "tts_streaming") -> None:
+        self._service = service
+        self._pod_cm = None
+        self.pod_url: str | None = None
+        self.pod_api_key: str | None = None
+        self._resolved = False
+
+    async def ensure(self) -> tuple[str | None, str | None]:
+        """Resolve (and lock) the pinned pod on first call. Subsequent
+        calls return the same (url, key). Returns (None, None) if no
+        pods are online or the pool is unavailable — callers should
+        fall through to their non-pinned path in that case."""
+        if self._resolved:
+            return (self.pod_url, self.pod_api_key)
+        self._resolved = True
+        try:
+            from ops import pool as gpu_pool
+            if gpu_pool.online_pod_count(self._service) <= 0:
+                return (None, None)
+            self._pod_cm = gpu_pool.pick_pod(self._service)
+            pod = await self._pod_cm.__aenter__()
+            self.pod_url = pod.url
+            self.pod_api_key = pod.api_key or None
+            return (self.pod_url, self.pod_api_key)
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("TurnTtsPodPin: failed to pin pod (%s)", exc)
+            self._pod_cm = None
+            return (None, None)
+
+    async def release(self) -> None:
+        if self._pod_cm is not None:
+            try:
+                await self._pod_cm.__aexit__(None, None, None)
+            except Exception:
+                pass
+            self._pod_cm = None
+
+
 async def _stream_clone_with_refs(
     text: str,
     ref_audio: bytes,
@@ -1520,6 +1590,7 @@ async def _stream_clone_with_refs(
     language: str | None = None,
     *,
     warmer: TtsWsWarmer | None = None,
+    pod_pin: TurnTtsPodPin | None = None,
 ) -> AsyncIterator[TtsChunk]:
     """Clone-based TTS given raw reference audio bytes + transcript.
     Uses the ``/v1/voice-clone/stream`` endpoint on the tts_streaming
@@ -1533,7 +1604,9 @@ async def _stream_clone_with_refs(
             pass
     if has_streaming:
         try:
-            async for chunk in _stream_clone_via_service(text, ref_audio, ref_text, language, warmer=warmer):
+            async for chunk in _stream_clone_via_service(
+                text, ref_audio, ref_text, language, warmer=warmer, pod_pin=pod_pin,
+            ):
                 yield chunk
             return
         except Exception as exc:  # noqa: BLE001
@@ -1548,12 +1621,15 @@ async def stream_voice_clone_tts(
     *,
     language: str | None = None,
     warmer: TtsWsWarmer | None = None,
+    pod_pin: TurnTtsPodPin | None = None,
 ) -> AsyncIterator[TtsChunk]:
     """Voice-cloned TTS for one sample-voice id. Yields the same TtsChunk
     shape as ``stream_qwen3_tts`` so the voicechat router can switch
     between paths."""
     ref_audio, ref_text = await load_sample_voice(sample_voice_id, language=language)
-    async for chunk in _stream_clone_with_refs(text, ref_audio, ref_text, language, warmer=warmer):
+    async for chunk in _stream_clone_with_refs(
+        text, ref_audio, ref_text, language, warmer=warmer, pod_pin=pod_pin,
+    ):
         yield chunk
 
 
@@ -1652,11 +1728,14 @@ async def stream_designed_voice_tts(
     user_id: str,
     language: str | None = None,
     warmer: TtsWsWarmer | None = None,
+    pod_pin: TurnTtsPodPin | None = None,
 ) -> AsyncIterator[TtsChunk]:
     """Voice-cloned TTS using a user's saved 'My Voice'. ``user_id`` is
     required so we don't leak voices across users."""
     ref_audio, ref_text = await _resolve_designed_voice(user_id, voice_id)
-    async for chunk in _stream_clone_with_refs(text, ref_audio, ref_text, language, warmer=warmer):
+    async for chunk in _stream_clone_with_refs(
+        text, ref_audio, ref_text, language, warmer=warmer, pod_pin=pod_pin,
+    ):
         yield chunk
 
 
@@ -1732,6 +1811,7 @@ async def stream_tts_for_voice(
     language: str | None = None,
     user_id: str | None = None,
     warmer: TtsWsWarmer | None = None,
+    pod_pin: TurnTtsPodPin | None = None,
 ) -> AsyncIterator[TtsChunk]:
     """Pick the right TTS backend for ``voice``:
        • ``dv:<id>``     → user-owned designed voice (My Voices)
@@ -1745,6 +1825,10 @@ async def stream_tts_for_voice(
     2..N skip the handshake. The router should build one with
     ``make_tts_warmer_for_voice()`` at turn start and close it at
     turn end.
+
+    ``pod_pin`` (optional) is a turn-scoped ``TurnTtsPodPin`` so every
+    sentence in one turn lands on the SAME tts_streaming pod (avoids
+    voice variation between sentences in multi-pod deployments).
     """
     dv_id = parse_designed_voice_id(voice)
     if dv_id is not None:
@@ -1754,7 +1838,10 @@ async def stream_tts_for_voice(
                 yield chunk
             return
         try:
-            async for chunk in stream_designed_voice_tts(text, dv_id, user_id=user_id, language=language, warmer=warmer):
+            async for chunk in stream_designed_voice_tts(
+                text, dv_id, user_id=user_id, language=language,
+                warmer=warmer, pod_pin=pod_pin,
+            ):
                 yield chunk
             return
         except Exception as exc:  # noqa: BLE001
@@ -1767,7 +1854,9 @@ async def stream_tts_for_voice(
             return
 
     if is_sample_voice(voice):
-        async for chunk in stream_voice_clone_tts(text, voice or "", language=language, warmer=warmer):
+        async for chunk in stream_voice_clone_tts(
+            text, voice or "", language=language, warmer=warmer, pod_pin=pod_pin,
+        ):
             yield chunk
         return
 
@@ -1788,7 +1877,9 @@ async def stream_tts_for_voice(
         "set to a display name instead of a sample-voice id.",
         voice, fallback_voice,
     )
-    async for chunk in stream_voice_clone_tts(text, fallback_voice, language=language, warmer=warmer):
+    async for chunk in stream_voice_clone_tts(
+        text, fallback_voice, language=language, warmer=warmer, pod_pin=pod_pin,
+    ):
         yield chunk
 
 

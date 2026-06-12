@@ -86,35 +86,48 @@ class CallRecorder:
         self._user_chunks: list[tuple[int, bytes]] = []
         self._user_total_bytes = 0
 
-        # Agent leg: more complex because TTS streams FASTER than
-        # real-time (the pod synthesises a 5-second sentence in
-        # ~0.7s and we push all those frames immediately). Naively
-        # appending those frames to the recorder timeline produces a
-        # mix where the recording contains audio the user never
-        # actually heard — exactly the user's barge-in-but-agent-
-        # keeps-talking-in-the-recording bug.
+        # Agent leg: complex because TTS streams FASTER than real-time
+        # (the pod synthesises a 5-second sentence in ~0.7s and we push
+        # all those frames immediately). Naively appending pushes to the
+        # timeline produces a recording with audio the user never heard —
+        # the barge-in-but-agent-keeps-talking-in-the-recording bug.
         #
-        # The fix is to buffer agent PCM as it's pushed but commit
-        # to the timeline only as the CLIENT signals playback. The
-        # client sends ``client_audio_started`` when its worklet
-        # first hits the speakers and ``client_audio_settled`` (or
-        # the server sees a ``cancel``) when playback ends. Between
-        # those events we know real-time elapsed; we keep only
-        # ``elapsed_ms × BYTES_PER_MS`` of the buffered agent PCM
-        # and discard the tail (audio that was buffered server-side
-        # but never reached the user).
+        # Design (server-driven turn lifecycle, NOT per-chunk client
+        # signals — the previous design tried to bracket each
+        # client_audio_started/settled pair and got cut by mid-turn
+        # queue-drains between sentences):
         #
-        # _agent_pending_buffer accumulates pushes for the CURRENT
-        # turn until a stop signal arrives. _agent_segments are
-        # (start_offset_ms, pcm_bytes) for windows that DID play;
-        # they're flattened into the right leg of the stereo WAV
-        # on close.
-        self._agent_pending_buffer: bytearray = bytearray()
+        # Each agent turn opens a SINGLE buffer when push_agent first
+        # fires. The buffer accumulates every chunk of every sentence
+        # in that turn. The buffer commits to a segment in exactly two
+        # ways:
+        #
+        #   * ``mark_agent_barge_in()``: user took the floor. Trim the
+        #     buffer to ``(now - turn_start) × BYTES_PER_MS`` bytes —
+        #     that's how much audio could possibly have reached the
+        #     speakers given the wall-clock elapsed. Drop the rest
+        #     (the over-produced TTS tail).
+        #   * ``mark_agent_turn_complete()``: TTS finished AND the
+        #     client signalled queue-drain. Keep everything; the user
+        #     heard it all. Called once both flags are set, in either
+        #     order — _tts_done from the router after the TTS pipeline
+        #     ends, _client_settled from client_audio_settled.
+        #
+        # ``_client_settled`` is reset to False on EVERY push_agent —
+        # so a stale settled signal from before the latest sentence
+        # arrived can't trigger a premature commit.
+        self._agent_buffer: bytearray = bytearray()
         self._agent_segments: list[tuple[int, bytes]] = []
-        # Set on client_audio_started; cleared on settled / cancel.
-        # When set, holds the recorder offset (ms from session
-        # start) at which the user first heard audio for this turn.
-        self._agent_playback_start_ms: int | None = None
+        # Recorder offset (ms from session start) at which the current
+        # turn's first push_agent fired. None when no turn is open.
+        self._agent_turn_start_ms: int | None = None
+        # Set when the router has signalled that no more push_agent
+        # calls will arrive for this turn (TTS pipeline ended).
+        self._agent_tts_done: bool = False
+        # Set when the client has signalled queue-drain AFTER the
+        # latest push of this turn. Reset on every push_agent so a
+        # mid-turn settled doesn't survive into the post-TTS check.
+        self._agent_client_settled: bool = False
 
         self._t0: float = 0.0
         self._started = False
@@ -151,13 +164,10 @@ class CallRecorder:
         Decimated 2:3 to 16 kHz so it matches the user side and the
         WAV file's single rate.
 
-        The chunk goes into a PENDING buffer, not directly into the
-        timeline. The buffer drains into a timeline segment when
-        ``notify_agent_playback_stopped`` fires — at that point we
-        know how much wall-clock the user actually heard and trim
-        the buffer to that duration. Audio that was synthesized but
-        never played (because the user barged in, the WS closed
-        early, etc.) is dropped.
+        Opens a turn on the first push (anchors ``_agent_turn_start_ms``
+        to ``_now_ms()``). Resets ``_agent_client_settled`` because new
+        audio is flowing — any prior settled signal is stale wrt the
+        bytes being appended.
         """
         if not self.started or not pcm:
             return
@@ -165,60 +175,86 @@ class CallRecorder:
             decimated = self._decimate_24k_to_16k(bytes(pcm))
             if not decimated:
                 return
-            self._agent_pending_buffer.extend(decimated)
+            if self._agent_turn_start_ms is None:
+                self._agent_turn_start_ms = self._now_ms()
+            # New audio means any earlier "client buffer drained" signal
+            # is stale — the client will need to drain again after these
+            # bytes finish playing.
+            self._agent_client_settled = False
+            self._agent_buffer.extend(decimated)
         except Exception:
             _log.debug("recorder: push_agent swallowed", exc_info=False)
 
-    def notify_agent_playback_started(self) -> None:
-        """Mark the start of a CLIENT-side playback window. Anchors
-        the agent timeline at the current recorder offset so the
-        segment we eventually commit lines up with what the user
-        heard. Idempotent — a flapping client_audio_started doesn't
-        reset us mid-playback.
+    def mark_agent_barge_in(self) -> None:
+        """User took the floor. Trim the open turn's buffer to the
+        wall-clock elapsed since the turn started and commit it as a
+        segment. The trim is the upper bound on what the user could
+        actually have heard — anything past that is over-produced TTS
+        that sat in the server's buffer but never reached the speakers.
 
-        Called from the voicechat router on receipt of
-        ``client_audio_started`` from the client.
+        Called from the voicechat router on receipt of ``cancel``.
+        No-op if there's no open turn.
         """
-        if not self.started or self._agent_playback_start_ms is not None:
+        if not self.started or self._agent_turn_start_ms is None:
             return
-        self._agent_playback_start_ms = self._now_ms()
-
-    def notify_agent_playback_stopped(self) -> None:
-        """Close the current playback window. The buffered agent
-        PCM is trimmed to ``(now - playback_start) × BYTES_PER_MS``
-        bytes — the volume of audio that could have reached the
-        speakers in the elapsed wall-clock. Anything beyond is
-        dropped (= the TTS audio that was synthesised faster than
-        real-time and buffered server-side but never played).
-
-        Called from the voicechat router on receipt of either
-        ``client_audio_settled`` (normal end-of-utterance) or
-        ``cancel`` (user barge-in). Both produce the same correct
-        behaviour: the recording only contains what the user heard.
-        """
-        if not self.started or self._agent_playback_start_ms is None:
-            return
-        elapsed_ms = self._now_ms() - self._agent_playback_start_ms
+        elapsed_ms = self._now_ms() - self._agent_turn_start_ms
         if elapsed_ms < 0:
             elapsed_ms = 0
         max_played_bytes = elapsed_ms * BYTES_PER_MS
-        # Even byte boundary for s16le.
         if max_played_bytes & 1:
             max_played_bytes -= 1
-
-        # The pending buffer was cleared by the previous
-        # notify_stopped (or starts at 0 for the first turn), so
-        # index 0 is the first byte of the current turn's audio.
-        # The client plays in order from there; we keep only the
-        # prefix that fits in the elapsed wall-clock.
-        playable = bytes(self._agent_pending_buffer[:max_played_bytes])
+        keep = min(max_played_bytes, len(self._agent_buffer))
+        playable = bytes(self._agent_buffer[:keep])
         if playable:
             self._agent_segments.append(
-                (self._agent_playback_start_ms, playable)
+                (self._agent_turn_start_ms, playable)
             )
+        self._reset_agent_turn_state()
 
-        self._agent_pending_buffer = bytearray()
-        self._agent_playback_start_ms = None
+    def notify_agent_tts_done(self) -> None:
+        """Router signals the TTS pipeline has finished for this turn —
+        no more push_agent calls coming. If the client has ALREADY
+        settled (queue-drained), this completes the turn and commits
+        the whole buffer (the user heard it all). Otherwise we wait
+        for the settled signal.
+        """
+        if not self.started or self._agent_turn_start_ms is None:
+            return
+        self._agent_tts_done = True
+        self._maybe_complete_agent_turn()
+
+    def notify_agent_client_settled(self) -> None:
+        """Client's audio queue drained. If TTS is also done pushing
+        for this turn, the user has heard all of it — commit the whole
+        buffer. Otherwise note the settled and wait for TTS to finish
+        (a queue-drain mid-turn between sentences is normal and
+        shouldn't truncate the recording).
+        """
+        if not self.started or self._agent_turn_start_ms is None:
+            return
+        self._agent_client_settled = True
+        self._maybe_complete_agent_turn()
+
+    def _maybe_complete_agent_turn(self) -> None:
+        """Commit the whole turn buffer once BOTH conditions are met:
+        TTS pushing has finished AND the client has reported queue-
+        drained. Order doesn't matter; whichever arrives second runs
+        the commit."""
+        if not (self._agent_tts_done and self._agent_client_settled):
+            return
+        if self._agent_turn_start_ms is None:
+            return
+        if self._agent_buffer:
+            self._agent_segments.append(
+                (self._agent_turn_start_ms, bytes(self._agent_buffer))
+            )
+        self._reset_agent_turn_state()
+
+    def _reset_agent_turn_state(self) -> None:
+        self._agent_buffer = bytearray()
+        self._agent_turn_start_ms = None
+        self._agent_tts_done = False
+        self._agent_client_settled = False
 
     @staticmethod
     def _decimate_24k_to_16k(pcm_s16le_24k: bytes) -> bytes:
@@ -246,16 +282,18 @@ class CallRecorder:
         if self._closed:
             return (None, None, 0)
 
-        # Flush any pending agent playback window BEFORE flipping
-        # _closed. notify_agent_playback_stopped() bails when
-        # ``started`` is False, and ``started`` reads
-        # ``_started and not _closed`` — so we have to do the
-        # flush while ``started`` is still True. Otherwise the
-        # last utterance of a session that ended mid-playback
-        # (WS closed before client_audio_settled arrived) would
-        # be silently dropped from the recording.
-        if self._agent_playback_start_ms is not None:
-            self.notify_agent_playback_stopped()
+        # Flush any pending agent turn BEFORE flipping _closed.
+        # ``started`` reads ``_started and not _closed`` so the
+        # commit helpers below bail once we flip. If the session
+        # ended mid-turn (WS closed before client_audio_settled
+        # arrived), the last utterance would otherwise be silently
+        # dropped from the recording — commit the buffer as-is
+        # since we have no signal that the user didn't hear it.
+        if self._agent_turn_start_ms is not None and self._agent_buffer:
+            self._agent_segments.append(
+                (self._agent_turn_start_ms, bytes(self._agent_buffer))
+            )
+            self._reset_agent_turn_state()
 
         self._closed = True
 

@@ -1354,7 +1354,11 @@ async def voicechat_session(
         token stream + TTS path WITHOUT calling the LLM. Used for
         the first_message greeting. Cancellable like any normal turn
         so user barge-in tears it down cleanly via ``_cancel_current``."""
-        from voicechat_service import stream_tts_for_voice
+        from voicechat_service import stream_tts_for_voice, TurnTtsPodPin
+        # Greeting is one utterance so pinning is less critical here,
+        # but use the same shape as regular turns for consistency and
+        # so a future multi-sentence greeting wouldn't regress.
+        greeting_pod_pin = TurnTtsPodPin()
         # 1. Emit the chat token so the UI shows the greeting.
         with suppress(Exception):
             await ws.send_json({"type": "token", "text": text})
@@ -1385,6 +1389,7 @@ async def voicechat_session(
                 agent_voice,
                 user_id=auth_user_id,
                 language=agent_language,
+                pod_pin=greeting_pod_pin,
             ):
                 if chunk.kind == "audio" and isinstance(chunk.payload, (bytes, bytearray)):
                     payload = chunk.payload if isinstance(chunk.payload, bytes) else bytes(chunk.payload)
@@ -1400,6 +1405,14 @@ async def voicechat_session(
             raise
         except Exception as exc:
             _log.warning("first_message stream failed: %s", exc, exc_info=False)
+        finally:
+            # Greeting TTS done — see the same comment in tts_consumer
+            # below. Without this the greeting's audio sits in the
+            # recorder buffer until the user's first turn pushes more.
+            if call_recorder is not None:
+                call_recorder.notify_agent_tts_done()
+            with suppress(Exception):
+                await greeting_pod_pin.release()
 
     if agent_first_message:
         # Append BEFORE kicking off TTS so a fast user barge-in
@@ -1506,15 +1519,13 @@ async def voicechat_session(
                 # User intent: take the floor. Don't wait for the
                 # client_audio_settled round-trip to clear the gate.
                 _gate_clear_from_client()
-                # Close the recorder's agent playback window NOW so
-                # the recording's right channel stops at the moment
-                # the user barged in. Without this, the recorder
-                # would still hold the rest of the buffered TTS
-                # (synthesised faster than real-time → already in
-                # the buffer) and the WAV would include audio the
-                # user never actually heard.
+                # Close the recorder's agent turn NOW so the right
+                # channel stops at the moment the user barged in.
+                # The recorder trims the buffered TTS down to
+                # wall-clock elapsed (= upper bound on what the user
+                # could have heard) and discards the rest.
                 if call_recorder is not None:
-                    call_recorder.notify_agent_playback_stopped()
+                    call_recorder.mark_agent_barge_in()
                 await _cancel_current()
                 try:
                     await ws.send_json({"type": "cancelled"})
@@ -1538,13 +1549,21 @@ async def voicechat_session(
             # reached the speakers.
             if mtype == "client_audio_started":
                 _gate_set_from_client()
-                if call_recorder is not None:
-                    call_recorder.notify_agent_playback_started()
+                # No recorder hook: the recorder opens its turn on the
+                # first push_agent (server-side, no RTT) so it never
+                # depends on the client signal arriving.
                 continue
             if mtype == "client_audio_settled":
                 _gate_clear_from_client()
+                # Tell the recorder the client's queue drained. If TTS
+                # is also done pushing for the turn, the recorder commits
+                # the whole buffer (the user heard it all). If TTS is
+                # still streaming for the turn (this settled fired
+                # between sentences while a gap let the queue drain),
+                # the recorder ignores it — a later settled after TTS
+                # finishes will be the one that completes the turn.
                 if call_recorder is not None:
-                    call_recorder.notify_agent_playback_stopped()
+                    call_recorder.notify_agent_client_settled()
                 continue
 
             # ``stream_commit`` belongs INSIDE an active stream session
@@ -2742,6 +2761,15 @@ async def _run_turn(
         # docstring in ``voicechat_session``. No server-side byte-count
         # bookkeeping here.
 
+        # Per-turn pod pin: every sentence in this turn lands on the
+        # SAME tts_streaming pod so the voice doesn't change between
+        # sentences. The pin acquires one dispatcher slot at first use
+        # (inside stream_tts_for_voice) and holds it until release()
+        # below — closing it on natural turn end AND on exception so
+        # we never leak the slot.
+        from voicechat_service import TurnTtsPodPin
+        turn_pod_pin = TurnTtsPodPin()
+
         async def tts_consumer() -> None:
             nonlocal ttfa_ms
             sentence_id = 0
@@ -2774,7 +2802,10 @@ async def _run_turn(
                 except Exception:
                     return
                 try:
-                    async for chunk in stream_tts_for_voice(spoken, voice, user_id=user_id, language=language, warmer=tts_warmer):
+                    async for chunk in stream_tts_for_voice(
+                        spoken, voice, user_id=user_id, language=language,
+                        warmer=tts_warmer, pod_pin=turn_pod_pin,
+                    ):
                         if chunk.kind == "audio" and isinstance(chunk.payload, (bytes, bytearray)):
                             if ttfa_ms is None:
                                 ttfa_ms = int((time.perf_counter() - started) * 1000)
@@ -2832,7 +2863,21 @@ async def _run_turn(
             # Mic-mute gate release happens when the client posts
             # ``client_audio_settled`` (audio queue drained OR barge-in
             # fade finished). No server-side scheduling needed.
-            pass
+            #
+            # Tell the recorder this turn's TTS is done pushing. If
+            # ``client_audio_settled`` has already fired for this turn,
+            # the recorder commits the whole buffer here. Otherwise it
+            # waits for the settled signal — either order completes the
+            # turn. Without this hook the recorder would wait forever
+            # for a "settled after TTS done" pair that never explicitly
+            # exists in the wire protocol.
+            if call_recorder is not None:
+                call_recorder.notify_agent_tts_done()
+            # Release the per-turn pinned pod (drops the dispatcher
+            # slot it held for this turn). Runs whether the gather
+            # ended normally or via a barge-in cancel.
+            with suppress(Exception):
+                await turn_pod_pin.release()
 
         bot_text_joined = "".join(bot_text_full).strip()
         if bot_text_joined:
