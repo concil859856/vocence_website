@@ -73,9 +73,10 @@ export function AgentCallsTab({ agentId, token }: Props) {
   // Session_id of the call whose transcript modal is currently open.
   // Null when no modal is showing.
   const [openTranscriptFor, setOpenTranscriptFor] = useState<string | null>(null);
-  // Session_id whose audio player is expanded inline. We keep audio
-  // inline (vs a modal) so the user can keep scanning the table.
-  const [playingFor, setPlayingFor] = useState<string | null>(null);
+  // The call currently loaded in the docked bottom player. One
+  // global player, music-player style — clicking Play on a
+  // different row swaps the source. Null = no player visible.
+  const [playingCall, setPlayingCall] = useState<AgentCall | null>(null);
   // Session_id currently being deleted (POST in flight). Disables
   // the trash button to prevent double-fires.
   const [deletingFor, setDeletingFor] = useState<string | null>(null);
@@ -103,8 +104,8 @@ export function AgentCallsTab({ agentId, token }: Props) {
             : c,
         ),
       );
-      // Collapse the player if it was open for this call.
-      if (playingFor === sessionId) setPlayingFor(null);
+      // Stop the bottom player if it was loaded with this call.
+      if (playingCall?.session_id === sessionId) setPlayingCall(null);
     } catch (err) {
       setError((err as Error)?.message ?? 'failed to delete recording');
     } finally {
@@ -125,7 +126,10 @@ export function AgentCallsTab({ agentId, token }: Props) {
   }, [agentId, token, range]);
 
   return (
-    <div className="space-y-4">
+    // pb-28 reserves room so the bottom-docked player never covers
+    // the last row in the table. The dock itself is fixed-positioned
+    // so it survives scrolling.
+    <div className={`space-y-4 ${playingCall ? 'pb-28' : ''}`}>
       {/* Range selector */}
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <h2 className="text-base font-semibold text-white">Calls</h2>
@@ -186,13 +190,11 @@ export function AgentCallsTab({ agentId, token }: Props) {
             <tbody className="divide-y divide-white/5">
               {calls.map((c) => {
                 const pres = REASON_PRESENTATION[c.end_reason] ?? REASON_PRESENTATION.unknown;
-                const playing = playingFor === c.session_id;
-                const downloadUrl = c.has_recording && token
-                  ? agentsApi.callAudioUrl(token, agentId, c.session_id)
-                  : null;
+                const playing = playingCall?.session_id === c.session_id;
+                const hasRecording = c.has_recording && !!token;
                 return (
                   <Fragment key={c.session_id}>
-                    <tr className="hover:bg-white/[0.02]">
+                    <tr className={`hover:bg-white/[0.02] ${playing ? 'bg-white/[0.03]' : ''}`}>
                       <td className="px-4 py-3 text-white/80" title={c.started_at}>
                         {formatRelative(c.started_at)}
                       </td>
@@ -205,12 +207,16 @@ export function AgentCallsTab({ agentId, token }: Props) {
                       </td>
                       <td className="px-4 py-3 text-right">
                         <div className="inline-flex items-center gap-1">
-                          {downloadUrl ? (
+                          {hasRecording ? (
                             <button
                               type="button"
-                              onClick={() => setPlayingFor(playing ? null : c.session_id)}
-                              className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs text-white/70 hover:bg-white/10 hover:text-white"
-                              title="Play recording"
+                              onClick={() => setPlayingCall(playing ? null : c)}
+                              className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs hover:bg-white/10 ${
+                                playing
+                                  ? 'text-[#DFFF00] bg-[#DFFF00]/10'
+                                  : 'text-white/70 hover:text-white'
+                              }`}
+                              title={playing ? 'Loaded in player' : 'Play in bottom player'}
                             >
                               <Play size={12} /> Play
                             </button>
@@ -255,34 +261,6 @@ export function AgentCallsTab({ agentId, token }: Props) {
                         </div>
                       </td>
                     </tr>
-                    {playing && downloadUrl && (
-                      <tr className="bg-white/[0.015]">
-                        <td colSpan={5} className="px-4 py-3">
-                          {/* InlineAudioPlayer fetches the presigned
-                              R2 URL via JSON (cookie-auth on our
-                              endpoint) then drops it on <audio src>
-                              with no crossOrigin set. Browser loads
-                              the audio anonymously from R2 — no
-                              CORS-with-credentials issue. The
-                              download link still hits our endpoint
-                              directly because <a download> doesn't
-                              CORS-check. */}
-                          <InlineAudioPlayer
-                            agentId={agentId}
-                            sessionId={c.session_id}
-                            token={token}
-                          />
-                          <div className="mt-2 text-right">
-                            <a
-                              href={`${downloadUrl}?download=true`}
-                              className="inline-flex items-center gap-1 text-xs text-white/60 hover:text-white"
-                            >
-                              <Download size={12} /> Download WAV
-                            </a>
-                          </div>
-                        </td>
-                      </tr>
-                    )}
                   </Fragment>
                 );
               })}
@@ -299,27 +277,38 @@ export function AgentCallsTab({ agentId, token }: Props) {
           onClose={() => setOpenTranscriptFor(null)}
         />
       )}
+      {playingCall && (
+        <BottomPlayer
+          agentId={agentId}
+          call={playingCall}
+          token={token}
+          onClose={() => setPlayingCall(null)}
+        />
+      )}
       {confirmDialog}
     </div>
   );
 }
 
-// ─── Inline audio player ─────────────────────────────────────────────
-// Wraps the fetch-presigned-URL-then-set-<audio>-src flow into a
-// reusable widget. Shared between the Calls tab inline expand and
-// (in principle) any other surface that needs to play a recording.
-// Loading state covers the "fetching the presigned URL" gap which
-// is normally ~100 ms on a warm backend; an error state surfaces
-// "recording missing" / "object store unavailable" instead of
-// silently broken playback.
+// ─── Bottom-docked audio player ──────────────────────────────────────
+// One player per tab, music-player style: fixed at the bottom of
+// the viewport, swaps source when the user clicks Play on a
+// different row. Persists across scrolling. The component owns the
+// presigned-URL fetch, the <audio> element, and a Close affordance.
+//
+// We re-fetch the URL on every call change (vs caching) because
+// presigned URLs are short-lived (~1h TTL) — fetching fresh each
+// time avoids edge cases where a long-lingering player suddenly
+// 403s mid-listen.
 
-interface InlineAudioPlayerProps {
+interface BottomPlayerProps {
   agentId: string;
-  sessionId: string;
+  call: AgentCall;
   token: string | null;
+  onClose: () => void;
 }
 
-function InlineAudioPlayer({ agentId, sessionId, token }: InlineAudioPlayerProps) {
+function BottomPlayer({ agentId, call, token, onClose }: BottomPlayerProps) {
   const [url, setUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -328,29 +317,70 @@ function InlineAudioPlayer({ agentId, sessionId, token }: InlineAudioPlayerProps
     let cancelled = false;
     setError(null);
     setUrl(null);
-    agentsApi.getCallAudioUrl(token, agentId, sessionId)
+    agentsApi.getCallAudioUrl(token, agentId, call.session_id)
       .then((u) => { if (!cancelled) setUrl(u); })
       .catch((err) => { if (!cancelled) setError(err?.message ?? 'failed to load recording'); });
     return () => { cancelled = true; };
-  }, [agentId, sessionId, token]);
+  }, [agentId, call.session_id, token]);
 
-  if (error) {
-    return (
-      <div className="text-xs text-red-300 bg-red-500/10 border border-red-500/20 rounded-md px-3 py-2">
-        {error}
+  const downloadUrl = token ? agentsApi.callAudioUrl(token, agentId, call.session_id) : null;
+
+  return (
+    <div className="fixed bottom-0 left-0 right-0 z-40 bg-[#0E1014]/95 backdrop-blur border-t border-white/10 px-4 py-3 shadow-lg">
+      <div className="max-w-6xl mx-auto flex items-center gap-4">
+        {/* Metadata column — call identity so the user knows what's
+            loaded when they have multiple agents open. */}
+        <div className="shrink-0 min-w-[180px]">
+          <div className="text-[11px] uppercase tracking-wider text-white/40">Now playing</div>
+          <div className="text-sm text-white truncate" title={call.session_id}>
+            Call · {formatDuration(call.duration_ms)}
+          </div>
+          <div className="text-[11px] text-white/40 truncate" title={call.started_at}>
+            {formatRelative(call.started_at)} · {call.turn_count} turn{call.turn_count === 1 ? '' : 's'}
+          </div>
+        </div>
+
+        {/* Audio element fills the remaining width. Loading + error
+            states render inline so the dock height stays stable. */}
+        <div className="flex-1 min-w-0">
+          {error && (
+            <div className="text-xs text-red-300">{error}</div>
+          )}
+          {!error && !url && (
+            <div className="inline-flex items-center text-xs text-white/40">
+              <Loader2 className="animate-spin mr-2" size={12} /> Loading recording…
+            </div>
+          )}
+          {!error && url && (
+            // No crossOrigin — presigned R2 URL is its own auth,
+            // skipping CORS mode lets the browser play directly.
+            <audio controls autoPlay src={url} className="w-full h-9" />
+          )}
+        </div>
+
+        {/* Actions */}
+        <div className="shrink-0 flex items-center gap-1">
+          {downloadUrl && (
+            <a
+              href={`${downloadUrl}?download=true`}
+              className="inline-flex items-center gap-1 px-2 py-1.5 rounded-md text-xs text-white/60 hover:bg-white/10 hover:text-white"
+              title="Download WAV"
+            >
+              <Download size={12} />
+            </a>
+          )}
+          <button
+            type="button"
+            onClick={onClose}
+            className="inline-flex items-center gap-1 px-2 py-1.5 rounded-md text-xs text-white/60 hover:bg-white/10 hover:text-white"
+            title="Close player"
+          >
+            <X size={14} />
+          </button>
+        </div>
       </div>
-    );
-  }
-  if (!url) {
-    return (
-      <div className="inline-flex items-center text-xs text-white/40">
-        <Loader2 className="animate-spin mr-2" size={12} /> Loading recording…
-      </div>
-    );
-  }
-  // No crossOrigin attribute — presigned R2 URL is its own auth,
-  // and skipping CORS mode lets the browser play directly.
-  return <audio controls src={url} autoPlay className="w-full" />;
+    </div>
+  );
 }
 
 interface TranscriptModalProps {
