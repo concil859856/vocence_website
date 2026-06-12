@@ -57,6 +57,13 @@ export function useCallPlayer(token: string | null) {
       subtitle: meta.subtitle,
       image: meta.image,
       durationHintSec: meta.durationSec,
+      // Stable identity so the fallback avatar doesn't reshuffle on
+      // every fresh presigned-URL fetch (signed query params differ
+      // between plays of the same call). Key on agentId so every
+      // call for the SAME agent gets the same gradient — call.id
+      // would change the avatar per call which fights the visual
+      // "this is my support agent" identity.
+      artSeed: `agent-${meta.agentId}`,
       // The download endpoint is its own URL; we don't pass it here
       // because Track.downloadFilename triggers a fetch-based download
       // path in the player that would re-fetch the presigned URL after

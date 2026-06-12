@@ -56,18 +56,17 @@ export function StudioPlayerBar() {
     .slice(0, 2)
     .map((p) => p[0]!.toUpperCase())
     .join('') || '?';
-  // Deterministic two-ring gradient seeded from the track title (or src
-  // as fallback), same palette as agents / designed voices. Used as the
-  // final fallback only if both ``track.image`` and the abstract image
-  // pool resolve to nothing.
-  const grad = avatarGradientPairFor(track.title || track.src || 'track');
-  // When the track has no explicit artwork, pick a stable image from the
-  // pre-generated abstract pool, keyed on title+src so the same track
-  // always gets the same image across plays / sessions. This replaces
-  // the bare gradient tile that was showing on freshly generated music
-  // (and any history item without a stored cover).
+  // Deterministic two-ring gradient seeded from artSeed (when the
+  // caller has a stable identity to provide), else title, else src.
+  // Same palette as agents / designed voices.
+  const artKey = track.artSeed || track.title || track.src || 'track';
+  const grad = avatarGradientPairFor(artKey);
+  // When the track has no explicit artwork, pick a stable image from
+  // the pre-generated abstract pool, keyed on the same artKey so the
+  // avatar doesn't reshuffle when the underlying src changes (which
+  // happens on every fresh presigned-URL fetch for call recordings).
   const fallbackArt = !track.image
-    ? fallbackCoverFor(`player-${track.title || ''}-${track.src || ''}`)
+    ? fallbackCoverFor(`player-${artKey}`)
     : '';
   const hasQueue = queue.length > 1;
 

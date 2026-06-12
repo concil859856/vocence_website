@@ -17,6 +17,14 @@ export interface Track {
    *  when you know the duration up front (e.g. call recordings
    *  have ``call.duration_ms`` on the row already). */
   durationHintSec?: number;
+  /** Stable identity for fallback artwork generation. When set,
+   *  the player keys its avatar gradient + abstract cover pool on
+   *  this value instead of (title, src). Use it whenever the same
+   *  logical track may have a changing ``src`` between plays —
+   *  e.g. call recordings whose presigned URL contains a new
+   *  signature on each fetch, which otherwise reshuffles the
+   *  avatar on every click. */
+  artSeed?: string;
 }
 
 type RepeatMode = 'off' | 'all' | 'one';
@@ -73,14 +81,31 @@ export function StudioPlayerProvider({ children }: { children: ReactNode }) {
   // Shuffled order
   const shuffledRef = useRef<number[]>([]);
 
+  // Suppresses the global ``timeupdate`` listener while we're in the
+  // middle of swapping src + deferred-seeking. Without this, setting
+  // ``el.src`` fires a stray timeupdate with currentTime=0 that
+  // clobbers the optimistic progress we set for playAt(track, X) —
+  // user sees the bar jump 0 → target instead of landing at target.
+  // While the flag is set the audio element's currentTime is still
+  // authoritative; we just skip pushing it to React state so the
+  // optimistic paint survives until the deferred seek completes.
+  const suppressTimeUpdateRef = useRef(false);
+
   useEffect(() => {
     if (!audioRef.current) {
       audioRef.current = new Audio();
     }
     const el = audioRef.current;
-    const onTime = () => { setProgress(el.currentTime); setDuration(el.duration || 0); };
+    const onTime = () => {
+      if (suppressTimeUpdateRef.current) return;
+      setProgress(el.currentTime);
+      setDuration(el.duration || 0);
+    };
     const onEnd = () => handleTrackEnd();
-    const onLoaded = () => setDuration(el.duration || 0);
+    const onLoaded = () => {
+      if (suppressTimeUpdateRef.current) return;
+      setDuration(el.duration || 0);
+    };
     el.addEventListener('timeupdate', onTime);
     el.addEventListener('ended', onEnd);
     el.addEventListener('loadedmetadata', onLoaded);
@@ -277,6 +302,15 @@ export function StudioPlayerProvider({ children }: { children: ReactNode }) {
     // before then). Optimistically paint the UI at the target
     // offset so we don't flash 0:00 → target. The actual audio
     // currentTime catches up once metadata lands.
+    //
+    // Setting el.src + el.currentTime=0 below fires a stray
+    // ``timeupdate`` event with currentTime=0 which would clobber
+    // the optimistic progress=safeSec we're about to set. Latch
+    // the suppress flag so that timeupdate is ignored until the
+    // deferred seek lands and the audio element actually reaches
+    // safeSec. Once we release, timeupdate resumes driving
+    // progress for normal playback.
+    suppressTimeUpdateRef.current = true;
     el.pause();
     el.src = t.src;
     el.currentTime = 0;
@@ -284,18 +318,20 @@ export function StudioPlayerProvider({ children }: { children: ReactNode }) {
     setQueue([t]);
     setQueueIndex(0);
     setQueueSource(null);
-    // Optimistic UI paint: progress=target, duration=hint (when
-    // provided). The progress bar percentage = progress/duration,
-    // so both have to land in one render or the bar still flashes.
-    // Once timeupdate fires after the deferred seek, these snap
-    // to the real audio-element values.
     setProgress(safeSec);
     if (t.durationHintSec && t.durationHintSec > 0) {
       setDuration(t.durationHintSec);
+    } else {
+      // No hint — keep duration at 0 so the bar reads 0 % until
+      // metadata arrives (matches the existing TTS / music
+      // behaviour for tracks with no known duration).
+      setDuration(0);
     }
     const onMeta = () => {
       el.currentTime = Math.min(safeSec, el.duration || safeSec);
       setProgress(el.currentTime);
+      setDuration(el.duration || 0);
+      suppressTimeUpdateRef.current = false;
       el.removeEventListener('loadedmetadata', onMeta);
     };
     el.addEventListener('loadedmetadata', onMeta);
