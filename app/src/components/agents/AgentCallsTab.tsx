@@ -12,9 +12,10 @@
  */
 
 import { Fragment, useEffect, useState } from 'react';
-import { Loader2, Phone, AlertCircle, Play, FileText, X, Download } from 'lucide-react';
+import { Loader2, Phone, AlertCircle, Play, FileText, X, Download, Trash2 } from 'lucide-react';
 import { agentsApi } from '../../lib/agents/api';
 import type { AgentCall, AnalyticsRange, CallEndReason } from '../../lib/agents/types';
+import { useConfirm } from '../../hooks/useConfirm';
 
 const RANGE_OPTIONS: { id: AnalyticsRange; label: string }[] = [
   { id: '24h', label: '24h' },
@@ -74,6 +75,41 @@ export function AgentCallsTab({ agentId, token }: Props) {
   // Session_id whose audio player is expanded inline. We keep audio
   // inline (vs a modal) so the user can keep scanning the table.
   const [playingFor, setPlayingFor] = useState<string | null>(null);
+  // Session_id currently being deleted (POST in flight). Disables
+  // the trash button to prevent double-fires.
+  const [deletingFor, setDeletingFor] = useState<string | null>(null);
+  const { confirm, dialog: confirmDialog } = useConfirm();
+
+  const handleDeleteRecording = async (sessionId: string) => {
+    if (!token) return;
+    const ok = await confirm({
+      title: 'Delete recording?',
+      message:
+        'This permanently removes the audio file. The call itself stays in the history (so your analytics are unchanged), but you won\'t be able to play or download this recording again.',
+      confirmLabel: 'Delete recording',
+      confirmVariant: 'danger',
+    });
+    if (!ok) return;
+    setDeletingFor(sessionId);
+    try {
+      await agentsApi.deleteCallRecording(token, agentId, sessionId);
+      // Optimistic local update: clear recording flags on the row so
+      // the Play button disappears immediately, no refetch needed.
+      setCalls((prev) =>
+        prev.map((c) =>
+          c.session_id === sessionId
+            ? { ...c, has_recording: false, recording_bytes: null }
+            : c,
+        ),
+      );
+      // Collapse the player if it was open for this call.
+      if (playingFor === sessionId) setPlayingFor(null);
+    } catch (err) {
+      setError((err as Error)?.message ?? 'failed to delete recording');
+    } finally {
+      setDeletingFor(null);
+    }
+  };
 
   useEffect(() => {
     if (!token) return;
@@ -188,6 +224,26 @@ export function AgentCallsTab({ agentId, token }: Props) {
                           >
                             <FileText size={12} /> Transcript
                           </button>
+                          {/* Only show the Delete affordance when the
+                              row actually has a recording — once the
+                              file is gone the button has nothing to
+                              act on, and showing a disabled button
+                              would just be noise. */}
+                          {c.has_recording && (
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteRecording(c.session_id)}
+                              disabled={deletingFor === c.session_id}
+                              className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs text-white/50 hover:bg-red-500/10 hover:text-red-300 disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-white/50"
+                              title="Delete recording"
+                            >
+                              {deletingFor === c.session_id ? (
+                                <Loader2 size={12} className="animate-spin" />
+                              ) : (
+                                <Trash2 size={12} />
+                              )}
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -234,6 +290,7 @@ export function AgentCallsTab({ agentId, token }: Props) {
           onClose={() => setOpenTranscriptFor(null)}
         />
       )}
+      {confirmDialog}
     </div>
   );
 }

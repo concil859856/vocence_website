@@ -676,6 +676,58 @@ async def download_call_audio(
     )
 
 
+@router.delete("/{agent_id}/calls/{session_id}/recording")
+async def delete_call_recording(
+    agent_id: str,
+    session_id: str,
+    user_id: str = Depends(require_auth),
+) -> dict:
+    """Immediately purge a single call's WAV. Owner-only, takes
+    effect before the next retention sweep. The voice_call_logs row
+    itself is preserved so analytics totals don't shift retroactively
+    — same policy as the sweep. Idempotent: deleting a call whose
+    recording is already gone returns 200 with ``deleted=False``."""
+    await _ensure_agent_owned(agent_id, user_id)
+    conn = await get_connection()
+    try:
+        row = await (await conn.execute(
+            """
+            SELECT recording_path FROM voice_call_logs
+            WHERE session_id = ? AND agent_id = ? AND user_id = ?
+            """,
+            (session_id, agent_id, user_id),
+        )).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="call not found")
+        path = row[0]
+        already_gone = path is None
+        if path:
+            try:
+                if os.path.exists(path):
+                    os.unlink(path)
+            except OSError as exc:
+                # Same trade-off the sweep makes: surface the failure
+                # to the caller so the UI can retry / show an error
+                # rather than silently NULLing the column while the
+                # file persists.
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"failed to delete recording: {exc}",
+                )
+            await conn.execute(
+                """
+                UPDATE voice_call_logs
+                SET recording_path = NULL, recording_bytes = NULL
+                WHERE session_id = ?
+                """,
+                (session_id,),
+            )
+            await conn.commit()
+        return {"deleted": not already_gone}
+    finally:
+        await conn.close()
+
+
 @router.get("/{agent_id}/calls/{session_id}/transcript")
 async def download_call_transcript(
     agent_id: str,

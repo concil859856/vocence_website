@@ -135,6 +135,21 @@ export const agentsApi = {
     );
   },
 
+  /** Immediately purge the WAV for one call (owner-only). The
+   *  voice_call_logs row is preserved so analytics totals don't
+   *  shift retroactively. ``deleted=false`` is fine — means the
+   *  recording was already gone. */
+  async deleteCallRecording(
+    token: string,
+    agentId: string,
+    sessionId: string,
+  ): Promise<{ deleted: boolean }> {
+    return jsonFetch(
+      `${API_BASE_URL}/dashboard/agents/${encodeURIComponent(agentId)}/calls/${encodeURIComponent(sessionId)}/recording`,
+      { method: 'DELETE', headers: authHeaders(token) },
+    );
+  },
+
   async draft(token: string, body: AgentDraftRequest): Promise<AgentDraftResponse> {
     return jsonFetch(`${API_BASE_URL}/dashboard/agents/draft`, {
       method: 'POST',
