@@ -61,12 +61,22 @@ export function StudioPlayerBar() {
   // Same palette as agents / designed voices.
   const artKey = track.artSeed || track.title || track.src || 'track';
   const grad = avatarGradientPairFor(artKey);
-  // When the track has no explicit artwork, pick a stable image from
-  // the pre-generated abstract pool, keyed on the same artKey so the
-  // avatar doesn't reshuffle when the underlying src changes (which
-  // happens on every fresh presigned-URL fetch for call recordings).
+  // When the track has no explicit artwork, pick a stable image
+  // from the pre-generated abstract pool.
+  //
+  // - If the caller passes ``artSeed`` it's already a namespaced
+  //   identity (e.g. "agent-{id}", matching AgentAvatar) — use it
+  //   raw so the player's tile MATCHES the agent's tile elsewhere
+  //   in the UI. Wrapping it in "player-..." would pick a
+  //   different image, which is exactly the bug the user hit.
+  // - Otherwise (TTS / clone / music tracks with no stable
+  //   identity) keep the legacy "player-{title}-{src}" key so
+  //   nothing else changes.
+  const coverSeed = track.artSeed
+    ? track.artSeed
+    : `player-${track.title || ''}-${track.src || ''}`;
   const fallbackArt = !track.image
-    ? fallbackCoverFor(`player-${artKey}`)
+    ? fallbackCoverFor(coverSeed)
     : '';
   const hasQueue = queue.length > 1;
 
