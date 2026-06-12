@@ -28,6 +28,7 @@ const AgentsList = lazy(() => import('./pages/agents/AgentsList').then((m) => ({
 const AgentBuilder = lazy(() => import('./pages/agents/AgentBuilder').then((m) => ({ default: m.AgentBuilder })));
 const AgentDetail = lazy(() => import('./pages/agents/AgentDetail').then((m) => ({ default: m.AgentDetail })));
 const AgentRunViewer = lazy(() => import('./pages/agents/AgentRunViewer').then((m) => ({ default: m.AgentRunViewer })));
+const AgentSessionReplay = lazy(() => import('./pages/agents/AgentSessionReplay').then((m) => ({ default: m.AgentSessionReplay })));
 const Docs = lazy(() => import('./pages/Docs').then((m) => ({ default: m.Docs })));
 const Blog = lazy(() => import('./pages/Blog').then((m) => ({ default: m.Blog })));
 const Article = lazy(() => import('./pages/Article').then((m) => ({ default: m.Article })));
@@ -94,6 +95,7 @@ function AppContent() {
               <Route path="/studio/agents" element={<AgentsList />} />
               <Route path="/studio/agents/new" element={<AgentBuilder />} />
               <Route path="/studio/agents/:id/runs/:runId" element={<AgentRunViewer />} />
+              <Route path="/studio/agents/:id/calls/:sessionId" element={<AgentSessionReplay />} />
               <Route path="/studio/agents/:id" element={<AgentDetail />} />
               <Route path="/studio/:view" element={<Studio />} />
               <Route path="/docs" element={<Navigate to="/docs/getting-started" replace />} />

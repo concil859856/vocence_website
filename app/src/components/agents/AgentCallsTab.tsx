@@ -12,7 +12,8 @@
  */
 
 import { Fragment, useEffect, useState } from 'react';
-import { Loader2, Phone, AlertCircle, Play, FileText, X, Download, Trash2 } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { Loader2, Phone, AlertCircle, Play, FileText, X, Download, Trash2, ExternalLink } from 'lucide-react';
 import { agentsApi } from '../../lib/agents/api';
 import type { AgentCall, AnalyticsRange, CallEndReason } from '../../lib/agents/types';
 import { useConfirm } from '../../hooks/useConfirm';
@@ -224,6 +225,13 @@ export function AgentCallsTab({ agentId, token }: Props) {
                           >
                             <FileText size={12} /> Transcript
                           </button>
+                          <Link
+                            to={`/studio/agents/${agentId}/calls/${c.session_id}`}
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs text-white/70 hover:bg-white/10 hover:text-white"
+                            title="Open full replay (audio + transcript timeline)"
+                          >
+                            <ExternalLink size={12} /> Replay
+                          </Link>
                           {/* Only show the Delete affordance when the
                               row actually has a recording — once the
                               file is gone the button has nothing to
