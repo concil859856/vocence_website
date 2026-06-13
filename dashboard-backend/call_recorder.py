@@ -128,6 +128,22 @@ class CallRecorder:
         # latest push of this turn. Reset on every push_agent so a
         # mid-turn settled doesn't survive into the post-TTS check.
         self._agent_client_settled: bool = False
+        # ROUTER-OWNED gate. The router signals the start of every
+        # agent reply (greeting + every LLM/TTS turn) via
+        # ``notify_agent_turn_started``. Set False at session start;
+        # ``mark_agent_barge_in`` flips it back to False so any
+        # in-flight push_agent calls from the cancelled turn's TTS
+        # task (which takes up to 1 s to actually die under its
+        # cooperative-cancellation grace window) get DROPPED instead
+        # of opening a phantom turn at the barge-in moment. Without
+        # this guard the orphan pushes would either land in their
+        # own phantom segment overlapping the user's interruption,
+        # OR — worse — get merged into the buffer of the NEXT real
+        # turn and the recording would have agent audio bleeding
+        # across two turns at the same time offset. The user-visible
+        # symptom: "in the recording, both agent and my interruption
+        # are playing together".
+        self._agent_turn_open: bool = False
 
         self._t0: float = 0.0
         self._started = False
@@ -141,6 +157,18 @@ class CallRecorder:
     @property
     def started(self) -> bool:
         return self._started and not self._closed
+
+    @property
+    def agent_turn_open(self) -> bool:
+        """Whether the recorder is currently accepting agent audio
+        pushes. The router uses this to also short-circuit
+        ``ws.send_bytes`` to the client: when a barge-in has closed
+        the gate but cancellation hasn't yet landed inside the
+        running TTS task, any chunks that would otherwise have
+        slipped through to the client (and queued behind the
+        already-flushed playback) are dropped server-side instead.
+        """
+        return self._agent_turn_open
 
     def _now_ms(self) -> int:
         return int((time.monotonic() - self._t0) * 1000)
@@ -157,6 +185,27 @@ class CallRecorder:
         except Exception:
             _log.debug("recorder: push_user swallowed", exc_info=False)
 
+    def notify_agent_turn_started(self) -> None:
+        """Router signals a new agent reply is about to begin (greeting
+        or normal LLM/TTS turn). Opens the agent-turn gate so the next
+        push_agent will buffer.
+
+        Idempotent: if a turn is already open with no audio yet, this
+        is a no-op. If the previous turn left orphan bytes in the
+        buffer (defensive — shouldn't happen if the router calls
+        ``mark_agent_barge_in`` / ``notify_agent_tts_done`` correctly),
+        they are dropped here rather than bleeding into the new turn.
+        """
+        if not self.started:
+            return
+        if self._agent_buffer or self._agent_turn_start_ms is not None:
+            # Defensive: should be empty already. Drop without
+            # recording — these are leftover bytes from an
+            # improperly-closed previous turn and we'd rather lose
+            # a few frames than corrupt the timeline.
+            self._reset_agent_turn_state()
+        self._agent_turn_open = True
+
     def push_agent(self, pcm: bytes | bytearray | memoryview) -> None:
         """Append an agent PCM chunk just before it goes to the client.
 
@@ -164,12 +213,19 @@ class CallRecorder:
         Decimated 2:3 to 16 kHz so it matches the user side and the
         WAV file's single rate.
 
-        Opens a turn on the first push (anchors ``_agent_turn_start_ms``
-        to ``_now_ms()``). Resets ``_agent_client_settled`` because new
-        audio is flowing — any prior settled signal is stale wrt the
-        bytes being appended.
+        DROPS the frame if no turn is open. This is the key guard
+        against the orphan-push race: after ``mark_agent_barge_in``
+        the previous turn's TTS task can still emit one or two more
+        chunks before its cancellation-grace window closes. Those
+        chunks land here with the gate closed and we drop them on
+        the floor — they never enter the buffer, never anchor a
+        phantom turn, never bleed into the next real turn's
+        recording. The first push within an OPEN turn anchors
+        ``_agent_turn_start_ms`` to ``_now_ms()``.
         """
         if not self.started or not pcm:
+            return
+        if not self._agent_turn_open:
             return
         try:
             decimated = self._decimate_24k_to_16k(bytes(pcm))
@@ -188,28 +244,37 @@ class CallRecorder:
     def mark_agent_barge_in(self) -> None:
         """User took the floor. Trim the open turn's buffer to the
         wall-clock elapsed since the turn started and commit it as a
-        segment. The trim is the upper bound on what the user could
-        actually have heard — anything past that is over-produced TTS
-        that sat in the server's buffer but never reached the speakers.
+        segment, then CLOSE the agent-turn gate so any straggling
+        push_agent calls from the cancelled TTS task (which has up
+        to 1 s grace to actually die) are dropped. The next real
+        turn won't accept pushes until ``notify_agent_turn_started``
+        re-opens the gate.
 
         Called from the voicechat router on receipt of ``cancel``.
-        No-op if there's no open turn.
+        No-op (but still closes the gate) if there's no buffered
+        audio yet.
         """
-        if not self.started or self._agent_turn_start_ms is None:
+        if not self.started:
             return
-        elapsed_ms = self._now_ms() - self._agent_turn_start_ms
-        if elapsed_ms < 0:
-            elapsed_ms = 0
-        max_played_bytes = elapsed_ms * BYTES_PER_MS
-        if max_played_bytes & 1:
-            max_played_bytes -= 1
-        keep = min(max_played_bytes, len(self._agent_buffer))
-        playable = bytes(self._agent_buffer[:keep])
-        if playable:
-            self._agent_segments.append(
-                (self._agent_turn_start_ms, playable)
-            )
+        if self._agent_turn_start_ms is not None:
+            elapsed_ms = self._now_ms() - self._agent_turn_start_ms
+            if elapsed_ms < 0:
+                elapsed_ms = 0
+            max_played_bytes = elapsed_ms * BYTES_PER_MS
+            if max_played_bytes & 1:
+                max_played_bytes -= 1
+            keep = min(max_played_bytes, len(self._agent_buffer))
+            playable = bytes(self._agent_buffer[:keep])
+            if playable:
+                self._agent_segments.append(
+                    (self._agent_turn_start_ms, playable)
+                )
         self._reset_agent_turn_state()
+        # Close the gate. Orphan pushes from the cancelled TTS
+        # task's grace window land here with the gate False and
+        # are dropped — that's the fix for "in the recording,
+        # both agent and my interruption are playing together".
+        self._agent_turn_open = False
 
     def notify_agent_tts_done(self) -> None:
         """Router signals the TTS pipeline has finished for this turn —
@@ -239,7 +304,9 @@ class CallRecorder:
         """Commit the whole turn buffer once BOTH conditions are met:
         TTS pushing has finished AND the client has reported queue-
         drained. Order doesn't matter; whichever arrives second runs
-        the commit."""
+        the commit. Also closes the turn gate — a subsequent
+        notify_agent_turn_started must reopen it before the next
+        agent reply can push."""
         if not (self._agent_tts_done and self._agent_client_settled):
             return
         if self._agent_turn_start_ms is None:
@@ -249,6 +316,7 @@ class CallRecorder:
                 (self._agent_turn_start_ms, bytes(self._agent_buffer))
             )
         self._reset_agent_turn_state()
+        self._agent_turn_open = False
 
     def _reset_agent_turn_state(self) -> None:
         self._agent_buffer = bytearray()

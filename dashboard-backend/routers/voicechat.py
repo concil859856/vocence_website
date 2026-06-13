@@ -1405,6 +1405,13 @@ async def voicechat_session(
         # but use the same shape as regular turns for consistency and
         # so a future multi-sentence greeting wouldn't regress.
         greeting_pod_pin = TurnTtsPodPin()
+        # Open the recorder's agent-turn gate so push_agent calls
+        # below land in the buffer. Without this the greeting's
+        # audio would be silently dropped — push_agent rejects
+        # frames while the gate is closed (it stays closed across
+        # session-open and after every barge-in).
+        if call_recorder is not None:
+            call_recorder.notify_agent_turn_started()
         # 1. Emit the chat token so the UI shows the greeting.
         with suppress(Exception):
             await ws.send_json({"type": "token", "text": text})
@@ -1437,6 +1444,12 @@ async def voicechat_session(
                 language=agent_language,
                 pod_pin=greeting_pod_pin,
             ):
+                # Barge-in fast-exit: if the recorder's agent-turn
+                # gate has closed (user interrupted the greeting),
+                # stop shipping bytes so the client doesn't queue
+                # them behind the user's interruption.
+                if call_recorder is not None and not call_recorder.agent_turn_open:
+                    break
                 if chunk.kind == "audio" and isinstance(chunk.payload, (bytes, bytearray)):
                     payload = chunk.payload if isinstance(chunk.payload, bytes) else bytes(chunk.payload)
                     if call_recorder is not None:
@@ -2848,6 +2861,14 @@ async def _run_turn(
         # we never leak the slot.
         from voicechat_service import TurnTtsPodPin
         turn_pod_pin = TurnTtsPodPin()
+        # Open the recorder's agent-turn gate. The gate is closed by
+        # ``mark_agent_barge_in`` at the previous barge-in and by
+        # ``_maybe_complete_agent_turn`` after the previous natural
+        # end, so we must explicitly reopen it here BEFORE the first
+        # push_agent of this turn's tts_consumer fires. Without this
+        # the recorder would silently drop every chunk of this reply.
+        if call_recorder is not None:
+            call_recorder.notify_agent_turn_started()
 
         async def tts_consumer() -> None:
             nonlocal ttfa_ms
@@ -2885,6 +2906,20 @@ async def _run_turn(
                         spoken, voice, user_id=user_id, language=language,
                         warmer=tts_warmer, pod_pin=turn_pod_pin,
                     ):
+                        # Barge-in fast-exit. The cancel handler
+                        # closes the recorder's agent-turn gate
+                        # SYNCHRONOUSLY (mark_agent_barge_in). Once
+                        # closed, any further chunks pushed to the
+                        # client would just queue behind the audio
+                        # the client already flushed for the
+                        # interruption — making the next agent
+                        # reply feel like it's waiting for "the
+                        # previous one to finish". Bailing here
+                        # cuts that delay; the task is being
+                        # cancelled anyway, we just don't wait
+                        # for the cancellation to land.
+                        if call_recorder is not None and not call_recorder.agent_turn_open:
+                            return
                         if chunk.kind == "audio" and isinstance(chunk.payload, (bytes, bytearray)):
                             if ttfa_ms is None:
                                 ttfa_ms = int((time.perf_counter() - started) * 1000)
