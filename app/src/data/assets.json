@@ -1,7 +1,7 @@
 {
   "version": 1,
   "baseUrl": "https://audio.vocence.ai",
-  "generatedAt": "2026-05-13T16:54:47+00:00",
+  "generatedAt": "2026-06-13T14:32:27+00:00",
   "assets": {
     "music.chill": {
       "url": "https://audio.vocence.ai/static/samples/audios/chill-73b1cccc49.opus",
@@ -1507,6 +1507,1546 @@
       "size": 21432,
       "originalSize": 1216837,
       "source": "agent-abstract-50.gpt-image-1"
+    },
+    "abstract.agent-abstract-51": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-51-e65687f2c6.webp",
+      "type": "image/webp",
+      "size": 16696,
+      "originalSize": 1283510,
+      "source": "agent-abstract-51.gpt-image-1"
+    },
+    "abstract.agent-abstract-52": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-52-0ef3da2149.webp",
+      "type": "image/webp",
+      "size": 18544,
+      "originalSize": 1163342,
+      "source": "agent-abstract-52.gpt-image-1"
+    },
+    "abstract.agent-abstract-53": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-53-7e09105204.webp",
+      "type": "image/webp",
+      "size": 16964,
+      "originalSize": 1266759,
+      "source": "agent-abstract-53.gpt-image-1"
+    },
+    "abstract.agent-abstract-54": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-54-eb27d1db45.webp",
+      "type": "image/webp",
+      "size": 23682,
+      "originalSize": 1190124,
+      "source": "agent-abstract-54.gpt-image-1"
+    },
+    "abstract.agent-abstract-55": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-55-31b664d340.webp",
+      "type": "image/webp",
+      "size": 9414,
+      "originalSize": 1254645,
+      "source": "agent-abstract-55.gpt-image-1"
+    },
+    "abstract.agent-abstract-56": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-56-9dc7e77e56.webp",
+      "type": "image/webp",
+      "size": 6258,
+      "originalSize": 1159916,
+      "source": "agent-abstract-56.gpt-image-1"
+    },
+    "abstract.agent-abstract-57": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-57-c33eac4c20.webp",
+      "type": "image/webp",
+      "size": 11916,
+      "originalSize": 1046430,
+      "source": "agent-abstract-57.gpt-image-1"
+    },
+    "abstract.agent-abstract-58": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-58-a532e05a14.webp",
+      "type": "image/webp",
+      "size": 22410,
+      "originalSize": 1315523,
+      "source": "agent-abstract-58.gpt-image-1"
+    },
+    "abstract.agent-abstract-59": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-59-ca52106d00.webp",
+      "type": "image/webp",
+      "size": 19752,
+      "originalSize": 1336265,
+      "source": "agent-abstract-59.gpt-image-1"
+    },
+    "abstract.agent-abstract-60": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-60-b86e644a5c.webp",
+      "type": "image/webp",
+      "size": 14452,
+      "originalSize": 1180710,
+      "source": "agent-abstract-60.gpt-image-1"
+    },
+    "abstract.agent-abstract-61": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-61-ddf4e47e37.webp",
+      "type": "image/webp",
+      "size": 21608,
+      "originalSize": 1356732,
+      "source": "agent-abstract-61.gpt-image-1"
+    },
+    "abstract.agent-abstract-62": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-62-a8c9e81f82.webp",
+      "type": "image/webp",
+      "size": 11918,
+      "originalSize": 1198572,
+      "source": "agent-abstract-62.gpt-image-1"
+    },
+    "abstract.agent-abstract-63": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-63-74054e9165.webp",
+      "type": "image/webp",
+      "size": 19170,
+      "originalSize": 1243369,
+      "source": "agent-abstract-63.gpt-image-1"
+    },
+    "abstract.agent-abstract-64": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-64-c90056fae6.webp",
+      "type": "image/webp",
+      "size": 24612,
+      "originalSize": 1428424,
+      "source": "agent-abstract-64.gpt-image-1"
+    },
+    "abstract.agent-abstract-65": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-65-a80792785b.webp",
+      "type": "image/webp",
+      "size": 10788,
+      "originalSize": 1289412,
+      "source": "agent-abstract-65.gpt-image-1"
+    },
+    "abstract.agent-abstract-66": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-66-782a4d7ed4.webp",
+      "type": "image/webp",
+      "size": 8744,
+      "originalSize": 1164866,
+      "source": "agent-abstract-66.gpt-image-1"
+    },
+    "abstract.agent-abstract-67": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-67-212e57f34b.webp",
+      "type": "image/webp",
+      "size": 16884,
+      "originalSize": 1332161,
+      "source": "agent-abstract-67.gpt-image-1"
+    },
+    "abstract.agent-abstract-68": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-68-d8611e3b94.webp",
+      "type": "image/webp",
+      "size": 18872,
+      "originalSize": 1263739,
+      "source": "agent-abstract-68.gpt-image-1"
+    },
+    "abstract.agent-abstract-69": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-69-9aed9806af.webp",
+      "type": "image/webp",
+      "size": 31308,
+      "originalSize": 1344492,
+      "source": "agent-abstract-69.gpt-image-1"
+    },
+    "abstract.agent-abstract-70": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-70-9b01c58000.webp",
+      "type": "image/webp",
+      "size": 9616,
+      "originalSize": 1235530,
+      "source": "agent-abstract-70.gpt-image-1"
+    },
+    "abstract.agent-abstract-71": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-71-b949ab4ab0.webp",
+      "type": "image/webp",
+      "size": 10154,
+      "originalSize": 1110240,
+      "source": "agent-abstract-71.gpt-image-1"
+    },
+    "abstract.agent-abstract-72": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-72-594b314157.webp",
+      "type": "image/webp",
+      "size": 14178,
+      "originalSize": 1106643,
+      "source": "agent-abstract-72.gpt-image-1"
+    },
+    "abstract.agent-abstract-73": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-73-e20baedcf0.webp",
+      "type": "image/webp",
+      "size": 13934,
+      "originalSize": 1239111,
+      "source": "agent-abstract-73.gpt-image-1"
+    },
+    "abstract.agent-abstract-74": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-74-c66e62e43b.webp",
+      "type": "image/webp",
+      "size": 23140,
+      "originalSize": 1463077,
+      "source": "agent-abstract-74.gpt-image-1"
+    },
+    "abstract.agent-abstract-75": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-75-c2e1bed4d9.webp",
+      "type": "image/webp",
+      "size": 13380,
+      "originalSize": 1349577,
+      "source": "agent-abstract-75.gpt-image-1"
+    },
+    "abstract.agent-abstract-76": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-76-3c4bbcdd07.webp",
+      "type": "image/webp",
+      "size": 10494,
+      "originalSize": 1208604,
+      "source": "agent-abstract-76.gpt-image-1"
+    },
+    "abstract.agent-abstract-77": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-77-1b45148620.webp",
+      "type": "image/webp",
+      "size": 16658,
+      "originalSize": 1296023,
+      "source": "agent-abstract-77.gpt-image-1"
+    },
+    "abstract.agent-abstract-78": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-78-8e2d16d7bd.webp",
+      "type": "image/webp",
+      "size": 26588,
+      "originalSize": 1317312,
+      "source": "agent-abstract-78.gpt-image-1"
+    },
+    "abstract.agent-abstract-79": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-79-794bb09d76.webp",
+      "type": "image/webp",
+      "size": 36142,
+      "originalSize": 1363253,
+      "source": "agent-abstract-79.gpt-image-1"
+    },
+    "abstract.agent-abstract-80": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-80-3c674e3180.webp",
+      "type": "image/webp",
+      "size": 16804,
+      "originalSize": 1149290,
+      "source": "agent-abstract-80.gpt-image-1"
+    },
+    "abstract.agent-abstract-81": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-81-b68eb4db71.webp",
+      "type": "image/webp",
+      "size": 12500,
+      "originalSize": 1250276,
+      "source": "agent-abstract-81.gpt-image-1"
+    },
+    "abstract.agent-abstract-82": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-82-c2eb000296.webp",
+      "type": "image/webp",
+      "size": 12628,
+      "originalSize": 1161493,
+      "source": "agent-abstract-82.gpt-image-1"
+    },
+    "abstract.agent-abstract-83": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-83-c11f0bcd9f.webp",
+      "type": "image/webp",
+      "size": 17816,
+      "originalSize": 1219567,
+      "source": "agent-abstract-83.gpt-image-1"
+    },
+    "abstract.agent-abstract-84": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-84-e10d2582aa.webp",
+      "type": "image/webp",
+      "size": 52832,
+      "originalSize": 1836465,
+      "source": "agent-abstract-84.gpt-image-1"
+    },
+    "abstract.agent-abstract-85": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-85-cc545161ca.webp",
+      "type": "image/webp",
+      "size": 15584,
+      "originalSize": 1482800,
+      "source": "agent-abstract-85.gpt-image-1"
+    },
+    "abstract.agent-abstract-86": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-86-7484b3181b.webp",
+      "type": "image/webp",
+      "size": 7852,
+      "originalSize": 1179300,
+      "source": "agent-abstract-86.gpt-image-1"
+    },
+    "abstract.agent-abstract-87": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-87-7d2d0e538a.webp",
+      "type": "image/webp",
+      "size": 12608,
+      "originalSize": 1229712,
+      "source": "agent-abstract-87.gpt-image-1"
+    },
+    "abstract.agent-abstract-88": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-88-6ea440ec70.webp",
+      "type": "image/webp",
+      "size": 15850,
+      "originalSize": 1346464,
+      "source": "agent-abstract-88.gpt-image-1"
+    },
+    "abstract.agent-abstract-89": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-89-6c169c5e3a.webp",
+      "type": "image/webp",
+      "size": 23832,
+      "originalSize": 1442050,
+      "source": "agent-abstract-89.gpt-image-1"
+    },
+    "abstract.agent-abstract-90": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-90-df0e9cb350.webp",
+      "type": "image/webp",
+      "size": 17390,
+      "originalSize": 1191119,
+      "source": "agent-abstract-90.gpt-image-1"
+    },
+    "abstract.agent-abstract-91": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-91-d05f8a9172.webp",
+      "type": "image/webp",
+      "size": 11120,
+      "originalSize": 1199404,
+      "source": "agent-abstract-91.gpt-image-1"
+    },
+    "abstract.agent-abstract-92": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-92-1868618840.webp",
+      "type": "image/webp",
+      "size": 17660,
+      "originalSize": 1216193,
+      "source": "agent-abstract-92.gpt-image-1"
+    },
+    "abstract.agent-abstract-93": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-93-72b03845e2.webp",
+      "type": "image/webp",
+      "size": 21412,
+      "originalSize": 1309896,
+      "source": "agent-abstract-93.gpt-image-1"
+    },
+    "abstract.agent-abstract-94": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-94-fb4e75aa26.webp",
+      "type": "image/webp",
+      "size": 31190,
+      "originalSize": 1454885,
+      "source": "agent-abstract-94.gpt-image-1"
+    },
+    "abstract.agent-abstract-95": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-95-fb19ab8abe.webp",
+      "type": "image/webp",
+      "size": 13948,
+      "originalSize": 1100298,
+      "source": "agent-abstract-95.gpt-image-1"
+    },
+    "abstract.agent-abstract-96": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-96-124c56a657.webp",
+      "type": "image/webp",
+      "size": 12260,
+      "originalSize": 1291647,
+      "source": "agent-abstract-96.gpt-image-1"
+    },
+    "abstract.agent-abstract-97": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-97-cb4ba96ec6.webp",
+      "type": "image/webp",
+      "size": 23466,
+      "originalSize": 1308792,
+      "source": "agent-abstract-97.gpt-image-1"
+    },
+    "abstract.agent-abstract-98": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-98-27e4caae62.webp",
+      "type": "image/webp",
+      "size": 19798,
+      "originalSize": 1164629,
+      "source": "agent-abstract-98.gpt-image-1"
+    },
+    "abstract.agent-abstract-99": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-99-adffb24561.webp",
+      "type": "image/webp",
+      "size": 29734,
+      "originalSize": 1358571,
+      "source": "agent-abstract-99.gpt-image-1"
+    },
+    "abstract.agent-abstract-100": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-100-1f71647924.webp",
+      "type": "image/webp",
+      "size": 19576,
+      "originalSize": 1424661,
+      "source": "agent-abstract-100.gpt-image-1"
+    },
+    "abstract.agent-abstract-101": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-101-f9c15e389a.webp",
+      "type": "image/webp",
+      "size": 10110,
+      "originalSize": 1130195,
+      "source": "agent-abstract-101.gpt-image-1"
+    },
+    "abstract.agent-abstract-102": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-102-4630590c7b.webp",
+      "type": "image/webp",
+      "size": 17220,
+      "originalSize": 1126096,
+      "source": "agent-abstract-102.gpt-image-1"
+    },
+    "abstract.agent-abstract-103": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-103-8d869ad747.webp",
+      "type": "image/webp",
+      "size": 13384,
+      "originalSize": 1235554,
+      "source": "agent-abstract-103.gpt-image-1"
+    },
+    "abstract.agent-abstract-104": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-104-734bcb5a4d.webp",
+      "type": "image/webp",
+      "size": 22922,
+      "originalSize": 1322185,
+      "source": "agent-abstract-104.gpt-image-1"
+    },
+    "abstract.agent-abstract-105": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-105-599604901e.webp",
+      "type": "image/webp",
+      "size": 12130,
+      "originalSize": 1299482,
+      "source": "agent-abstract-105.gpt-image-1"
+    },
+    "abstract.agent-abstract-106": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-106-424aa622ee.webp",
+      "type": "image/webp",
+      "size": 7892,
+      "originalSize": 1173573,
+      "source": "agent-abstract-106.gpt-image-1"
+    },
+    "abstract.agent-abstract-107": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-107-63bc2488ee.webp",
+      "type": "image/webp",
+      "size": 16250,
+      "originalSize": 1226846,
+      "source": "agent-abstract-107.gpt-image-1"
+    },
+    "abstract.agent-abstract-108": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-108-ba15b5d7c7.webp",
+      "type": "image/webp",
+      "size": 20136,
+      "originalSize": 1289653,
+      "source": "agent-abstract-108.gpt-image-1"
+    },
+    "abstract.agent-abstract-109": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-109-a6d125f0bf.webp",
+      "type": "image/webp",
+      "size": 16024,
+      "originalSize": 1240206,
+      "source": "agent-abstract-109.gpt-image-1"
+    },
+    "abstract.agent-abstract-110": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-110-2e2c8890a7.webp",
+      "type": "image/webp",
+      "size": 18538,
+      "originalSize": 1211029,
+      "source": "agent-abstract-110.gpt-image-1"
+    },
+    "abstract.agent-abstract-111": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-111-d31f702481.webp",
+      "type": "image/webp",
+      "size": 9594,
+      "originalSize": 1098082,
+      "source": "agent-abstract-111.gpt-image-1"
+    },
+    "abstract.agent-abstract-112": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-112-d6c0fe3421.webp",
+      "type": "image/webp",
+      "size": 12742,
+      "originalSize": 1192511,
+      "source": "agent-abstract-112.gpt-image-1"
+    },
+    "abstract.agent-abstract-113": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-113-c0231bfca3.webp",
+      "type": "image/webp",
+      "size": 17540,
+      "originalSize": 1286378,
+      "source": "agent-abstract-113.gpt-image-1"
+    },
+    "abstract.agent-abstract-114": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-114-0f64433493.webp",
+      "type": "image/webp",
+      "size": 26982,
+      "originalSize": 1346843,
+      "source": "agent-abstract-114.gpt-image-1"
+    },
+    "abstract.agent-abstract-115": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-115-e2c3202a62.webp",
+      "type": "image/webp",
+      "size": 18526,
+      "originalSize": 1573406,
+      "source": "agent-abstract-115.gpt-image-1"
+    },
+    "abstract.agent-abstract-116": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-116-4f95055941.webp",
+      "type": "image/webp",
+      "size": 9292,
+      "originalSize": 1175143,
+      "source": "agent-abstract-116.gpt-image-1"
+    },
+    "abstract.agent-abstract-117": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-117-c9e846c733.webp",
+      "type": "image/webp",
+      "size": 17016,
+      "originalSize": 1336334,
+      "source": "agent-abstract-117.gpt-image-1"
+    },
+    "abstract.agent-abstract-118": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-118-f94424353a.webp",
+      "type": "image/webp",
+      "size": 24606,
+      "originalSize": 1178561,
+      "source": "agent-abstract-118.gpt-image-1"
+    },
+    "abstract.agent-abstract-119": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-119-d18dd49094.webp",
+      "type": "image/webp",
+      "size": 21384,
+      "originalSize": 1205037,
+      "source": "agent-abstract-119.gpt-image-1"
+    },
+    "abstract.agent-abstract-120": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-120-cbfa4b2ac9.webp",
+      "type": "image/webp",
+      "size": 13656,
+      "originalSize": 1159313,
+      "source": "agent-abstract-120.gpt-image-1"
+    },
+    "abstract.agent-abstract-121": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-121-98d6709373.webp",
+      "type": "image/webp",
+      "size": 9402,
+      "originalSize": 1067219,
+      "source": "agent-abstract-121.gpt-image-1"
+    },
+    "abstract.agent-abstract-122": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-122-9403fd0241.webp",
+      "type": "image/webp",
+      "size": 12972,
+      "originalSize": 1139083,
+      "source": "agent-abstract-122.gpt-image-1"
+    },
+    "abstract.agent-abstract-123": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-123-3f0fcbdf43.webp",
+      "type": "image/webp",
+      "size": 14192,
+      "originalSize": 1218359,
+      "source": "agent-abstract-123.gpt-image-1"
+    },
+    "abstract.agent-abstract-124": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-124-119a9c3930.webp",
+      "type": "image/webp",
+      "size": 25008,
+      "originalSize": 1529445,
+      "source": "agent-abstract-124.gpt-image-1"
+    },
+    "abstract.agent-abstract-125": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-125-3ef5f7002f.webp",
+      "type": "image/webp",
+      "size": 11704,
+      "originalSize": 1276864,
+      "source": "agent-abstract-125.gpt-image-1"
+    },
+    "abstract.agent-abstract-126": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-126-349a97b52f.webp",
+      "type": "image/webp",
+      "size": 6572,
+      "originalSize": 1154033,
+      "source": "agent-abstract-126.gpt-image-1"
+    },
+    "abstract.agent-abstract-127": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-127-d8dc490f69.webp",
+      "type": "image/webp",
+      "size": 17596,
+      "originalSize": 1281904,
+      "source": "agent-abstract-127.gpt-image-1"
+    },
+    "abstract.agent-abstract-128": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-128-b96ecd0e0c.webp",
+      "type": "image/webp",
+      "size": 12732,
+      "originalSize": 1239183,
+      "source": "agent-abstract-128.gpt-image-1"
+    },
+    "abstract.agent-abstract-129": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-129-0da17c6ead.webp",
+      "type": "image/webp",
+      "size": 27956,
+      "originalSize": 1256841,
+      "source": "agent-abstract-129.gpt-image-1"
+    },
+    "abstract.agent-abstract-130": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-130-4e14abfc70.webp",
+      "type": "image/webp",
+      "size": 21430,
+      "originalSize": 1269019,
+      "source": "agent-abstract-130.gpt-image-1"
+    },
+    "abstract.agent-abstract-131": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-131-c123a897da.webp",
+      "type": "image/webp",
+      "size": 10306,
+      "originalSize": 1206804,
+      "source": "agent-abstract-131.gpt-image-1"
+    },
+    "abstract.agent-abstract-132": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-132-8e9b8efd82.webp",
+      "type": "image/webp",
+      "size": 12680,
+      "originalSize": 1207533,
+      "source": "agent-abstract-132.gpt-image-1"
+    },
+    "abstract.agent-abstract-133": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-133-a5ff8740d9.webp",
+      "type": "image/webp",
+      "size": 14964,
+      "originalSize": 1223207,
+      "source": "agent-abstract-133.gpt-image-1"
+    },
+    "abstract.agent-abstract-134": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-134-c69b981205.webp",
+      "type": "image/webp",
+      "size": 23480,
+      "originalSize": 1377309,
+      "source": "agent-abstract-134.gpt-image-1"
+    },
+    "abstract.agent-abstract-135": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-135-a854fd0aa4.webp",
+      "type": "image/webp",
+      "size": 16132,
+      "originalSize": 1324894,
+      "source": "agent-abstract-135.gpt-image-1"
+    },
+    "abstract.agent-abstract-136": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-136-97bbd2a749.webp",
+      "type": "image/webp",
+      "size": 11352,
+      "originalSize": 1223983,
+      "source": "agent-abstract-136.gpt-image-1"
+    },
+    "abstract.agent-abstract-137": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-137-b74b9bd6a3.webp",
+      "type": "image/webp",
+      "size": 22058,
+      "originalSize": 1329140,
+      "source": "agent-abstract-137.gpt-image-1"
+    },
+    "abstract.agent-abstract-138": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-138-a7fa6642ba.webp",
+      "type": "image/webp",
+      "size": 14836,
+      "originalSize": 1104194,
+      "source": "agent-abstract-138.gpt-image-1"
+    },
+    "abstract.agent-abstract-139": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-139-1bf39432ff.webp",
+      "type": "image/webp",
+      "size": 38662,
+      "originalSize": 1445712,
+      "source": "agent-abstract-139.gpt-image-1"
+    },
+    "abstract.agent-abstract-140": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-140-5f380ae63e.webp",
+      "type": "image/webp",
+      "size": 11568,
+      "originalSize": 1198279,
+      "source": "agent-abstract-140.gpt-image-1"
+    },
+    "abstract.agent-abstract-141": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-141-45dd59df93.webp",
+      "type": "image/webp",
+      "size": 18628,
+      "originalSize": 1142270,
+      "source": "agent-abstract-141.gpt-image-1"
+    },
+    "abstract.agent-abstract-142": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-142-d4286432bf.webp",
+      "type": "image/webp",
+      "size": 22388,
+      "originalSize": 1360932,
+      "source": "agent-abstract-142.gpt-image-1"
+    },
+    "abstract.agent-abstract-143": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-143-1652392bbe.webp",
+      "type": "image/webp",
+      "size": 18548,
+      "originalSize": 1326365,
+      "source": "agent-abstract-143.gpt-image-1"
+    },
+    "abstract.agent-abstract-144": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-144-c645955691.webp",
+      "type": "image/webp",
+      "size": 32216,
+      "originalSize": 1495185,
+      "source": "agent-abstract-144.gpt-image-1"
+    },
+    "abstract.agent-abstract-145": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-145-8b6e655055.webp",
+      "type": "image/webp",
+      "size": 12656,
+      "originalSize": 1524576,
+      "source": "agent-abstract-145.gpt-image-1"
+    },
+    "abstract.agent-abstract-146": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-146-387eddd4e9.webp",
+      "type": "image/webp",
+      "size": 12460,
+      "originalSize": 1218200,
+      "source": "agent-abstract-146.gpt-image-1"
+    },
+    "abstract.agent-abstract-147": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-147-3f2c8deae7.webp",
+      "type": "image/webp",
+      "size": 19522,
+      "originalSize": 1160468,
+      "source": "agent-abstract-147.gpt-image-1"
+    },
+    "abstract.agent-abstract-148": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-148-0494d475e2.webp",
+      "type": "image/webp",
+      "size": 15356,
+      "originalSize": 1308442,
+      "source": "agent-abstract-148.gpt-image-1"
+    },
+    "abstract.agent-abstract-149": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-149-a804394d2d.webp",
+      "type": "image/webp",
+      "size": 24394,
+      "originalSize": 1322288,
+      "source": "agent-abstract-149.gpt-image-1"
+    },
+    "abstract.agent-abstract-150": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-150-d36244a230.webp",
+      "type": "image/webp",
+      "size": 17488,
+      "originalSize": 1221995,
+      "source": "agent-abstract-150.gpt-image-1"
+    },
+    "abstract.agent-abstract-151": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-151-c78e162e02.webp",
+      "type": "image/webp",
+      "size": 10274,
+      "originalSize": 1365349,
+      "source": "agent-abstract-151.gpt-image-1"
+    },
+    "abstract.agent-abstract-152": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-152-e445dd9fb1.webp",
+      "type": "image/webp",
+      "size": 14612,
+      "originalSize": 1210095,
+      "source": "agent-abstract-152.gpt-image-1"
+    },
+    "abstract.agent-abstract-153": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-153-628d758b35.webp",
+      "type": "image/webp",
+      "size": 20632,
+      "originalSize": 1260903,
+      "source": "agent-abstract-153.gpt-image-1"
+    },
+    "abstract.agent-abstract-154": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-154-6f5579fbb9.webp",
+      "type": "image/webp",
+      "size": 23370,
+      "originalSize": 1487919,
+      "source": "agent-abstract-154.gpt-image-1"
+    },
+    "abstract.agent-abstract-155": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-155-0b4400f490.webp",
+      "type": "image/webp",
+      "size": 15056,
+      "originalSize": 1375091,
+      "source": "agent-abstract-155.gpt-image-1"
+    },
+    "abstract.agent-abstract-156": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-156-49d6bb53ee.webp",
+      "type": "image/webp",
+      "size": 9364,
+      "originalSize": 1181155,
+      "source": "agent-abstract-156.gpt-image-1"
+    },
+    "abstract.agent-abstract-157": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-157-1ca4eadab2.webp",
+      "type": "image/webp",
+      "size": 14908,
+      "originalSize": 1294674,
+      "source": "agent-abstract-157.gpt-image-1"
+    },
+    "abstract.agent-abstract-158": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-158-8e52d29ef3.webp",
+      "type": "image/webp",
+      "size": 17434,
+      "originalSize": 1234528,
+      "source": "agent-abstract-158.gpt-image-1"
+    },
+    "abstract.agent-abstract-159": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-159-68cb4d6209.webp",
+      "type": "image/webp",
+      "size": 19836,
+      "originalSize": 1195847,
+      "source": "agent-abstract-159.gpt-image-1"
+    },
+    "abstract.agent-abstract-160": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-160-3d0e5be8ed.webp",
+      "type": "image/webp",
+      "size": 7450,
+      "originalSize": 1182505,
+      "source": "agent-abstract-160.gpt-image-1"
+    },
+    "abstract.agent-abstract-161": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-161-0f70598c29.webp",
+      "type": "image/webp",
+      "size": 12676,
+      "originalSize": 1071300,
+      "source": "agent-abstract-161.gpt-image-1"
+    },
+    "abstract.agent-abstract-162": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-162-0ead9c5350.webp",
+      "type": "image/webp",
+      "size": 12094,
+      "originalSize": 1174336,
+      "source": "agent-abstract-162.gpt-image-1"
+    },
+    "abstract.agent-abstract-163": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-163-69ca1efb59.webp",
+      "type": "image/webp",
+      "size": 16374,
+      "originalSize": 1274808,
+      "source": "agent-abstract-163.gpt-image-1"
+    },
+    "abstract.agent-abstract-164": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-164-bb155f7565.webp",
+      "type": "image/webp",
+      "size": 16520,
+      "originalSize": 1095350,
+      "source": "agent-abstract-164.gpt-image-1"
+    },
+    "abstract.agent-abstract-165": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-165-bf72fb732f.webp",
+      "type": "image/webp",
+      "size": 10614,
+      "originalSize": 1390704,
+      "source": "agent-abstract-165.gpt-image-1"
+    },
+    "abstract.agent-abstract-166": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-166-1d5f0eca31.webp",
+      "type": "image/webp",
+      "size": 7614,
+      "originalSize": 1185439,
+      "source": "agent-abstract-166.gpt-image-1"
+    },
+    "abstract.agent-abstract-167": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-167-cff57fa3e4.webp",
+      "type": "image/webp",
+      "size": 16052,
+      "originalSize": 1286791,
+      "source": "agent-abstract-167.gpt-image-1"
+    },
+    "abstract.agent-abstract-168": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-168-de114bec37.webp",
+      "type": "image/webp",
+      "size": 10288,
+      "originalSize": 1223091,
+      "source": "agent-abstract-168.gpt-image-1"
+    },
+    "abstract.agent-abstract-169": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-169-17621e7de2.webp",
+      "type": "image/webp",
+      "size": 21916,
+      "originalSize": 1289182,
+      "source": "agent-abstract-169.gpt-image-1"
+    },
+    "abstract.agent-abstract-170": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-170-b0cfdd19a7.webp",
+      "type": "image/webp",
+      "size": 14140,
+      "originalSize": 1278161,
+      "source": "agent-abstract-170.gpt-image-1"
+    },
+    "abstract.agent-abstract-171": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-171-2faea12580.webp",
+      "type": "image/webp",
+      "size": 14048,
+      "originalSize": 1279298,
+      "source": "agent-abstract-171.gpt-image-1"
+    },
+    "abstract.agent-abstract-172": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-172-98a3339298.webp",
+      "type": "image/webp",
+      "size": 14576,
+      "originalSize": 1125291,
+      "source": "agent-abstract-172.gpt-image-1"
+    },
+    "abstract.agent-abstract-173": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-173-52867d031f.webp",
+      "type": "image/webp",
+      "size": 14232,
+      "originalSize": 1083783,
+      "source": "agent-abstract-173.gpt-image-1"
+    },
+    "abstract.agent-abstract-174": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-174-458d985aab.webp",
+      "type": "image/webp",
+      "size": 50296,
+      "originalSize": 2220478,
+      "source": "agent-abstract-174.gpt-image-1"
+    },
+    "abstract.agent-abstract-175": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-175-28e36f14a8.webp",
+      "type": "image/webp",
+      "size": 16888,
+      "originalSize": 1545504,
+      "source": "agent-abstract-175.gpt-image-1"
+    },
+    "abstract.agent-abstract-176": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-176-8082753489.webp",
+      "type": "image/webp",
+      "size": 6348,
+      "originalSize": 1140198,
+      "source": "agent-abstract-176.gpt-image-1"
+    },
+    "abstract.agent-abstract-177": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-177-d459511308.webp",
+      "type": "image/webp",
+      "size": 14312,
+      "originalSize": 1328649,
+      "source": "agent-abstract-177.gpt-image-1"
+    },
+    "abstract.agent-abstract-178": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-178-a959e21adc.webp",
+      "type": "image/webp",
+      "size": 23850,
+      "originalSize": 1346340,
+      "source": "agent-abstract-178.gpt-image-1"
+    },
+    "abstract.agent-abstract-179": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-179-7f03effe39.webp",
+      "type": "image/webp",
+      "size": 23648,
+      "originalSize": 1231976,
+      "source": "agent-abstract-179.gpt-image-1"
+    },
+    "abstract.agent-abstract-180": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-180-e40a353a52.webp",
+      "type": "image/webp",
+      "size": 13262,
+      "originalSize": 1312488,
+      "source": "agent-abstract-180.gpt-image-1"
+    },
+    "abstract.agent-abstract-181": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-181-3ab1010bb5.webp",
+      "type": "image/webp",
+      "size": 10590,
+      "originalSize": 1253874,
+      "source": "agent-abstract-181.gpt-image-1"
+    },
+    "abstract.agent-abstract-182": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-182-33f35cb725.webp",
+      "type": "image/webp",
+      "size": 15144,
+      "originalSize": 1239532,
+      "source": "agent-abstract-182.gpt-image-1"
+    },
+    "abstract.agent-abstract-183": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-183-470a185268.webp",
+      "type": "image/webp",
+      "size": 23518,
+      "originalSize": 1247146,
+      "source": "agent-abstract-183.gpt-image-1"
+    },
+    "abstract.agent-abstract-184": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-184-2f80f2e391.webp",
+      "type": "image/webp",
+      "size": 22660,
+      "originalSize": 1109055,
+      "source": "agent-abstract-184.gpt-image-1"
+    },
+    "abstract.agent-abstract-185": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-185-dcc94a277a.webp",
+      "type": "image/webp",
+      "size": 16836,
+      "originalSize": 1129567,
+      "source": "agent-abstract-185.gpt-image-1"
+    },
+    "abstract.agent-abstract-186": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-186-d3476734c0.webp",
+      "type": "image/webp",
+      "size": 7470,
+      "originalSize": 1184592,
+      "source": "agent-abstract-186.gpt-image-1"
+    },
+    "abstract.agent-abstract-187": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-187-b64ca59a77.webp",
+      "type": "image/webp",
+      "size": 14180,
+      "originalSize": 1245588,
+      "source": "agent-abstract-187.gpt-image-1"
+    },
+    "abstract.agent-abstract-188": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-188-7dd4451bde.webp",
+      "type": "image/webp",
+      "size": 14790,
+      "originalSize": 1237621,
+      "source": "agent-abstract-188.gpt-image-1"
+    },
+    "abstract.agent-abstract-189": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-189-ac9f453887.webp",
+      "type": "image/webp",
+      "size": 22200,
+      "originalSize": 1321183,
+      "source": "agent-abstract-189.gpt-image-1"
+    },
+    "abstract.agent-abstract-190": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-190-3303a4565d.webp",
+      "type": "image/webp",
+      "size": 14732,
+      "originalSize": 1294733,
+      "source": "agent-abstract-190.gpt-image-1"
+    },
+    "abstract.agent-abstract-191": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-191-aa9ef517c1.webp",
+      "type": "image/webp",
+      "size": 6862,
+      "originalSize": 1039506,
+      "source": "agent-abstract-191.gpt-image-1"
+    },
+    "abstract.agent-abstract-192": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-192-773cd90784.webp",
+      "type": "image/webp",
+      "size": 11066,
+      "originalSize": 1082977,
+      "source": "agent-abstract-192.gpt-image-1"
+    },
+    "abstract.agent-abstract-193": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-193-b5392da9ab.webp",
+      "type": "image/webp",
+      "size": 15354,
+      "originalSize": 1226918,
+      "source": "agent-abstract-193.gpt-image-1"
+    },
+    "abstract.agent-abstract-194": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-194-56c494a97c.webp",
+      "type": "image/webp",
+      "size": 18338,
+      "originalSize": 1157389,
+      "source": "agent-abstract-194.gpt-image-1"
+    },
+    "abstract.agent-abstract-195": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-195-4bf3e3011e.webp",
+      "type": "image/webp",
+      "size": 11944,
+      "originalSize": 1291673,
+      "source": "agent-abstract-195.gpt-image-1"
+    },
+    "abstract.agent-abstract-196": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-196-6f2fd3ab2b.webp",
+      "type": "image/webp",
+      "size": 7194,
+      "originalSize": 1199763,
+      "source": "agent-abstract-196.gpt-image-1"
+    },
+    "abstract.agent-abstract-197": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-197-5c81e88101.webp",
+      "type": "image/webp",
+      "size": 15580,
+      "originalSize": 1314026,
+      "source": "agent-abstract-197.gpt-image-1"
+    },
+    "abstract.agent-abstract-198": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-198-f159c157a2.webp",
+      "type": "image/webp",
+      "size": 16626,
+      "originalSize": 1243103,
+      "source": "agent-abstract-198.gpt-image-1"
+    },
+    "abstract.agent-abstract-199": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-199-9b79700670.webp",
+      "type": "image/webp",
+      "size": 23298,
+      "originalSize": 1171022,
+      "source": "agent-abstract-199.gpt-image-1"
+    },
+    "abstract.agent-abstract-200": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-200-cbdb924337.webp",
+      "type": "image/webp",
+      "size": 12724,
+      "originalSize": 1299437,
+      "source": "agent-abstract-200.gpt-image-1"
+    },
+    "abstract.agent-abstract-201": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-201-c626db4ecd.webp",
+      "type": "image/webp",
+      "size": 16878,
+      "originalSize": 1225374,
+      "source": "agent-abstract-201.gpt-image-1"
+    },
+    "abstract.agent-abstract-202": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-202-ebe97fc35b.webp",
+      "type": "image/webp",
+      "size": 12740,
+      "originalSize": 1121025,
+      "source": "agent-abstract-202.gpt-image-1"
+    },
+    "abstract.agent-abstract-203": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-203-814c56c5de.webp",
+      "type": "image/webp",
+      "size": 25100,
+      "originalSize": 1186658,
+      "source": "agent-abstract-203.gpt-image-1"
+    },
+    "abstract.agent-abstract-204": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-204-2cc7d01e01.webp",
+      "type": "image/webp",
+      "size": 26424,
+      "originalSize": 1380280,
+      "source": "agent-abstract-204.gpt-image-1"
+    },
+    "abstract.agent-abstract-205": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-205-48eded479c.webp",
+      "type": "image/webp",
+      "size": 13306,
+      "originalSize": 1145079,
+      "source": "agent-abstract-205.gpt-image-1"
+    },
+    "abstract.agent-abstract-206": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-206-889fadd661.webp",
+      "type": "image/webp",
+      "size": 12566,
+      "originalSize": 1099705,
+      "source": "agent-abstract-206.gpt-image-1"
+    },
+    "abstract.agent-abstract-207": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-207-785aadcfb9.webp",
+      "type": "image/webp",
+      "size": 15612,
+      "originalSize": 1346227,
+      "source": "agent-abstract-207.gpt-image-1"
+    },
+    "abstract.agent-abstract-208": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-208-54bc647c9f.webp",
+      "type": "image/webp",
+      "size": 13282,
+      "originalSize": 1228660,
+      "source": "agent-abstract-208.gpt-image-1"
+    },
+    "abstract.agent-abstract-209": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-209-a537b662b0.webp",
+      "type": "image/webp",
+      "size": 20348,
+      "originalSize": 1275275,
+      "source": "agent-abstract-209.gpt-image-1"
+    },
+    "abstract.agent-abstract-210": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-210-b4a07d81b6.webp",
+      "type": "image/webp",
+      "size": 15252,
+      "originalSize": 1333238,
+      "source": "agent-abstract-210.gpt-image-1"
+    },
+    "abstract.agent-abstract-211": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-211-be144e1fbd.webp",
+      "type": "image/webp",
+      "size": 11260,
+      "originalSize": 1233139,
+      "source": "agent-abstract-211.gpt-image-1"
+    },
+    "abstract.agent-abstract-212": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-212-424d36ea5b.webp",
+      "type": "image/webp",
+      "size": 18432,
+      "originalSize": 1260383,
+      "source": "agent-abstract-212.gpt-image-1"
+    },
+    "abstract.agent-abstract-213": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-213-905126f0cb.webp",
+      "type": "image/webp",
+      "size": 14332,
+      "originalSize": 1200727,
+      "source": "agent-abstract-213.gpt-image-1"
+    },
+    "abstract.agent-abstract-214": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-214-1fbf353ab1.webp",
+      "type": "image/webp",
+      "size": 32578,
+      "originalSize": 1400898,
+      "source": "agent-abstract-214.gpt-image-1"
+    },
+    "abstract.agent-abstract-215": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-215-a8c6becb51.webp",
+      "type": "image/webp",
+      "size": 18582,
+      "originalSize": 1542570,
+      "source": "agent-abstract-215.gpt-image-1"
+    },
+    "abstract.agent-abstract-216": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-216-776492707f.webp",
+      "type": "image/webp",
+      "size": 10430,
+      "originalSize": 1190249,
+      "source": "agent-abstract-216.gpt-image-1"
+    },
+    "abstract.agent-abstract-217": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-217-4f14108174.webp",
+      "type": "image/webp",
+      "size": 16848,
+      "originalSize": 1317532,
+      "source": "agent-abstract-217.gpt-image-1"
+    },
+    "abstract.agent-abstract-218": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-218-e3477aaefc.webp",
+      "type": "image/webp",
+      "size": 13658,
+      "originalSize": 1250240,
+      "source": "agent-abstract-218.gpt-image-1"
+    },
+    "abstract.agent-abstract-219": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-219-bf87fe4d86.webp",
+      "type": "image/webp",
+      "size": 29302,
+      "originalSize": 1420192,
+      "source": "agent-abstract-219.gpt-image-1"
+    },
+    "abstract.agent-abstract-220": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-220-0a8bffa6c0.webp",
+      "type": "image/webp",
+      "size": 20426,
+      "originalSize": 1459973,
+      "source": "agent-abstract-220.gpt-image-1"
+    },
+    "abstract.agent-abstract-221": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-221-d4c51cbdf6.webp",
+      "type": "image/webp",
+      "size": 8886,
+      "originalSize": 1191433,
+      "source": "agent-abstract-221.gpt-image-1"
+    },
+    "abstract.agent-abstract-222": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-222-ad227b7caa.webp",
+      "type": "image/webp",
+      "size": 12186,
+      "originalSize": 1074556,
+      "source": "agent-abstract-222.gpt-image-1"
+    },
+    "abstract.agent-abstract-223": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-223-56d0988a61.webp",
+      "type": "image/webp",
+      "size": 13890,
+      "originalSize": 1210368,
+      "source": "agent-abstract-223.gpt-image-1"
+    },
+    "abstract.agent-abstract-224": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-224-f8c7779ecd.webp",
+      "type": "image/webp",
+      "size": 17514,
+      "originalSize": 1202223,
+      "source": "agent-abstract-224.gpt-image-1"
+    },
+    "abstract.agent-abstract-225": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-225-e48ff5ba1c.webp",
+      "type": "image/webp",
+      "size": 17342,
+      "originalSize": 1281662,
+      "source": "agent-abstract-225.gpt-image-1"
+    },
+    "abstract.agent-abstract-226": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-226-b5e075d01c.webp",
+      "type": "image/webp",
+      "size": 7850,
+      "originalSize": 1175491,
+      "source": "agent-abstract-226.gpt-image-1"
+    },
+    "abstract.agent-abstract-227": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-227-d0507d8e29.webp",
+      "type": "image/webp",
+      "size": 31450,
+      "originalSize": 1451308,
+      "source": "agent-abstract-227.gpt-image-1"
+    },
+    "abstract.agent-abstract-228": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-228-f5cb850ccd.webp",
+      "type": "image/webp",
+      "size": 23160,
+      "originalSize": 1217845,
+      "source": "agent-abstract-228.gpt-image-1"
+    },
+    "abstract.agent-abstract-229": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-229-2285f1ccc8.webp",
+      "type": "image/webp",
+      "size": 26892,
+      "originalSize": 1255945,
+      "source": "agent-abstract-229.gpt-image-1"
+    },
+    "abstract.agent-abstract-230": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-230-8410889282.webp",
+      "type": "image/webp",
+      "size": 18256,
+      "originalSize": 1317804,
+      "source": "agent-abstract-230.gpt-image-1"
+    },
+    "abstract.agent-abstract-231": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-231-a77baa3a0e.webp",
+      "type": "image/webp",
+      "size": 12126,
+      "originalSize": 1206823,
+      "source": "agent-abstract-231.gpt-image-1"
+    },
+    "abstract.agent-abstract-232": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-232-7654ff6a01.webp",
+      "type": "image/webp",
+      "size": 16040,
+      "originalSize": 1227670,
+      "source": "agent-abstract-232.gpt-image-1"
+    },
+    "abstract.agent-abstract-233": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-233-97a99b06bd.webp",
+      "type": "image/webp",
+      "size": 11386,
+      "originalSize": 1185333,
+      "source": "agent-abstract-233.gpt-image-1"
+    },
+    "abstract.agent-abstract-234": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-234-5770275a23.webp",
+      "type": "image/webp",
+      "size": 34958,
+      "originalSize": 1393419,
+      "source": "agent-abstract-234.gpt-image-1"
+    },
+    "abstract.agent-abstract-235": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-235-0f180867ca.webp",
+      "type": "image/webp",
+      "size": 12772,
+      "originalSize": 1315594,
+      "source": "agent-abstract-235.gpt-image-1"
+    },
+    "abstract.agent-abstract-236": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-236-3d50769cad.webp",
+      "type": "image/webp",
+      "size": 6886,
+      "originalSize": 1182395,
+      "source": "agent-abstract-236.gpt-image-1"
+    },
+    "abstract.agent-abstract-237": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-237-254ae532b7.webp",
+      "type": "image/webp",
+      "size": 15692,
+      "originalSize": 1286940,
+      "source": "agent-abstract-237.gpt-image-1"
+    },
+    "abstract.agent-abstract-238": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-238-24c28f5014.webp",
+      "type": "image/webp",
+      "size": 16800,
+      "originalSize": 1286090,
+      "source": "agent-abstract-238.gpt-image-1"
+    },
+    "abstract.agent-abstract-239": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-239-0db20af179.webp",
+      "type": "image/webp",
+      "size": 17984,
+      "originalSize": 1324887,
+      "source": "agent-abstract-239.gpt-image-1"
+    },
+    "abstract.agent-abstract-240": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-240-828ae09efa.webp",
+      "type": "image/webp",
+      "size": 19334,
+      "originalSize": 1321369,
+      "source": "agent-abstract-240.gpt-image-1"
+    },
+    "abstract.agent-abstract-241": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-241-8e51ed9ad4.webp",
+      "type": "image/webp",
+      "size": 8706,
+      "originalSize": 1184445,
+      "source": "agent-abstract-241.gpt-image-1"
+    },
+    "abstract.agent-abstract-242": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-242-0a53acc414.webp",
+      "type": "image/webp",
+      "size": 16720,
+      "originalSize": 1152055,
+      "source": "agent-abstract-242.gpt-image-1"
+    },
+    "abstract.agent-abstract-243": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-243-2a718656b6.webp",
+      "type": "image/webp",
+      "size": 14812,
+      "originalSize": 1205296,
+      "source": "agent-abstract-243.gpt-image-1"
+    },
+    "abstract.agent-abstract-244": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-244-0bbc26de87.webp",
+      "type": "image/webp",
+      "size": 50284,
+      "originalSize": 2152075,
+      "source": "agent-abstract-244.gpt-image-1"
+    },
+    "abstract.agent-abstract-245": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-245-1e12f9fc8d.webp",
+      "type": "image/webp",
+      "size": 12732,
+      "originalSize": 1240563,
+      "source": "agent-abstract-245.gpt-image-1"
+    },
+    "abstract.agent-abstract-246": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-246-a2721a1bbf.webp",
+      "type": "image/webp",
+      "size": 6690,
+      "originalSize": 1179827,
+      "source": "agent-abstract-246.gpt-image-1"
+    },
+    "abstract.agent-abstract-247": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-247-dd727f4999.webp",
+      "type": "image/webp",
+      "size": 12794,
+      "originalSize": 1010101,
+      "source": "agent-abstract-247.gpt-image-1"
+    },
+    "abstract.agent-abstract-248": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-248-c55be55725.webp",
+      "type": "image/webp",
+      "size": 10082,
+      "originalSize": 1231441,
+      "source": "agent-abstract-248.gpt-image-1"
+    },
+    "abstract.agent-abstract-249": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-249-c2ab1d62d0.webp",
+      "type": "image/webp",
+      "size": 36180,
+      "originalSize": 1545578,
+      "source": "agent-abstract-249.gpt-image-1"
+    },
+    "abstract.agent-abstract-250": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-250-3534c80417.webp",
+      "type": "image/webp",
+      "size": 22736,
+      "originalSize": 1381964,
+      "source": "agent-abstract-250.gpt-image-1"
+    },
+    "abstract.agent-abstract-251": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-251-5a1e33029d.webp",
+      "type": "image/webp",
+      "size": 22422,
+      "originalSize": 1485241,
+      "source": "agent-abstract-251.gpt-image-1"
+    },
+    "abstract.agent-abstract-252": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-252-1d2b1d6a2a.webp",
+      "type": "image/webp",
+      "size": 14070,
+      "originalSize": 1213779,
+      "source": "agent-abstract-252.gpt-image-1"
+    },
+    "abstract.agent-abstract-253": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-253-40d06ce052.webp",
+      "type": "image/webp",
+      "size": 16014,
+      "originalSize": 1241164,
+      "source": "agent-abstract-253.gpt-image-1"
+    },
+    "abstract.agent-abstract-254": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-254-357b327823.webp",
+      "type": "image/webp",
+      "size": 46074,
+      "originalSize": 1761071,
+      "source": "agent-abstract-254.gpt-image-1"
+    },
+    "abstract.agent-abstract-255": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-255-6310fc6d47.webp",
+      "type": "image/webp",
+      "size": 13544,
+      "originalSize": 1273258,
+      "source": "agent-abstract-255.gpt-image-1"
+    },
+    "abstract.agent-abstract-256": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-256-409e4bcca5.webp",
+      "type": "image/webp",
+      "size": 9014,
+      "originalSize": 1208269,
+      "source": "agent-abstract-256.gpt-image-1"
+    },
+    "abstract.agent-abstract-257": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-257-6e08a87027.webp",
+      "type": "image/webp",
+      "size": 12296,
+      "originalSize": 1318872,
+      "source": "agent-abstract-257.gpt-image-1"
+    },
+    "abstract.agent-abstract-258": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-258-b420c9f4b8.webp",
+      "type": "image/webp",
+      "size": 14248,
+      "originalSize": 1222935,
+      "source": "agent-abstract-258.gpt-image-1"
+    },
+    "abstract.agent-abstract-259": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-259-5c91d4d92e.webp",
+      "type": "image/webp",
+      "size": 26434,
+      "originalSize": 1401067,
+      "source": "agent-abstract-259.gpt-image-1"
+    },
+    "abstract.agent-abstract-260": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-260-2e80c1f091.webp",
+      "type": "image/webp",
+      "size": 28296,
+      "originalSize": 1450060,
+      "source": "agent-abstract-260.gpt-image-1"
+    },
+    "abstract.agent-abstract-261": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-261-285eee3e0c.webp",
+      "type": "image/webp",
+      "size": 20454,
+      "originalSize": 1351283,
+      "source": "agent-abstract-261.gpt-image-1"
+    },
+    "abstract.agent-abstract-262": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-262-f0d1ff31c1.webp",
+      "type": "image/webp",
+      "size": 14110,
+      "originalSize": 1218549,
+      "source": "agent-abstract-262.gpt-image-1"
+    },
+    "abstract.agent-abstract-263": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-263-d7d1a76d99.webp",
+      "type": "image/webp",
+      "size": 14382,
+      "originalSize": 1242111,
+      "source": "agent-abstract-263.gpt-image-1"
+    },
+    "abstract.agent-abstract-264": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-264-eea441e2aa.webp",
+      "type": "image/webp",
+      "size": 41532,
+      "originalSize": 1579968,
+      "source": "agent-abstract-264.gpt-image-1"
+    },
+    "abstract.agent-abstract-265": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-265-65d1a70888.webp",
+      "type": "image/webp",
+      "size": 10040,
+      "originalSize": 1341774,
+      "source": "agent-abstract-265.gpt-image-1"
+    },
+    "abstract.agent-abstract-266": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-266-f9ef098d19.webp",
+      "type": "image/webp",
+      "size": 7108,
+      "originalSize": 1179807,
+      "source": "agent-abstract-266.gpt-image-1"
+    },
+    "abstract.agent-abstract-267": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-267-e09b51cbb7.webp",
+      "type": "image/webp",
+      "size": 15522,
+      "originalSize": 1355128,
+      "source": "agent-abstract-267.gpt-image-1"
+    },
+    "abstract.agent-abstract-268": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-268-8757b335e9.webp",
+      "type": "image/webp",
+      "size": 14282,
+      "originalSize": 1310065,
+      "source": "agent-abstract-268.gpt-image-1"
+    },
+    "abstract.agent-abstract-269": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-269-ae430bd1ef.webp",
+      "type": "image/webp",
+      "size": 25658,
+      "originalSize": 1372116,
+      "source": "agent-abstract-269.gpt-image-1"
+    },
+    "abstract.agent-abstract-270": {
+      "url": "https://audio.vocence.ai/static/abstract/agent-abstract-270-74f6429796.webp",
+      "type": "image/webp",
+      "size": 15108,
+      "originalSize": 1159148,
+      "source": "agent-abstract-270.gpt-image-1"
     }
   }
 }
