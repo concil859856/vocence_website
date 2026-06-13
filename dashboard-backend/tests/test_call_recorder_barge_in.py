@@ -203,6 +203,42 @@ def test_mid_turn_settled_does_not_commit(monkeypatch):
     assert rec._agent_turn_open is False
 
 
+def test_notify_agent_turn_started_is_idempotent(monkeypatch):
+    """Defensive: calling notify_agent_turn_started twice without an
+    intervening commit / barge-in (e.g. greeting fired it, then the
+    first tts_consumer of a turn fires it again) must not corrupt
+    state — the gate just stays open and the next push_agent opens
+    a fresh turn."""
+    rec = _make_recorder(monkeypatch, t0=1000.0)
+    rec.notify_agent_turn_started()
+    assert rec._agent_turn_open is True
+    # Call again with the gate already open and no audio buffered.
+    rec.notify_agent_turn_started()
+    assert rec._agent_turn_open is True
+    assert rec._agent_buffer == bytearray()
+    assert rec._agent_turn_start_ms is None
+    # Push works normally afterward.
+    rec.push_agent(_fake_24k_frame(200))
+    assert rec._agent_turn_start_ms is not None
+    assert len(rec._agent_buffer) > 0
+
+
+def test_notify_agent_turn_started_drops_stale_buffer(monkeypatch):
+    """If a previous turn left orphan bytes in the buffer (e.g. the
+    router forgot to call mark_agent_barge_in / tts_done — shouldn't
+    happen but be defensive), notify_agent_turn_started discards
+    them rather than letting them bleed into the new turn."""
+    rec = _make_recorder(monkeypatch, t0=1000.0)
+    rec.notify_agent_turn_started()
+    rec.push_agent(_fake_24k_frame(400))
+    # Skip the proper close — simulate the missing mark/tts_done bug.
+    # Next turn starts.
+    rec.notify_agent_turn_started()
+    assert rec._agent_buffer == bytearray()
+    assert rec._agent_turn_start_ms is None
+    assert rec._agent_turn_open is True
+
+
 def test_close_flushes_open_turn(monkeypatch, tmp_path):
     """If the WS closes mid-utterance (before tts_done or settled),
     close() must flush the still-open turn so the last utterance

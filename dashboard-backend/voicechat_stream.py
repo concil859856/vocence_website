@@ -257,12 +257,17 @@ class StreamingTurnSession:
             # them in order BEFORE _forward_frames starts so the
             # ensembler's silence clock and the STT pod's partials
             # already reflect the barge-in onset by the time the loop
-            # spins up. Also tee into the recorder so the user channel
-            # of the WAV gets the same frames — the router's top-level
-            # capture handles the recorder push for these frames too,
-            # but if the recorder reference here is different (it's not
-            # today, but be safe) it would be missed; the recorder
-            # rejects empty pcm and dedup is harmless.
+            # spins up.
+            #
+            # We deliberately DO NOT push these to the call_recorder
+            # here — the router's top-level binary-frame handler
+            # already pushed every one of these frames to the recorder
+            # when it received them from the client. Pushing again
+            # would double-record on the user channel of the WAV.
+            # _mark_voice is called once so the ensembler's silence
+            # clock starts from "user is currently speaking", which
+            # is accurate (pre-roll IS the leading edge of the user's
+            # barge-in utterance).
             if self._preroll_frames:
                 _log.info(
                     "[stream] trace session=%s phase=preroll_flush frames=%d ms~=%d",
