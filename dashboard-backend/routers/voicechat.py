@@ -1064,6 +1064,52 @@ async def voicechat_session(
     # Track current turn task so we can cancel on barge-in
     current_turn: asyncio.Task | None = None
 
+    # ── Barge-in pre-roll ─────────────────────────────────────────────
+    # Mic frames arriving from the client while NO StreamingTurnSession
+    # is active (i.e. between turns, while the agent's TTS is playing)
+    # used to be dropped at the binary-frame branch below — both the
+    # recorder and STT missed those bytes. When the user barges in,
+    # they speak for several hundred ms before the client's local VAD
+    # decides "yes, this is a barge-in" and sends ``cancel`` +
+    # ``stream_start``. By the time the new session spins up, the
+    # first 300-800 ms of the interruption has already been thrown
+    # away. The user's report:
+    #
+    #   "i feel sometimes the mic is not open, especially when i
+    #    interrupt. in the recording, there is no recording of my
+    #    first part of the interruption sentence"
+    #
+    # The fix: keep a rolling pre-roll of the most recent mic frames
+    # and tee them into BOTH the recorder (so the WAV has them) and
+    # the next StreamingTurnSession (so STT/Smart/UltraVAD see them
+    # before the first post-stream_start frame arrives). The buffer
+    # auto-truncates to PREROLL_MS so it can't grow unboundedly while
+    # a user is silent through a long agent monologue.
+    from collections import deque
+    PREROLL_MS = 1500
+    PREROLL_BYTES_PER_MS = 32  # 16 kHz mono s16le
+    PREROLL_MAX_BYTES = PREROLL_MS * PREROLL_BYTES_PER_MS
+    preroll_buf: deque[bytes] = deque()
+    preroll_bytes: int = 0
+
+    def _preroll_append(frame: bytes) -> None:
+        nonlocal preroll_bytes
+        preroll_buf.append(frame)
+        preroll_bytes += len(frame)
+        while preroll_bytes > PREROLL_MAX_BYTES and preroll_buf:
+            old = preroll_buf.popleft()
+            preroll_bytes -= len(old)
+
+    def _preroll_consume() -> list[bytes]:
+        """Snapshot the buffer for handoff to a new session and reset
+        it. We hand off a list (not the deque) so the session can
+        own its copy without thread-safety questions."""
+        nonlocal preroll_bytes
+        frames = list(preroll_buf)
+        preroll_buf.clear()
+        preroll_bytes = 0
+        return frames
+
     # Session-scoped TTS WS warmer. The voice is fixed for the lifetime
     # of this session (one agent, one voice), so we build a single
     # warmer at session-open and reuse it across every turn instead of
@@ -1480,10 +1526,25 @@ async def voicechat_session(
             if mtype_raw == "websocket.disconnect":
                 await _cancel_current()
                 return
-            # Binary frame arriving at the top-level loop: no stream
-            # session is active, so just drop it. Stream sessions consume
-            # binary frames inside their own ``ws.receive()`` loop.
+            # Binary frame arriving at the top-level loop. No stream
+            # session is currently consuming it — the user is between
+            # turns (e.g. mid-bot-TTS) and these frames are the leading
+            # edge of a barge-in. DON'T silently drop:
+            #   * Push to the recorder unconditionally so the WAV's
+            #     user channel reflects the actual mic, not "what STT
+            #     happened to see after the new session opened".
+            #   * Append to ``preroll_buf`` so when the imminent
+            #     ``stream_start`` creates the next session, we can
+            #     hand it the same frames to flush into STT/Smart-Turn/
+            #     UltraVAD — recovering the first words of the
+            #     interruption that would otherwise be lost in the
+            #     stream_start handshake window.
             if msg.get("bytes") is not None:
+                frame_bytes = msg.get("bytes")
+                if frame_bytes:
+                    if call_recorder is not None:
+                        call_recorder.push_user(frame_bytes)
+                    _preroll_append(frame_bytes)
                 continue
             raw = msg.get("text")
             if raw is None:
@@ -1728,6 +1789,14 @@ async def voicechat_session(
                     ultravad_threshold=float(_agent_cfg.get("ultravad_threshold", 0.55)),
                     prewarmed_stt=adopted_prewarm_stt,
                     call_recorder=call_recorder,
+                    # Hand off the rolling pre-roll the top-level loop
+                    # accumulated while no session was active. The
+                    # session flushes these into STT + Smart-Turn +
+                    # UltraVAD at startup so the user's first words
+                    # of a barge-in are not dropped on the floor.
+                    # ``_preroll_consume`` snapshots and clears so the
+                    # NEXT inter-turn window starts fresh.
+                    preroll_frames=_preroll_consume(),
                 )
             )
             # The idle clock is anchored to "agent stopped talking".
@@ -1943,6 +2012,15 @@ async def _run_turn(
     # StreamingTurnSession._forward_frames (post-mute-gate,
     # post-denoise) — the recorder threads through there too.
     call_recorder: CallRecorder | None = None,
+    # Rolling buffer of mic frames captured by the top-level loop in
+    # ``voicechat_session`` while no StreamingTurnSession existed.
+    # Forwarded to the new session so it can flush these into STT +
+    # Smart-Turn + UltraVAD before its own receive loop starts —
+    # recovers the first words of a barge-in that arrive between
+    # the user's mouth opening and the client's ``stream_start``
+    # reaching the server. None / empty list = no pre-roll, normal
+    # cold-start behaviour.
+    preroll_frames: list[bytes] | None = None,
 ) -> None:
     mode = payload.get("type")
     started = time.perf_counter()
@@ -2021,6 +2099,7 @@ async def _run_turn(
                 ultravad_threshold=ultravad_threshold,
                 prewarmed_stt=prewarmed_stt,
                 call_recorder=call_recorder,
+                preroll_frames=preroll_frames,
             )
             _t_session_start = time.perf_counter()
             _log.info(

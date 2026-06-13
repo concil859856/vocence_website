@@ -165,6 +165,16 @@ class StreamingTurnSession:
         # frames are NOT captured — the recording reflects what STT
         # actually heard.
         call_recorder: Any | None = None,
+        # Optional list of recent client mic frames captured by the
+        # voicechat router's top-level loop while no stream session
+        # was active. We flush these into STT + Smart-Turn + UltraVAD
+        # at startup so the user's first words of a barge-in (the ones
+        # spoken BEFORE the client's ``cancel`` could reach the server
+        # and a new session could be created) end up in the transcript
+        # and the ensembler's turn-end probability — not silently
+        # dropped. Each entry is 16 kHz mono s16le PCM, same shape STT
+        # expects. See the router's ``preroll_buf`` for the source.
+        preroll_frames: list[bytes] | None = None,
     ) -> None:
         self._client_ws = client_ws
         self._language = language or "auto"
@@ -215,6 +225,13 @@ class StreamingTurnSession:
         # by reference is intentional — multiple StreamingTurnSession
         # instances over one call all push into the same recorder.
         self._call_recorder = call_recorder
+        # Frames captured by the router BEFORE this session existed
+        # (between the end of the prior turn's commit and the
+        # creation of this session). We flush them once at the top
+        # of run() so STT sees the user's barge-in from its first
+        # word, not from whenever the client managed to get
+        # ``stream_start`` across the wire.
+        self._preroll_frames = list(preroll_frames or [])
 
     # -----------------------------------------------------------------
     # Lifecycle
@@ -233,6 +250,43 @@ class StreamingTurnSession:
                     "message": "speech-to-text pod is not available",
                 })
                 return None
+
+            # Flush any pre-roll the router captured while this session
+            # was being created. Each frame is 16 kHz mono s16le, the
+            # exact shape STT / Smart-Turn / UltraVAD expect. We push
+            # them in order BEFORE _forward_frames starts so the
+            # ensembler's silence clock and the STT pod's partials
+            # already reflect the barge-in onset by the time the loop
+            # spins up. Also tee into the recorder so the user channel
+            # of the WAV gets the same frames — the router's top-level
+            # capture handles the recorder push for these frames too,
+            # but if the recorder reference here is different (it's not
+            # today, but be safe) it would be missed; the recorder
+            # rejects empty pcm and dedup is harmless.
+            if self._preroll_frames:
+                _log.info(
+                    "[stream] trace session=%s phase=preroll_flush frames=%d ms~=%d",
+                    self._session_id, len(self._preroll_frames),
+                    sum(len(f) for f in self._preroll_frames) // 32,
+                )
+                self._mark_voice()
+                for f in self._preroll_frames:
+                    if self._stt_ws is not None and not self._stt_ws.closed:
+                        try:
+                            await self._stt_ws.send_bytes(f)
+                        except Exception:
+                            pass
+                    if self._smart is not None:
+                        try:
+                            await self._smart.send_pcm(f)
+                        except Exception:
+                            pass
+                    if self._ultravad is not None:
+                        try:
+                            await self._ultravad.send_pcm(f)
+                        except Exception:
+                            pass
+                self._preroll_frames = []
 
             tasks = [
                 asyncio.create_task(self._forward_frames(), name="forward"),
