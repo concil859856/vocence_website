@@ -1675,7 +1675,10 @@ uv run vocence serve`}</pre>
           <li><a href="#latency" className="text-zinc-300 hover:text-[#DFFF00]">8. Latency &amp; what to expect</a></li>
           <li><a href="#goal" className="text-zinc-300 hover:text-[#DFFF00]">9. Goal agents</a></li>
           <li><a href="#cost" className="text-zinc-300 hover:text-[#DFFF00]">10. Cost &amp; credits</a></li>
-          <li><a href="#troubleshooting" className="text-zinc-300 hover:text-[#DFFF00]">11. Troubleshooting</a></li>
+          <li><a href="#calls" className="text-zinc-300 hover:text-[#DFFF00]">11. Calls, recordings &amp; replay</a></li>
+          <li><a href="#deploy" className="text-zinc-300 hover:text-[#DFFF00]">12. Deploying — embed &amp; webhooks</a></li>
+          <li><a href="#privacy" className="text-zinc-300 hover:text-[#DFFF00]">13. Privacy &amp; data</a></li>
+          <li><a href="#troubleshooting" className="text-zinc-300 hover:text-[#DFFF00]">14. Troubleshooting</a></li>
         </ul>
       </section>
 
@@ -2022,8 +2025,153 @@ Authorization: Bearer <your auth secret>`}
         </p>
       </section>
 
+      <section id="calls">
+        <h2 className="text-lg font-semibold mb-3">11. Calls, recordings &amp; replay</h2>
+        <p className="text-sm text-zinc-400 leading-relaxed mb-4">
+          Every conversation an agent has — yours, your team's, or a public visitor's — is captured for review.
+          Open any agent and click the <span className="text-zinc-200">Calls</span> tab to scroll the call history,
+          listen back, copy transcripts, or hand them to your CRM.
+        </p>
+        <div className="space-y-4">
+          <div className="card-vocence p-4">
+            <h3 className="font-medium text-sm text-zinc-100 mb-1.5">Session replay page</h3>
+            <p className="text-sm text-zinc-400 leading-relaxed">
+              Clicking a call row opens a per-call replay: a stereo waveform (left&nbsp;=&nbsp;user, right&nbsp;=&nbsp;agent),
+              the full transcript with per-turn timestamps, and click-to-seek rows. Hitting the play button on any
+              row jumps the audio to that exact moment. The bottom <span className="text-zinc-200">music-style
+              player</span> follows you across pages so a recording keeps playing while you navigate.
+            </p>
+          </div>
+          <div className="card-vocence p-4">
+            <h3 className="font-medium text-sm text-zinc-100 mb-1.5">Downloads — WAV, transcript, CSV</h3>
+            <p className="text-sm text-zinc-400 leading-relaxed">
+              Three buttons per call: download the stereo WAV (16&nbsp;kHz), download the transcript as plain text, or
+              export the whole call list to CSV from the Calls tab header. CSVs include
+              <code className="rounded bg-white/[0.06] px-1 mx-1 text-zinc-300">session_id</code>,
+              <code className="rounded bg-white/[0.06] px-1 mx-1 text-zinc-300">started_at</code>,
+              <code className="rounded bg-white/[0.06] px-1 mx-1 text-zinc-300">duration_ms</code>, and the full
+              redacted transcript per row.
+            </p>
+          </div>
+          <div className="card-vocence p-4">
+            <h3 className="font-medium text-sm text-zinc-100 mb-1.5">Search across history</h3>
+            <p className="text-sm text-zinc-400 leading-relaxed">
+              The search bar on the Calls tab runs a full-text query over every call this agent has ever had —
+              powered by an SQLite FTS5 index. Type a word or phrase, hit enter, and you get matching sessions
+              with the hit highlighted in the transcript snippet. Useful for "did anyone ever ask about pricing?"
+              after a few hundred calls have accumulated.
+            </p>
+          </div>
+          <div className="card-vocence p-4">
+            <h3 className="font-medium text-sm text-zinc-100 mb-1.5">Turning recording off</h3>
+            <p className="text-sm text-zinc-400 leading-relaxed">
+              Recording is on by default but per-agent. Settings → Recording → uncheck "Record calls" to disable
+              for new sessions. Pre-existing recordings keep playing; only future calls won't be captured.
+              Retention is 30 days; older WAVs are swept automatically. See section 13 for manual purges.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section id="deploy">
+        <h2 className="text-lg font-semibold mb-3">12. Deploying — embed &amp; webhooks</h2>
+        <p className="text-sm text-zinc-400 leading-relaxed mb-4">
+          Once an agent works in Studio, you'll want it on your own site, in your own app, or wired into your own
+          tooling. Three integration shapes, pick the one that fits.
+        </p>
+        <div className="space-y-4">
+          <div className="card-vocence p-4">
+            <h3 className="font-medium text-sm text-zinc-100 mb-1.5">Embed snippet — paste it on your site</h3>
+            <p className="text-sm text-zinc-400 leading-relaxed">
+              Settings → <span className="text-zinc-200">Embed</span> → mint a token, copy the one-line
+              <code className="rounded bg-white/[0.06] px-1 mx-1 text-zinc-300">&lt;script&gt;</code>
+              snippet, paste it into your HTML. Visitors get a floating mic button that opens a full-screen call UI
+              with your agent. Pin the snippet to specific origins (your domain) for security; you can leave it open
+              for embedding anywhere too. Revoke any token from the Embed tab — every site using it stops working
+              immediately.
+            </p>
+          </div>
+          <div className="card-vocence p-4">
+            <h3 className="font-medium text-sm text-zinc-100 mb-1.5">Outbound webhooks — react to call.ended</h3>
+            <p className="text-sm text-zinc-400 leading-relaxed mb-3">
+              Settings → <span className="text-zinc-200">Webhooks</span> → register a URL + secret. Every time a call
+              completes, we POST a signed JSON envelope to your URL so you can pipe transcripts into your CRM, alert
+              on escalations, or kick off follow-up workflows. Signature uses the same HMAC-SHA256
+              scheme as custom-tool webhooks (see the{' '}
+              <Link to="/docs/sdk-webhooks" className="text-[#DFFF00] hover:underline">SDK Webhooks page</Link>
+              {' '}for verification helpers). Retries on 5xx / timeout with backoff at 30s, 2m, 10m, 30m.
+            </p>
+            <pre className="bg-black/40 border border-white/[0.06] rounded-lg p-4 text-[12px] text-zinc-300 overflow-x-auto font-mono leading-relaxed">
+{`POST https://your-app.example.com/vocence/events
+Content-Type: application/json
+X-Vocence-Timestamp: 1735689600
+X-Vocence-Signature: v1=BASE64(HMAC-SHA256(secret, "v1.{ts}.{body}"))
+
+{
+  "event": "call.ended",
+  "session_id": "abc123",
+  "agent_id": 42,
+  "started_at": "2026-06-13T18:42:11Z",
+  "duration_ms": 187000,
+  "transcript": "User: Hi, can you help …",
+  "recording_url": "https://audio.vocence.ai/…/abc123.wav"
+}`}</pre>
+            <p className="text-sm text-zinc-400 leading-relaxed mt-3">
+              The <span className="text-zinc-200">Test</span> button on the Webhooks tab fires a synthetic
+              event you can use to wire up your receiver before any real call lands.
+            </p>
+          </div>
+          <div className="card-vocence p-4">
+            <h3 className="font-medium text-sm text-zinc-100 mb-1.5">API — full programmatic control</h3>
+            <p className="text-sm text-zinc-400 leading-relaxed">
+              For mobile apps or custom voice UIs, drive the agent over the API directly: open a WebSocket to{' '}
+              <code className="rounded bg-white/[0.06] px-1 text-zinc-300">/voicechat/agent/&lt;id&gt;</code>,
+              stream PCM up, get token + audio back. The{' '}
+              <Link to="/docs/api" className="text-[#DFFF00] hover:underline">API Reference</Link> has the wire
+              protocol; the{' '}
+              <Link to="/docs/sdk-python" className="text-[#DFFF00] hover:underline">Python SDK</Link> wraps it.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section id="privacy">
+        <h2 className="text-lg font-semibold mb-3">13. Privacy &amp; data</h2>
+        <p className="text-sm text-zinc-400 leading-relaxed mb-4">
+          What we keep, where it lives, how to delete it.
+        </p>
+        <div className="space-y-4">
+          <div className="card-vocence p-4">
+            <h3 className="font-medium text-sm text-zinc-100 mb-1.5">PII redaction on stored transcripts</h3>
+            <p className="text-sm text-zinc-400 leading-relaxed">
+              Email addresses, phone numbers, and credit-card-shaped digit runs are auto-redacted at the
+              storage boundary. The LLM still sees the raw text in-call (so it can actually help the user —
+              "your card ending in 4242" works), but anything written to the per-call transcript, search index,
+              CSV export, or webhook payload is masked. No agent-side configuration needed.
+            </p>
+          </div>
+          <div className="card-vocence p-4">
+            <h3 className="font-medium text-sm text-zinc-100 mb-1.5">Where audio lives</h3>
+            <p className="text-sm text-zinc-400 leading-relaxed">
+              Call WAVs go to Cloudflare R2 under a per-user prefix. Transcripts live in your dashboard's local
+              SQLite. Audio in transit is TLS; audio at rest is R2-managed encryption. Server logs are operational
+              only (timings, error codes) — no transcript bodies are written to logs.
+            </p>
+          </div>
+          <div className="card-vocence p-4">
+            <h3 className="font-medium text-sm text-zinc-100 mb-1.5">Deletion</h3>
+            <p className="text-sm text-zinc-400 leading-relaxed">
+              Two paths: per-call (a delete button next to each row in the Calls tab — purges the WAV immediately
+              and NULLs the transcript pointer), or wait for the 30-day retention sweep that runs in the existing
+              background cleanup loop. Delete is irreversible. Disabling recording per-agent (section&nbsp;11) stops
+              new captures but doesn't touch existing ones.
+            </p>
+          </div>
+        </div>
+      </section>
+
       <section id="troubleshooting">
-        <h2 className="text-lg font-semibold mb-3">11. Troubleshooting</h2>
+        <h2 className="text-lg font-semibold mb-3">14. Troubleshooting</h2>
         <div className="space-y-4">
           <div className="card-vocence p-4">
             <h3 className="font-medium text-sm text-zinc-100 mb-1.5">The agent doesn't talk at all</h3>
