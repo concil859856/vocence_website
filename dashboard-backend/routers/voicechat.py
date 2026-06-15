@@ -89,6 +89,20 @@ MAX_TOOL_DEPTH = int(os.environ.get("VOICECHAT_MAX_TOOL_DEPTH") or "2")
 WHOLE_REPLY_CHUNK_THRESHOLD = int(os.environ.get("VOICECHAT_WHOLE_REPLY_THRESHOLD") or "300")
 
 
+# Voice-consistency mode: when on (default), the chunker is bypassed and
+# the ENTIRE LLM reply is sent to TTS in a single WebSocket call. The
+# pod's spec §5.1 guarantees no quality drift within a single connection,
+# so the agent speaks every reply in a flat, settled voice — the same one
+# the user heard on word 1 they still hear on word 500. The tradeoff is
+# TTFA: instead of audio starting after the first ~50-200 char sentence
+# clears the LLM, audio waits for the full reply to complete. The filler
+# audio path stays in place to mask the extra wait. Flip to 0 to restore
+# the old TTFA-optimized chunker (first chunk early, tail batched).
+VOICECHAT_SINGLE_CALL_TTS = (
+    os.environ.get("VOICECHAT_SINGLE_CALL_TTS") or "1"
+).strip().lower() not in {"0", "false", "no", ""}
+
+
 # -----------------------------------------------------------------------
 # Filler audio ("Hmm, let me check…") — fired when the LLM is going to
 # take a perceptible amount of time to produce its first content token.
@@ -2513,7 +2527,13 @@ async def _run_turn(
             """
             nonlocal ttft_ms, ttfs_ms
             chunker = SentenceChunker()
-            chunking_active = True
+            # Single-call mode (default): start with chunking OFF so every
+            # delta accumulates straight into ``tail_buffer``. The
+            # end-of-stream flush already handles the single-TTS-call
+            # dispatch when ``chunking_active`` is False, so no other
+            # branch in this function needs to change. Chunked mode (env
+            # opt-out) keeps the old behaviour for A/B comparison.
+            chunking_active = not VOICECHAT_SINGLE_CALL_TTS
             emitted_chars = 0
             tail_buffer = ""
 
