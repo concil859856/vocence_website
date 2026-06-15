@@ -86,20 +86,22 @@ MAX_TOOL_DEPTH = int(os.environ.get("VOICECHAT_MAX_TOOL_DEPTH") or "2")
 # sentence-by-sentence path the entire turn — TTFA stays low. Longer
 # replies switch to accumulating the rest into one final TTS call so the
 # bulk of the answer keeps coherent prosody.
-WHOLE_REPLY_CHUNK_THRESHOLD = int(os.environ.get("VOICECHAT_WHOLE_REPLY_THRESHOLD") or "300")
+WHOLE_REPLY_CHUNK_THRESHOLD = int(os.environ.get("VOICECHAT_WHOLE_REPLY_THRESHOLD") or "1")
 
 
-# Voice-consistency mode: when on (default), the chunker is bypassed and
-# the ENTIRE LLM reply is sent to TTS in a single WebSocket call. The
-# pod's spec §5.1 guarantees no quality drift within a single connection,
-# so the agent speaks every reply in a flat, settled voice — the same one
-# the user heard on word 1 they still hear on word 500. The tradeoff is
-# TTFA: instead of audio starting after the first ~50-200 char sentence
-# clears the LLM, audio waits for the full reply to complete. The filler
-# audio path stays in place to mask the extra wait. Flip to 0 to restore
-# the old TTFA-optimized chunker (first chunk early, tail batched).
+# Voice-consistency mode (default off). When ON, the chunker is bypassed
+# and the ENTIRE LLM reply is sent to TTS in a single WebSocket call —
+# zero voice drift within a reply. BUT TTFA grows to ≈ full LLM completion
+# time, which is brutal on long replies (3000+ chars LLM = 20-30 s of
+# silence before any audio plays). The default is now OFF in favour of
+# the HYBRID path: phase-1 chunker emits a small first chunk
+# (≥FIRST_CHUNK_MIN chars at a sentence boundary), then immediately
+# switches to whole-tail mode so EVERYTHING ELSE goes as a single big
+# call. Result: ~1 s TTFA AND only one voice cut per reply (between the
+# first chunk and the tail) regardless of reply length. Flip to 1 if
+# you want absolute within-reply voice flatness and don't mind the wait.
 VOICECHAT_SINGLE_CALL_TTS = (
-    os.environ.get("VOICECHAT_SINGLE_CALL_TTS") or "1"
+    os.environ.get("VOICECHAT_SINGLE_CALL_TTS") or "0"
 ).strip().lower() not in {"0", "false", "no", ""}
 
 # Hard ceiling on a single TTS-pod call. The pod responds
@@ -1383,25 +1385,39 @@ async def voicechat_session(
                 # If we got here the client never sent ``settled``
                 # within MAX_HOLD — assume it crashed or the WS broke
                 # mid-playback. Release rather than lock the mic
-                # forever.
+                # forever. Treat this as a turn-end signal for billing
+                # too, so the idle watchdog can resume counting from
+                # this moment instead of the (much earlier) point
+                # when the TTS pipeline finished streaming.
                 _log.warning(
                     "[gate] safety release after %.0fs without client_audio_settled "
                     "(session=%s, likely client crash mid-playback)",
                     GATE_MAX_HOLD_S, session_id,
                 )
                 bot_speaking_evt.clear()
+                billing.mark_turn_ended()
             except asyncio.CancelledError:
                 pass
 
         gate_safety_task = asyncio.create_task(_safety(), name="gate_safety")
 
     def _gate_clear_from_client() -> None:
-        """Release the mute gate. Triggered by ``client_audio_settled``."""
+        """Release the mute gate. Triggered by ``client_audio_settled``
+        (or by cancel / new-turn start). When the gate WAS set, this
+        is the moment the agent actually stopped speaking from the
+        user's perspective — reset the idle clock here so the 60-second
+        rule reads as "60 s after audio drained on the client" instead
+        of "60 s after the LLM pipeline finished streaming" (which on a
+        long reply can be many minutes too early, the bug the user
+        reported as 'Session ended mid-speech')."""
         nonlocal gate_safety_task
+        was_set = bot_speaking_evt.is_set()
         bot_speaking_evt.clear()
         if gate_safety_task and not gate_safety_task.done():
             gate_safety_task.cancel()
             gate_safety_task = None
+        if was_set:
+            billing.mark_turn_ended()
 
     async def _cancel_current() -> None:
         """Cancel the in-flight turn and wait for it to tear down — but
@@ -1584,13 +1600,20 @@ async def voicechat_session(
         )
         # The idle clock starts ticking the moment the greeting ENDS —
         # not when it begins. ``mark_turn_started`` keeps the watchdog
-        # quiet while the greeting plays; ``mark_turn_ended`` (in the
-        # done-callback) reset _last_activity_at to "now" exactly when
-        # the agent stops talking.
+        # quiet while the greeting plays. The done-callback below fires
+        # ``mark_turn_ended`` ONLY when the bot isn't currently speaking
+        # (no audio playing on the client). If the bot IS speaking when
+        # the LLM/TTS pipeline returns, ``_gate_clear_from_client`` will
+        # fire mark_turn_ended later when ``client_audio_settled``
+        # actually arrives — which is the true "agent stopped talking"
+        # moment. Without this guard, long greetings used to trip the
+        # 60 s idle timeout mid-speech because the pipeline finishes
+        # streaming far earlier than the audio finishes playing.
         billing.mark_turn_started()
-        current_turn.add_done_callback(
-            lambda _t, b=billing: b.mark_turn_ended()
-        )
+        def _on_greeting_done(_t, b=billing, evt=bot_speaking_evt):
+            if not evt.is_set():
+                b.mark_turn_ended()
+        current_turn.add_done_callback(_on_greeting_done)
 
     try:
         while True:
@@ -1887,16 +1910,22 @@ async def voicechat_session(
                     preroll_frames=_preroll_consume(),
                 )
             )
-            # The idle clock is anchored to "agent stopped talking".
-            # ``mark_turn_started`` keeps the watchdog quiet while the
-            # LLM + TTS run, and the done-callback fires
-            # ``mark_turn_ended`` on any termination (success / cancel /
-            # exception) — at which point _last_activity_at is set to
-            # "now" and the 60-second countdown begins.
+            # The idle clock is anchored to "agent stopped talking" —
+            # which on a long reply can be MANY MINUTES after the
+            # LLM/TTS pipeline finishes streaming (the pipeline runs
+            # at 100+ chars/s, the client plays back at ~15 chars/s).
+            # The done-callback below fires mark_turn_ended ONLY when
+            # the bot isn't currently mid-playback; if it is,
+            # ``_gate_clear_from_client`` fires mark_turn_ended later
+            # when ``client_audio_settled`` arrives. Without this
+            # the 60 s idle countdown started at pipeline-done and
+            # killed the session mid-speech for any reply over a
+            # minute of audio.
             billing.mark_turn_started()
-            current_turn.add_done_callback(
-                lambda _t, b=billing: b.mark_turn_ended()
-            )
+            def _on_turn_task_done(_t, b=billing, evt=bot_speaking_evt):
+                if not evt.is_set():
+                    b.mark_turn_ended()
+            current_turn.add_done_callback(_on_turn_task_done)
 
             # Stream-mode turns own the WS for their lifetime — their
             # internal loop calls ``ws.receive()`` to consume PCM frames.

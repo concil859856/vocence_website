@@ -133,7 +133,7 @@ SUMMARIZE_KEEP_RECENT = int(os.environ.get("VOICECHAT_SUMMARIZE_KEEP_RECENT") or
 #
 # All thresholds stay safely under the server's MAX_TEXT_CHARS=1000.
 SENTENCE_END_PATTERN = re.compile(r"(?<=\S)[\.!\?]+\s+|[。！？]+|\n+")
-FIRST_CHUNK_MIN = int(os.environ.get("VOICECHAT_FIRST_CHUNK_MIN") or "30")
+FIRST_CHUNK_MIN = int(os.environ.get("VOICECHAT_FIRST_CHUNK_MIN") or "100")
 FIRST_CHUNK_MAX = int(os.environ.get("VOICECHAT_FIRST_CHUNK_MAX") or "200")
 PACK_TARGET = int(os.environ.get("VOICECHAT_PACK_TARGET") or "700")
 PACK_HARD_FLOOR = int(os.environ.get("VOICECHAT_PACK_HARD_FLOOR") or "900")
