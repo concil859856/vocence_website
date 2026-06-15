@@ -1791,6 +1791,21 @@ async def voicechat_session(
             _gate_clear_from_client()
             # Cancel any in-flight turn before starting a new one
             await _cancel_current()
+            # Defensively close the previous turn's idle-billing slot.
+            # The PRIMARY decrement still happens at
+            # ``client_audio_settled`` for the previous turn, but in
+            # the wild that signal is unreliable: when the client
+            # sends ``stream_start`` (VAD-detected barge-in) without
+            # an explicit ``cancel``, the previous turn's settled is
+            # superseded by the new turn's audio and never arrives —
+            # so the previous turn's mark_turn_ended would leak. The
+            # leak compounds: after N such barge-ins,
+            # _in_flight_turns is stuck at N and the idle watchdog's
+            # "== 0" check is never satisfied. Session never times
+            # out — exactly the user's report. mark_turn_ended is
+            # idempotent (floors at 0) so calling it here when the
+            # previous turn DID settle cleanly is a no-op.
+            billing.mark_turn_ended()
 
             # Per-user rate limit (no credits, but bound abuse).
             # Checked BEFORE marking activity so a flood of rejected
