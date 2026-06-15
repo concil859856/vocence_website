@@ -1568,8 +1568,15 @@ async def voicechat_session(
             # Greeting TTS done — see the same comment in tts_consumer
             # below. Without this the greeting's audio sits in the
             # recorder buffer until the user's first turn pushes more.
+            # If client_audio_settled has already fired for this turn,
+            # notify_agent_tts_done is what flips the recorder into
+            # "turn complete" — so check the transition and fire
+            # billing.mark_turn_ended at that exact moment.
             if call_recorder is not None:
+                was_open = call_recorder.agent_turn_open
                 call_recorder.notify_agent_tts_done()
+                if was_open and not call_recorder.agent_turn_open:
+                    billing.mark_turn_ended()
             with suppress(Exception):
                 await greeting_pod_pin.release()
 
@@ -1746,23 +1753,48 @@ async def voicechat_session(
                 continue
             if mtype == "client_audio_settled":
                 _gate_clear_from_client()
-                # Tell the recorder the client's queue drained. If TTS
-                # is also done pushing for the turn, the recorder commits
-                # the whole buffer (the user heard it all). If TTS is
-                # still streaming for the turn (this settled fired
-                # between sentences while a gap let the queue drain),
-                # the recorder ignores it — a later settled after TTS
-                # finishes will be the one that completes the turn.
+                # ``client_audio_settled`` is ambiguous on the wire — it
+                # just means "client queue is empty NOW". It could be:
+                #   (a) the current turn's audio finished playing,
+                #   (b) the previous turn's audio finished fading after
+                #       a barge-in (queue drained AFTER the new turn
+                #       already started server-side), or
+                #   (c) a brief mid-turn drain between sentences.
+                #
+                # Only case (a) means "agent stopped talking, start the
+                # idle countdown". The recorder's _maybe_complete_agent_turn
+                # already encodes exactly that — it commits + closes the
+                # turn ONLY when BOTH ``client_settled`` and ``tts_done``
+                # are true AND the buffer was actually filled. So tie
+                # billing's mark_turn_ended to that transition: only
+                # fire if notify_agent_client_settled actually closes
+                # the recorder's agent turn.
+                #
+                # Without this check, case (b) fires mark_turn_ended on
+                # the NEW turn (just started), counter drops to 0 while
+                # the agent is mid-speech, watchdog kills the session at
+                # the 60 s mark mid-monologue. Logs showed this
+                # explicitly: a stream of mark_turn_ended (was 1) lines
+                # while a long agent reply was still streaming chunks.
+                was_open = (
+                    call_recorder is not None and call_recorder.agent_turn_open
+                )
                 if call_recorder is not None:
                     call_recorder.notify_agent_client_settled()
-                # This is the REAL "agent finished speaking" signal —
-                # the client's audio queue has actually drained, so the
-                # user has heard the last word. Reset the idle clock
-                # NOW (independent of bot_speaking_evt, which the 6 s
-                # gate-safety may have already cleared). The 60 s
-                # countdown now reads "60 s after the user heard the
-                # last syllable", which is what users expect.
-                billing.mark_turn_ended()
+                now_open = (
+                    call_recorder is not None and call_recorder.agent_turn_open
+                )
+                if was_open and not now_open:
+                    # The recorder JUST closed the turn — agent has
+                    # truly stopped speaking. Reset the idle clock.
+                    billing.mark_turn_ended()
+                # If recorder is None entirely (e.g. agent has
+                # record_enabled off), fall back to the previous
+                # behaviour: trust settled as the end-of-turn signal.
+                # Same false-decrement risk as before, but the recorder
+                # check above already covers the common case.
+                elif call_recorder is None:
+                    billing.mark_turn_ended()
                 continue
 
             # ``stream_commit`` belongs INSIDE an active stream session
@@ -3151,8 +3183,17 @@ async def _run_turn(
             # turn. Without this hook the recorder would wait forever
             # for a "settled after TTS done" pair that never explicitly
             # exists in the wire protocol.
+            #
+            # Same billing pattern as the client_audio_settled handler:
+            # only fire mark_turn_ended if notify_agent_tts_done was
+            # the trigger that actually closed the turn (i.e., settled
+            # had already arrived). Otherwise let the eventual settled
+            # be the one that fires it.
             if call_recorder is not None:
+                was_open = call_recorder.agent_turn_open
                 call_recorder.notify_agent_tts_done()
+                if was_open and not call_recorder.agent_turn_open:
+                    billing.mark_turn_ended()
             # Release the per-turn pinned pod (drops the dispatcher
             # slot it held for this turn). Runs whether the gather
             # ended normally or via a barge-in cancel.
