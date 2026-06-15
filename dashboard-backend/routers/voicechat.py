@@ -1554,6 +1554,10 @@ async def voicechat_session(
                     payload = chunk.payload if isinstance(chunk.payload, bytes) else bytes(chunk.payload)
                     if call_recorder is not None:
                         call_recorder.push_agent(payload)
+                    # Extend the idle clock by this chunk's expected
+                    # playback duration. TTS audio is 24 kHz mono s16le
+                    # = 48 bytes per millisecond.
+                    billing.mark_agent_audio_pushed(len(payload) // 48)
                     with suppress(Exception):
                         await ws.send_bytes(payload)
                 elif chunk.kind == "error":
@@ -1722,8 +1726,11 @@ async def voicechat_session(
                 # could have heard) and discards the rest.
                 if call_recorder is not None:
                     call_recorder.mark_agent_barge_in()
-                # Barge-in ends the agent's turn — reset the idle clock.
+                # Barge-in ends the agent's turn — reset the idle clock
+                # AND the future-audio timestamp (the client just
+                # flushed its audio queue; no more audio is playing).
                 billing.mark_turn_ended()
+                billing.mark_agent_audio_drained()
                 await _cancel_current()
                 try:
                     await ws.send_json({"type": "cancelled"})
@@ -1753,48 +1760,20 @@ async def voicechat_session(
                 continue
             if mtype == "client_audio_settled":
                 _gate_clear_from_client()
-                # ``client_audio_settled`` is ambiguous on the wire — it
-                # just means "client queue is empty NOW". It could be:
-                #   (a) the current turn's audio finished playing,
-                #   (b) the previous turn's audio finished fading after
-                #       a barge-in (queue drained AFTER the new turn
-                #       already started server-side), or
-                #   (c) a brief mid-turn drain between sentences.
-                #
-                # Only case (a) means "agent stopped talking, start the
-                # idle countdown". The recorder's _maybe_complete_agent_turn
-                # already encodes exactly that — it commits + closes the
-                # turn ONLY when BOTH ``client_settled`` and ``tts_done``
-                # are true AND the buffer was actually filled. So tie
-                # billing's mark_turn_ended to that transition: only
-                # fire if notify_agent_client_settled actually closes
-                # the recorder's agent turn.
-                #
-                # Without this check, case (b) fires mark_turn_ended on
-                # the NEW turn (just started), counter drops to 0 while
-                # the agent is mid-speech, watchdog kills the session at
-                # the 60 s mark mid-monologue. Logs showed this
-                # explicitly: a stream of mark_turn_ended (was 1) lines
-                # while a long agent reply was still streaming chunks.
-                was_open = (
-                    call_recorder is not None and call_recorder.agent_turn_open
-                )
                 if call_recorder is not None:
                     call_recorder.notify_agent_client_settled()
-                now_open = (
-                    call_recorder is not None and call_recorder.agent_turn_open
-                )
-                if was_open and not now_open:
-                    # The recorder JUST closed the turn — agent has
-                    # truly stopped speaking. Reset the idle clock.
-                    billing.mark_turn_ended()
-                # If recorder is None entirely (e.g. agent has
-                # record_enabled off), fall back to the previous
-                # behaviour: trust settled as the end-of-turn signal.
-                # Same false-decrement risk as before, but the recorder
-                # check above already covers the common case.
-                elif call_recorder is None:
-                    billing.mark_turn_ended()
+                # Audio actually drained on the client — the agent has
+                # stopped speaking from the user's perspective. Reset
+                # both the in-flight counter and the future-audio
+                # timestamp so the 60-s idle clock starts counting
+                # from NOW. The future-timestamp logic in
+                # ``mark_agent_audio_pushed`` already protects against
+                # premature settles from a PREVIOUS turn's fade (the
+                # NEW turn's push_agent extends _last_activity_at into
+                # the future, so a stray drained-reset is harmless —
+                # the next push will re-extend).
+                billing.mark_turn_ended()
+                billing.mark_agent_audio_drained()
                 continue
 
             # ``stream_commit`` belongs INSIDE an active stream session
@@ -1982,6 +1961,7 @@ async def voicechat_session(
                     # ``_preroll_consume`` snapshots and clears so the
                     # NEXT inter-turn window starts fresh.
                     preroll_frames=_preroll_consume(),
+                    billing=billing,
                 )
             )
             # The idle clock is anchored to "agent stopped talking",
@@ -2215,6 +2195,11 @@ async def _run_turn(
     # reaching the server. None / empty list = no pre-roll, normal
     # cold-start behaviour.
     preroll_frames: list[bytes] | None = None,
+    # Session-scoped billing watchdog. We need a handle so the inner
+    # tts_consumer can call ``mark_agent_audio_pushed`` per chunk —
+    # that's what extends the idle clock into the future so it doesn't
+    # fire mid-monologue on long replies.
+    billing: Any | None = None,
 ) -> None:
     mode = payload.get("type")
     started = time.perf_counter()
@@ -3132,6 +3117,12 @@ async def _run_turn(
                                 payload = chunk.payload if isinstance(chunk.payload, bytes) else bytes(chunk.payload)
                                 if call_recorder is not None:
                                     call_recorder.push_agent(payload)
+                                # Extend the idle clock by this chunk's
+                                # expected playback duration. TTS audio
+                                # is 24 kHz mono s16le = 48 bytes per
+                                # millisecond.
+                                if billing is not None:
+                                    billing.mark_agent_audio_pushed(len(payload) // 48)
                                 await ws.send_bytes(payload)
                                 frames += 1
                                 bytes_sent += len(payload)

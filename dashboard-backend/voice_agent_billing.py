@@ -240,17 +240,63 @@ class VoiceAgentBilling:
         )
 
     def mark_turn_ended(self) -> None:
-        """Called when an agent turn finishes (TTS drained / cancelled /
-        errored). Resets the idle clock AND decrements the in-flight
-        counter — both transitions happen atomically so the watchdog
-        sees a consistent state on its next tick."""
+        """Called when an agent turn's pipeline ends (TTS pipeline done /
+        cancelled / errored). Decrements the in-flight counter and
+        bumps the idle clock — BUT only FORWARD, never backwards. If
+        ``mark_agent_audio_pushed`` already set ``_last_activity_at``
+        to a future timestamp (audio still expected to be playing
+        client-side), leave it alone so the 60-s idle countdown fires
+        AFTER playback completes, not from pipeline-done."""
         before = self._in_flight_turns
         self._in_flight_turns = max(0, self._in_flight_turns - 1)
-        self._last_activity_at = time.monotonic()
+        now = time.monotonic()
+        if now > self._last_activity_at:
+            # No future-audio extension active — safe to reset.
+            self._last_activity_at = now
+        # else: _last_activity_at is in the future (audio queued to
+        # play). Leave it; the watchdog will start counting once
+        # playback is estimated to have completed.
         _log.info(
-            "[billing] mark_turn_ended session=%s in_flight=%d (was %d)",
+            "[billing] mark_turn_ended session=%s in_flight=%d (was %d) "
+            "last_activity_in=%.1fs",
             self.session_id, self._in_flight_turns, before,
+            self._last_activity_at - now,
         )
+
+    def mark_agent_audio_pushed(self, duration_ms: int) -> None:
+        """The server just dispatched ``duration_ms`` of agent audio to
+        the client. Extend ``_last_activity_at`` to the moment that
+        audio is estimated to finish playing — so the idle countdown
+        doesn't fire while the user is still listening.
+
+        TTS streams faster than realtime (~5 s of audio in ~0.7 s wall
+        clock). Naive "time since last push" would fire idle mid-
+        monologue on long replies; "time since pipeline-done" fires
+        even sooner. Server-side estimate of playback-end is the only
+        signal independent of (a) the client's ``client_audio_settled``
+        message (unreliable for long replies — client doesn't send it
+        until the queue truly drains, which can be many minutes after
+        the server finished streaming) and (b) the ``_in_flight_turns``
+        counter (which leaks in barge-in scenarios when an OLD turn's
+        settled decrements a NEW turn).
+
+        Chunks queue: ``max(now, prior_end) + duration`` so the
+        timestamp tracks the end of the LAST queued chunk, not the
+        end of the most recently pushed one."""
+        if duration_ms <= 0:
+            return
+        now = time.monotonic()
+        baseline = max(now, self._last_activity_at)
+        self._last_activity_at = baseline + duration_ms / 1000.0
+
+    def mark_agent_audio_drained(self) -> None:
+        """Explicit signal that the agent's audio is drained on the
+        client RIGHT NOW (cancel/barge-in flushed the queue; the real
+        ``client_audio_settled`` arrived after TTS pipeline-done).
+        Resets ``_last_activity_at`` to ``now``, overriding any future
+        timestamp left by ``mark_agent_audio_pushed`` so the 60-s
+        countdown starts counting from this moment."""
+        self._last_activity_at = time.monotonic()
 
     def mark_activity(self) -> None:
         """Call when ANY user turn arrives (voice or text). Resets the
