@@ -234,14 +234,23 @@ class VoiceAgentBilling:
         rule be exactly what we want: 60 s after the agent STOPS
         talking, regardless of how long the previous turn took."""
         self._in_flight_turns += 1
+        _log.info(
+            "[billing] mark_turn_started session=%s in_flight=%d",
+            self.session_id, self._in_flight_turns,
+        )
 
     def mark_turn_ended(self) -> None:
         """Called when an agent turn finishes (TTS drained / cancelled /
         errored). Resets the idle clock AND decrements the in-flight
         counter — both transitions happen atomically so the watchdog
         sees a consistent state on its next tick."""
+        before = self._in_flight_turns
         self._in_flight_turns = max(0, self._in_flight_turns - 1)
         self._last_activity_at = time.monotonic()
+        _log.info(
+            "[billing] mark_turn_ended session=%s in_flight=%d (was %d)",
+            self.session_id, self._in_flight_turns, before,
+        )
 
     def mark_activity(self) -> None:
         """Call when ANY user turn arrives (voice or text). Resets the
@@ -401,6 +410,21 @@ class VoiceAgentBilling:
             # 2. Idle timeout — also before deduction. A user who walked
             #    away shouldn't be charged for one more increment past
             #    the threshold; we close on the increment AT the boundary.
+            #
+            # Diagnostic log: prints the two numbers the idle check
+            # compares so we can see exactly why an idle timeout did or
+            # didn't fire on a given tick. Throttled to "interesting"
+            # ticks (anything past 30 s of apparent inactivity OR
+            # in-flight > 0) so quiet idle ticks don't spam the log.
+            since = int(now - self._last_activity_at)
+            if since >= 30 or self._in_flight_turns != 0:
+                _log.info(
+                    "[billing] tick session=%s in_flight=%d since_activity=%ds "
+                    "idle_threshold=%ds idle_would_fire=%s",
+                    self.session_id, self._in_flight_turns, since,
+                    IDLE_TIMEOUT_SEC,
+                    self._in_flight_turns == 0 and since >= IDLE_TIMEOUT_SEC,
+                )
             if (
                 IDLE_TIMEOUT_SEC > 0
                 and self._in_flight_turns == 0
