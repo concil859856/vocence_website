@@ -1385,17 +1385,27 @@ async def voicechat_session(
                 # If we got here the client never sent ``settled``
                 # within MAX_HOLD — assume it crashed or the WS broke
                 # mid-playback. Release rather than lock the mic
-                # forever. Treat this as a turn-end signal for billing
-                # too, so the idle watchdog can resume counting from
-                # this moment instead of the (much earlier) point
-                # when the TTS pipeline finished streaming.
+                # forever.
+                #
+                # CRITICAL: do NOT fire billing.mark_turn_ended() here.
+                # The safety release is a MIC-GATE concept — it lets
+                # the user speak again — and fires on EVERY reply
+                # longer than 6 s of audio, which is most replies.
+                # The bot is still speaking; the client's queue just
+                # hasn't drained yet. Treating this as "agent stopped
+                # talking" for billing kicked off the 60 s idle clock
+                # at second 6 of a 4-minute reply and killed the
+                # session mid-monologue. The real "agent stopped"
+                # signal is ``client_audio_settled`` arriving at
+                # ``_gate_clear_from_client`` — wait for it. If the
+                # client truly crashed and never sends it, the
+                # session's max-duration cap is the safety net.
                 _log.warning(
                     "[gate] safety release after %.0fs without client_audio_settled "
-                    "(session=%s, likely client crash mid-playback)",
+                    "(session=%s, mic re-opened; billing still waits for real settled)",
                     GATE_MAX_HOLD_S, session_id,
                 )
                 bot_speaking_evt.clear()
-                billing.mark_turn_ended()
             except asyncio.CancelledError:
                 pass
 
