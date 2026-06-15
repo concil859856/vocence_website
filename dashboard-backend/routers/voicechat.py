@@ -102,6 +102,67 @@ VOICECHAT_SINGLE_CALL_TTS = (
     os.environ.get("VOICECHAT_SINGLE_CALL_TTS") or "1"
 ).strip().lower() not in {"0", "false", "no", ""}
 
+# Hard ceiling on a single TTS-pod call. The pod responds
+# ``bad_request: start.text too long (… chars; max 1000)`` if we
+# exceed this — meaning the audio for that turn never plays at all.
+# Single-call mode falls back to splitting at sentence boundaries
+# when the reply exceeds this limit; everything up to the limit
+# still synthesizes in one connection (still drift-free), only the
+# OVERFLOW pieces become extra calls. 900 leaves a 100-char safety
+# margin under the pod's hard 1000, since LLM tokenization can run
+# a few chars over a clean punctuation boundary.
+TTS_POD_MAX_TEXT_CHARS = int(
+    os.environ.get("VOICECHAT_TTS_POD_MAX_CHARS") or "900"
+)
+
+
+def _split_for_pod_limit(text: str, max_chars: int) -> list[str]:
+    """Split ``text`` into pieces each ≤ ``max_chars`` chars, preferring
+    sentence boundaries (``. ! ?``) and falling back to whitespace then
+    hard-cuts. Each piece is then a valid single-call TTS payload. Used
+    only when single-call mode produces a tail larger than the pod can
+    accept — typical short / medium replies hit the
+    ``len(text) <= max_chars`` fast path and return a one-element list.
+    """
+    text = text.strip()
+    if len(text) <= max_chars:
+        return [text] if text else []
+
+    import re
+    sentence_end = re.compile(r"(?<=[.!?])\s+")
+    out: list[str] = []
+    cur = ""
+    for piece in sentence_end.split(text):
+        if not piece:
+            continue
+        candidate = f"{cur} {piece}".strip() if cur else piece
+        if len(candidate) <= max_chars:
+            cur = candidate
+            continue
+        # Adding ``piece`` would overflow. Flush ``cur`` (if any),
+        # then start a new accumulator with ``piece``.
+        if cur:
+            out.append(cur)
+            cur = ""
+        if len(piece) <= max_chars:
+            cur = piece
+            continue
+        # A single sentence is itself larger than max_chars (rare —
+        # LLM-generated wall of text with no punctuation). Hard-cut
+        # at the last whitespace before max_chars, repeatedly.
+        remaining = piece
+        while len(remaining) > max_chars:
+            cut = remaining.rfind(" ", 0, max_chars)
+            if cut <= 0:
+                cut = max_chars
+            out.append(remaining[:cut].rstrip())
+            remaining = remaining[cut:].lstrip()
+        if remaining:
+            cur = remaining
+    if cur:
+        out.append(cur)
+    return out
+
 
 # -----------------------------------------------------------------------
 # Filler audio ("Hmm, let me check…") — fired when the LLM is going to
@@ -2853,7 +2914,18 @@ async def _run_turn(
                     if tail:
                         spoken_tail = sanitize_for_tts(tail)
                         if spoken_tail:
-                            await sentence_q.put((spoken_tail, False))
+                            # Pod hard-rejects ``start.text`` above
+                            # ~1000 chars. For short / medium replies
+                            # (the common case) this is a one-element
+                            # list and dispatch is unchanged; only
+                            # genuinely-long replies (3-4 sentences
+                            # of detail) split into multiple calls,
+                            # reintroducing inter-call voice drift on
+                            # the cuts but at least the audio plays.
+                            for piece in _split_for_pod_limit(
+                                spoken_tail, TTS_POD_MAX_TEXT_CHARS
+                            ):
+                                await sentence_q.put((piece, False))
             finally:
                 # Sentinel to release the consumer no matter what.
                 await sentence_q.put(None)
