@@ -507,6 +507,112 @@ export function Docs() {
 
       </header>
 
+      <section className="space-y-4">
+        <h2 className="text-lg font-semibold tracking-tight text-white">
+          Voice Agent WebSocket — wire protocol
+        </h2>
+        <p className="text-sm leading-relaxed text-zinc-400">
+          The endpoint <code className="rounded bg-white/[0.06] px-1 text-zinc-300">wss://api.vocence.ai/v1/agents/&#123;agent_id&#125;/session</code> {' '}
+          drives every voice agent — used by the Studio UI, the embed snippet, the SDK, and your own clients. It's a single
+          bidirectional WebSocket carrying JSON control messages and binary PCM audio in both directions. The full
+          message reference is auto-generated below; this section explains the wire-level pieces that don't
+          fit cleanly in the schema browser.
+        </p>
+
+        <h3 className="text-sm font-semibold text-zinc-200 mt-4">Authentication</h3>
+        <p className="text-sm leading-relaxed text-zinc-400">
+          Browsers can't set custom headers on a WS upgrade, so two auth shapes are supported:
+        </p>
+        <ul className="ml-4 list-disc space-y-1 text-sm text-zinc-400 marker:text-zinc-600">
+          <li>
+            <code className="rounded bg-white/[0.06] px-1 text-zinc-300">Authorization: Bearer voc_live_…</code> — server-side
+            clients (Python, Go, Node) using your account-scoped API key. Caller must own the agent.
+          </li>
+          <li>
+            <code className="rounded bg-white/[0.06] px-1 text-zinc-300">?token=&lt;embed-token&gt;</code> query param —
+            browsers using a per-agent embed token minted in Studio → Embed. Origin-locked when configured;
+            revocable at any time. See the{' '}
+            <Link to="/docs/guide-agents#deploy" className="text-[#DFFF00] hover:underline">Agents guide §12</Link>{' '}
+            for the embed flow.
+          </li>
+        </ul>
+
+        <h3 className="text-sm font-semibold text-zinc-200 mt-4">Three turn modes</h3>
+        <p className="text-sm leading-relaxed text-zinc-400 mb-2">
+          One turn = one user input → one agent reply. Pick the mode that matches your client:
+        </p>
+        <div className="overflow-hidden rounded-xl border border-white/[0.06]">
+          <table className="w-full text-left text-[13px]">
+            <thead className="bg-white/[0.03]">
+              <tr className="border-b border-white/[0.06]">
+                <th className="px-4 py-2.5 font-medium text-zinc-300">Mode</th>
+                <th className="px-4 py-2.5 font-medium text-zinc-300">Client → server</th>
+                <th className="px-4 py-2.5 font-medium text-zinc-300">Use when</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-white/[0.04]">
+              <tr>
+                <td className="px-4 py-3 font-mono text-cyan-300 align-top">text</td>
+                <td className="px-4 py-3 text-zinc-400 align-top"><code>&#123;"type":"text","text":"…"&#125;</code></td>
+                <td className="px-4 py-3 text-zinc-400 align-top">Chat-style. No audio input. Fastest TTFA.</td>
+              </tr>
+              <tr>
+                <td className="px-4 py-3 font-mono text-cyan-300 align-top">voice</td>
+                <td className="px-4 py-3 text-zinc-400 align-top"><code>&#123;"type":"voice","audio_b64":"…","mime":"audio/wav"&#125;</code></td>
+                <td className="px-4 py-3 text-zinc-400 align-top">Press-to-talk. Whole clip in one shot. Easy to integrate.</td>
+              </tr>
+              <tr>
+                <td className="px-4 py-3 font-mono text-cyan-300 align-top">stream_start</td>
+                <td className="px-4 py-3 text-zinc-400 align-top">
+                  <code>&#123;"type":"stream_start","language":"en"&#125;</code><br />
+                  then 20 ms PCM16LE @ 16 kHz binary frames<br />
+                  then <code>&#123;"type":"stream_commit"&#125;</code> (optional VAD hint)
+                </td>
+                <td className="px-4 py-3 text-zinc-400 align-top">Continuous live conversation. Server runs STT + turn detection. Lowest latency. Requires{' '}
+                  <code>capabilities.voice_stream=true</code> in the <code>ready</code> event.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3 className="text-sm font-semibold text-zinc-200 mt-4">Server → client events</h3>
+        <p className="text-sm leading-relaxed text-zinc-400">
+          A typical turn yields, in order: <code>transcript</code> (final user text), optional <code>tool_call_started</code> →{' '}
+          <code>tool_call_completed</code>, a sequence of <code>token</code> deltas, then per-sentence{' '}
+          <code>audio_meta</code> → binary frames → <code>audio_end</code>, finally <code>turn_end</code>. Errors fire as{' '}
+          <code>error</code>; the server may also send <code>session_timeout</code> (idle / max-duration) and{' '}
+          <code>billing_exhausted</code> as terminal events.
+        </p>
+
+        <h3 className="text-sm font-semibold text-zinc-200 mt-4">Barge-in protocol</h3>
+        <p className="text-sm leading-relaxed text-zinc-400">
+          Send <code>&#123;"type":"cancel"&#125;</code> to interrupt the agent. The server flushes the in-flight TTS, drops
+          straggling audio chunks (so they don't queue ahead of your next reply), trims the recording's right channel to
+          the moment of barge-in, and acks with <code>&#123;"type":"cancelled"&#125;</code>. Your audio player should flush
+          its own queue locally — don't wait for the server confirmation before silencing the speakers.
+        </p>
+
+        <h3 className="text-sm font-semibold text-zinc-200 mt-4">Audio formats</h3>
+        <ul className="ml-4 list-disc space-y-1 text-sm text-zinc-400 marker:text-zinc-600">
+          <li>Client → server (stream_start mode): <strong>PCM16LE, 16 kHz, mono, 20 ms frames</strong> (640 bytes / frame).</li>
+          <li>Server → client (every mode): <strong>PCM16LE, 24 kHz, mono, 40 ms frames</strong> (1920 bytes / frame), preceded by an{' '}
+            <code>audio_meta</code> JSON envelope so the format is self-describing.
+          </li>
+          <li>Frames are NOT base64-encoded over the WS — raw binary. The base64-encoded path is only the one-shot{' '}
+            <code>voice</code> upload.
+          </li>
+        </ul>
+
+        <h3 className="text-sm font-semibold text-zinc-200 mt-4">Close codes</h3>
+        <ul className="ml-4 list-disc space-y-1 text-sm text-zinc-400 marker:text-zinc-600">
+          <li><code>4401</code> — authentication failed (missing / wrong / revoked token).</li>
+          <li><code>4404</code> — agent id not found or not owned by the calling key.</li>
+          <li><code>4502</code> — voice pipeline upstream unavailable (STT / TTS / LLM pod offline).</li>
+          <li><code>4503</code> — service misconfigured (env vars / missing pods at deploy time).</li>
+        </ul>
+      </section>
+
       {/* All endpoints (REST + WebSocket + key management) are rendered
           inside the explorer. The right-rail TOC mirrors the same set
           and scrolls independently of the page. */}
@@ -3567,6 +3673,78 @@ async def proxy(ws: WebSocket, agent_id: str):
           codec library.
         </p>
       </section>
+
+      <section className="space-y-3">
+        <h2 className="text-lg font-semibold tracking-tight text-white">
+          Configuring the voice pipeline
+        </h2>
+        <p className="text-sm leading-relaxed text-zinc-400">
+          Three per-agent knobs let you trade latency for robustness against noisy mics and ragged turn-taking.
+          Set them when creating or updating an agent — they live under{' '}
+          <code className="rounded bg-white/[0.06] px-1 text-zinc-300">config</code>:
+        </p>
+        <div className="overflow-hidden rounded-xl border border-white/[0.06]">
+          <table className="w-full text-left text-[13px]">
+            <thead className="bg-white/[0.03]">
+              <tr className="border-b border-white/[0.06]">
+                <th className="px-4 py-2.5 font-medium text-zinc-300">Field</th>
+                <th className="px-4 py-2.5 font-medium text-zinc-300">Type · default</th>
+                <th className="px-4 py-2.5 font-medium text-zinc-300">What it does</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-white/[0.04]">
+              <tr>
+                <td className="px-4 py-3 font-mono text-cyan-300 align-top">denoise_enabled</td>
+                <td className="px-4 py-3 text-zinc-400 align-top"><code>bool</code> · <code>false</code></td>
+                <td className="px-4 py-3 text-zinc-400 align-top">
+                  Inserts DeepFilterNet 3 upstream of STT + UltraVAD. Adds ~200 ms passthrough latency. Turn on for
+                  call-center, mobile-in-public, or any agent that expects background noise.
+                </td>
+              </tr>
+              <tr>
+                <td className="px-4 py-3 font-mono text-cyan-300 align-top">turn_decider</td>
+                <td className="px-4 py-3 text-zinc-400 align-top"><code>"ultravad" | "fusion"</code> · <code>"ultravad"</code></td>
+                <td className="px-4 py-3 text-zinc-400 align-top">
+                  Primary end-of-turn detector. UltraVAD is the snappier, model-based path; fusion ensembles Smart Turn
+                  with the LiveKit turn detector. Either path falls back to the other if its pod is unhealthy.
+                </td>
+              </tr>
+              <tr>
+                <td className="px-4 py-3 font-mono text-cyan-300 align-top">ultravad_threshold</td>
+                <td className="px-4 py-3 text-zinc-400 align-top"><code>float [0, 1]</code> · <code>0.55</code></td>
+                <td className="px-4 py-3 text-zinc-400 align-top">
+                  UltraVAD's commit threshold. Higher = more conservative (lets mid-sentence pauses through, adds ~200 ms
+                  of end-of-turn latency); lower = snappier but more likely to cut the user off mid-sentence.
+                </td>
+              </tr>
+              <tr>
+                <td className="px-4 py-3 font-mono text-cyan-300 align-top">record_enabled</td>
+                <td className="px-4 py-3 text-zinc-400 align-top"><code>bool</code> · <code>false</code></td>
+                <td className="px-4 py-3 text-zinc-400 align-top">
+                  When true, the session tees both legs (user + agent PCM) to a stereo WAV uploaded to R2.
+                  Downloadable + searchable from the Calls tab in Studio. Retention 30 days.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <CodeBlock code={`from vocence import Vocence
+
+agent = Vocence().agents.update(
+    "agent-id",
+    config={
+        "denoise_enabled": True,         # noisy call-center mic
+        "turn_decider": "ultravad",
+        "ultravad_threshold": 0.6,       # slightly more patient than the default
+        "record_enabled": True,          # capture WAVs for review
+    },
+)`} />
+        <p className="text-sm leading-relaxed text-zinc-400">
+          See <Link to="/docs/guide-agents" className="text-[#DFFF00] hover:underline">Agents §6 Voice tuning</Link> for the
+          mental model behind these knobs, and the <Link to="/docs/api" className="text-[#DFFF00] hover:underline">API Reference</Link>
+          {' '}for the <code>PATCH /v1/agents/&#123;id&#125;</code> shape.
+        </p>
+      </section>
     </div>
   );
 
@@ -3681,6 +3859,40 @@ print(resp.status_code)`} />
           What it does <em>not</em> cover: webhook URLs themselves are a
           public surface. Use a unique, hard-to-guess path per tool and
           never log full request bodies if they may contain user PII.
+        </p>
+      </section>
+
+      <section className="space-y-3 border-t border-white/[0.06] pt-6">
+        <h2 className="text-lg font-semibold tracking-tight text-white">Outbound events — verifying <code className="text-zinc-300">call.ended</code></h2>
+        <p className="text-sm leading-relaxed text-zinc-400">
+          Outbound webhooks (Settings → Webhooks in Studio) fire when an agent call completes.
+          Same wire format as custom-tool calls, same verifier — the only thing that changes is the direction.
+          Both the headers (<code>X-Vocence-Timestamp</code>, <code>X-Vocence-Signature: v1=…</code>) and the
+          <code>v1.&#123;ts&#125;.&#123;body&#125;</code> HMAC base string are identical, so the existing helpers work
+          unchanged.
+        </p>
+        <CodeBlock code={`from fastapi import FastAPI, Depends
+from vocence.webhooks import fastapi_verifier
+
+app = FastAPI()
+verify = fastapi_verifier(secret="your-webhook-secret-from-Studio")
+
+@app.post("/vocence/events", dependencies=[Depends(verify)])
+async def on_event(envelope: dict):
+    if envelope["event"] == "call.ended":
+        session = envelope["session_id"]
+        duration = envelope["duration_ms"] / 1000
+        recording = envelope.get("recording_url")  # None when recording is off
+        await save_call_to_crm(session, duration, recording, envelope["transcript"])
+    return {"ok": True}`} />
+        <p className="text-sm leading-relaxed text-zinc-400">
+          Delivery is at-least-once: on a 5xx response or timeout we retry with backoff at
+          <strong> 30 s, 2 min, 10 min, 30 min</strong> before giving up. Idempotency-key your handler — the same
+          <code>session_id</code> may arrive more than once during retry storms or after a transient outage.
+        </p>
+        <p className="text-sm leading-relaxed text-zinc-400">
+          See <Link to="/docs/guide-agents#deploy" className="text-[#DFFF00] hover:underline">Agents §12 Deploying</Link> for the
+          full envelope shape and the Test-button flow you can use to wire up your receiver before any real call lands.
         </p>
       </section>
     </div>
