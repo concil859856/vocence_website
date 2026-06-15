@@ -1412,22 +1412,21 @@ async def voicechat_session(
         gate_safety_task = asyncio.create_task(_safety(), name="gate_safety")
 
     def _gate_clear_from_client() -> None:
-        """Release the mute gate. Triggered by ``client_audio_settled``
-        (or by cancel / new-turn start). When the gate WAS set, this
-        is the moment the agent actually stopped speaking from the
-        user's perspective — reset the idle clock here so the 60-second
-        rule reads as "60 s after audio drained on the client" instead
-        of "60 s after the LLM pipeline finished streaming" (which on a
-        long reply can be many minutes too early, the bug the user
-        reported as 'Session ended mid-speech')."""
+        """Release the mute gate. Pure mic-gate concern — does NOT
+        touch billing. Billing/idle is handled separately by the
+        explicit ``billing.mark_turn_ended()`` calls at the actual
+        "agent stopped speaking" sites (client_audio_settled, cancel,
+        new-turn-start, or no-audio pipeline-done). The previous
+        coupling here was buggy: the 6 s gate-safety release clears
+        ``bot_speaking_evt`` for echo-prevention reasons even while
+        the bot is still mid-playback, and using ``was_set`` as a
+        guard meant the real client_audio_settled (arriving minutes
+        later) saw was_set=False and never fired mark_turn_ended."""
         nonlocal gate_safety_task
-        was_set = bot_speaking_evt.is_set()
         bot_speaking_evt.clear()
         if gate_safety_task and not gate_safety_task.done():
             gate_safety_task.cancel()
             gate_safety_task = None
-        if was_set:
-            billing.mark_turn_ended()
 
     async def _cancel_current() -> None:
         """Cancel the in-flight turn and wait for it to tear down — but
@@ -1608,21 +1607,29 @@ async def voicechat_session(
         current_turn = asyncio.create_task(
             _speak_pretext(agent_first_message), name="first_message"
         )
-        # The idle clock starts ticking the moment the greeting ENDS —
-        # not when it begins. ``mark_turn_started`` keeps the watchdog
-        # quiet while the greeting plays. The done-callback below fires
-        # ``mark_turn_ended`` ONLY when the bot isn't currently speaking
-        # (no audio playing on the client). If the bot IS speaking when
-        # the LLM/TTS pipeline returns, ``_gate_clear_from_client`` will
-        # fire mark_turn_ended later when ``client_audio_settled``
-        # actually arrives — which is the true "agent stopped talking"
-        # moment. Without this guard, long greetings used to trip the
-        # 60 s idle timeout mid-speech because the pipeline finishes
-        # streaming far earlier than the audio finishes playing.
+        # The idle clock starts ticking when the agent STOPS speaking,
+        # not when the LLM/TTS pipeline finishes streaming. For audio
+        # turns (the common case), the ``client_audio_settled`` handler
+        # fires mark_turn_ended when the user has actually heard the
+        # last syllable. The done-callback here only fires
+        # mark_turn_ended for turns that NEVER dispatched any audio
+        # (cancel-before-first-chunk, TTS disabled, etc.) — settled
+        # won't arrive for those.
+        #
+        # Critically, we check ``call_recorder.agent_audio_dispatched``
+        # (which survives the 6 s gate-safety release) rather than
+        # ``bot_speaking_evt`` (which the gate-safety clears even
+        # mid-playback). Using bot_speaking_evt here was the bug that
+        # killed the session at the 66 s mark on long replies.
         billing.mark_turn_started()
-        def _on_greeting_done(_t, b=billing, evt=bot_speaking_evt):
-            if not evt.is_set():
+        def _on_greeting_done(_t, b=billing, recorder=call_recorder):
+            audio_dispatched = (
+                recorder is not None and recorder.agent_audio_dispatched
+            )
+            if not audio_dispatched:
                 b.mark_turn_ended()
+            # else: client_audio_settled handler will fire mark_turn_ended
+            # when the user actually hears the last word.
         current_turn.add_done_callback(_on_greeting_done)
 
     try:
@@ -1708,6 +1715,8 @@ async def voicechat_session(
                 # could have heard) and discards the rest.
                 if call_recorder is not None:
                     call_recorder.mark_agent_barge_in()
+                # Barge-in ends the agent's turn — reset the idle clock.
+                billing.mark_turn_ended()
                 await _cancel_current()
                 try:
                     await ws.send_json({"type": "cancelled"})
@@ -1746,6 +1755,14 @@ async def voicechat_session(
                 # finishes will be the one that completes the turn.
                 if call_recorder is not None:
                     call_recorder.notify_agent_client_settled()
+                # This is the REAL "agent finished speaking" signal —
+                # the client's audio queue has actually drained, so the
+                # user has heard the last word. Reset the idle clock
+                # NOW (independent of bot_speaking_evt, which the 6 s
+                # gate-safety may have already cleared). The 60 s
+                # countdown now reads "60 s after the user heard the
+                # last syllable", which is what users expect.
+                billing.mark_turn_ended()
                 continue
 
             # ``stream_commit`` belongs INSIDE an active stream session
@@ -1920,20 +1937,23 @@ async def voicechat_session(
                     preroll_frames=_preroll_consume(),
                 )
             )
-            # The idle clock is anchored to "agent stopped talking" —
-            # which on a long reply can be MANY MINUTES after the
-            # LLM/TTS pipeline finishes streaming (the pipeline runs
-            # at 100+ chars/s, the client plays back at ~15 chars/s).
-            # The done-callback below fires mark_turn_ended ONLY when
-            # the bot isn't currently mid-playback; if it is,
-            # ``_gate_clear_from_client`` fires mark_turn_ended later
-            # when ``client_audio_settled`` arrives. Without this
-            # the 60 s idle countdown started at pipeline-done and
-            # killed the session mid-speech for any reply over a
-            # minute of audio.
+            # The idle clock is anchored to "agent stopped talking",
+            # which on a long reply can be many MINUTES after the
+            # LLM/TTS pipeline finishes streaming (pipeline runs
+            # ~100 chars/s, client plays ~15 chars/s). The done-
+            # callback below fires mark_turn_ended ONLY for turns
+            # that never dispatched any audio (text-only with TTS
+            # disabled, cancel before any push_agent); for normal
+            # audio turns, the ``client_audio_settled`` handler is
+            # what fires mark_turn_ended at the true "user heard
+            # the last word" moment. See _on_greeting_done above
+            # for the long form of the rationale.
             billing.mark_turn_started()
-            def _on_turn_task_done(_t, b=billing, evt=bot_speaking_evt):
-                if not evt.is_set():
+            def _on_turn_task_done(_t, b=billing, recorder=call_recorder):
+                audio_dispatched = (
+                    recorder is not None and recorder.agent_audio_dispatched
+                )
+                if not audio_dispatched:
                     b.mark_turn_ended()
             current_turn.add_done_callback(_on_turn_task_done)
 

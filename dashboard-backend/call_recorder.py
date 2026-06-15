@@ -170,6 +170,25 @@ class CallRecorder:
         """
         return self._agent_turn_open
 
+    @property
+    def agent_audio_dispatched(self) -> bool:
+        """Whether at least one PCM chunk has been pushed for the
+        currently-open turn. Used by the router's idle-watchdog wiring
+        to distinguish "agent has audio still playing on the client"
+        (need to wait for client_audio_settled) from "turn ended
+        without any audio" (text-only with TTS off, or cancel before
+        any chunk landed — in which case settled will never arrive
+        and the watchdog must reset its idle clock from the
+        pipeline-done callback).
+
+        Decoupled from the mic-mute gate: the 6 s gate-safety release
+        clears bot_speaking_evt for echo-prevention reasons even while
+        the bot is still mid-playback, but this flag stays True until
+        the turn actually completes (settled + tts_done) or a barge-in
+        closes it.
+        """
+        return self._agent_turn_start_ms is not None
+
     def _now_ms(self) -> int:
         return int((time.monotonic() - self._t0) * 1000)
 
