@@ -895,9 +895,34 @@ class StreamingTurnSession:
             #      (rule="silence" so it's logged as different from a
             #      confident UltraVAD commit). Without this the turn
             #      hangs until SESSION_HARD_TIMEOUT_S kills the WS.
+            # Adaptive min_delay: short transcripts (backchannels,
+            # fillers, half-sentences) need MORE silence before commit
+            # because they're often mid-thought pauses. Long transcripts
+            # are usually complete and can commit at the configured
+            # min_delay. Triggered by user feedback: "Hm. Yeah." was
+            # committing at 500 ms silence even though the user was
+            # about to continue. Long sentences like "What is the best
+            # TTS model in the world" are clearly done — commit fast.
+            #
+            # Bucket on total spoken words this turn (finals_accumulated
+            # + current partial). Buckets are coarse so the curve doesn't
+            # surprise the user with sudden cadence shifts.
+            total_words = sum(
+                len(s.split()) for s in self._state.finals_accumulated
+            ) + len(self._state.partial_text.split())
+            if total_words <= 3:
+                # Backchannels / fillers / "yeah" / "hm yeah" — wait
+                # noticeably longer so we don't cut a thought in half.
+                effective_min_delay = max(self._min_delay_ms, 1200)
+            elif total_words <= 6:
+                # Short replies — half-sentences, slight extra patience.
+                effective_min_delay = max(self._min_delay_ms, 800)
+            else:
+                # Full sentences — trust the configured floor.
+                effective_min_delay = self._min_delay_ms
             uv_threshold_crossed = (
                 uv_available
-                and silence_ms >= self._min_delay_ms
+                and silence_ms >= effective_min_delay
                 and ultravad_p >= self._ultravad_threshold
             )
             uv_backstop_hit = uv_available and silence_ms >= MAX_DELAY_MS
