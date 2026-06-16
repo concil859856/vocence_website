@@ -1815,31 +1815,25 @@ async def voicechat_session(
                 call_recorder.mark_agent_barge_in()
             # Cancel any in-flight turn before starting a new one
             await _cancel_current()
-            # ALWAYS tell the client to flush its local audio queue,
-            # regardless of whether ``current_turn`` was still running
-            # server-side. The previous gate (``had_in_flight_turn``)
-            # only fired when the server task was still in flight —
-            # but the common bug is the opposite case:
+            # Tell the client to flush its local audio queue (the
+            # previous turn's TTS bytes may already be on the wire or
+            # in the worklet's prebuffer — without a flush, that audio
+            # plays out IN FULL before the new turn's reply starts,
+            # so the user hears two replies back-to-back).
             #
-            #   * TTS already streamed all bytes to client (server
-            #     ``current_turn.done() == True``)
-            #   * Client's audio worklet still has multi-second buffer
-            #     queued (or even just sitting in the 1.5s prebuffer,
-            #     so client_audio_started hasn't fired yet)
-            #   * User barges in via VAD → stream_start arrives
-            #   * Old logic: had_in_flight_turn=False → no flush sent
-            #   * Client drains its buffer in full BEFORE the new
-            #     turn's audio plays
-            #
-            # User experience: "agent kept talking AND THEN played the
-            # new reply." Sending ``cancelled`` unconditionally means
-            # the client always gets the flush signal. The frontend's
-            # handler is idempotent — a flush with nothing to flush
-            # is a no-op (the ``cancel`` branch above already proves
-            # this contract by sending it on every cancel regardless
-            # of state).
+            # Use a dedicated ``flush_player`` message rather than
+            # reusing ``cancelled``: ``cancelled`` ALSO closes the
+            # client's ``streamTurnOpenRef`` (which routes the mic's
+            # PCM frames), so sending it after stream_start would
+            # immediately stop the just-opened stream and STT would
+            # only see the handful of frames that landed in the brief
+            # round-trip window. Net symptom: "Hello", "Yeah it's",
+            # "How I", "What is it" instead of the full sentences
+            # the user actually spoke. The new message is
+            # surgical — flush the audio worklet only, leave the
+            # active stream session alone.
             try:
-                await ws.send_json({"type": "cancelled"})
+                await ws.send_json({"type": "flush_player"})
             except (WebSocketDisconnect, RuntimeError, Exception):
                 return
             # Defensively close the previous turn's idle-billing slot.

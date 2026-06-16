@@ -578,6 +578,18 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
             return 'idle';
           });
           break;
+        case 'flush_player':
+          // Server-initiated audio-queue flush. Sent on every new turn
+          // (stream_start) so the previous turn's buffered TTS doesn't
+          // play out behind the new reply. UNLIKE ``cancelled``, this
+          // does NOT touch ``streamTurnOpenRef`` (the just-opened
+          // stream session must keep shipping mic frames) and does NOT
+          // touch UI bubble / state machine (the previous turn's
+          // bubble already completed normally — the user just barged
+          // in, not asked to cancel it).
+          playerRef.current?.flush();
+          audioStartedForTurnRef.current = false;
+          break;
         case 'session_timeout': {
           // Backend auto-closed the session. Three codes today:
           //   • code: max_duration   — 30-min paid-agent cap
