@@ -2724,8 +2724,9 @@ async def _run_turn(
                 if ttft_ms is None:
                     ttft_ms = int((time.perf_counter() - started) * 1000)
                     _log.info(
-                        "[stream] trace session=%s phase=llm_first_token ttft=%dms",
-                        session_id, ttft_ms,
+                        "[stream] trace session=%s phase=llm_first_token "
+                        "ttft=%dms llm_model=%s",
+                        session_id, ttft_ms, llm_model or "<default>",
                     )
                 bot_text_full.append(delta)
                 try:
