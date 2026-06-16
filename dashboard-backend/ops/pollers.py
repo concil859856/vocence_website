@@ -579,6 +579,18 @@ async def cleanup_loop() -> None:
         except Exception:
             _log.exception("cleanup_loop: unhandled error (recording sweep)")
 
+        # Local-disk straggler sweep (SSH key temps, etc). Producers
+        # own their own cleanup at the call site; this is the backstop
+        # for crashes / kill -9 / new code paths that forgot.
+        try:
+            from local_storage_janitor import sweep_once, log_sweep_results
+            results = await sweep_once()
+            log_sweep_results(results, source="hourly")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _log.exception("cleanup_loop: unhandled error (local janitor)")
+
         await asyncio.sleep(CLEANUP_INTERVAL_S)
 
 
@@ -599,6 +611,16 @@ async def start_pollers() -> None:
         await pool.reload_pool()
     except Exception:
         _log.exception("ops.start_pollers: initial reload_pool failed (non-fatal)")
+    # One-shot local-disk sweep at startup. Catches stragglers from a
+    # crash / kill -9 in the previous process generation BEFORE we wait
+    # an hour for the first cleanup_loop iteration. Audit time: dev box
+    # had 44 leaked /tmp/ops_ssh_*.key tempfiles from May–June.
+    try:
+        from local_storage_janitor import sweep_once, log_sweep_results
+        results = await sweep_once()
+        log_sweep_results(results, source="startup")
+    except Exception:
+        _log.exception("ops.start_pollers: startup local sweep failed (non-fatal)")
     _TASKS.append(asyncio.create_task(health_poller(), name="ops.health_poller"))
     _TASKS.append(asyncio.create_task(metrics_poller(), name="ops.metrics_poller"))
     _TASKS.append(asyncio.create_task(update_detector_loop(), name="ops.update_detector"))

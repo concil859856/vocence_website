@@ -143,9 +143,16 @@ def validate_private_key(raw: str) -> None:
         raise SshError(f"SSH private key could not be parsed: {type(e).__name__}: {e}") from e
 
 
-def _resolve_client_keys(server: dict) -> list[str] | None:
-    """Return a list of asyncssh client_keys (file paths OR raw key strings).
-    Per-server key wins; platform key is the fallback."""
+def _resolve_client_keys(server: dict) -> tuple[list[str], list[str]]:
+    """Return ``(client_keys, temp_paths)``.
+
+    ``client_keys`` is the list passed to ``asyncssh.connect``.
+    ``temp_paths`` is the subset of those paths that are server-issued
+    tempfiles the caller MUST unlink after asyncssh consumes them
+    (asyncssh reads keys eagerly during the connect handshake, not
+    lazily, so unlinking right after ``connect()`` returns is safe).
+    Per-server key wins; platform key is the fallback (not a tempfile,
+    do NOT unlink)."""
     enc = server.get("ssh_private_key_enc")
     if enc:
         try:
@@ -156,7 +163,9 @@ def _resolve_client_keys(server: dict) -> list[str] | None:
         pem = normalize_private_key(pem)
         # asyncssh accepts the PEM contents directly as a string in client_keys.
         # Write to a tempfile because asyncssh's loader is more forgiving on
-        # files than on strings for some key formats.
+        # files than on strings for some key formats. The caller unlinks the
+        # tempfile in its ``finally`` block after connect — keeping it around
+        # past handshake leaks a plaintext PEM into /tmp on every restart.
         fd, path = tempfile.mkstemp(prefix=f"ops_ssh_{server['id']}_", suffix=".key")
         try:
             with os.fdopen(fd, "w") as f:
@@ -168,7 +177,7 @@ def _resolve_client_keys(server: dict) -> list[str] | None:
             except OSError:
                 pass
             raise
-        return [path]
+        return [path], [path]
 
     platform_path = (os.environ.get("OPS_SSH_PRIVATE_KEY_PATH") or "").strip()
     if not platform_path:
@@ -180,12 +189,12 @@ def _resolve_client_keys(server: dict) -> list[str] | None:
         raise SshError(
             f"OPS_SSH_PRIVATE_KEY_PATH points at {platform_path!r} which doesn't exist"
         )
-    return [platform_path]
+    return [platform_path], []
 
 
 async def _open_connection(server: dict) -> "asyncssh.SSHClientConnection":
     """Open a new SSH connection. Caller already holds the per-server lock."""
-    client_keys = _resolve_client_keys(server)
+    client_keys, temp_paths = _resolve_client_keys(server)
     try:
         return await asyncio.wait_for(
             asyncssh.connect(
@@ -204,6 +213,16 @@ async def _open_connection(server: dict) -> "asyncssh.SSHClientConnection":
         raise SshError(f"server {server['id']}: SSH connect timed out") from e
     except (OSError, asyncssh.Error) as e:
         raise SshError(f"server {server['id']}: SSH connect failed: {e}") from e
+    finally:
+        # asyncssh has finished reading the keys by now (success or
+        # failure). Drop the tempfiles so they don't accumulate as
+        # plaintext PEMs in /tmp. Caught at audit time: 44 stragglers
+        # from May–June leaking key material across reboots.
+        for p in temp_paths:
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
 
 
 async def _get_connection(server: dict) -> "asyncssh.SSHClientConnection":
