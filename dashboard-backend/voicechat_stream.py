@@ -107,6 +107,11 @@ class _SignalState:
     final_language: str | None = None
     history: list[dict] = field(default_factory=list)
     finals_accumulated: list[str] = field(default_factory=list)
+    # Longest partial seen since the last successful rescue or final.
+    # Used by the partial-shrink-rescue heuristic to recover head
+    # content when the STT pod slides its internal partial window
+    # forward without emitting a final. Reset on each rescue / final.
+    longest_partial_in_window: str = ""
     # Silence clock — wall-clock since the last speech evidence
     # (``partial`` or ``vad_speech``). A ``final`` deliberately does NOT
     # reset this: a final arrives ~800 ms AFTER the pause that produced
@@ -677,6 +682,43 @@ class StreamingTurnSession:
                 # as 10 concatenated rewrites of one spoken sentence.
                 # The pod is the authority on utterance boundaries; it
                 # signals them via ``final``. Trust that.
+                #
+                # HOWEVER: on long utterances (10+ s) some STT pods
+                # SLIDE their internal partial window forward, dropping
+                # leading words from subsequent partials WITHOUT
+                # emitting a final for the dropped portion. Symptom:
+                # 18-second monologue ends up as just the trailing
+                # sentence in the final transcript — head silently
+                # lost, LLM sees only the tail. Rescue: anchor against
+                # the LONGEST partial seen since the last rescue (not
+                # just the previous partial), so successive single-word
+                # slides don't lose the words in between.
+                anchor_partial = self._state.longest_partial_in_window
+                if anchor_partial and text != anchor_partial:
+                    new_words = text.split()
+                    if len(new_words) >= 2:
+                        anchor = " ".join(new_words[:2]).lower()
+                        idx = anchor_partial.lower().find(anchor)
+                        if idx > 0:
+                            dropped = anchor_partial[:idx].strip()
+                            if dropped:
+                                self._state.finals_accumulated.append(dropped)
+                                _log.info(
+                                    "[stream] trace session=%s phase=stt_partial_shrink_rescue "
+                                    "dropped_head=%r new_partial_starts=%r",
+                                    self._session_id,
+                                    dropped[:120], text[:60],
+                                )
+                                # Reset the longest-tracker to the NEW
+                                # partial: everything before it has been
+                                # promoted, so we only track from here.
+                                self._state.longest_partial_in_window = text
+                # Update longest-seen tracker. We only track upward —
+                # a new partial that extends the current longest (or
+                # is strictly longer) becomes the new anchor for the
+                # next rescue check.
+                if len(text) > len(self._state.longest_partial_in_window):
+                    self._state.longest_partial_in_window = text
                 self._state.partial_text = text
                 self._mark_voice()
                 running = self._state.running_transcript()
@@ -693,6 +735,11 @@ class StreamingTurnSession:
                 if text:
                     self._state.finals_accumulated.append(text)
                 self._state.partial_text = ""
+                # Reset the rescue tracker — anything in the previous
+                # partial window is either now in finals_accumulated
+                # (via the rescue path) or in this final, so we start
+                # fresh for the next utterance segment.
+                self._state.longest_partial_in_window = ""
                 lang = data.get("language_detected")
                 if lang:
                     self._state.final_language = lang
