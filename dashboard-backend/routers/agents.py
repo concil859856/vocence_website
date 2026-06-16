@@ -242,6 +242,18 @@ async def list_models(user_id: str = Depends(require_auth)) -> dict:
             },
         ])
 
+    # Gemini 3.5 Flash with reasoning disabled — sub-second TTFT
+    # plus measurably higher general-knowledge quality than the
+    # gpt-oss-120b baseline (Artificial Analysis Intelligence Index
+    # 43 vs 33). The ``reasoning_effort="none"`` injection lives in
+    # llm_client so a future caller can't accidentally turn thinking
+    # back on and quietly regress voice TTFT to 5+ s.
+    if llm_client.google_llm_configured():
+        models.append({
+            "id": "gemini:gemini-3.5-flash",
+            "label": "Google · Gemini 3.5 Flash (highest quality, minimal reasoning)",
+        })
+
     # Surface legacy default if Cerebras isn't configured — keeps the
     # picker non-empty in dev setups without a Cerebras key.
     if not models:

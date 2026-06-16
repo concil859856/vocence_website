@@ -193,6 +193,85 @@ VOICECHAT_GROK_FALLBACK_MODEL = (
     os.environ.get("VOICECHAT_GROK_FALLBACK_MODEL") or "grok-4.20-0309-non-reasoning"
 ).strip()
 
+# Google Gemini — voice-agent third LLM choice (alongside the two
+# Cerebras options). Uses Gemini's OpenAI-compatible endpoint so the
+# wire shape, streaming protocol, and tool-call schema are identical
+# to the other providers — only the URL, auth header, and the
+# ``reasoning_effort="none"`` injection differ.
+#
+# ``reasoning_effort="none"`` is CRITICAL for voice: Gemini 2.5/3.x
+# Flash default to thinking-on, which pushes TTFT from ~0.9 s to 5+ s
+# (unusable for a voice agent). With "none" the model skips the
+# thinking pass entirely — measured Intelligence Index 43 vs 33 for
+# gpt-oss-120b, at sub-second TTFT (per Artificial Analysis P50). The
+# injection lives in ``_stream_chat_with_tools_once`` so any model
+# routed via ``gemini:`` prefix gets it automatically.
+#
+# Multi-key rotation parallels the Cerebras setup: ``GOOGLE_API_KEYS``
+# (plural, comma-separated) is the primary source. ``GOOGLE_API_KEY``
+# (singular) is honoured for back-compat as a single-key shortcut.
+GOOGLE_API_KEYS: list[str] = [
+    k.strip() for k in (
+        os.environ.get("GOOGLE_API_KEYS")
+        or os.environ.get("GOOGLE_API_KEY")
+        or ""
+    ).split(",") if k.strip()
+]
+GOOGLE_BASE_URL = (
+    os.environ.get("GOOGLE_BASE_URL")
+    or "https://generativelanguage.googleapis.com/v1beta/openai"
+).strip().rstrip("/")
+GOOGLE_MODEL = (os.environ.get("GOOGLE_MODEL") or "gemini-3.5-flash").strip()
+
+
+_google_key_rr_counter = 0
+_GOOGLE_COOLDOWN_SEC = float(os.environ.get("GOOGLE_KEY_COOLDOWN_SEC") or "30")
+_google_key_cooldown_until: dict[str, float] = {}
+
+
+def _is_google_key_cooling(key: str) -> bool:
+    if not key:
+        return False
+    expiry = _google_key_cooldown_until.get(key)
+    return expiry is not None and time.monotonic() < expiry
+
+
+def _mark_google_key_cooling(key: str) -> None:
+    if not key:
+        return
+    _google_key_cooldown_until[key] = time.monotonic() + _GOOGLE_COOLDOWN_SEC
+
+
+def _next_google_key_index() -> int:
+    global _google_key_rr_counter
+    if not GOOGLE_API_KEYS:
+        return 0
+    idx = _google_key_rr_counter % len(GOOGLE_API_KEYS)
+    _google_key_rr_counter += 1
+    return idx
+
+
+def google_llm_configured() -> bool:
+    """True when at least one GOOGLE_API_KEYS entry is set — controls
+    whether the Gemini option appears in the agent-settings model
+    picker and whether ``gemini:`` prefixed model ids resolve at
+    routing time."""
+    return bool(GOOGLE_API_KEYS)
+
+
+def _google_headers(api_key: str | None = None) -> dict:
+    """Bearer auth + JSON. The OpenAI-compatible endpoint accepts the
+    standard ``Authorization: Bearer <key>`` shape — same code path
+    as every other provider, no Google-specific SDK required."""
+    key = api_key
+    if key is None:
+        idx = _next_google_key_index()
+        key = GOOGLE_API_KEYS[idx] if GOOGLE_API_KEYS else ""
+    return {
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+    }
+
 # Provider selection: explicit override via env, else auto-detect.
 # Accepts: "openai" | "local" | "chutes" | "" (auto).
 _LLM_PROVIDER_OVERRIDE = (os.environ.get("LLM_PROVIDER") or "").strip().lower()
@@ -312,7 +391,7 @@ def llm_configured() -> bool:
 # specific provider regardless of the system-wide default. This keeps
 # per-agent routing explicit and lets callers mix providers within one
 # deployment (Logos on Claude/Chutes, voice agents on Groq for speed).
-_PROVIDER_PREFIXES = {"groq:", "openai:", "chutes:", "anthropic:", "cerebras:", "xai:", "grok:"}
+_PROVIDER_PREFIXES = {"groq:", "openai:", "chutes:", "anthropic:", "cerebras:", "xai:", "grok:", "gemini:", "google:"}
 
 
 def split_provider_prefix(model: str | None) -> tuple[str | None, str | None]:
@@ -331,6 +410,8 @@ def split_provider_prefix(model: str | None) -> tuple[str | None, str | None]:
                 prov = "chutes"
             elif prov == "grok":
                 prov = "xai"
+            elif prov == "google":
+                prov = "gemini"
             return prov, s[len(pref):].strip() or None
     return None, s
 
@@ -740,6 +821,70 @@ async def _cerebras_chat_complete(
         )
 
 
+async def _gemini_chat_complete(
+    messages: list[dict],
+    *,
+    temperature: float,
+    max_tokens: int,
+    model: str | None,
+    api_key: str | None = None,
+) -> str:
+    """Non-streaming Gemini chat completion. OpenAI-compatible endpoint
+    at generativelanguage.googleapis.com/v1beta/openai/chat/completions.
+    ``reasoning_effort="none"`` is forced on every call so Gemini 3.x
+    Flash doesn't burn 5 s in the thinking pass (see comment on
+    ``GOOGLE_API_KEYS`` for the full rationale)."""
+    if not GOOGLE_API_KEYS:
+        raise RuntimeError("GOOGLE_API_KEYS not set")
+    use_model = (model or GOOGLE_MODEL).strip()
+    if not use_model:
+        raise RuntimeError("No Gemini model configured")
+    url = f"{GOOGLE_BASE_URL}/chat/completions"
+    body = {
+        "model": use_model,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "reasoning_effort": "none",
+    }
+    timeout = aiohttp.ClientTimeout(total=LOCAL_LLM_TIMEOUT_SEC)
+    t0 = time.monotonic()
+    http_status: int | None = None
+    status = "error"
+    err: str | None = None
+    p_tok = c_tok = tot_tok = None
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(url, headers=_google_headers(api_key), json=body) as resp:
+                http_status = resp.status
+                raw = await resp.read()
+                if resp.status != 200:
+                    snippet = raw[:400].decode("utf-8", errors="replace")
+                    raise RuntimeError(f"gemini LLM returned {resp.status}: {snippet}")
+                try:
+                    obj = json.loads(raw.decode("utf-8"))
+                except Exception as exc:
+                    raise RuntimeError(f"gemini LLM returned non-JSON: {exc}")
+                p_tok, c_tok, tot_tok = _usage_from(obj)
+                content = _extract_content(obj)
+                if not content:
+                    status = "empty"
+                    raise RuntimeError("gemini LLM returned empty content")
+                status = "ok"
+                return content
+    except Exception as exc:
+        err = str(exc)
+        raise
+    finally:
+        _record_llm_call(
+            provider="gemini", model=use_model, mode="chat",
+            status=status, http_status=http_status,
+            latency_ms=int((time.monotonic() - t0) * 1000),
+            prompt_tokens=p_tok, completion_tokens=c_tok, total_tokens=tot_tok,
+            error_message=err,
+        )
+
+
 async def _xai_chat_complete(
     messages: list[dict],
     *,
@@ -904,6 +1049,17 @@ async def chat_complete(
         if forced_provider == "xai":
             return await _retry(
                 lambda: _xai_chat_complete(messages, temperature=temperature, max_tokens=max_tokens, model=bare_model),
+                retries,
+            )
+        if forced_provider == "gemini":
+            # Non-streaming Gemini path. Same OpenAI-compatible
+            # endpoint as the streaming route, but goes through the
+            # plain ``_openai_compatible_chat_complete`` shape with
+            # the Google headers + reasoning_effort=none baked in.
+            if not GOOGLE_API_KEYS:
+                raise RuntimeError("GOOGLE_API_KEYS not set")
+            return await _retry(
+                lambda: _gemini_chat_complete(messages, temperature=temperature, max_tokens=max_tokens, model=bare_model),
                 retries,
             )
         if forced_provider == "openai":
@@ -1501,6 +1657,15 @@ def _route_for_streaming(model: str | None) -> tuple[str, str, dict, str]:
                 {**_openai_headers(), "Accept": "text/event-stream"},
                 "openai",
             )
+        if forced == "gemini":
+            if not GOOGLE_API_KEYS:
+                raise RuntimeError("GOOGLE_API_KEYS not set")
+            return (
+                f"{GOOGLE_BASE_URL}/chat/completions",
+                (bare or GOOGLE_MODEL),
+                {**_google_headers(), "Accept": "text/event-stream"},
+                "gemini",
+            )
         # Bare or ``chutes:`` prefix → Chutes
         if not CHUTES_AUTH_KEY:
             raise RuntimeError("CHUTES_AUTH_KEY not set")
@@ -1568,71 +1733,82 @@ async def stream_chat_with_tools(
     if not model_id:
         raise RuntimeError(f"{provider}: no model id configured for streaming")
 
-    # Voice-chat fallback ladder: Cerebras can be transiently unavailable
-    # (rate limits, brief outages). If the *primary* stream fails BEFORE
-    # we've emitted any content/tool-call deltas, retry once against
-    # xAI's Grok with the same prompt + tools. Once any delta has been
-    # emitted, errors propagate — partial replies should not silently
-    # restart on a different provider mid-sentence.
+    # Voice-chat fallback ladder, provider-agnostic. Any primary
+    # provider that has its own multi-key pool (Cerebras, Gemini)
+    # rotates through every configured key in round-robin order
+    # BEFORE falling back to xAI Grok. Eligible providers + the
+    # ``VOICECHAT_LLM_FALLBACK_ENABLED`` flag both gate the behaviour;
+    # if the primary stream fails BEFORE we've emitted any content/
+    # tool-call deltas, the loop retries with the next key or falls
+    # to Grok. Once any delta has been emitted, errors propagate —
+    # partial replies should not silently restart on a different
+    # provider/account mid-sentence.
     #
-    # Eligibility: only when the resolved provider is Cerebras AND xAI
-    # is configured. The flag ``VOICECHAT_LLM_FALLBACK_ENABLED`` gates
-    # the whole behaviour.
+    # The starting key advances by one each call (via the provider's
+    # ``_next_*_key_index``) so traffic spreads evenly across accounts:
+    #   Call 1: try [A, B, C]   — start at A
+    #   Call 2: try [B, C, A]   — start at B
+    #   Call 3: try [C, A, B]   — start at C
+    #   Call 4: try [A, B, C]   — wraps
+    # Keys currently in their post-429 cooldown window are filtered
+    # out so re-probing a known-saturated key doesn't waste
+    # ~100-200 ms per call. When EVERY key is cooling, we go straight
+    # to Grok (tagged with ``<provider>_all_keys_cooling`` in the
+    # audit log so the cause is visible).
+    PROVIDER_KEY_POOLS: dict[str, dict] = {
+        "cerebras": {
+            "keys": CEREBRAS_API_KEYS,
+            "next_idx": _next_cerebras_key_index,
+            "is_cooling": _is_cerebras_key_cooling,
+            "mark_cooling": _mark_cerebras_key_cooling,
+            "headers": _cerebras_headers,
+        },
+        "gemini": {
+            "keys": GOOGLE_API_KEYS,
+            "next_idx": _next_google_key_index,
+            "is_cooling": _is_google_key_cooling,
+            "mark_cooling": _mark_google_key_cooling,
+            "headers": _google_headers,
+        },
+    }
+    pool_info = PROVIDER_KEY_POOLS.get(provider)
     primary_eligible_for_fallback = (
-        provider == "cerebras"
+        pool_info is not None
         and VOICECHAT_LLM_FALLBACK_ENABLED
         and xai_llm_configured()
     )
     emitted_any = False
     fallback_reason: str | None = None
 
-    # Multi-key Cerebras rotation. Walk through every configured key
-    # in ROUND-ROBIN order before falling back to Grok. The starting
-    # key advances by one each call (via ``_next_cerebras_key_index``)
-    # so traffic spreads evenly across accounts over time:
-    #   Call 1: try [A, B, C]   — start at A
-    #   Call 2: try [B, C, A]   — start at B
-    #   Call 3: try [C, A, B]   — start at C
-    #   Call 4: try [A, B, C]   — wraps
-    # Each key attempt is only retried if NO content/tool-call deltas
-    # have been emitted yet — once the user starts seeing tokens,
-    # errors propagate so we don't restart mid-sentence on a different
-    # account.
-    #
-    # Keys currently in their post-429 cooldown window are filtered
-    # out — re-probing a known-saturated key wastes ~100-200 ms per
-    # call. When ALL keys are cooling, the list is empty and we go
-    # straight to Grok (still tagged with ``cerebras_all_keys_429``
-    # so the audit log shows why).
-    cerebras_keys_to_try: list[str] = []
+    keys_to_try: list[str] = []
     all_keys_cooling = False
-    if provider == "cerebras" and CEREBRAS_API_KEYS:
-        start = _next_cerebras_key_index()
-        n = len(CEREBRAS_API_KEYS)
-        rotated = [CEREBRAS_API_KEYS[(start + i) % n] for i in range(n)]
-        cerebras_keys_to_try = [k for k in rotated if not _is_cerebras_key_cooling(k)]
-        if not cerebras_keys_to_try:
-            # Every key in the pool is in cooldown; record the reason
-            # so the Grok fallback below tags the audit log correctly.
+    if pool_info and pool_info["keys"]:
+        pool = pool_info["keys"]
+        next_idx = pool_info["next_idx"]
+        is_cooling = pool_info["is_cooling"]
+        start = next_idx()
+        n = len(pool)
+        rotated = [pool[(start + i) % n] for i in range(n)]
+        keys_to_try = [k for k in rotated if not is_cooling(k)]
+        if not keys_to_try:
             all_keys_cooling = True
-            fallback_reason = "cerebras_all_keys_cooling"
+            fallback_reason = f"{provider}_all_keys_cooling"
             _log.warning(
-                "all %d cerebras key(s) in cooldown; routing this call "
-                "directly to Grok",
-                len(CEREBRAS_API_KEYS),
+                "all %d %s key(s) in cooldown; routing this call directly to Grok",
+                len(pool), provider,
             )
     else:
-        # Non-cerebras provider, single attempt with whatever the
-        # route already resolved (no rotation possible).
-        cerebras_keys_to_try = [""]
+        # Provider has no multi-key pool (openai/groq/chutes/etc.) —
+        # single attempt with whatever the route already resolved.
+        keys_to_try = [""]
 
-    for attempt_idx, attempt_key in enumerate(cerebras_keys_to_try):
-        # Rebuild headers for THIS key if we're on the cerebras path
-        # (first iteration uses the route-resolved headers; subsequent
-        # iterations swap in a fresh key).
+    for attempt_idx, attempt_key in enumerate(keys_to_try):
+        # Rebuild headers for THIS key when we have a pool (the route-
+        # resolved headers used the round-robin's PREVIOUS pick; the
+        # loop's rotation starts from the NEXT index).
         attempt_headers = headers
-        if provider == "cerebras" and attempt_key:
-            attempt_headers = {**_cerebras_headers(attempt_key), "Accept": "text/event-stream"}
+        if pool_info and attempt_key:
+            attempt_headers = {**pool_info["headers"](attempt_key), "Accept": "text/event-stream"}
         try:
             async for evt in _stream_chat_with_tools_once(
                 url, model_id, attempt_headers, provider, messages,
@@ -1653,39 +1829,36 @@ async def stream_chat_with_tools(
                 raise
             msg = str(exc).lower()
             if _is_rate_limit_error(exc):
-                fallback_reason = "cerebras_429"
+                fallback_reason = f"{provider}_429"
                 # Mark this key as cooling so subsequent calls within
                 # the cooldown window skip it entirely.
-                if provider == "cerebras" and attempt_key:
-                    _mark_cerebras_key_cooling(attempt_key)
+                if pool_info and attempt_key:
+                    pool_info["mark_cooling"](attempt_key)
             elif "timeout" in msg or "timed out" in msg:
-                fallback_reason = "cerebras_timeout"
+                fallback_reason = f"{provider}_timeout"
             elif "5" in msg and "returned 5" in msg:
-                fallback_reason = "cerebras_5xx"
+                fallback_reason = f"{provider}_5xx"
             else:
-                fallback_reason = "cerebras_error"
-            # If we have more cerebras keys left, log + loop to next.
+                fallback_reason = f"{provider}_error"
+            # If we have more keys in the pool, log + loop to next.
             # The very last failure falls through to the Grok path
             # below.
-            remaining = len(cerebras_keys_to_try) - attempt_idx - 1
+            remaining = len(keys_to_try) - attempt_idx - 1
             if remaining > 0:
                 _log.warning(
-                    "cerebras key %d/%d failed (%s); trying next key",
-                    attempt_idx + 1, len(cerebras_keys_to_try), exc,
+                    "%s key %d/%d failed (%s); trying next key",
+                    provider, attempt_idx + 1, len(keys_to_try), exc,
                 )
                 continue
             _log.warning(
-                "all %d cerebras key(s) failed; last error: %s. "
-                "Falling back to Grok",
-                len(cerebras_keys_to_try), exc,
+                "all %d %s key(s) failed; last error: %s. Falling back to Grok",
+                len(keys_to_try), provider, exc,
             )
-            # Tag the reason so the audit log shows which path
-            # exhausted: a single key, or every key in the pool.
-            if len(cerebras_keys_to_try) > 1:
-                fallback_reason = f"cerebras_all_keys_{fallback_reason or 'error'}"
+            if len(keys_to_try) > 1:
+                fallback_reason = f"{provider}_all_keys_{fallback_reason or 'error'}"
 
     # Sanity: if every key was already cooling at the top of the call,
-    # ``cerebras_keys_to_try`` was empty and we never entered the loop.
+    # ``keys_to_try`` was empty and we never entered the loop.
     # ``all_keys_cooling`` is True, ``fallback_reason`` is already set,
     # and we drop straight into the Grok path below.
     _ = all_keys_cooling  # referenced so the variable isn't dead code
@@ -1698,12 +1871,12 @@ async def stream_chat_with_tools(
     fb_url = f"{XAI_BASE_URL}/chat/completions"
     fb_headers = {**_xai_headers(), "Accept": "text/event-stream"}
     fb_model = VOICECHAT_GROK_FALLBACK_MODEL
-    _log.info("voicechat fallback using grok model=%s", fb_model)
+    _log.info("voicechat fallback to grok from=%s model=%s", provider, fb_model)
     async for evt in _stream_chat_with_tools_once(
         fb_url, fb_model, fb_headers, "xai", messages,
         tools=tools, tool_choice=tool_choice,
         temperature=temperature, max_tokens=max_tokens,
-        fallback_from="cerebras", fallback_reason=fallback_reason,
+        fallback_from=provider, fallback_reason=fallback_reason,
         reasoning_effort=None,
     ):
         yield evt
@@ -1757,6 +1930,19 @@ async def _stream_chat_with_tools_once(
     else:
         body["max_tokens"] = max_tokens
         body["temperature"] = temperature
+        if provider == "gemini":
+            # CRITICAL for voice: Gemini 2.5/3.x Flash default to
+            # thinking-on, which pushes TTFT from ~0.9 s to 5+ s — the
+            # entire reason we'd pick Gemini over Cerebras goes away.
+            # The OpenAI-compatible endpoint accepts ``reasoning_effort
+            # = "none"`` as a Gemini extension that bypasses the
+            # thinking pass entirely. We force it on every call unless
+            # the caller already set something else (so a future
+            # non-voice integration can opt into reasoning if it wants).
+            if reasoning_effort is None:
+                body["reasoning_effort"] = "none"
+            else:
+                body["reasoning_effort"] = reasoning_effort
     if tools:
         body["tools"] = tools
         body["tool_choice"] = tool_choice
