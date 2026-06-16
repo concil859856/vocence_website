@@ -123,20 +123,31 @@ async def get_job(
 # Ingest endpoints
 # ---------------------------------------------------------------------------
 
+from agent_limits import (
+    INGEST_TEXT_MAX_CHARS,
+    INGEST_TITLE_MAX_CHARS,
+    INGEST_URL_MAX_CHARS,
+)
+
+
 class IngestTextBody(BaseModel):
-    title: str | None = Field(default=None, max_length=200)
-    content: str = Field(..., min_length=1)
+    title: str | None = Field(default=None, max_length=INGEST_TITLE_MAX_CHARS)
+    # Per-call ceiling on raw text. Above this users should split into
+    # multiple ingestions or use the URL/sitemap path. The RAG index has
+    # no total-corpus cap so multi-ingest stacks fine; this is just to
+    # prevent a single API call from OOMing the chunker.
+    content: str = Field(..., min_length=1, max_length=INGEST_TEXT_MAX_CHARS)
 
 
 class IngestUrlBody(BaseModel):
-    url: str = Field(..., min_length=4, max_length=2048)
-    title: str | None = Field(default=None, max_length=200)
+    url: str = Field(..., min_length=4, max_length=INGEST_URL_MAX_CHARS)
+    title: str | None = Field(default=None, max_length=INGEST_TITLE_MAX_CHARS)
     max_depth: int = Field(default=0, ge=0, le=1)
 
 
 class IngestSitemapBody(BaseModel):
-    url: str = Field(..., min_length=4, max_length=2048)
-    title: str | None = Field(default=None, max_length=200)
+    url: str = Field(..., min_length=4, max_length=INGEST_URL_MAX_CHARS)
+    title: str | None = Field(default=None, max_length=INGEST_TITLE_MAX_CHARS)
     include: list[str] | None = None
     exclude: list[str] | None = None
     max_pages: int = Field(default=500, ge=1, le=5000)

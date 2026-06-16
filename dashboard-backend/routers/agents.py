@@ -32,10 +32,23 @@ router = APIRouter(prefix="/agents", tags=["agents"])
 # ---------------------------------------------------------------------------
 
 
+from agent_limits import (
+    AGENT_NAME_MAX_CHARS,
+    AGENT_PURPOSE_MAX_CHARS,
+    AGENT_FIRST_MESSAGE_MAX_CHARS,
+    AGENT_SYSTEM_PROMPT_MAX_CHARS,
+    AGENT_KNOWLEDGE_MAX_CHARS,
+)
+
+
 class AgentConfigIn(BaseModel):
-    purpose: str = ""
-    system_prompt: str = ""
-    knowledge: str = ""
+    purpose: str = Field(default="", max_length=AGENT_PURPOSE_MAX_CHARS)
+    system_prompt: str = Field(default="", max_length=AGENT_SYSTEM_PROMPT_MAX_CHARS)
+    knowledge: str = Field(default="", max_length=AGENT_KNOWLEDGE_MAX_CHARS)
+    # Free-form "what the agent says first" greeting. The voicechat
+    # router speaks this before the user has said anything, so it
+    # needs to be short — a multi-sentence greeting at most.
+    first_message: Optional[str] = Field(default=None, max_length=AGENT_FIRST_MESSAGE_MAX_CHARS)
     # Default voice: must be a real sample-voice id from
     # sample_voices_data.py (NOT a display name). "Ryan" was the
     # historic default but didn't exist in the sample registry, so
@@ -83,13 +96,13 @@ class AgentConfigIn(BaseModel):
 
 
 class AgentCreateIn(BaseModel):
-    name: str = Field(min_length=1, max_length=120)
+    name: str = Field(min_length=1, max_length=AGENT_NAME_MAX_CHARS)
     type: str = Field(pattern="^(knowledge|goal)$")
     config: AgentConfigIn
 
 
 class AgentPatchIn(BaseModel):
-    name: Optional[str] = None
+    name: Optional[str] = Field(default=None, max_length=AGENT_NAME_MAX_CHARS)
     status: Optional[str] = None
     config: Optional[dict] = None  # partial — merged with stored config
 
@@ -403,8 +416,11 @@ async def update_agent(agent_id: str, body: AgentPatchIn, user_id: str = Depends
     values: list[Any] = []
 
     if body.name is not None:
+        # Pydantic already rejected > AGENT_NAME_MAX_CHARS; just strip.
+        # (Previous code silently truncated at 120 — confusing for the
+        # user; the validator now produces a proper 422 instead.)
         fields.append("name = ?")
-        values.append(body.name.strip()[:120])
+        values.append(body.name.strip())
 
     if body.status is not None:
         if body.status not in ("draft", "active", "paused", "archived"):
@@ -422,6 +438,24 @@ async def update_agent(agent_id: str, body: AgentPatchIn, user_id: str = Depends
         if "temperature" in existing:
             try: existing["temperature"] = max(0.0, min(2.0, float(existing["temperature"])))
             except Exception: existing["temperature"] = 0.6
+        # Patch payload uses ``config: dict`` (free-form merge) so the
+        # AgentConfigIn validators don't fire on the inbound body. Re-
+        # check the text-length limits explicitly on the post-merge
+        # config so PATCH can't bypass what POST and AgentConfigIn
+        # enforce. Same numeric thresholds; consistent 422 response.
+        _PATCH_TEXT_LIMITS = {
+            "purpose": AGENT_PURPOSE_MAX_CHARS,
+            "system_prompt": AGENT_SYSTEM_PROMPT_MAX_CHARS,
+            "knowledge": AGENT_KNOWLEDGE_MAX_CHARS,
+            "first_message": AGENT_FIRST_MESSAGE_MAX_CHARS,
+        }
+        for field, cap in _PATCH_TEXT_LIMITS.items():
+            val = existing.get(field)
+            if isinstance(val, str) and len(val) > cap:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"{field} too long: {len(val)} chars (max {cap})",
+                )
         new_knowledge = (existing.get("knowledge") or "").strip()
         knowledge_changed = new_knowledge != old_knowledge
         fields.append("config_json = ?")

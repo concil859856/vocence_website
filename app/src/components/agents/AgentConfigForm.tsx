@@ -23,6 +23,30 @@ import {
   type CustomTool,
 } from '../../lib/agents/api';
 import { CustomToolEditor } from './CustomToolEditor';
+import {
+  AGENT_NAME_MAX_CHARS,
+  AGENT_PURPOSE_MAX_CHARS,
+  AGENT_FIRST_MESSAGE_MAX_CHARS,
+  AGENT_SYSTEM_PROMPT_MAX_CHARS,
+  AGENT_KNOWLEDGE_MAX_CHARS,
+} from '../../lib/agents/limits';
+
+/** Live char counter shown under a length-limited input. Neutral
+ *  grey under 80% of the cap, amber 80-100% (soft warning), red
+ *  once exceeded (won't happen for inputs with ``maxLength`` but
+ *  defensive in case the parent passes oversize data). Mirrors the
+ *  backend's ``Field(max_length=…)`` server-side guard. */
+function CharCounter({ value, max }: { value: string; max: number }) {
+  const n = value.length;
+  const ratio = n / max;
+  const tone =
+    n > max ? 'text-red-400' : ratio >= 0.8 ? 'text-amber-300' : 'text-[#666]';
+  return (
+    <div className={`text-[11px] mt-1 text-right tabular-nums ${tone}`}>
+      {n.toLocaleString()} / {max.toLocaleString()}
+    </div>
+  );
+}
 
 interface Props {
   name: string;
@@ -240,9 +264,11 @@ export function AgentConfigForm({ name, type, config, availableModels, onChange,
             type="text"
             value={name}
             onChange={(e) => onChange({ name: e.target.value })}
-            placeholder="e.g. Postgres Support Assistant"
+            placeholder="e.g. Postgres Support"
+            maxLength={AGENT_NAME_MAX_CHARS}
             className="w-full bg-[#07080A] border border-white/15 rounded-lg px-3 py-2 text-sm text-white placeholder:text-[#666] focus:outline-none focus:border-[#DFFF00]/40"
           />
+          <CharCounter value={name} max={AGENT_NAME_MAX_CHARS} />
         </Field>
         <Field
           label="Purpose"
@@ -254,8 +280,10 @@ export function AgentConfigForm({ name, type, config, availableModels, onChange,
             onChange={(e) => onChange({ config: { purpose: e.target.value } })}
             placeholder="A friendly Postgres support agent that answers user questions about connection errors, replication, and query performance."
             rows={3}
+            maxLength={AGENT_PURPOSE_MAX_CHARS}
             className="w-full bg-[#07080A] border border-white/15 rounded-lg px-3 py-2 text-sm text-white placeholder:text-[#666] focus:outline-none focus:border-[#DFFF00]/40 resize-y"
           />
+          <CharCounter value={config.purpose || ''} max={AGENT_PURPOSE_MAX_CHARS} />
         </Field>
       </Section>
 
@@ -270,9 +298,10 @@ export function AgentConfigForm({ name, type, config, availableModels, onChange,
             value={config.first_message ?? ''}
             onChange={(e) => onChange({ config: { first_message: e.target.value } })}
             placeholder="Hello, how may I assist you today?"
-            maxLength={500}
+            maxLength={AGENT_FIRST_MESSAGE_MAX_CHARS}
             className="w-full bg-[#07080A] border border-white/15 rounded-lg px-3 py-2 text-sm text-white placeholder:text-[#666] focus:outline-none focus:border-[#DFFF00]/40"
           />
+          <CharCounter value={config.first_message || ''} max={AGENT_FIRST_MESSAGE_MAX_CHARS} />
         </Field>
         <Field label="System prompt">
           <textarea
@@ -280,8 +309,10 @@ export function AgentConfigForm({ name, type, config, availableModels, onChange,
             onChange={(e) => onChange({ config: { system_prompt: e.target.value } })}
             placeholder="You are a friendly Postgres expert. Answer concisely. If you don't know, say so."
             rows={20}
+            maxLength={AGENT_SYSTEM_PROMPT_MAX_CHARS}
             className="w-full bg-[#07080A] border border-white/15 rounded-lg px-3 py-2 text-[13px] text-white placeholder:text-[#666] focus:outline-none focus:border-[#DFFF00]/40 resize-y font-mono"
           />
+          <CharCounter value={config.system_prompt || ''} max={AGENT_SYSTEM_PROMPT_MAX_CHARS} />
         </Field>
         <Field
           label="Record calls"
@@ -300,15 +331,17 @@ export function AgentConfigForm({ name, type, config, availableModels, onChange,
       </Section>
 
       {/* Knowledge */}
-      <Section title="Knowledge" hint="Reference text injected into context every turn. v1 is text-only, file/URL upload coming soon.">
+      <Section title="Knowledge" hint="Reference text injected into context every turn. For longer reference docs, use the file / URL upload below.">
         <Field label="">
           <textarea
             value={config.knowledge}
             onChange={(e) => onChange({ config: { knowledge: e.target.value } })}
             placeholder="Pricing tiers, FAQ entries, API examples, error code lookups…"
             rows={15}
+            maxLength={AGENT_KNOWLEDGE_MAX_CHARS}
             className="w-full bg-[#07080A] border border-white/15 rounded-lg px-3 py-2 text-sm text-white placeholder:text-[#666] focus:outline-none focus:border-[#DFFF00]/40 resize-y"
           />
+          <CharCounter value={config.knowledge || ''} max={AGENT_KNOWLEDGE_MAX_CHARS} />
         </Field>
       </Section>
 
