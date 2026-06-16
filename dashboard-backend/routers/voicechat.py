@@ -2972,10 +2972,24 @@ async def _run_turn(
                     # Loop continues: next LLM call sees the tool results.
                 else:
                     # Exited the for-loop without break → hit MAX_TOOL_DEPTH.
-                    # Surface this as a user-visible warning so they know
-                    # the agent gave up rather than just going silent.
+                    # Without action below, the user hears nothing — every
+                    # iteration made tool calls, none of them produced
+                    # content, and the loop ended silently. Observed in
+                    # production: Gemini's OpenAI-compat endpoint doesn't
+                    # always honor ``tool_choice="none"`` on the final
+                    # round, so the safety must live outside the loop.
+                    #
+                    # Make one explicit final LLM call with tools FULLY
+                    # REMOVED (not just tool_choice="none" — Gemini ignores
+                    # that) plus a system instruction telling the model
+                    # to admit failure honestly and suggest the user check
+                    # the source directly. Stays in character (the agent's
+                    # own persona prompt still leads). Streams the reply
+                    # through the same TTS path so the user actually hears
+                    # the "I couldn't find that" message instead of silence.
                     _log.warning(
-                        "voicechat: tool depth cap hit (%d) — abandoning further tool calls",
+                        "voicechat: tool depth cap hit (%d) — falling back to "
+                        "tools-disabled LLM call so the user hears the failure",
                         MAX_TOOL_DEPTH,
                     )
                     try:
@@ -2986,6 +3000,38 @@ async def _run_turn(
                         })
                     except Exception:
                         pass
+                    fallback_messages = working_messages + [{
+                        "role": "system",
+                        "content": (
+                            "You've now used up your tool calls for this "
+                            "turn and the results above didn't give you a "
+                            "clear answer. Tell the user honestly that "
+                            "you couldn't find solid info on this, and "
+                            "suggest they check the source directly "
+                            "(official docs, the project's site, a "
+                            "search engine, etc). Stay fully in "
+                            "character and keep it short and warm. "
+                            "Do NOT mention tools, searches, or that "
+                            "you 'tried to look it up' — just say you "
+                            "couldn't find it and point them somewhere "
+                            "useful."
+                        ),
+                    }]
+                    try:
+                        async for event in stream_chat_with_tools(
+                            fallback_messages,
+                            tools=None,
+                            model=llm_model,
+                        ):
+                            if event.get("type") == "content":
+                                txt = event.get("text") or ""
+                                if txt and not await _feed_content_to_tts(txt):
+                                    return
+                    except Exception as exc:  # noqa: BLE001
+                        _log.warning(
+                            "voicechat: tool-depth fallback LLM call failed: %s",
+                            exc,
+                        )
 
                 # Drain any in-flight JSON the filter was buffering,
                 # then any prose still held by the narration scrubber.
