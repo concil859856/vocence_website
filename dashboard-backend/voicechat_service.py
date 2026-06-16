@@ -117,11 +117,18 @@ SUMMARIZE_KEEP_RECENT = int(os.environ.get("VOICECHAT_SUMMARIZE_KEEP_RECENT") or
 #
 # Two-phase chunker tuned for the qwen3-tts-streaming server (1000-char hard cap).
 #
-# Phase 1 — first chunk of a reply (TTFA-critical, kept small):
+# Phase 1 — first chunk of a reply (sized for voice consistency, NOT TTFA):
 #   Emit at the FIRST sentence boundary once at least FIRST_CHUNK_MIN chars
-#   are buffered, up to FIRST_CHUNK_MAX. The user perceives this chunk's
-#   latency as "how long until the agent starts speaking", so we trade a
-#   tiny prosody hit for ~2× faster TTFA.
+#   are buffered, up to FIRST_CHUNK_MAX. Sized at 600/900 so that most short
+#   replies (the common case) never cross MIN at all — the chunker accepts
+#   the entire buffer at end-of-stream and dispatches it as a SINGLE TTS
+#   call. That's important because each fresh /v1/voice-clone/stream
+#   connection has its own ~100-200 ms voice-cloning "settling" phase at
+#   the start, and the seam between two chunks of one reply was audible.
+#   Trade-off: short-reply TTFA grows from ~1.4 s to ~2.5 s because we
+#   wait for the full LLM output. Voice consistency wins for under-MIN
+#   replies; longer replies still split at sentence boundaries and pay
+#   one seam each.
 #
 # Phase 2 — subsequent chunks (throughput-optimized, packed):
 #   Accumulate up to PACK_TARGET chars, then cut at the LAST sentence
@@ -133,8 +140,8 @@ SUMMARIZE_KEEP_RECENT = int(os.environ.get("VOICECHAT_SUMMARIZE_KEEP_RECENT") or
 #
 # All thresholds stay safely under the server's MAX_TEXT_CHARS=1000.
 SENTENCE_END_PATTERN = re.compile(r"(?<=\S)[\.!\?]+\s+|[。！？]+|\n+")
-FIRST_CHUNK_MIN = int(os.environ.get("VOICECHAT_FIRST_CHUNK_MIN") or "100")
-FIRST_CHUNK_MAX = int(os.environ.get("VOICECHAT_FIRST_CHUNK_MAX") or "200")
+FIRST_CHUNK_MIN = int(os.environ.get("VOICECHAT_FIRST_CHUNK_MIN") or "600")
+FIRST_CHUNK_MAX = int(os.environ.get("VOICECHAT_FIRST_CHUNK_MAX") or "900")
 PACK_TARGET = int(os.environ.get("VOICECHAT_PACK_TARGET") or "700")
 PACK_HARD_FLOOR = int(os.environ.get("VOICECHAT_PACK_HARD_FLOOR") or "900")
 # Kept for backward compat with any external import; no longer used internally.
