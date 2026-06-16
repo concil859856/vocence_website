@@ -1800,6 +1800,19 @@ async def voicechat_session(
             # turn's audio tail can be ignored at the source, not by
             # rejecting the user's mic frames downstream.
             _gate_clear_from_client()
+            # Close the recorder's previous agent turn BEFORE we cancel
+            # the in-flight TTS task. ``mark_agent_barge_in`` trims the
+            # buffered agent audio to wall-clock-elapsed and commits it
+            # as a segment, then closes the gate. Without this call,
+            # stream_start / voice / text from a VAD-detected barge-in
+            # leaves the previous turn's buffer dangling — and the
+            # NEXT turn's ``notify_agent_turn_started`` would silently
+            # drop it (defensive reset). Symptom: parts of the agent's
+            # reply never made it into the recording. Idempotent w.r.t.
+            # ``mark_agent_barge_in`` already-called paths (cancel
+            # branch above), which closes the gate first so this no-ops.
+            if call_recorder is not None and call_recorder.agent_turn_open:
+                call_recorder.mark_agent_barge_in()
             # Cancel any in-flight turn before starting a new one
             await _cancel_current()
             # Defensively close the previous turn's idle-billing slot.

@@ -211,19 +211,41 @@ class CallRecorder:
 
         Idempotent: if a turn is already open with no audio yet, this
         is a no-op. If the previous turn left orphan bytes in the
-        buffer (defensive — shouldn't happen if the router calls
-        ``mark_agent_barge_in`` / ``notify_agent_tts_done`` correctly),
-        they are dropped here rather than bleeding into the new turn.
+        buffer (the router SHOULD have called ``mark_agent_barge_in``
+        or ``notify_agent_tts_done``+settled, but settled is unreliable
+        — sometimes the client gets interrupted before it sends one),
+        commit them as a trimmed segment FIRST so the agent's audio
+        actually makes it into the recording. Dropping silently is
+        what caused "parts of the agent reply are missing from the
+        recording" in production.
         """
         if not self.started:
             return
         if self._agent_buffer or self._agent_turn_start_ms is not None:
-            # Defensive: should be empty already. Drop without
-            # recording — these are leftover bytes from an
-            # improperly-closed previous turn and we'd rather lose
-            # a few frames than corrupt the timeline.
-            self._reset_agent_turn_state()
+            self._flush_open_turn_trimmed()
         self._agent_turn_open = True
+
+    def _flush_open_turn_trimmed(self) -> None:
+        """Commit the open turn's buffer as a segment, trimmed to the
+        max audio the user could have heard (wall-clock since the turn
+        opened). Used by both ``mark_agent_barge_in`` (user interrupted)
+        and ``notify_agent_turn_started`` (next-turn safety path: a
+        previous turn ended without an explicit barge-in OR a
+        ``settled`` signal). Always resets the per-turn state."""
+        if self._agent_turn_start_ms is not None:
+            elapsed_ms = self._now_ms() - self._agent_turn_start_ms
+            if elapsed_ms < 0:
+                elapsed_ms = 0
+            max_played_bytes = elapsed_ms * BYTES_PER_MS
+            if max_played_bytes & 1:
+                max_played_bytes -= 1
+            keep = min(max_played_bytes, len(self._agent_buffer))
+            playable = bytes(self._agent_buffer[:keep])
+            if playable:
+                self._agent_segments.append(
+                    (self._agent_turn_start_ms, playable)
+                )
+        self._reset_agent_turn_state()
 
     def push_agent(self, pcm: bytes | bytearray | memoryview) -> None:
         """Append an agent PCM chunk just before it goes to the client.
@@ -275,20 +297,7 @@ class CallRecorder:
         """
         if not self.started:
             return
-        if self._agent_turn_start_ms is not None:
-            elapsed_ms = self._now_ms() - self._agent_turn_start_ms
-            if elapsed_ms < 0:
-                elapsed_ms = 0
-            max_played_bytes = elapsed_ms * BYTES_PER_MS
-            if max_played_bytes & 1:
-                max_played_bytes -= 1
-            keep = min(max_played_bytes, len(self._agent_buffer))
-            playable = bytes(self._agent_buffer[:keep])
-            if playable:
-                self._agent_segments.append(
-                    (self._agent_turn_start_ms, playable)
-                )
-        self._reset_agent_turn_state()
+        self._flush_open_turn_trimmed()
         # Close the gate. Orphan pushes from the cancelled TTS
         # task's grace window land here with the gate False and
         # are dropped — that's the fix for "in the recording,
