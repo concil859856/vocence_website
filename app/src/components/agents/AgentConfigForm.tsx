@@ -454,6 +454,49 @@ export function AgentConfigForm({ name, type, config, availableModels, onChange,
         </Field>
       </Section>
 
+      {/* Turn-taking tuning. Both controls affect how aggressively
+          UltraVAD calls "you're done talking" — too snappy cuts the
+          user mid-sentence, too patient adds latency to every reply.
+          Defaults match the global server defaults so undefined here
+          renders the recommended baseline. */}
+      <Section
+        title="Turn detection"
+        hint="How quickly the agent decides you've finished speaking. Snappier replies cut more often; more patience adds reply latency."
+      >
+        <Field
+          label="End-of-turn confidence threshold"
+          hint={`Higher = waits for stronger end-of-turn signal before replying. Current: ${(config.ultravad_threshold ?? 0.5).toFixed(2)}`}
+        >
+          <input
+            type="range"
+            min={0.3}
+            max={0.8}
+            step={0.05}
+            value={config.ultravad_threshold ?? 0.5}
+            onChange={(e) => onChange({ config: { ultravad_threshold: Number(e.target.value) } })}
+            className="w-full accent-[#DFFF00]"
+          />
+        </Field>
+        <Field
+          label="Minimum silence before reply (ms)"
+          hint={`How long the agent waits in silence before it's allowed to commit a turn. Default 500 ms.`}
+        >
+          <input
+            type="number"
+            min={200}
+            max={2000}
+            step={50}
+            value={config.min_delay_ms ?? 500}
+            onChange={(e) => {
+              const v = Number(e.target.value);
+              const clamped = Math.max(200, Math.min(2000, isFinite(v) ? v : 500));
+              onChange({ config: { min_delay_ms: clamped } });
+            }}
+            className="w-32 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white"
+          />
+        </Field>
+      </Section>
+
       {/* Tools, built-in capabilities the agent can call mid-conversation.
           Web search, weather, time, URL fetch, Wikipedia. Tools the
           deployment can't run (missing API key) render disabled with

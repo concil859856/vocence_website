@@ -47,6 +47,15 @@ export interface AgentConfig {
    *  player + download. Off by default — the agent owner explicitly
    *  opts in. Mirrors AgentConfigIn.record_enabled on the backend. */
   record_enabled?: boolean;
+  /** UltraVAD end-of-turn probability threshold. Range [0, 1].
+   *  Lower = snappier turn-taking, higher = more patient. Default
+   *  0.50. Mirrors AgentConfigIn.ultravad_threshold on the backend. */
+  ultravad_threshold?: number;
+  /** Minimum silence (ms) before UltraVAD can fire commit, regardless
+   *  of model confidence. Range 200–2000. Undefined falls through to
+   *  the backend's MIN_DELAY_MS env-var default (500 ms). Mirrors
+   *  AgentConfigIn.min_delay_ms on the backend. */
+  min_delay_ms?: number | null;
 }
 
 export interface Agent {

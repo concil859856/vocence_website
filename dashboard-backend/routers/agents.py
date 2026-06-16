@@ -83,9 +83,17 @@ class AgentConfigIn(BaseModel):
     # [0, 1]; higher = more conservative (waits for stronger model
     # confidence, lets brief mid-sentence pauses through), lower =
     # more eager (snappier but more likely to cut mid-utterance).
-    # 0.55 trades ~200 ms of end-of-turn latency for noticeably
-    # fewer "agent cut me off mid-sentence" complaints.
-    ultravad_threshold: float = 0.55
+    # 0.50 is the global default — biased slightly toward "wait for
+    # the user to finish" over "snap fast at any pause."
+    ultravad_threshold: float = Field(default=0.50, ge=0.0, le=1.0)
+    # Minimum silence (ms) before the UltraVAD primary path is even
+    # allowed to fire commit, regardless of model confidence. Bumping
+    # this up gives the user a longer "is the next sentence coming?"
+    # window before EOU. Falls through to the global ``MIN_DELAY_MS``
+    # env-var default (500 ms) when omitted. Range 200–2000 — below
+    # 200 ms is faster than human pause detection and above 2000 ms
+    # makes the agent feel sluggish.
+    min_delay_ms: Optional[int] = Field(default=None, ge=200, le=2000)
     # Per-agent recording opt-in. When true, the voicechat session
     # tees both legs (user + agent PCM) to a stereo WAV stored under
     # data/recordings/{user_id}/{session_id}.wav and writes the path

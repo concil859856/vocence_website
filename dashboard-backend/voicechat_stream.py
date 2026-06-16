@@ -152,7 +152,11 @@ class StreamingTurnSession:
         # Per-agent voice-pipeline config (see AgentConfigIn).
         denoise_enabled: bool = False,
         turn_decider: str = "fusion",
-        ultravad_threshold: float = 0.55,
+        ultravad_threshold: float = 0.50,
+        # Per-agent override for the global ``MIN_DELAY_MS`` env var.
+        # ``None`` falls through to the env-var default. Bounded by
+        # the Pydantic layer (200..2000 ms) so don't re-validate here.
+        min_delay_ms: int | None = None,
         # Optional STT pod WS prewarmed at session-open. When present,
         # _open_stt adopts it instead of cold-connecting — saves the
         # full TLS + WS handshake + STT-pod-ready round trip (~200–500
@@ -199,6 +203,12 @@ class StreamingTurnSession:
         self._denoise_enabled = bool(denoise_enabled)
         self._turn_decider = turn_decider if turn_decider in ("ultravad", "fusion") else "fusion"
         self._ultravad_threshold = float(ultravad_threshold)
+        # Resolve min-delay: explicit per-agent value wins, otherwise
+        # the module-level env-var default. Validation already happened
+        # at the Pydantic layer; clamp here only as a defensive guard.
+        self._min_delay_ms = (
+            int(min_delay_ms) if min_delay_ms is not None else MIN_DELAY_MS
+        )
 
         self._session_id = uuid.uuid4().hex[:12]
         self._state = _SignalState(history=history)
@@ -799,7 +809,7 @@ class StreamingTurnSession:
             td_available, st_available, uv_available,
             self._denoiser is not None,
             self._language, len(self._history),
-            MIN_DELAY_MS, MAX_DELAY_MS, self._ultravad_threshold,
+            self._min_delay_ms, MAX_DELAY_MS, self._ultravad_threshold,
         )
 
         last_log_at = 0.0
@@ -840,7 +850,7 @@ class StreamingTurnSession:
             #      hangs until SESSION_HARD_TIMEOUT_S kills the WS.
             uv_threshold_crossed = (
                 uv_available
-                and silence_ms >= MIN_DELAY_MS
+                and silence_ms >= self._min_delay_ms
                 and ultravad_p >= self._ultravad_threshold
             )
             uv_backstop_hit = uv_available and silence_ms >= MAX_DELAY_MS

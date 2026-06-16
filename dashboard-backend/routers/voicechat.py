@@ -1990,7 +1990,8 @@ async def voicechat_session(
                     tts_warmer=session_tts_warmer,
                     denoise_enabled=bool(_agent_cfg.get("denoise_enabled", False)),
                     turn_decider=str(_agent_cfg.get("turn_decider", "fusion")),
-                    ultravad_threshold=float(_agent_cfg.get("ultravad_threshold", 0.55)),
+                    ultravad_threshold=float(_agent_cfg.get("ultravad_threshold", 0.50)),
+                    min_delay_ms=_agent_cfg.get("min_delay_ms"),
                     prewarmed_stt=adopted_prewarm_stt,
                     call_recorder=call_recorder,
                     # Hand off the rolling pre-roll the top-level loop
@@ -2259,7 +2260,8 @@ async def _run_turn(
     # current behavior until explicitly opted in.
     denoise_enabled: bool = False,
     turn_decider: str = "fusion",
-    ultravad_threshold: float = 0.55,
+    ultravad_threshold: float = 0.50,
+    min_delay_ms: int | None = None,
     # First-turn STT pod prewarm from the session layer (None on later
     # turns). Forwarded to StreamingTurnSession, which adopts or
     # discards in _open_stt depending on language match. Ignored for
@@ -2362,6 +2364,7 @@ async def _run_turn(
                 denoise_enabled=denoise_enabled,
                 turn_decider=turn_decider,
                 ultravad_threshold=ultravad_threshold,
+                min_delay_ms=min_delay_ms,
                 prewarmed_stt=prewarmed_stt,
                 call_recorder=call_recorder,
                 preroll_frames=preroll_frames,
