@@ -256,9 +256,13 @@ class VoiceAgentBilling:
         # else: _last_activity_at is in the future (audio queued to
         # play). Leave it; the watchdog will start counting once
         # playback is estimated to have completed.
-        _log.info(
-            "[billing] mark_turn_ended session=%s in_flight=%d (was %d) "
-            "last_activity_in=%.1fs",
+        # Defensive duplicate-end (was 0) is noise — only log real
+        # state transitions. INFO when in_flight actually changed,
+        # DEBUG for the no-op floor-at-zero case.
+        log_fn = _log.info if before > 0 else _log.debug
+        log_fn(
+            "[billing] turn_ended session=%s in_flight=%d (was %d) "
+            "next_idle_in=%.1fs",
             self.session_id, self._in_flight_turns, before,
             self._last_activity_at - now,
         )
@@ -457,20 +461,19 @@ class VoiceAgentBilling:
             #    away shouldn't be charged for one more increment past
             #    the threshold; we close on the increment AT the boundary.
             #
-            # Diagnostic log: prints the two numbers the idle check
-            # compares so we can see exactly why an idle timeout did or
-            # didn't fire on a given tick. Throttled to "interesting"
-            # ticks (anything past 30 s of apparent inactivity OR
-            # in-flight > 0) so quiet idle ticks don't spam the log.
+            # Diagnostic tick — now DEBUG. The only INFO-worthy idle
+            # signal is "we're about to fire idle_timeout", which the
+            # _fire_end below already logs. Continuous "in_flight=1
+            # since_activity=-23s" ticks every 6 s were dominating the
+            # log on long agent replies (future-timestamp from
+            # mark_agent_audio_pushed → negative since_activity).
             since = int(now - self._last_activity_at)
-            if since >= 30 or self._in_flight_turns != 0:
-                _log.info(
-                    "[billing] tick session=%s in_flight=%d since_activity=%ds "
-                    "idle_threshold=%ds idle_would_fire=%s",
-                    self.session_id, self._in_flight_turns, since,
-                    IDLE_TIMEOUT_SEC,
-                    self._in_flight_turns == 0 and since >= IDLE_TIMEOUT_SEC,
-                )
+            _log.debug(
+                "[billing] tick session=%s in_flight=%d since_activity=%ds "
+                "idle_threshold=%ds",
+                self.session_id, self._in_flight_turns, since,
+                IDLE_TIMEOUT_SEC,
+            )
             if (
                 IDLE_TIMEOUT_SEC > 0
                 and self._in_flight_turns == 0

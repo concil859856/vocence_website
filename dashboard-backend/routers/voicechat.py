@@ -1407,9 +1407,14 @@ async def voicechat_session(
                 # ``_gate_clear_from_client`` — wait for it. If the
                 # client truly crashed and never sends it, the
                 # session's max-duration cap is the safety net.
-                _log.warning(
-                    "[gate] safety release after %.0fs without client_audio_settled "
-                    "(session=%s, mic re-opened; billing still waits for real settled)",
+                # Demoted to DEBUG: this fires on EVERY agent reply
+                # longer than 6 s of audio (which is most replies),
+                # and the behavior is correct-by-design. Spamming the
+                # log every turn obscures the real signals. Bump to
+                # DEBUG when investigating mic-gate issues.
+                _log.debug(
+                    "[gate] safety release after %.0fs no client_audio_settled "
+                    "(session=%s)",
                     GATE_MAX_HOLD_S, session_id,
                 )
                 bot_speaking_evt.clear()
@@ -1703,18 +1708,18 @@ async def voicechat_session(
                 continue
 
             mtype = payload.get("type")
-            # Log every client→server message at INFO so we can replay
-            # the exact protocol order: ready, stream_start, cancel,
-            # text, voice. The "only last sentence" bug shows up here
-            # as cancel-followed-by-stream_start in quick succession
-            # (barge-in cascade) — visible only with this log.
-            _log.info(
-                "[stream] trace session=%s phase=client_msg type=%r "
-                "current_turn_active=%s payload_preview=%r",
+            # Routine client→server frames (client_audio_started,
+            # client_audio_settled, stream_commit) fire on every turn
+            # and dominate the log. Only INFO-log the user-action
+            # types (cancel, stream_start, voice, text); the rest go
+            # to DEBUG. Set the logger to DEBUG when reproducing a
+            # barge-in cascade to get the full message stream back.
+            _routine = {"client_audio_started", "client_audio_settled", "stream_commit"}
+            _msg_log = _log.debug if mtype in _routine else _log.info
+            _msg_log(
+                "[stream] client_msg session=%s type=%r turn_active=%s",
                 session_id, mtype,
                 bool(current_turn and not current_turn.done()),
-                {k: (v[:60] if isinstance(v, str) else v)
-                 for k, v in payload.items() if k != "audio_b64"},
             )
 
             if mtype == "cancel":

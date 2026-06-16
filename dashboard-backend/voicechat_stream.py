@@ -78,6 +78,46 @@ SESSION_HARD_TIMEOUT_S = 30.0
 # accept whatever the client sends and tee it). Kept here for docs.
 EXPECTED_FRAME_BYTES = 640  # 20 ms @ 16 kHz mono s16le
 
+# Words that strongly suggest the user is mid-thought (function
+# words / conjunctions / determiners / hedges). When the running
+# transcript ends with one of these, we extend the EOU silence
+# requirement so the agent doesn't cut mid-sentence. Lowercased,
+# punctuation-stripped before comparison.
+_INCOMPLETE_TAIL_WORDS = frozenset({
+    # Conjunctions
+    "and", "or", "but", "so", "because", "if", "when", "while",
+    "as", "though", "although", "than",
+    # Prepositions
+    "to", "for", "with", "by", "of", "in", "on", "at", "from",
+    "about", "into", "onto", "over", "under", "through", "during",
+    # Determiners / articles
+    "the", "a", "an", "my", "your", "his", "her", "its", "our", "their",
+    "this", "that", "these", "those", "some", "any", "every", "no",
+    # Pronouns
+    "i", "you", "he", "she", "we", "they", "it", "who", "whom", "which",
+    # Auxiliaries
+    "is", "was", "are", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did",
+    "will", "would", "shall", "should", "may", "might", "can", "could",
+    "must", "ought",
+    # Common hedges / fillers
+    "uh", "um", "like", "well",
+})
+
+
+def _looks_mid_thought(text: str) -> bool:
+    """True if the text ends mid-sentence (function word, no terminator).
+    Used to extend EOU silence requirements so the agent doesn't cut
+    in the middle of a longer thought."""
+    if not text:
+        return False
+    stripped = text.rstrip()
+    if stripped.endswith((".", "!", "?")):
+        return False
+    last = stripped.rsplit(None, 1)[-1] if stripped else ""
+    last_clean = last.lower().strip(",.;:!?\"'()[]")
+    return last_clean in _INCOMPLETE_TAIL_WORDS
+
 # STT provider selection. ``vocence`` (default) uses the self-hosted
 # vocence/stt-streaming pod via the gpu_pool dispatcher. ``deepgram``
 # routes the same audio over a WebSocket to Deepgram's Listen API
@@ -141,6 +181,21 @@ class _SignalState:
         parts = [seg for seg in self.finals_accumulated if seg]
         if self.partial_text:
             parts.append(self.partial_text)
+        return " ".join(parts).strip()
+
+    def transcript_for_commit(self) -> str:
+        """Final transcript used at commit boundary. Prefers the
+        longest partial seen since the last final over the latest
+        partial — the STT pod sometimes emits a 'final' that wildly
+        rewrites a previously-good partial, AND its sliding window
+        means the latest partial may be shorter than the cumulative
+        max. Both failure modes lose content, so anchor on the max."""
+        parts = [seg for seg in self.finals_accumulated if seg]
+        tail = self.partial_text
+        if len(self.longest_partial_in_window) > len(tail):
+            tail = self.longest_partial_in_window
+        if tail:
+            parts.append(tail)
         return " ".join(parts).strip()
 
     def silence_ms(self) -> int:
@@ -355,7 +410,7 @@ class StreamingTurnSession:
                     except Exception as exc:  # noqa: BLE001
                         _log.warning("[stream] task %s raised: %s", t.get_name(), exc)
 
-            transcript = self._state.running_transcript()
+            transcript = self._state.transcript_for_commit()
             if not transcript:
                 return None
 
@@ -822,9 +877,12 @@ class StreamingTurnSession:
                 self._state.partial_text = text
                 self._mark_voice()
                 running = self._state.running_transcript()
-                _log.info(
-                    "[stream] trace session=%s phase=stt_partial text=%r running=%r",
-                    self._session_id, text[:120], running[:120],
+                # Per-partial trace is DEBUG only — partials fire every
+                # ~100 ms and dominate the log otherwise. The commit
+                # trace below captures the final picture.
+                _log.debug(
+                    "[stream] partial session=%s text=%r",
+                    self._session_id, text[:80],
                 )
                 try:
                     await self._send_json({"type": "partial_transcript", "text": running})
@@ -843,10 +901,10 @@ class StreamingTurnSession:
                 lang = data.get("language_detected")
                 if lang:
                     self._state.final_language = lang
-                _log.info(
-                    "[stream] trace session=%s phase=stt_final new=%r accumulator=%r",
-                    self._session_id, text[:120],
-                    [seg[:60] for seg in self._state.finals_accumulated],
+                _log.debug(
+                    "[stream] final session=%s new=%r segs=%d",
+                    self._session_id, text[:80],
+                    len(self._state.finals_accumulated),
                 )
                 try:
                     await self._send_json({
@@ -1034,31 +1092,30 @@ class StreamingTurnSession:
             #      (rule="silence" so it's logged as different from a
             #      confident UltraVAD commit). Without this the turn
             #      hangs until SESSION_HARD_TIMEOUT_S kills the WS.
-            # Adaptive min_delay: short transcripts (backchannels,
-            # fillers, half-sentences) need MORE silence before commit
-            # because they're often mid-thought pauses. Long transcripts
-            # are usually complete and can commit at the configured
-            # min_delay. Triggered by user feedback: "Hm. Yeah." was
-            # committing at 500 ms silence even though the user was
-            # about to continue. Long sentences like "What is the best
-            # TTS model in the world" are clearly done — commit fast.
+            # Adaptive min_delay: short transcripts and mid-thought
+            # endings need MORE silence before commit because they're
+            # usually pauses, not utterance ends. Long completed
+            # sentences commit fast.
             #
-            # Bucket on total spoken words this turn (finals_accumulated
-            # + current partial). Buckets are coarse so the curve doesn't
-            # surprise the user with sudden cadence shifts.
-            total_words = sum(
-                len(s.split()) for s in self._state.finals_accumulated
-            ) + len(self._state.partial_text.split())
+            #   1. Bucket on total spoken words (short = needs patience):
+            #        ≤ 3 words  → 1500 ms
+            #        ≤ 6 words  → 1000 ms
+            #        ≥ 7 words  → configured min_delay (default 500 ms)
+            #   2. If the running transcript ENDS with a function word
+            #      ("and", "to", "the", "is", "uh" …) or no terminator,
+            #      add another 600 ms — the user is mid-clause.
+            #
+            # Backstop (MAX_DELAY_MS = 3 s) still fires regardless.
+            running_text = self._state.running_transcript()
+            total_words = len(running_text.split()) if running_text else 0
             if total_words <= 3:
-                # Backchannels / fillers / "yeah" / "hm yeah" — wait
-                # noticeably longer so we don't cut a thought in half.
-                effective_min_delay = max(self._min_delay_ms, 1200)
+                effective_min_delay = max(self._min_delay_ms, 1500)
             elif total_words <= 6:
-                # Short replies — half-sentences, slight extra patience.
-                effective_min_delay = max(self._min_delay_ms, 800)
+                effective_min_delay = max(self._min_delay_ms, 1000)
             else:
-                # Full sentences — trust the configured floor.
                 effective_min_delay = self._min_delay_ms
+            if _looks_mid_thought(running_text):
+                effective_min_delay += 600
             uv_threshold_crossed = (
                 uv_available
                 and silence_ms >= effective_min_delay
@@ -1086,20 +1143,16 @@ class StreamingTurnSession:
                     else "silence" if uv_backstop_hit else ""
                 )
 
-            # Throttled per-tick trace + always-on commit trace.
-            now = time.monotonic()
-            if silence_ms >= 150 and (now - last_log_at) > 0.4 or committed:
-                last_log_at = now
-                _log.info(
-                    "[stream] trace session=%s tick silence=%dms/%dms "
-                    "conf=%.2fx text_c=%.2f audio=%.2f complete=%.2f "
-                    "uv_p=%.3f rule=%r shadow_%s_commit=%s shadow_rule=%r "
-                    "partial=%r",
+            # Per-tick trace is DEBUG-only — the commit trace below
+            # captures the decision-relevant state. Set the logger to
+            # DEBUG when reproducing a wrong-commit issue and the
+            # per-tick stream comes back.
+            if silence_ms >= 150:
+                _log.debug(
+                    "[stream] tick session=%s silence=%dms/%dms uv_p=%.3f "
+                    "rule=%r partial=%r",
                     self._session_id, silence_ms, fusion_d.required_ms,
-                    self._state.turn_detector_confidence, fusion_d.text_c,
-                    fusion_d.audio_c, fusion_d.combined,
-                    ultravad_p, rule, shadow_label, shadow_committed, shadow_rule,
-                    self._state.running_transcript()[:80],
+                    ultravad_p, rule, self._state.partial_text[:60],
                 )
 
             if not committed:
