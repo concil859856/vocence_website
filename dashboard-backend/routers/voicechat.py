@@ -2024,11 +2024,57 @@ async def voicechat_session(
             # stream session ends (its own loop handles ``stream_commit``
             # / ``cancel`` text messages so cancellation still works).
             if mtype == "stream_start":
+                # Wait for the streaming turn to finish, but stay
+                # responsive to client disconnects. During the LLM /
+                # TTS phase of ``current_turn`` nobody is reading the
+                # WS (the StreamingTurnSession's _recv_next_audio
+                # already returned), so a slow LLM (60 s sock_read)
+                # used to leave the user staring at an unresponsive
+                # "end" button. Race the turn against an asyncio
+                # shield + 2 s poll: if ``ws.client_state`` flips to
+                # DISCONNECTED or ws.receive() reports
+                # ``websocket.disconnect``, kill the turn immediately.
+                from starlette.websockets import WebSocketState
                 try:
-                    await current_turn
-                except asyncio.CancelledError:
-                    pass
-                current_turn = None
+                    while not current_turn.done():
+                        try:
+                            await asyncio.wait_for(
+                                asyncio.shield(current_turn), timeout=2.0
+                            )
+                        except asyncio.TimeoutError:
+                            # Still in flight. Check WS health. The
+                            # state attributes only update once
+                            # receive() drains the disconnect message
+                            # — but if the underlying transport is
+                            # closed, ``application_state`` flips even
+                            # without a receive, so the cheap check
+                            # works for the common case.
+                            if (
+                                ws.client_state == WebSocketState.DISCONNECTED
+                                or ws.application_state == WebSocketState.DISCONNECTED
+                            ):
+                                _log.info(
+                                    "[stream] trace session=%s phase=client_disconnect_during_turn "
+                                    "(cancelling in-flight LLM/TTS so the session ends instead of waiting on the LLM)",
+                                    session_id,
+                                )
+                                current_turn.cancel()
+                                with suppress(Exception):
+                                    await asyncio.wait_for(current_turn, timeout=2)
+                                break
+                            continue
+                        except asyncio.CancelledError:
+                            # Propagated cancellation (e.g. uvicorn shutdown).
+                            # Make sure the inner turn dies with us.
+                            if not current_turn.done():
+                                current_turn.cancel()
+                                with suppress(Exception):
+                                    await asyncio.wait_for(current_turn, timeout=2)
+                            raise
+                        # current_turn finished normally — fall out of the loop.
+                        break
+                finally:
+                    current_turn = None
     finally:
         # ── Session-close cleanup ─────────────────────────────────────
         # CRITICAL: ``asyncio.CancelledError`` is a ``BaseException``,
