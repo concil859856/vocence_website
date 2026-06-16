@@ -44,6 +44,7 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import os
 import struct
 import time
 import wave
@@ -58,6 +59,14 @@ _log = logging.getLogger(__name__)
 SAMPLE_RATE = 16000
 SAMPLE_WIDTH_BYTES = 2  # s16le
 BYTES_PER_MS = SAMPLE_RATE * SAMPLE_WIDTH_BYTES // 1000  # 32
+
+# Inter-turn silence cap. Real calls have multi-second gaps between
+# the user's end-of-speech and the agent's first audio (LLM TTFT +
+# TTS TTFA + EOU detection). Listening to a recording with those
+# gaps preserved one-for-one is unbearable. We compress any gap
+# where BOTH legs are silent to at most this many milliseconds.
+# Set to a large value (e.g. 999999) to effectively disable.
+RECORDING_MAX_GAP_MS = int(os.environ.get("RECORDING_MAX_GAP_MS") or "400")
 
 
 class CallRecorder:
@@ -352,6 +361,62 @@ class CallRecorder:
         self._agent_tts_done = False
         self._agent_client_settled = False
 
+    def _compute_gap_breakpoints(self) -> list[tuple[int, int]]:
+        """Find silences > ``RECORDING_MAX_GAP_MS`` where BOTH legs
+        are inactive, and compute the cumulative shift to apply to
+        chunks that start at or after each gap.
+
+        Returns a sorted list of (gap_end_offset_ms, cumulative_shift_ms)
+        tuples. A chunk whose original offset is >= ``gap_end_offset_ms``
+        gets shifted earlier by ``cumulative_shift_ms`` milliseconds.
+
+        Covers the leading-silence case too: if the call begins with a
+        long pre-greeting wait, that initial gap is also compressed."""
+        intervals: list[tuple[int, int]] = []
+        for off_ms, data in self._user_chunks:
+            intervals.append((off_ms, off_ms + len(data) // BYTES_PER_MS))
+        for off_ms, data in self._agent_segments:
+            intervals.append((off_ms, off_ms + len(data) // BYTES_PER_MS))
+        if not intervals or RECORDING_MAX_GAP_MS <= 0:
+            return []
+        intervals.sort()
+        merged: list[list[int]] = [list(intervals[0])]
+        for start, end in intervals[1:]:
+            if start <= merged[-1][1]:
+                merged[-1][1] = max(merged[-1][1], end)
+            else:
+                merged.append([start, end])
+
+        breakpoints: list[tuple[int, int]] = []
+        cumulative = 0
+        # Leading-silence (t=0 to first activity).
+        leading = merged[0][0]
+        if leading > RECORDING_MAX_GAP_MS:
+            cumulative += leading - RECORDING_MAX_GAP_MS
+            breakpoints.append((merged[0][0], cumulative))
+        for i in range(len(merged) - 1):
+            gap_start = merged[i][1]
+            gap_end = merged[i + 1][0]
+            gap = gap_end - gap_start
+            if gap > RECORDING_MAX_GAP_MS:
+                cumulative += gap - RECORDING_MAX_GAP_MS
+                breakpoints.append((gap_end, cumulative))
+        return breakpoints
+
+    @staticmethod
+    def _apply_shift(offset_ms: int, breakpoints: list[tuple[int, int]]) -> int:
+        """Shift a chunk's offset earlier by the cumulative shift of
+        the latest breakpoint with ``bp_at <= offset_ms``. Walks the
+        sorted list in order (breakpoints are small in practice — one
+        per inter-turn gap, typically <20 in a call)."""
+        shift = 0
+        for bp_at, bp_shift in breakpoints:
+            if offset_ms >= bp_at:
+                shift = bp_shift
+            else:
+                break
+        return max(0, offset_ms - shift)
+
     @staticmethod
     def _decimate_24k_to_16k(pcm_s16le_24k: bytes) -> bytes:
         """Keep 2 of every 3 input samples (drop every third) — exact
@@ -399,12 +464,40 @@ class CallRecorder:
             # flowed. Nothing to upload.
             return (None, None, 0)
 
+        # Compress inter-turn silences > RECORDING_MAX_GAP_MS by
+        # shifting chunk offsets earlier. Applied to BOTH legs with
+        # the same breakpoint table so they stay synchronized — a
+        # silence is only a "gap" when neither user nor agent is
+        # active. Pure metadata operation: the PCM bytes aren't
+        # touched, just the offsets that ``_flatten`` uses to insert
+        # zero padding.
+        breakpoints = self._compute_gap_breakpoints()
+        if breakpoints:
+            user_chunks = [
+                (self._apply_shift(off, breakpoints), data)
+                for off, data in self._user_chunks
+            ]
+            agent_segments = [
+                (self._apply_shift(off, breakpoints), data)
+                for off, data in self._agent_segments
+            ]
+            total_compressed_ms = breakpoints[-1][1]
+            _log.info(
+                "recorder: gap-compressed session=%s gaps=%d total_saved_ms=%d "
+                "(cap=%dms)",
+                self._session_id, len(breakpoints), total_compressed_ms,
+                RECORDING_MAX_GAP_MS,
+            )
+        else:
+            user_chunks = self._user_chunks
+            agent_segments = self._agent_segments
+
         try:
             # Build interleaved stereo PCM off-thread because both
             # legs can be tens of MB and we don't want to stall the
             # event loop while serializing them.
-            user_mono = await asyncio.to_thread(self._flatten, self._user_chunks)
-            agent_mono = await asyncio.to_thread(self._flatten, self._agent_segments)
+            user_mono = await asyncio.to_thread(self._flatten, user_chunks)
+            agent_mono = await asyncio.to_thread(self._flatten, agent_segments)
 
             # Pad the shorter leg with silence so both arrays have
             # the same sample count — required for interleave.
