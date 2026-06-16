@@ -127,7 +127,79 @@ from agent_limits import (
     INGEST_TEXT_MAX_CHARS,
     INGEST_TITLE_MAX_CHARS,
     INGEST_URL_MAX_CHARS,
+    PER_AGENT_PDF_SOURCE_LIMIT,
+    PER_AGENT_TEXT_SOURCE_LIMIT,
+    PER_AGENT_URL_SOURCE_LIMIT,
 )
+
+
+# Pod-returned source_type strings get mapped into three buckets for
+# the cap check. text+markdown count together; url+sitemap count
+# together; pdf is its own bucket. So a user can't sneak past the
+# text cap by sending markdown, or past the url cap by sending a
+# sitemap. Pod docs guarantee these five types — extras (if the pod
+# adds them later) fall through and won't be capped, which is the
+# safe default since they're unknown to us.
+_SOURCE_KIND_BUCKET = {
+    "text": "text",
+    "markdown": "text",
+    "url": "url",
+    "sitemap": "url",
+    "pdf": "pdf",
+}
+_BUCKET_LIMIT = {
+    "text": PER_AGENT_TEXT_SOURCE_LIMIT,
+    "url": PER_AGENT_URL_SOURCE_LIMIT,
+    "pdf": PER_AGENT_PDF_SOURCE_LIMIT,
+}
+_BUCKET_LABEL = {
+    "text": "text source",
+    "url": "URL source",
+    "pdf": "PDF source",
+}
+
+
+async def _enforce_source_cap(agent_id: str, kind: str) -> None:
+    """Reject the new ingest with 409 if the agent already has the
+    maximum allowed sources of its bucket (text/url/pdf). The user is
+    expected to delete the existing source first via the delete
+    endpoint — UI guides them to it.
+
+    If the knowledge pod is unreachable when we try to count, we let
+    the ingest proceed (vs. failing closed): a transient pod outage
+    shouldn't block a legitimate upload. The pod itself will reject
+    the ingest if it's actually down."""
+    bucket = _SOURCE_KIND_BUCKET.get(kind)
+    if bucket is None:
+        return
+    limit = _BUCKET_LIMIT.get(bucket, 0)
+    if limit <= 0:
+        return
+    try:
+        listing = await knowledge_client.list_sources(agent_id)
+    except Exception:
+        return  # fail-open on pod outage
+    sources = listing.get("sources") if isinstance(listing, dict) else None
+    if not isinstance(sources, list):
+        return
+    matching = sum(
+        1 for s in sources
+        if isinstance(s, dict)
+        and _SOURCE_KIND_BUCKET.get(str(s.get("source_type") or "")) == bucket
+    )
+    if matching >= limit:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "source_limit_reached",
+                "message": (
+                    f"This agent already has a {_BUCKET_LABEL[bucket]}. "
+                    f"Delete the existing one before adding another."
+                ),
+                "kind": bucket,
+                "limit": limit,
+            },
+        )
 
 
 class IngestTextBody(BaseModel):
@@ -160,6 +232,7 @@ async def ingest_text(
 ) -> dict:
     await _require_agent_owner(agent_id, user_id)
     _ensure_kn_available()
+    await _enforce_source_cap(agent_id, "text")
     try:
         return await knowledge_client.ingest_text(
             agent_id, content=body.content, title=body.title,
@@ -175,6 +248,7 @@ async def ingest_markdown(
 ) -> dict:
     await _require_agent_owner(agent_id, user_id)
     _ensure_kn_available()
+    await _enforce_source_cap(agent_id, "markdown")
     try:
         return await knowledge_client.ingest_markdown(
             agent_id, content=body.content, title=body.title,
@@ -190,6 +264,7 @@ async def ingest_url(
 ) -> dict:
     await _require_agent_owner(agent_id, user_id)
     _ensure_kn_available()
+    await _enforce_source_cap(agent_id, "url")
     try:
         return await knowledge_client.ingest_url(
             agent_id, url=body.url, title=body.title, max_depth=body.max_depth,
@@ -205,6 +280,7 @@ async def ingest_sitemap(
 ) -> dict:
     await _require_agent_owner(agent_id, user_id)
     _ensure_kn_available()
+    await _enforce_source_cap(agent_id, "sitemap")
     try:
         return await knowledge_client.ingest_sitemap(
             agent_id,
@@ -231,6 +307,9 @@ async def ingest_pdf(
 ) -> dict:
     await _require_agent_owner(agent_id, user_id)
     _ensure_kn_available()
+    # Per-agent PDF cap check BEFORE we read the file — saves the cost
+    # of buffering a 50 MB upload just to reject it.
+    await _enforce_source_cap(agent_id, "pdf")
     # Cheap pre-check from the multipart header before we buffer
     # anything. Catches the common case of an oversize upload without
     # paying the cost of reading it.

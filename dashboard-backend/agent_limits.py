@@ -45,12 +45,23 @@ AGENT_KNOWLEDGE_MAX_CHARS = 5000
 
 # --- Knowledge-ingestion API limits (POST /agents/{id}/knowledge/ingest/*) ---
 
-# Per-call text/markdown ingest body. 500k chars (~75k words) is enough
-# for a full reference doc / chapter / FAQ page in one upload. Users can
-# call the endpoint multiple times to stack more — total per-agent
-# corpus has no hard cap (RAG scales fine to many MB, retrieval latency
-# stays sub-100 ms).
-INGEST_TEXT_MAX_CHARS = 500_000
+# Per-call text/markdown ingest body. 10k chars (~1500 words) — fits a
+# typical FAQ page, a product-info sheet, or a small reference doc.
+# Users get ONE text source per agent (see PER_AGENT_*_LIMIT below), so
+# this cap is the per-agent text-knowledge ceiling, not just per-call.
+# For larger reference docs use the URL or PDF ingest paths.
+INGEST_TEXT_MAX_CHARS = 10_000
+
+# Per-agent source-count caps. Each agent gets ONE of each source kind
+# to prevent corpus bloat and stop a user from stacking dozens of PDFs
+# / URLs to bypass the per-source size limits. Re-uploading the same
+# kind REPLACES the prior source rather than stacking. Source kinds the
+# knowledge pod tracks: ``text``, ``markdown`` (treated as text for
+# count purposes), ``url``, ``sitemap`` (treated as url for count
+# purposes), ``pdf``.
+PER_AGENT_TEXT_SOURCE_LIMIT = 1
+PER_AGENT_URL_SOURCE_LIMIT = 1
+PER_AGENT_PDF_SOURCE_LIMIT = 1
 
 # Ingest title (across all ingest endpoints). Already capped at 200 in
 # Pydantic; mirrored here so the frontend reads the same number.
