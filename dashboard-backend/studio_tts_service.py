@@ -1201,6 +1201,56 @@ def upload_wav_preview(user_id: str, preview_token: str, variant: str, wav_bytes
 CALL_RECORDING_SUBDIR = "call-recordings"
 
 
+# ---------------------------------------------------------------------------
+# Public-asset uploads (blog images, etc)
+#
+# Layout: ``blog/<uuid>.<ext>`` in the active bucket. No user_id prefix —
+# blog assets are global. The bucket is served by the configured
+# ``R2_PUBLIC_DOMAIN`` (e.g. audio.vocence.ai) so the returned URL is
+# direct-public (no presigning, no expiry). If the deployment hasn't
+# configured a public R2 domain we fall back to a long-lived presigned
+# URL — works but blog images would need rotation every PRESIGNED_EXPIRY.
+# ---------------------------------------------------------------------------
+
+BLOG_IMAGES_SUBDIR = "blog"
+
+
+def upload_public_blog_image(
+    content: bytes,
+    *,
+    extension: str,
+    content_type: str,
+) -> tuple[str, str, str]:
+    """Upload an admin-supplied blog image to the active public bucket.
+    Returns ``(bucket, key, public_url)``. The public_url is what gets
+    written into ``blog_posts.image`` and served to every visitor.
+
+    Admin-only call (blog editor). Image-only content-type is enforced
+    at the router; this helper trusts its inputs.
+    """
+    bucket = _active_bucket()
+    client = _minio_client()
+    ensure_bucket(client, bucket)
+    safe_ext = (extension or "jpg").lstrip(".").lower() or "jpg"
+    key = f"{BLOG_IMAGES_SUBDIR}/{uuid.uuid4().hex}.{safe_ext}"
+    client.put_object(
+        bucket,
+        key,
+        BytesIO(content),
+        length=len(content),
+        content_type=content_type or "application/octet-stream",
+    )
+    if BUCKET_PROVIDER == "r2" and R2_PUBLIC_DOMAIN:
+        public_url = f"https://{R2_PUBLIC_DOMAIN}/{key}"
+    else:
+        # Hippius / no public domain configured — long-lived presigned
+        # URL. Caller logs this as a misconfig because it'll expire.
+        public_url = _minio_client().presigned_get_object(
+            bucket, key, expires=timedelta(days=7)
+        )
+    return bucket, key, public_url
+
+
 def upload_call_recording_wav(
     user_id: str,
     session_id: str,

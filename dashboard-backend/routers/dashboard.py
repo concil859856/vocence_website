@@ -1,6 +1,8 @@
 """Dashboard API routes."""
 
+import asyncio
 import json
+import logging
 import os
 import uuid
 from datetime import datetime, timezone
@@ -8,6 +10,8 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, UploadFile
 from fastapi.responses import JSONResponse
+
+logger = logging.getLogger(__name__)
 
 from database import acquire
 from local_db import ensure_tables, get_connection, log_admin_action
@@ -1898,15 +1902,33 @@ async def upload_blog_image(
     file: UploadFile,
     _: str = Depends(require_admin_session),
 ):
-    """Upload an image for a blog post. Returns the URL path to use in POST /blog."""
+    """Upload an image for a blog post to R2. Returns the public URL
+    to store in ``blog_posts.image``. Previously wrote to local
+    ``uploads/`` and served via a static mount — that worked but
+    didn't survive container redeploys and left blog post rows
+    pointing at vanished files on prod restarts. Now lives in the
+    same public R2 bucket as the abstract covers / sample voices."""
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="File must be an image")
     ext = Path(file.filename or "img").suffix or ".jpg"
-    name = f"{uuid.uuid4().hex}{ext}"
-    path = UPLOADS_DIR / name
     content = await file.read()
-    path.write_bytes(content)
-    return {"url": f"/api/dashboard/uploads/{name}"}
+    if not content:
+        raise HTTPException(status_code=400, detail="Empty upload")
+    try:
+        # Run the synchronous MinIO put off-thread so a slow R2 PUT
+        # doesn't stall the event loop. Returns the public URL ready
+        # to write into the post.
+        from studio_tts_service import upload_public_blog_image
+        _, _, public_url = await asyncio.to_thread(
+            upload_public_blog_image,
+            content,
+            extension=ext,
+            content_type=file.content_type,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("blog image upload to R2 failed")
+        raise HTTPException(status_code=502, detail=f"upload failed: {exc}") from exc
+    return {"url": public_url}
 
 
 @router.post("/blog", response_model=BlogPostResponse)
