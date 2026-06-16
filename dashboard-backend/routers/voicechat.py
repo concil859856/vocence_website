@@ -1242,6 +1242,13 @@ async def voicechat_session(
 
     async def _prewarm_stt() -> None:
         nonlocal prewarmed_stt
+        # Deepgram is a hosted API, no GPU pod to keep warm — the
+        # prewarm silence-pump only makes sense for the self-hosted
+        # vocence pod. Bail out early so we don't spin up a useless
+        # WS or burn Deepgram billing on a silence stream.
+        from voicechat_stream import STT_PROVIDER as _STT_PROVIDER
+        if _STT_PROVIDER != "vocence":
+            return
         import aiohttp
         from ops import pool as gpu_pool
         pod_cm = None

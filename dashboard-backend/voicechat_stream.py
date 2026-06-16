@@ -34,11 +34,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
 from contextlib import suppress
 from typing import Any, Awaitable, Callable
+from urllib.parse import urlencode
 
 import aiohttp
 
@@ -75,6 +77,22 @@ SESSION_HARD_TIMEOUT_S = 30.0
 # Frame size the client is expected to send. Currently unused (we
 # accept whatever the client sends and tee it). Kept here for docs.
 EXPECTED_FRAME_BYTES = 640  # 20 ms @ 16 kHz mono s16le
+
+# STT provider selection. ``vocence`` (default) uses the self-hosted
+# vocence/stt-streaming pod via the gpu_pool dispatcher. ``deepgram``
+# routes the same audio over a WebSocket to Deepgram's Listen API
+# (Nova-3 by default). Both paths emit the same internal event shape
+# so ``_pump_stt`` and everything downstream is unchanged.
+STT_PROVIDER = (os.environ.get("STT_PROVIDER") or "vocence").strip().lower()
+DEEPGRAM_API_KEY = (os.environ.get("DEEPGRAM_API_KEY") or "").strip()
+DEEPGRAM_MODEL = (os.environ.get("DEEPGRAM_MODEL") or "nova-3").strip()
+# Deepgram's endpointing controls how aggressively their VAD emits
+# is_final on natural pauses. We run our own EOU ensembler so set
+# this just high enough to get clean per-utterance finals (which our
+# accumulator uses) without committing too early. 500 ms ≈ half a
+# beat — long enough for "uh" pauses, short enough that long replies
+# do still segment into multiple finals.
+DEEPGRAM_ENDPOINTING_MS = int(os.environ.get("DEEPGRAM_ENDPOINTING_MS") or "500")
 
 
 @dataclass
@@ -219,6 +237,10 @@ class StreamingTurnSession:
         self._state = _SignalState(history=history)
         self._stt_session: aiohttp.ClientSession | None = None
         self._stt_ws: aiohttp.ClientWebSocketResponse | None = None
+        # Which provider is wired to ``_stt_ws``. Determines the wire
+        # format ``_pump_stt`` parses. "vocence" for the self-hosted
+        # pod (default), "deepgram" for the Deepgram Listen API.
+        self._stt_provider: str = "vocence"
         # The fusion path (Smart Turn + LiveKit batch). Always opened
         # so it can serve as the fallback when UltraVAD is the primary
         # decider but the UltraVAD pod is unhealthy/offline; degrades
@@ -423,6 +445,11 @@ class StreamingTurnSession:
         return True
 
     async def _open_stt(self) -> bool:
+        # Provider branch. Deepgram (cloud) bypasses pod pool + prewarm
+        # entirely — it's a hosted endpoint. Vocence (self-hosted pod)
+        # gets the full prewarm / pod-pool fast path below.
+        if STT_PROVIDER == "deepgram":
+            return await self._open_stt_deepgram()
         # Fast path: adopt a socket the session layer prewarmed during
         # the greeting. The prewarm already sent ``start`` and got
         # ``ready`` AND has been pumping silence frames to keep the
@@ -512,6 +539,71 @@ class StreamingTurnSession:
             return True
         except Exception as exc:  # noqa: BLE001
             _log.warning("[stream] STT connect failed: %s", exc)
+            await self._close_stt()
+            return False
+
+    async def _open_stt_deepgram(self) -> bool:
+        """Open a Deepgram Listen WebSocket as a drop-in replacement
+        for the vocence pod. Same audio format (linear16 16 kHz mono),
+        same internal event shape after translation (see _pump_stt).
+
+        Config knobs (env):
+          * DEEPGRAM_API_KEY — required; without it we degrade silently
+          * DEEPGRAM_MODEL — nova-3 default; override for testing
+          * DEEPGRAM_ENDPOINTING_MS — silence threshold for is_final
+        """
+        if not DEEPGRAM_API_KEY:
+            _log.warning(
+                "[stream] STT_PROVIDER=deepgram but DEEPGRAM_API_KEY is not set"
+            )
+            return False
+        # Deepgram language codes are ISO-639. We expose "auto" /
+        # "English" in agent config; map both to Deepgram. nova-3
+        # supports ``multi`` for multilingual auto-detection.
+        lang_map = {
+            "auto": "multi",
+            "english": "en", "en": "en",
+            "chinese": "zh", "zh": "zh",
+            "japanese": "ja", "ja": "ja",
+            "korean": "ko", "ko": "ko",
+            "spanish": "es", "es": "es",
+            "french": "fr", "fr": "fr",
+            "german": "de", "de": "de",
+            "portuguese": "pt", "pt": "pt",
+            "italian": "it", "it": "it",
+            "russian": "ru", "ru": "ru",
+        }
+        dg_lang = lang_map.get((self._language or "auto").lower(), "multi")
+        params = {
+            "model": DEEPGRAM_MODEL,
+            "encoding": "linear16",
+            "sample_rate": "16000",
+            "channels": "1",
+            "interim_results": "true",
+            "smart_format": "true",
+            "punctuate": "true",
+            "language": dg_lang,
+            "vad_events": "true",
+            "endpointing": str(DEEPGRAM_ENDPOINTING_MS),
+        }
+        url = "wss://api.deepgram.com/v1/listen?" + urlencode(params)
+        headers = {"Authorization": f"Token {DEEPGRAM_API_KEY}"}
+        try:
+            self._stt_session = aiohttp.ClientSession(headers=headers)
+            self._stt_ws = await self._stt_session.ws_connect(
+                url,
+                timeout=aiohttp.ClientWSTimeout(ws_close=15),
+                max_msg_size=2 * 1024 * 1024,
+            )
+            self._stt_provider = "deepgram"
+            _log.info(
+                "[stream] trace session=%s phase=stt_connected provider=deepgram "
+                "model=%s lang=%s endpointing=%dms",
+                self._session_id, DEEPGRAM_MODEL, dg_lang, DEEPGRAM_ENDPOINTING_MS,
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("[stream] Deepgram connect failed: %s", exc)
             await self._close_stt()
             return False
 
@@ -668,6 +760,14 @@ class StreamingTurnSession:
                 data = json.loads(msg.data)
             except Exception:
                 continue
+            # Deepgram → vocence event shape translation. Keeps the
+            # rest of this function (and the entire downstream
+            # ensembler / accumulator path) unaware of which provider
+            # is wired up. Drops Metadata / unknown events.
+            if self._stt_provider == "deepgram":
+                data = self._translate_deepgram_event(data)
+                if data is None:
+                    continue
             mtype = data.get("type")
             if mtype == "partial":
                 text = (data.get("text") or "").strip()
@@ -770,6 +870,45 @@ class StreamingTurnSession:
                 )
                 self._closed.set()
                 return
+
+    def _translate_deepgram_event(self, data: dict) -> dict | None:
+        """Translate one Deepgram Listen event into the internal shape
+        expected by ``_pump_stt`` (the vocence pod's wire format).
+        Returns ``None`` for events we don't act on (Metadata,
+        unrecognized types) so the caller skips them.
+
+        Mapping:
+          * ``Results`` with ``is_final=false``  → ``{type: 'partial', text}``
+          * ``Results`` with ``is_final=true``   → ``{type: 'final', text,
+                                                       language_detected?}``
+          * ``SpeechStarted``                    → ``{type: 'vad_speech'}``
+          * ``UtteranceEnd``                     → ``{type: 'vad_silence'}``
+          * everything else                       → ``None`` (skip)
+        """
+        dg_type = data.get("type")
+        if dg_type == "Results":
+            alts = (data.get("channel") or {}).get("alternatives") or []
+            text = ""
+            if alts:
+                text = (alts[0].get("transcript") or "").strip()
+            if not text:
+                return None
+            is_final = bool(data.get("is_final"))
+            out: dict = {"type": "final" if is_final else "partial", "text": text}
+            # nova-3 multi-language returns detected language on the
+            # channel object. Surface it so the existing final-handler
+            # can set ``self._state.final_language``.
+            if is_final:
+                detected = (data.get("channel") or {}).get("detected_language")
+                if detected:
+                    out["language_detected"] = detected
+            return out
+        if dg_type == "SpeechStarted":
+            return {"type": "vad_speech"}
+        if dg_type == "UtteranceEnd":
+            return {"type": "vad_silence"}
+        # Metadata / SpeechFinal / unknown — ignore.
+        return None
 
     async def _text_scorer(self) -> None:
         """Re-score the in-progress turn text whenever it changes.
