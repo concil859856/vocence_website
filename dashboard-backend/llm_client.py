@@ -1943,6 +1943,19 @@ async def _stream_chat_with_tools_once(
                 body["reasoning_effort"] = "none"
             else:
                 body["reasoning_effort"] = reasoning_effort
+        elif provider == "cerebras" and "glm" in (model_id or "").lower():
+            # GLM-4.7 (zai-glm-4.7) on Cerebras is a reasoning model
+            # by default — voice agents want it OFF or every reply
+            # burns hundreds of tokens (and ~2-5 s of TTFT) on the
+            # thinking pass. GLM accepts ``reasoning_effort="none"``
+            # for a clean non-reasoning path. gpt-oss-120b in the
+            # same Cerebras family does NOT accept "none" (only
+            # low/medium/high), so we narrow the injection to model
+            # ids containing "glm".
+            if reasoning_effort is None:
+                body["reasoning_effort"] = "none"
+            else:
+                body["reasoning_effort"] = reasoning_effort
     if tools:
         body["tools"] = tools
         body["tool_choice"] = tool_choice

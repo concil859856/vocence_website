@@ -230,15 +230,22 @@ async def list_models(user_id: str = Depends(require_auth)) -> dict:
     agents."""
     models: list[dict[str, str]] = []
 
+    # Cerebras currently serves two models on the account (verified
+    # against /v1/models): ``gpt-oss-120b`` (the existing fast default)
+    # and ``zai-glm-4.7`` (Z.AI's frontier model, supports
+    # reasoning_effort=none for a clean non-reasoning path that fits
+    # voice). Earlier labels referenced Qwen-3-235B and Llama-3.3-70B
+    # which Cerebras doesn't actually expose on this account — picking
+    # those would have failed at call time with a 404.
     if llm_client.cerebras_llm_configured():
         models.extend([
             {
-                "id": "cerebras:qwen-3-235b-a22b-instruct-2507",
-                "label": "Cerebras · Qwen 3 235B (quality, recommended)",
+                "id": "cerebras:gpt-oss-120b",
+                "label": "Cerebras · GPT-OSS 120B (default, fast)",
             },
             {
-                "id": "cerebras:llama-3.3-70b",
-                "label": "Cerebras · Llama 3.3 70B (faster, lower latency)",
+                "id": "cerebras:zai-glm-4.7",
+                "label": "Cerebras · GLM-4.7 (higher quality, slightly slower)",
             },
         ])
 
@@ -251,7 +258,7 @@ async def list_models(user_id: str = Depends(require_auth)) -> dict:
     if llm_client.google_llm_configured():
         models.append({
             "id": "gemini:gemini-3.5-flash",
-            "label": "Google · Gemini 3.5 Flash (highest quality, minimal reasoning)",
+            "label": "Google · Gemini 3.5 Flash (high quality, sub-second TTFT)",
         })
 
     # Surface legacy default if Cerebras isn't configured — keeps the
