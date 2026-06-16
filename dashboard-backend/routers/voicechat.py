@@ -1811,10 +1811,28 @@ async def voicechat_session(
             # reply never made it into the recording. Idempotent w.r.t.
             # ``mark_agent_barge_in`` already-called paths (cancel
             # branch above), which closes the gate first so this no-ops.
+            had_in_flight_turn = current_turn is not None and not current_turn.done()
             if call_recorder is not None and call_recorder.agent_turn_open:
                 call_recorder.mark_agent_barge_in()
             # Cancel any in-flight turn before starting a new one
             await _cancel_current()
+            # Tell the client to FLUSH its local audio queue. Without
+            # this, the worklet keeps draining whatever audio was
+            # already in its buffer + whatever bytes were already on
+            # the wire — so the agent appears to finish its first
+            # reply, then plays the new reply back-to-back, even
+            # though the LLM was already cancelled and the new turn
+            # has started. The ``cancel`` branch above already does
+            # this; the VAD-barge-in branch (stream_start) was
+            # forgotten and ended up as the "agent doesn't stop when
+            # I keep talking" bug. Only send when there was actually
+            # something in flight to cancel — text-only turns with
+            # no prior agent reply don't need a flush signal.
+            if had_in_flight_turn:
+                try:
+                    await ws.send_json({"type": "cancelled"})
+                except (WebSocketDisconnect, RuntimeError, Exception):
+                    return
             # Defensively close the previous turn's idle-billing slot.
             # The PRIMARY decrement still happens at
             # ``client_audio_settled`` for the previous turn, but in

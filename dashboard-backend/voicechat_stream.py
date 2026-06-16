@@ -568,14 +568,28 @@ class StreamingTurnSession:
             if frame is None:
                 self._closed.set()
                 return
-            # Mic-mute gate — see __init__ docstring.
+            # Mic-mute gate — see __init__ docstring. Frames are
+            # dropped from STT / Smart-Turn / UltraVAD so bot-TTS
+            # echo leaking back into the mic doesn't trigger false
+            # barge-ins or waste GPU cycles.
+            #
+            # BUT we still tee them to the recorder. Modern browsers
+            # run acoustic echo cancellation before sending PCM, so
+            # the residual echo on the recording is minimal — much
+            # less of a problem than losing the first ~200-500 ms of
+            # every barge-in utterance. Without this push, the user
+            # channel of the WAV cuts off the leading edge of every
+            # mid-bot-speech interruption: the recording felt like
+            # "the start of what I said is missing, by 1-2 s".
             if self._is_bot_speaking is not None and self._is_bot_speaking():
+                if self._call_recorder is not None:
+                    self._call_recorder.push_user(frame)
                 self._muted_frames_dropped += 1
                 now = time.monotonic()
                 if now - self._last_muted_log_at >= 1.0:
                     self._last_muted_log_at = now
                     _log.info(
-                        "[stream] trace session=%s phase=mic_muted dropped=%d (bot speaking)",
+                        "[stream] trace session=%s phase=mic_muted dropped=%d (bot speaking, recorder still capturing)",
                         self._session_id, self._muted_frames_dropped,
                     )
                 continue
