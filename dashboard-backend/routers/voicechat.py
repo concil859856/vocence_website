@@ -2886,17 +2886,32 @@ async def _run_turn(
                     # The LLM wants tools. Append its assistant message
                     # (with the tool_calls) to working_messages so the
                     # next LLM call sees the chain, then dispatch.
+                    #
+                    # For Gemini specifically: each tool_call carries
+                    # ``extra_content.google.thought_signature`` from
+                    # the upstream response. Gemini's OpenAI-compat
+                    # endpoint REQUIRES that signature be echoed on
+                    # the assistant message in the next request, or
+                    # the call fails with a 400 ("Function call is
+                    # missing a thought_signature in functionCall
+                    # parts"). Pass-through the extra_content here so
+                    # the next /chat/completions body carries it
+                    # verbatim. Other OpenAI-compatible providers
+                    # (Cerebras, Groq, OpenAI) silently ignore the
+                    # extra field, so this is safe to always include.
+                    def _build_tc(tc: dict) -> dict:
+                        out: dict = {
+                            "id": tc["id"],
+                            "type": "function",
+                            "function": {"name": tc["name"], "arguments": tc["arguments"]},
+                        }
+                        if tc.get("extra_content"):
+                            out["extra_content"] = tc["extra_content"]
+                        return out
                     asst_msg: dict = {
                         "role": "assistant",
                         "content": "".join(round_assistant_content) or None,
-                        "tool_calls": [
-                            {
-                                "id": tc["id"],
-                                "type": "function",
-                                "function": {"name": tc["name"], "arguments": tc["arguments"]},
-                            }
-                            for tc in accumulated_tool_calls
-                        ],
+                        "tool_calls": [_build_tc(tc) for tc in accumulated_tool_calls],
                     }
                     working_messages.append(asst_msg)
 

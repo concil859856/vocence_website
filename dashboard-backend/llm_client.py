@@ -2036,6 +2036,28 @@ async def _stream_chat_with_tools_once(
                         args_chunk = fn.get("arguments")
                         if isinstance(args_chunk, str):
                             acc["arguments"] += args_chunk
+                        # Gemini's OpenAI-compat endpoint attaches a
+                        # ``thought_signature`` under
+                        # ``extra_content.google`` on the assistant
+                        # tool_call. When the conversation is later
+                        # round-tripped (assistant tool_call →
+                        # tool_result → next call), Gemini REQUIRES the
+                        # signature back or it returns a 400:
+                        # "Function call is missing a thought_signature
+                        # in functionCall parts." Preserve any
+                        # extra_content here so the caller can echo it
+                        # in the next-turn request. Streaming chunks
+                        # can split extra_content across deltas, so
+                        # we deep-merge nested ``google`` fields rather
+                        # than overwriting.
+                        extra = tcd.get("extra_content")
+                        if isinstance(extra, dict):
+                            existing = acc.setdefault("extra_content", {})
+                            for k, v in extra.items():
+                                if k == "google" and isinstance(v, dict):
+                                    existing.setdefault("google", {}).update(v)
+                                else:
+                                    existing[k] = v
                         # First-sighting signal: yield once per index as
                         # soon as we have BOTH name and id populated.
                         # Skip if already signaled — accumulated args
