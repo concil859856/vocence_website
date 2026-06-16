@@ -1811,28 +1811,37 @@ async def voicechat_session(
             # reply never made it into the recording. Idempotent w.r.t.
             # ``mark_agent_barge_in`` already-called paths (cancel
             # branch above), which closes the gate first so this no-ops.
-            had_in_flight_turn = current_turn is not None and not current_turn.done()
             if call_recorder is not None and call_recorder.agent_turn_open:
                 call_recorder.mark_agent_barge_in()
             # Cancel any in-flight turn before starting a new one
             await _cancel_current()
-            # Tell the client to FLUSH its local audio queue. Without
-            # this, the worklet keeps draining whatever audio was
-            # already in its buffer + whatever bytes were already on
-            # the wire — so the agent appears to finish its first
-            # reply, then plays the new reply back-to-back, even
-            # though the LLM was already cancelled and the new turn
-            # has started. The ``cancel`` branch above already does
-            # this; the VAD-barge-in branch (stream_start) was
-            # forgotten and ended up as the "agent doesn't stop when
-            # I keep talking" bug. Only send when there was actually
-            # something in flight to cancel — text-only turns with
-            # no prior agent reply don't need a flush signal.
-            if had_in_flight_turn:
-                try:
-                    await ws.send_json({"type": "cancelled"})
-                except (WebSocketDisconnect, RuntimeError, Exception):
-                    return
+            # ALWAYS tell the client to flush its local audio queue,
+            # regardless of whether ``current_turn`` was still running
+            # server-side. The previous gate (``had_in_flight_turn``)
+            # only fired when the server task was still in flight —
+            # but the common bug is the opposite case:
+            #
+            #   * TTS already streamed all bytes to client (server
+            #     ``current_turn.done() == True``)
+            #   * Client's audio worklet still has multi-second buffer
+            #     queued (or even just sitting in the 1.5s prebuffer,
+            #     so client_audio_started hasn't fired yet)
+            #   * User barges in via VAD → stream_start arrives
+            #   * Old logic: had_in_flight_turn=False → no flush sent
+            #   * Client drains its buffer in full BEFORE the new
+            #     turn's audio plays
+            #
+            # User experience: "agent kept talking AND THEN played the
+            # new reply." Sending ``cancelled`` unconditionally means
+            # the client always gets the flush signal. The frontend's
+            # handler is idempotent — a flush with nothing to flush
+            # is a no-op (the ``cancel`` branch above already proves
+            # this contract by sending it on every cancel regardless
+            # of state).
+            try:
+                await ws.send_json({"type": "cancelled"})
+            except (WebSocketDisconnect, RuntimeError, Exception):
+                return
             # Defensively close the previous turn's idle-billing slot.
             # The PRIMARY decrement still happens at
             # ``client_audio_settled`` for the previous turn, but in
