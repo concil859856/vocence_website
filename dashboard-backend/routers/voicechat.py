@@ -3000,23 +3000,30 @@ async def _run_turn(
                         })
                     except Exception:
                         pass
-                    fallback_messages = working_messages + [{
+                    # Rebuild from the ORIGINAL message snapshot (no
+                    # tool_calls / tool history). Gemini's OpenAI-compat
+                    # endpoint goes silent when it sees assistant.tool_calls
+                    # but ``tools=None``: prior production turn produced
+                    # zero ``content`` events, fallback finished without
+                    # audio, user heard silence.
+                    fallback_messages = [
+                        {"role": m.role, "content": m.content}
+                        for m in llm_messages
+                    ] + [{
                         "role": "system",
                         "content": (
-                            "You've now used up your tool calls for this "
-                            "turn and the results above didn't give you a "
-                            "clear answer. Tell the user honestly that "
-                            "you couldn't find solid info on this, and "
-                            "suggest they check the source directly "
-                            "(official docs, the project's site, a "
-                            "search engine, etc). Stay fully in "
-                            "character and keep it short and warm. "
-                            "Do NOT mention tools, searches, or that "
-                            "you 'tried to look it up' — just say you "
-                            "couldn't find it and point them somewhere "
-                            "useful."
+                            "You couldn't find solid info on the user's "
+                            "last question. Tell them honestly you couldn't "
+                            "find it and suggest they check the source "
+                            "directly (official docs, the project's site, "
+                            "a search engine, etc). Stay fully in character "
+                            "and keep it short and warm. Do NOT mention "
+                            "tools, searches, or that you 'tried to look "
+                            "it up' — just say you couldn't find it and "
+                            "point them somewhere useful."
                         ),
                     }]
+                    fallback_produced = False
                     try:
                         async for event in stream_chat_with_tools(
                             fallback_messages,
@@ -3025,6 +3032,8 @@ async def _run_turn(
                         ):
                             if event.get("type") == "content":
                                 txt = event.get("text") or ""
+                                if txt:
+                                    fallback_produced = True
                                 if txt and not await _feed_content_to_tts(txt):
                                     return
                     except Exception as exc:  # noqa: BLE001
@@ -3032,6 +3041,30 @@ async def _run_turn(
                             "voicechat: tool-depth fallback LLM call failed: %s",
                             exc,
                         )
+                    # Belt-and-suspenders: if the LLM still produced
+                    # nothing (Gemini safety block, empty response, etc),
+                    # synthesize a hardcoded safety reply and push it
+                    # straight into the TTS queue so the user never
+                    # hears silence after a tool-depth exhaustion.
+                    if not fallback_produced:
+                        _log.warning(
+                            "voicechat: tool-depth fallback LLM returned "
+                            "0 content events (model=%s) — emitting "
+                            "hardcoded safety string",
+                            llm_model or "<default>",
+                        )
+                        safety_msg = (
+                            "Hmm, I couldn't dig that one up — try "
+                            "checking the official docs or doing a "
+                            "quick web search, that'll have the latest."
+                        )
+                        bot_text_full.append(safety_msg)
+                        with suppress(Exception):
+                            await ws.send_json({"type": "token", "text": safety_msg})
+                        if VOICECHAT_TTS_ENABLED:
+                            spoken_safety = sanitize_for_tts(safety_msg)
+                            if spoken_safety:
+                                await sentence_q.put((spoken_safety, False))
 
                 # Drain any in-flight JSON the filter was buffering,
                 # then any prose still held by the narration scrubber.
