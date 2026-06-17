@@ -170,6 +170,47 @@ def _looks_mid_thought(text: str) -> bool:
 # (Nova-3 by default). Both paths emit the same internal event shape
 # so ``_pump_stt`` and everything downstream is unchanged.
 STT_PROVIDER = (os.environ.get("STT_PROVIDER") or "vocence").strip().lower()
+
+# Agent-config language names (the values stored in agents.config.language
+# — see developer-api/app/api/routes/agent_mgmt.py AGENT_LANGUAGE) → the
+# ISO-639-1 codes the STT pod's ``/v1/stream`` start frame expects
+# (STREAMING_STT_SPEC.md §5: "ISO-639-1 code or 'auto' for auto-detect").
+# Sending the full name silently degrades to auto-detect on the pod
+# side, which is the root cause of English-configured agents
+# occasionally transcribing Russian / French — Parakeet TDT v3 is
+# multilingual and mis-detects Cyrillic phonemes on short utterances.
+# Any name not in this table falls through to "auto".
+_STT_LANG_TO_ISO = {
+    "English": "en",
+    "Chinese": "zh",
+    "Japanese": "ja",
+    "Korean": "ko",
+    "German": "de",
+    "French": "fr",
+    "Russian": "ru",
+    "Portuguese": "pt",
+    "Spanish": "es",
+    "Italian": "it",
+}
+
+
+def _stt_language_code(language: str | None) -> str:
+    """Resolve any input form to the ISO-639-1 code the STT pod wants.
+
+    Accepts: agent-config full names ("English"), already-ISO codes
+    ("en"), and the sentinel "auto" / None. Returns "auto" for unknown
+    inputs so the pod is never sent a string it doesn't understand."""
+    if not language:
+        return "auto"
+    s = language.strip()
+    if s.lower() == "auto":
+        return "auto"
+    if s in _STT_LANG_TO_ISO:
+        return _STT_LANG_TO_ISO[s]
+    # Already a 2-letter ISO code (e.g. "en") — accept verbatim.
+    if len(s) == 2 and s.isalpha():
+        return s.lower()
+    return "auto"
 DEEPGRAM_API_KEY = (os.environ.get("DEEPGRAM_API_KEY") or "").strip()
 DEEPGRAM_MODEL = (os.environ.get("DEEPGRAM_MODEL") or "nova-3").strip()
 # Deepgram's endpointing controls how aggressively their VAD emits
@@ -632,7 +673,9 @@ class StreamingTurnSession:
             )
             await self._stt_ws.send_json({
                 "type": "start",
-                "language": self._language,
+                # Normalize to ISO-639-1 — the pod's spec is explicit
+                # that full names ("English") silently degrade to auto.
+                "language": _stt_language_code(self._language),
                 "sample_rate": 16000,
                 "encoding": "pcm_s16le",
                 "enable_partials": True,

@@ -55,7 +55,11 @@ const REBUFFER_RESUME_MS = 200;
 // over ~100–200 ms instead. We use 150 ms: fast enough that the agent
 // clearly stops, slow enough that there's no click. Kept short so the user
 // doesn't keep hearing the agent while they're already mid-sentence.
-const BARGE_IN_FADE_MS = 150;
+// Tightened from 150 → 80 ms so the user hears the agent stop almost
+// instantly on a barge-in. 80 ms is still long enough to mask the
+// discontinuity (a hard cut would click), short enough that it feels
+// near-immediate against natural reaction time.
+const BARGE_IN_FADE_MS = 80;
 
 const WORKLET_SOURCE = `
 class PcmPlayer extends AudioWorkletProcessor {

@@ -1302,9 +1302,14 @@ async def voicechat_session(
                 max_msg_size=2 * 1024 * 1024,
             )
             # Send ``start`` immediately so the pod doesn't time out.
+            # Normalize the language to an ISO-639-1 code — the pod
+            # silently degrades full names to auto-detect (see
+            # voicechat_stream._stt_language_code), which then bleeds
+            # into the prewarm adoption check (mismatch → cold open).
+            from voicechat_stream import _stt_language_code
             await ws.send_json({
                 "type": "start",
-                "language": prewarm_stt_language,
+                "language": _stt_language_code(prewarm_stt_language),
                 "sample_rate": 16000,
                 "encoding": "pcm_s16le",
                 "enable_partials": True,

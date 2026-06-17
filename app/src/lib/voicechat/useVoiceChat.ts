@@ -167,8 +167,15 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
   // ~170 ms of trailing edge to detect the end). Trade-off: brief
   // sub-120 ms sounds now barge in instantly; this only affects users
   // who interject very short syllables during agent playback.
-  const BACKCHANNEL_GRACE_MS = 120;   // how long to wait before committing to a barge-in
-  const BACKCHANNEL_MAX_MS = 250;     // total speech duration that counts as a backchannel
+  // Tightened from 120/250 → 60/180 per repeated user reports that
+  // the agent doesn't stop fast enough when they keep talking after
+  // a premature commit. Trade-off: very short backchannels ("uh-huh"
+  // ≤180 ms) still get filtered, but ANY continuation of the user's
+  // own speech that lasts >60 ms now interrupts within a single
+  // frame's worth of latency. Background-noise false positives go up
+  // marginally; the perceptual win on real conversations is bigger.
+  const BACKCHANNEL_GRACE_MS = 60;    // how long to wait before committing to a barge-in
+  const BACKCHANNEL_MAX_MS = 180;     // total speech duration that counts as a backchannel
   const pendingBargeInRef = useRef<number | null>(null);   // setTimeout id
   const bargeInDeferredRef = useRef<boolean>(false);       // true while grace window is open
   const isAgentSpeakingRef = useRef<boolean>(false);       // mirrors ``state === 'speaking'``
