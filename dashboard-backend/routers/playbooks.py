@@ -187,16 +187,30 @@ async def list_public_playbooks(
 
 
 @router.get("/{playbook_id}", response_model=PlaybookDetailResponse)
-async def get_playbook(playbook_id: int, user_id: str = Depends(require_auth)):
+async def get_playbook(
+    playbook_id: int,
+    viewer_id: str | None = Depends(optional_auth),
+):
+    """Public playbooks are readable anonymously; private playbooks
+    still require the owner's session. The frontend assumes this
+    contract (see PlaybookDetailView.load), so the endpoint MUST
+    accept no-token requests and either serve a public playbook or
+    404 — never 401."""
     conn = await get_connection()
     try:
-        # Try owned first, then public
-        pb = await (await conn.execute(
-            "SELECT * FROM playbooks WHERE id = ? AND user_id = ?", (playbook_id, user_id)
-        )).fetchone()
+        # Logged-in viewers see their own playbooks first (handles the
+        # private-owned case); fall through to the public lookup for
+        # both owned-public and anonymous viewers.
+        pb = None
+        if viewer_id is not None:
+            pb = await (await conn.execute(
+                "SELECT * FROM playbooks WHERE id = ? AND user_id = ?",
+                (playbook_id, viewer_id),
+            )).fetchone()
         if not pb:
             pb = await (await conn.execute(
-                "SELECT * FROM playbooks WHERE id = ? AND visibility = 'public'", (playbook_id,)
+                "SELECT * FROM playbooks WHERE id = ? AND visibility = 'public'",
+                (playbook_id,),
             )).fetchone()
         if not pb:
             raise HTTPException(status_code=404, detail="Playbook not found")
@@ -206,10 +220,14 @@ async def get_playbook(playbook_id: int, user_id: str = Depends(require_auth)):
             (playbook_id,),
         )).fetchall()
 
+        # Anonymous viewers never have a thumb state. Pass an empty
+        # string as user_id so the EXISTS subquery returns 0 cleanly
+        # (no row will match) without raising on the NULL bind.
+        vote_user_id = viewer_id or ""
         vote_row = await (await conn.execute(
             """SELECT (SELECT COUNT(*) FROM playbook_votes WHERE playbook_id = ?) AS vote_count,
                       EXISTS(SELECT 1 FROM playbook_votes WHERE playbook_id = ? AND user_id = ?) AS viewer_voted""",
-            (playbook_id, playbook_id, user_id),
+            (playbook_id, playbook_id, vote_user_id),
         )).fetchone()
     finally:
         await conn.close()
@@ -231,7 +249,7 @@ async def get_playbook(playbook_id: int, user_id: str = Depends(require_auth)):
         created_at=str(pb["created_at"] or ""),
         updated_at=str(pb["updated_at"] or ""),
         tracks=tracks,
-        is_owner=(pb["user_id"] == user_id),
+        is_owner=(viewer_id is not None and pb["user_id"] == viewer_id),
     )
 
 
