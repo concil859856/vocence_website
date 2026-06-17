@@ -3359,7 +3359,17 @@ async def _run_turn(
                         if chunk.kind == "audio" and isinstance(chunk.payload, (bytes, bytearray)):
                             if ttfa_ms is None:
                                 ttfa_ms = int((time.perf_counter() - started) * 1000)
-                                _log.info("tts: TTFA=%d ms (chunk %d)", ttfa_ms, sid)
+                                # Voice / pod-pin diagnostic logging.
+                                # If a turn comes back in the wrong
+                                # voice (gender / accent mismatch),
+                                # this line tells us what the
+                                # orchestrator actually asked for vs
+                                # what came out.
+                                _pin_id = getattr(turn_pod_pin, "pod_id", None) if turn_pod_pin else None
+                                _log.info(
+                                    "tts: TTFA=%d ms (chunk %d) voice=%r pod_pin=%s sentence=%r",
+                                    ttfa_ms, sid, voice, _pin_id, (spoken or "")[:60],
+                                )
                                 _log.info(
                                     "[stream] trace session=%s phase=tts_first_audio ttfa=%dms ttft=%dms",
                                     session_id, ttfa_ms, ttft_ms or 0,

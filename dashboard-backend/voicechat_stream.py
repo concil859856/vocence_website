@@ -87,6 +87,19 @@ EXPECTED_FRAME_BYTES = 640  # 20 ms @ 16 kHz mono s16le
 # whole sentences.
 _STT_SEND_QUEUE_MAX = 100
 
+# Post-final grace period. After STT emits a ``final`` we hold off
+# committing the turn for this long, even if silence_ms is already
+# past the configured minimum delay. Matches videosdk's
+# ``_wait_for_additional_speech`` pattern (see speech_understanding.py
+# in their repo) — STT pods emit finals at their own internal
+# silence threshold (~800 ms), but real speakers routinely pause
+# 500–700 ms between clauses while still mid-thought ("…well,
+# [pause] …I was thinking…"). Without this grace the commit fires
+# on the inter-clause pause and cuts the speaker off. The grace is
+# bypassed when total silence_ms is already very large (long
+# silence = user definitely done) — see the decision loop.
+_POST_FINAL_GRACE_MS = 600
+
 # UltraVAD commit eligibility — sustained-signal debouncing.
 #
 # Require ``p_end_of_turn`` to stay at-or-above ``_ultravad_threshold``
@@ -269,6 +282,14 @@ class _SignalState:
     # ``uv_above_ticks >= _UV_REQUIRED_TICKS``. See the constants block
     # for why this replaced the earlier persistent-arm hysteresis.
     uv_above_ticks: int = 0
+    # Wall-clock timestamp of the most recent STT ``final`` event.
+    # Used by the post-final grace period in the decision loop —
+    # after a final, the user often pauses briefly before resuming
+    # their sentence ("…well, [pause] …I was thinking…"). silence_ms
+    # alone treats those pauses as turn-end; videosdk's wait timer
+    # protects against this by holding off commit for ~600 ms after
+    # any final. ``0.0`` = no final has fired this turn.
+    last_final_at: float = 0.0
 
     def running_transcript(self) -> str:
         parts = [seg for seg in self.finals_accumulated if seg]
@@ -1062,6 +1083,11 @@ class StreamingTurnSession:
             elif mtype == "final":
                 text = (data.get("text") or "").strip()
                 longest = self._state.longest_partial_in_window
+                # Stamp the wall-clock so the decision loop's
+                # post-final grace knows how long ago this fired.
+                # Mirrors videosdk's wait_started_at — the moment a
+                # final lands is when their wait timer arms.
+                self._state.last_final_at = time.monotonic()
                 if text:
                     # Final-truncation rescue. The STT pod sometimes
                     # emits a ``final`` that's SHORTER than the longest
@@ -1324,10 +1350,28 @@ class StreamingTurnSession:
                     self._state.uv_above_ticks += 1
                 else:
                     self._state.uv_above_ticks = 0
+            # Post-final grace gate. After STT emits a ``final`` the
+            # user often pauses briefly between clauses ("…well, …I was
+            # thinking…"). silence_ms alone treats those pauses as
+            # turn-end; videosdk's _wait_for_additional_speech wraps
+            # exactly this case. We refuse to commit until the grace
+            # period is exhausted unless the silence is already very
+            # long (user definitely done, can't keep them waiting).
+            now_ms = int(time.monotonic() * 1000)
+            ms_since_final = (
+                (now_ms - int(self._state.last_final_at * 1000))
+                if self._state.last_final_at > 0 else None
+            )
+            in_post_final_grace = (
+                ms_since_final is not None
+                and ms_since_final < _POST_FINAL_GRACE_MS
+                and silence_ms < (_POST_FINAL_GRACE_MS + effective_min_delay)
+            )
             uv_threshold_crossed = (
                 uv_available
                 and silence_ms >= effective_min_delay
                 and self._state.uv_above_ticks >= _UV_REQUIRED_TICKS
+                and not in_post_final_grace
             )
             uv_backstop_hit = uv_available and silence_ms >= MAX_DELAY_MS
             ultravad_commits = uv_threshold_crossed or uv_backstop_hit
@@ -1369,15 +1413,18 @@ class StreamingTurnSession:
             self._commit_rule = rule
             _log.info(
                 "[stream] commit decider=%s rule=%s silence=%dms smart=%.2f "
-                "td_p=%.4f conf=%.2fx uv_p=%.3f uv_above_ticks=%d shadow_%s_would=%s session=%s",
+                "td_p=%.4f conf=%.2fx uv_p=%.3f uv_above_ticks=%d "
+                "ms_since_final=%s shadow_%s_would=%s session=%s",
                 effective_decider, rule, silence_ms, self._state.smart_turn_p,
                 self._state.turn_detector_p, self._state.turn_detector_confidence,
                 ultravad_p, self._state.uv_above_ticks,
+                ms_since_final if ms_since_final is not None else "none",
                 shadow_label, shadow_committed, self._session_id,
             )
-            # Reset the sustained-signal counter so the next turn (if
-            # reused in the same session) starts from 0.
+            # Reset per-turn state so the next turn (if reused in the
+            # same session) starts clean.
             self._state.uv_above_ticks = 0
+            self._state.last_final_at = 0.0
             await self._finalize_commit()
             # Reset both audio-EOU windows so the previous utterance's
             # tail doesn't bleed into the next turn.
