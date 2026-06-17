@@ -267,6 +267,15 @@ def _agent_row_to_response(row: dict) -> dict:
             "goal": cfg.get("goal") or None,
             "success_metric": cfg.get("success_metric") or None,
             "max_iterations": cfg.get("max_iterations") or None,
+            # Voice-pipeline knobs.
+            "denoise_enabled": bool(cfg.get("denoise_enabled", False)),
+            "turn_decider": cfg.get("turn_decider") or "ultravad",
+            "ultravad_threshold": (
+                float(cfg.get("ultravad_threshold"))
+                if cfg.get("ultravad_threshold") is not None else 0.50
+            ),
+            "min_delay_ms": cfg.get("min_delay_ms"),
+            "record_enabled": bool(cfg.get("record_enabled", False)),
         },
         "created_at": row["created_at"] or "",
         "updated_at": row["updated_at"] or "",
@@ -377,6 +386,52 @@ class AgentCreateIn(BaseModel):
         le=50,
         description="Hard upper bound on agent loop iterations (1–50).",
     )
+    # ── Voice-pipeline knobs ─────────────────────────────────────────
+    denoise_enabled: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Insert DeepFilterNet 3 denoise upstream of STT + UltraVAD. "
+            "Off by default (adds ~200 ms passthrough latency). Turn on "
+            "for agents that expect noisy mics (call-center, mobile-in-public)."
+        ),
+    )
+    turn_decider: Optional[Literal["ultravad", "fusion"]] = Field(
+        default=None,
+        description=(
+            "Primary end-of-turn detector. `ultravad` (default) uses the "
+            "UltraVAD pod's prosody model; `fusion` uses Smart-Turn + "
+            "LiveKit. Falls back automatically when the configured pod "
+            "is offline."
+        ),
+    )
+    ultravad_threshold: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "UltraVAD end-of-turn probability threshold (0.0–1.0). "
+            "Lower = snappier turn-taking; higher = more patient. "
+            "Default 0.50."
+        ),
+    )
+    min_delay_ms: Optional[int] = Field(
+        default=None,
+        ge=200,
+        le=2000,
+        description=(
+            "Minimum silence (ms) before commit, regardless of model "
+            "confidence. Default 500 (server). Bump to 800–1000 for "
+            "agents whose users pause mid-thought a lot."
+        ),
+    )
+    record_enabled: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Record both legs of every call to a stereo WAV "
+            "(left=user, right=agent). Off by default. When on, "
+            "recordings appear under GET /v1/agents/{id}/calls."
+        ),
+    )
 
 
 class AgentPatchIn(BaseModel):
@@ -411,6 +466,12 @@ class AgentPatchIn(BaseModel):
     goal: Optional[str] = Field(default=None, max_length=2000)
     success_metric: Optional[str] = Field(default=None, max_length=2000)
     max_iterations: Optional[int] = Field(default=None, ge=1, le=50)
+    # Voice-pipeline knobs (see AgentCreateIn for descriptions).
+    denoise_enabled: Optional[bool] = Field(default=None)
+    turn_decider: Optional[Literal["ultravad", "fusion"]] = Field(default=None)
+    ultravad_threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    min_delay_ms: Optional[int] = Field(default=None, ge=200, le=2000)
+    record_enabled: Optional[bool] = Field(default=None)
 
 
 class CustomToolCreateIn(BaseModel):
@@ -550,6 +611,15 @@ async def create_agent(body: AgentCreateIn, auth_ctx: dict = Depends(require_api
         "goal": body.goal,
         "success_metric": body.success_metric,
         "max_iterations": body.max_iterations,
+        # Voice-pipeline knobs. Omitted ⇒ defaults applied by the
+        # voicechat router at session-open time.
+        "denoise_enabled": bool(body.denoise_enabled) if body.denoise_enabled is not None else False,
+        "turn_decider": body.turn_decider or "ultravad",
+        "ultravad_threshold": (
+            float(body.ultravad_threshold) if body.ultravad_threshold is not None else 0.50
+        ),
+        "min_delay_ms": body.min_delay_ms,
+        "record_enabled": bool(body.record_enabled) if body.record_enabled is not None else False,
     }
     agent_id = uuid.uuid4().hex
     conn = await get_db()
@@ -603,6 +673,12 @@ async def patch_agent(agent_id: str, body: AgentPatchIn, auth_ctx: dict = Depend
         "goal": body.goal,
         "success_metric": body.success_metric,
         "max_iterations": body.max_iterations,
+        # Voice-pipeline knobs.
+        "denoise_enabled": body.denoise_enabled,
+        "turn_decider": body.turn_decider,
+        "ultravad_threshold": body.ultravad_threshold,
+        "min_delay_ms": body.min_delay_ms,
+        "record_enabled": body.record_enabled,
     }
     # ``first_message`` is special: callers pass an empty string to
     # clear the greeting (start silent) and ``null`` to leave it
@@ -657,6 +733,272 @@ async def delete_agent(agent_id: str, auth_ctx: dict = Depends(require_api_key))
     finally:
         await conn.close()
     return {"ok": True}
+
+
+# ============================================================================
+# Call history (recordings + transcripts for one agent's past calls)
+# ============================================================================
+
+
+def _range_to_days(spec: str) -> int:
+    """Parse `7d`, `30d`, `90d` etc. into integer days. Defaults to 30
+    on malformed input. Mirrors the dashboard route's parser so the
+    behavior is identical."""
+    s = (spec or "30d").strip().lower()
+    if s.endswith("d") and s[:-1].isdigit():
+        days = int(s[:-1])
+    elif s.isdigit():
+        days = int(s)
+    else:
+        days = 30
+    return max(1, min(days, 365))
+
+
+@router.get(
+    "/v1/agents/{agent_id}/calls",
+    tags=["Call History"],
+    summary="List recent voice calls for an agent",
+)
+async def list_agent_calls(
+    agent_id: str,
+    range: str = "30d",
+    limit: int = 100,
+    auth_ctx: dict = Depends(require_api_key),
+) -> dict:
+    """Recent calls for one agent, newest first. `range` accepts
+    `7d` / `30d` / `90d` (max `365d`). `limit` is capped at 500.
+
+    Each call row carries `has_recording`; if true, fetch the audio
+    via `GET /v1/agents/{agent_id}/calls/{session_id}/recording`
+    (returns a presigned URL) and the turn-by-turn transcript via
+    `GET /v1/agents/{agent_id}/calls/{session_id}/transcript`.
+
+    Recording availability requires the agent's `record_enabled` was
+    on for the call. Recordings are retained 30 days by default,
+    after which `has_recording` flips to false even though the
+    `voice_call_logs` row stays for analytics."""
+    user_id = auth_ctx["user_id"]
+    await _verify_agent_ownership(agent_id, user_id)
+    days = _range_to_days(range)
+    limit = max(1, min(int(limit), 500))
+    conn = await get_db()
+    try:
+        rows = await (await conn.execute(
+            """
+            SELECT session_id, started_at, ended_at, duration_ms, end_reason,
+                   turn_count, user_chars, agent_chars, recording_path,
+                   recording_bytes
+            FROM voice_call_logs
+            WHERE agent_id = ?
+              AND started_at >= datetime('now', ?)
+            ORDER BY started_at DESC
+            LIMIT ?
+            """,
+            (agent_id, f"-{days} days", limit),
+        )).fetchall()
+    finally:
+        await conn.close()
+    calls = [
+        {
+            "session_id": r[0],
+            "started_at": r[1],
+            "ended_at": r[2],
+            "duration_ms": int(r[3] or 0),
+            "end_reason": r[4] or "unknown",
+            "turn_count": int(r[5] or 0),
+            "user_chars": int(r[6] or 0),
+            "agent_chars": int(r[7] or 0),
+            "has_recording": bool(r[8]),
+            "recording_bytes": int(r[9]) if r[9] is not None else None,
+        }
+        for r in rows
+    ]
+    return {"calls": calls, "range": f"{days}d", "limit": limit}
+
+
+@router.get(
+    "/v1/agents/{agent_id}/calls/{session_id}/transcript",
+    tags=["Call History"],
+    summary="Get the per-turn transcript for one call",
+)
+async def get_call_transcript(
+    agent_id: str,
+    session_id: str,
+    auth_ctx: dict = Depends(require_api_key),
+) -> dict:
+    """Per-turn transcript for one call. Each turn carries an
+    `at_ms` offset relative to the call's `started_at`, so a player
+    UI can seek to the exact moment of a turn.
+
+    Response shape:
+        {
+          "session_id": "...",
+          "agent_id": "...",
+          "turns": [
+            {"role": "user", "text": "...", "at_ms": 1230},
+            {"role": "assistant", "text": "...", "at_ms": 1230},
+            ...
+          ]
+        }
+    """
+    user_id = auth_ctx["user_id"]
+    await _verify_agent_ownership(agent_id, user_id)
+    conn = await get_db()
+    try:
+        rows = await (await conn.execute(
+            """
+            SELECT
+                t.user_text,
+                t.bot_text,
+                CAST(
+                    (julianday(t.created_at) - julianday(c.started_at)) * 86400000
+                    AS INTEGER
+                ) AS at_ms
+            FROM voice_call_logs c
+            JOIN studio_voicechat_history t ON t.session_id = c.session_id
+            WHERE c.session_id = ? AND c.agent_id = ? AND c.user_id = ?
+            ORDER BY t.id ASC
+            """,
+            (session_id, agent_id, user_id),
+        )).fetchall()
+        if not rows:
+            owned = await (await conn.execute(
+                "SELECT 1 FROM voice_call_logs "
+                "WHERE session_id = ? AND agent_id = ? AND user_id = ?",
+                (session_id, agent_id, user_id),
+            )).fetchone()
+            if not owned:
+                raise HTTPException(status_code=404, detail="call not found")
+    finally:
+        await conn.close()
+    turns: list[dict] = []
+    for r in rows:
+        user_text = (r[0] or "").strip()
+        bot_text = (r[1] or "").strip()
+        at_ms = int(r[2] or 0)
+        if user_text:
+            turns.append({"role": "user", "text": user_text, "at_ms": at_ms})
+        if bot_text:
+            turns.append({"role": "assistant", "text": bot_text, "at_ms": at_ms})
+    return {"session_id": session_id, "agent_id": agent_id, "turns": turns}
+
+
+@router.get(
+    "/v1/agents/{agent_id}/calls/{session_id}/recording",
+    tags=["Call History"],
+    summary="Get a presigned URL for one call's stereo WAV recording",
+)
+async def get_call_recording_url(
+    agent_id: str,
+    session_id: str,
+    download: bool = False,
+    auth_ctx: dict = Depends(require_api_key),
+) -> dict:
+    """Returns `{"url": "<presigned R2 URL>", "expires_in": 3600}`.
+    The URL is signed for 1 hour. Stream the WAV directly from R2;
+    no auth needed on that GET.
+
+    The WAV is stereo 16 kHz s16le: left channel = user mic post-
+    denoise (the bytes STT actually heard), right channel = agent
+    TTS output. Both channels share a single timeline so playback
+    aligns 1:1 with what each side experienced.
+
+    Set `download=true` to get a URL with a
+    `Content-Disposition: attachment; filename={session_id}.wav`
+    response header (triggers the save dialog instead of inline
+    playback). 404 if the call has no recording (either the
+    agent's `record_enabled` was off, or the 30-day retention
+    sweep already removed it).
+    """
+    user_id = auth_ctx["user_id"]
+    await _verify_agent_ownership(agent_id, user_id)
+    conn = await get_db()
+    try:
+        row = await (await conn.execute(
+            """
+            SELECT recording_bucket, recording_path
+            FROM voice_call_logs
+            WHERE session_id = ? AND agent_id = ? AND user_id = ?
+            """,
+            (session_id, agent_id, user_id),
+        )).fetchone()
+    finally:
+        await conn.close()
+    if not row or not row[0] or not row[1]:
+        raise HTTPException(status_code=404, detail="recording not found")
+    bucket, key = str(row[0]), str(row[1])
+    # Late import — keeps the developer-api cold-start lean for
+    # deployments that don't use call recordings.
+    from studio_tts_service import presigned_call_recording_url
+    url = presigned_call_recording_url(
+        bucket,
+        key,
+        expires_seconds=3600,
+        download_filename=f"{session_id}.wav" if download else None,
+    )
+    if not url:
+        raise HTTPException(status_code=502, detail="object store unavailable")
+    return {"url": url, "expires_in": 3600}
+
+
+@router.delete(
+    "/v1/agents/{agent_id}/calls/{session_id}/recording",
+    tags=["Call History"],
+    summary="Delete one call's recording",
+)
+async def delete_call_recording(
+    agent_id: str,
+    session_id: str,
+    auth_ctx: dict = Depends(require_api_key),
+) -> dict:
+    """Immediately purge a call's recording object from object storage
+    and NULL the `recording_path` / `recording_bucket` / `recording_bytes`
+    columns on its `voice_call_logs` row. The log row itself stays so
+    aggregate analytics don't shift retroactively.
+
+    Idempotent: returns `{"deleted": false}` when the recording was
+    already gone (never created or already swept)."""
+    import asyncio
+    user_id = auth_ctx["user_id"]
+    await _verify_agent_ownership(agent_id, user_id)
+    conn = await get_db()
+    try:
+        row = await (await conn.execute(
+            """
+            SELECT recording_bucket, recording_path FROM voice_call_logs
+            WHERE session_id = ? AND agent_id = ? AND user_id = ?
+            """,
+            (session_id, agent_id, user_id),
+        )).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="call not found")
+        bucket = row[0]
+        key = row[1]
+        already_gone = bucket is None or key is None
+        if not already_gone:
+            from studio_tts_service import delete_call_recording_object
+            ok = await asyncio.to_thread(
+                delete_call_recording_object, str(bucket), str(key),
+            )
+            if not ok:
+                raise HTTPException(
+                    status_code=502,
+                    detail="object store unavailable; try again",
+                )
+            await conn.execute(
+                """
+                UPDATE voice_call_logs
+                SET recording_path = NULL,
+                    recording_bucket = NULL,
+                    recording_bytes = NULL
+                WHERE session_id = ?
+                """,
+                (session_id,),
+            )
+            await conn.commit()
+        return {"deleted": not already_gone}
+    finally:
+        await conn.close()
 
 
 # ============================================================================

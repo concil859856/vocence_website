@@ -592,6 +592,14 @@ export function Docs() {
           the moment of barge-in, and acks with <code>&#123;"type":"cancelled"&#125;</code>. Your audio player should flush
           its own queue locally — don't wait for the server confirmation before silencing the speakers.
         </p>
+        <p className="text-sm leading-relaxed text-zinc-400 mt-2">
+          When you instead start a new turn (<code>stream_start</code> / <code>voice</code> / <code>text</code>) while the
+          agent's previous reply is still playing in your local audio queue, the server cancels the previous LLM/TTS
+          server-side AND sends <code>&#123;"type":"flush_player"&#125;</code> so your client can flush whatever bytes were
+          already on the wire or sitting in its prebuffer. Handle <code>flush_player</code> exactly like the audio-queue
+          flush part of <code>cancelled</code> — but DO NOT close the active streaming session (the new turn just opened
+          it). Flushing the player only is the difference between the two messages.
+        </p>
 
         <h3 className="text-sm font-semibold text-zinc-200 mt-4">Audio formats</h3>
         <ul className="ml-4 list-disc space-y-1 text-sm text-zinc-400 marker:text-zinc-600">
@@ -629,6 +637,92 @@ export function Docs() {
           Detailed pricing and billing rules for Studio and Developer API.
         </p>
       </div>
+
+      <section className="border-t border-white/[0.06] pt-8 max-w-4xl">
+        <h2 className="text-lg font-semibold tracking-tight text-white mb-3">
+          Call History — recordings &amp; transcripts
+        </h2>
+        <p className="text-sm leading-relaxed text-zinc-400 mb-4">
+          Every voice-agent call is logged. When the agent's{' '}
+          <code>config.record_enabled</code> is <code>true</code>, the session also produces a stereo WAV
+          (left channel = user mic post-denoise, right channel = agent TTS, both 16 kHz s16le, one shared
+          timeline) uploaded to Cloudflare R2. Three endpoints expose the history:
+        </p>
+        <div className="overflow-hidden rounded-xl border border-white/[0.06] bg-white/[0.02] mb-4">
+          <table className="w-full text-left text-[13px]">
+            <thead className="bg-white/[0.03] text-zinc-400">
+              <tr>
+                <th className="px-4 py-2.5 font-medium">Route</th>
+                <th className="px-4 py-2.5 font-medium">What it returns</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-white/[0.04]">
+              <tr>
+                <td className="px-4 py-3 align-top"><code className="text-white/90">GET /v1/agents/&#123;agent_id&#125;/calls?range=30d&amp;limit=100</code></td>
+                <td className="px-4 py-3 text-zinc-400 align-top">
+                  Recent calls, newest first. Each row carries <code>session_id</code>,{' '}
+                  <code>started_at</code>, <code>ended_at</code>, <code>duration_ms</code>,{' '}
+                  <code>end_reason</code>, <code>turn_count</code>, <code>user_chars</code>,{' '}
+                  <code>agent_chars</code>, and a <code>has_recording</code> boolean. <code>range</code>{' '}
+                  accepts <code>7d</code>/<code>30d</code>/<code>90d</code> (max <code>365d</code>);{' '}
+                  <code>limit</code> caps at 500.
+                </td>
+              </tr>
+              <tr>
+                <td className="px-4 py-3 align-top"><code className="text-white/90">GET /v1/agents/&#123;agent_id&#125;/calls/&#123;session_id&#125;/transcript</code></td>
+                <td className="px-4 py-3 text-zinc-400 align-top">
+                  Per-turn transcript:{' '}
+                  <code>&#123;turns: [&#123;role: "user"|"assistant", text, at_ms&#125;…]&#125;</code>. The{' '}
+                  <code>at_ms</code> offset is relative to the call's <code>started_at</code> so a player
+                  UI can seek to the exact moment of a turn.
+                </td>
+              </tr>
+              <tr>
+                <td className="px-4 py-3 align-top"><code className="text-white/90">GET /v1/agents/&#123;agent_id&#125;/calls/&#123;session_id&#125;/recording?download=false</code></td>
+                <td className="px-4 py-3 text-zinc-400 align-top">
+                  Returns <code>&#123;url, expires_in: 3600&#125;</code> — a 1-hour presigned R2 URL. Stream
+                  the WAV directly from R2 (no auth needed on the GET). Pass <code>download=true</code> to
+                  receive a URL with a <code>Content-Disposition: attachment</code> header so browsers
+                  offer a save dialog. <strong>404</strong> when the recording is missing (agent didn't
+                  have <code>record_enabled</code>, or the 30-day retention sweep already removed it).
+                </td>
+              </tr>
+              <tr>
+                <td className="px-4 py-3 align-top"><code className="text-white/90">DELETE /v1/agents/&#123;agent_id&#125;/calls/&#123;session_id&#125;/recording</code></td>
+                <td className="px-4 py-3 text-zinc-400 align-top">
+                  Purge a single recording from object storage. Returns{' '}
+                  <code>&#123;deleted: true|false&#125;</code>; <code>false</code> means it was already
+                  gone. The <code>voice_call_logs</code> row stays so analytics totals don't shift.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <CodeBlock code={`from vocence import Vocence
+
+client = Vocence()
+
+# 1. List the agent's calls from the last 30 days.
+calls = client.agents.calls("agent-id").list(range="30d", limit=50)
+for c in calls:
+    print(c["session_id"], c["duration_ms"], "recording:", c["has_recording"])
+
+# 2. Fetch one call's per-turn transcript.
+turns = client.agents.calls("agent-id").transcript(calls[0]["session_id"])
+for t in turns:
+    print(f"[{t['at_ms']:>6} ms] {t['role']}: {t['text']}")
+
+# 3. Get a presigned URL for the stereo WAV.
+rec = client.agents.calls("agent-id").recording(calls[0]["session_id"])
+print(rec["url"])  # download or stream directly from R2
+`} />
+        <p className="text-xs leading-relaxed text-zinc-500 mt-3">
+          Recordings require the agent's <code>config.record_enabled = true</code> (off by default for
+          privacy). Default retention is 30 days; after that the WAV is purged but the call row stays.
+          To delete a recording on demand, call the DELETE endpoint or{' '}
+          <code>client.agents.calls(id).delete_recording(session_id)</code> from the Python SDK.
+        </p>
+      </section>
 
       <section>
         <h2 className="text-lg font-semibold mb-3">Current Plans</h2>
@@ -886,6 +980,10 @@ export function Docs() {
                 ['GET /v1/agents/{id}/embed-tokens', 'List embed tokens for a public-website widget.'],
                 ['POST /v1/agents/{id}/embed-tokens', 'Create an embed token (allowed origins + rate limits).'],
                 ['DELETE /v1/agents/{id}/embed-tokens/{id}', 'Revoke an embed token.'],
+                ['GET /v1/agents/{id}/calls', 'List recent voice calls (range 7d/30d/90d, newest first).'],
+                ['GET /v1/agents/{id}/calls/{session_id}/transcript', 'Per-turn transcript with at_ms timestamps.'],
+                ['GET /v1/agents/{id}/calls/{session_id}/recording', 'Presigned URL for the stereo WAV (1 h TTL).'],
+                ['DELETE /v1/agents/{id}/calls/{session_id}/recording', 'Purge the recording from object storage.'],
                 ['POST /v1/feedback', 'Submit or update thumbs feedback on a generation.'],
                 ['GET /v1/feedback', 'Fetch your current rating for a single generation.'],
                 ['WS /v1/agents/{id}/session', 'Bidirectional voice-agent WebSocket (PCM in, PCM out).'],
@@ -3711,10 +3809,21 @@ async def proxy(ws: WebSocket, agent_id: str):
               </tr>
               <tr>
                 <td className="px-4 py-3 font-mono text-cyan-300 align-top">ultravad_threshold</td>
-                <td className="px-4 py-3 text-zinc-400 align-top"><code>float [0, 1]</code> · <code>0.55</code></td>
+                <td className="px-4 py-3 text-zinc-400 align-top"><code>float [0, 1]</code> · <code>0.50</code></td>
                 <td className="px-4 py-3 text-zinc-400 align-top">
                   UltraVAD's commit threshold. Higher = more conservative (lets mid-sentence pauses through, adds ~200 ms
-                  of end-of-turn latency); lower = snappier but more likely to cut the user off mid-sentence.
+                  of end-of-turn latency); lower = snappier but more likely to cut the user off mid-sentence. The server
+                  also auto-extends silence for short or mid-thought transcripts ("Hm. Yeah." gets 1500 ms before a commit
+                  is allowed) — see the Agents guide for the adaptive curve.
+                </td>
+              </tr>
+              <tr>
+                <td className="px-4 py-3 font-mono text-cyan-300 align-top">min_delay_ms</td>
+                <td className="px-4 py-3 text-zinc-400 align-top"><code>int? [200, 2000]</code> · <code>null</code></td>
+                <td className="px-4 py-3 text-zinc-400 align-top">
+                  Minimum silence (ms) before commit is even allowed to fire, regardless of model confidence. Omit
+                  (server-default 500 ms) for normal use; bump to 800–1000 ms for agents whose users pause mid-thought
+                  a lot. The adaptive curve above this still kicks in for very short transcripts.
                 </td>
               </tr>
               <tr>
@@ -3722,7 +3831,8 @@ async def proxy(ws: WebSocket, agent_id: str):
                 <td className="px-4 py-3 text-zinc-400 align-top"><code>bool</code> · <code>false</code></td>
                 <td className="px-4 py-3 text-zinc-400 align-top">
                   When true, the session tees both legs (user + agent PCM) to a stereo WAV uploaded to R2.
-                  Downloadable + searchable from the Calls tab in Studio. Retention 30 days.
+                  Downloadable + searchable via the Calls tab in Studio AND through <code>GET /v1/agents/&#123;id&#125;/calls</code>
+                  in the public API. Retention 30 days.
                 </td>
               </tr>
             </tbody>
@@ -3735,7 +3845,8 @@ agent = Vocence().agents.update(
     config={
         "denoise_enabled": True,         # noisy call-center mic
         "turn_decider": "ultravad",
-        "ultravad_threshold": 0.6,       # slightly more patient than the default
+        "ultravad_threshold": 0.55,      # slightly more patient than the 0.50 default
+        "min_delay_ms": 800,             # require 800 ms silence before commit
         "record_enabled": True,          # capture WAVs for review
     },
 )`} />
