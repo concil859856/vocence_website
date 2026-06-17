@@ -78,6 +78,28 @@ SESSION_HARD_TIMEOUT_S = 30.0
 # accept whatever the client sends and tee it). Kept here for docs.
 EXPECTED_FRAME_BYTES = 640  # 20 ms @ 16 kHz mono s16le
 
+# Bounded queue between the audio ingress (``_forward_frames``) and the
+# STT pod WS. Sized to ~2 s of audio at 20 ms frames so a momentary STT
+# slowdown doesn't backpressure the ingress loop. On overflow we drop
+# the OLDEST frame, not the newest — the recent speech is what matters
+# for the user's current turn. The counter feeds a WARN log so a chronic
+# STT slowdown shows up as a real signal instead of silently dropping
+# whole sentences.
+_STT_SEND_QUEUE_MAX = 100
+
+# UltraVAD hysteresis. The session is "armed" (ready to commit) only
+# once ``p_end_of_turn`` has crossed ``_ultravad_threshold`` (set per
+# agent, default 0.50) AND has not dropped below this exit threshold
+# for ``_UV_EXIT_TICKS`` consecutive ensembler ticks. A single-tick
+# spike from a noise burst no longer fires a premature commit — the
+# probability has to STAY high (or at least stay above ~0.35) for the
+# duration that ``silence_ms`` is also accumulating toward the configured
+# minimum delay. In the common case where speech ends and ``p_end_of_turn``
+# rises and stays high, this adds zero latency: the first tick crosses
+# entry → armed → next tick that also satisfies ``silence_ms`` commits.
+_UV_EXIT_THRESHOLD = 0.35
+_UV_EXIT_TICKS = 2
+
 # Words that strongly suggest the user is mid-thought (function
 # words / conjunctions / determiners / hedges). When the running
 # transcript ends with one of these, we extend the EOU silence
@@ -176,6 +198,14 @@ class _SignalState:
     # it, so counting it as voice would wrongly extend the turn.
     last_voice_at: float = field(default_factory=time.monotonic)
     turn_active: bool = False
+    # UltraVAD hysteresis state — see ``_UV_EXIT_THRESHOLD`` /
+    # ``_UV_EXIT_TICKS``. ``uv_armed`` flips True the first tick that
+    # ``p_end_of_turn`` crosses the entry threshold, flips False after
+    # ``_UV_EXIT_TICKS`` consecutive ticks below the exit threshold.
+    # Without this a single-tick noise spike during a pause could commit
+    # the turn while the user was still mid-thought.
+    uv_armed: bool = False
+    uv_below_exit_ticks: int = 0
 
     def running_transcript(self) -> str:
         parts = [seg for seg in self.finals_accumulated if seg]
@@ -311,6 +341,12 @@ class StreamingTurnSession:
         self._started_at = 0.0
         self._commit_rule: str = "stream_ended"
         self._closed = asyncio.Event()
+        # Bounded send queue + background drain task in front of the STT
+        # pod. Lazily created on the first frame so cold sessions don't
+        # spin up a task that immediately exits. See ``_enqueue_stt_send``.
+        self._stt_send_queue: asyncio.Queue[bytes] | None = None
+        self._stt_send_consumer_task: asyncio.Task | None = None
+        self._stt_dropped: int = 0
         # Stashed at construction, consumed (or discarded) in _open_stt.
         self._prewarmed_stt = prewarmed_stt
         # Recorder lives for the SESSION (multiple turns), so storing
@@ -369,10 +405,7 @@ class StreamingTurnSession:
                 self._mark_voice()
                 for f in self._preroll_frames:
                     if self._stt_ws is not None and not self._stt_ws.closed:
-                        try:
-                            await self._stt_ws.send_bytes(f)
-                        except Exception:
-                            pass
+                        self._enqueue_stt_send(f)
                     if self._smart is not None:
                         try:
                             await self._smart.send_pcm(f)
@@ -680,6 +713,20 @@ class StreamingTurnSession:
             setattr(self, attr, None)
 
     async def _close_stt(self) -> None:
+        # Tear down the send-queue drain task BEFORE closing the WS so
+        # the drain doesn't race a send against an already-closed socket
+        # and log spurious errors at shutdown.
+        if self._stt_send_consumer_task is not None:
+            self._stt_send_consumer_task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await self._stt_send_consumer_task
+            self._stt_send_consumer_task = None
+        self._stt_send_queue = None
+        if self._stt_dropped:
+            _log.warning(
+                "[stream] session=%s STT total dropped frames at close: %d",
+                self._session_id, self._stt_dropped,
+            )
         if self._stt_ws is not None:
             try:
                 if not self._stt_ws.closed:
@@ -715,6 +762,68 @@ class StreamingTurnSession:
         """
         self._state.turn_active = True
         self._state.last_voice_at = time.monotonic()
+
+    def _enqueue_stt_send(self, frame: bytes) -> None:
+        """Non-blocking enqueue of one PCM frame for the STT pod.
+
+        On overflow, drop the OLDEST queued frame and push the new one —
+        recent audio is what matters for the current turn. The drop
+        counter is logged at WARN every 25 events so a chronic STT
+        slowdown shows up as a real signal instead of silently swallowing
+        whole sentences (the bug class behind "STT missed whole speech").
+        """
+        if self._stt_send_queue is None:
+            self._stt_send_queue = asyncio.Queue(maxsize=_STT_SEND_QUEUE_MAX)
+            self._stt_send_consumer_task = asyncio.create_task(
+                self._drain_stt_send_queue(), name="stt_send_drain"
+            )
+        try:
+            self._stt_send_queue.put_nowait(frame)
+            return
+        except asyncio.QueueFull:
+            pass
+        try:
+            self._stt_send_queue.get_nowait()
+        except asyncio.QueueEmpty:
+            pass
+        try:
+            self._stt_send_queue.put_nowait(frame)
+        except asyncio.QueueFull:
+            return
+        self._stt_dropped += 1
+        if self._stt_dropped % 25 == 1:
+            _log.warning(
+                "[stream] session=%s STT send queue overflow: dropped %d frames so far",
+                self._session_id, self._stt_dropped,
+            )
+
+    async def _drain_stt_send_queue(self) -> None:
+        """Forward PCM frames from the bounded queue to the STT pod WS.
+
+        Runs as a background task so a slow STT pod can't backpressure
+        ``_forward_frames`` (which would in turn stall denoise, the
+        recorder tee, and the parallel UltraVAD / Smart-Turn sends).
+        """
+        queue = self._stt_send_queue
+        if queue is None:
+            return
+        while not self._closed.is_set():
+            try:
+                frame = await queue.get()
+            except asyncio.CancelledError:
+                return
+            ws = self._stt_ws
+            if ws is None or ws.closed:
+                continue
+            try:
+                await ws.send_bytes(frame)
+            except asyncio.CancelledError:
+                return
+            except Exception as exc:  # noqa: BLE001
+                _log.warning(
+                    "[stream] session=%s STT send_bytes failed: %s",
+                    self._session_id, exc,
+                )
 
     async def _forward_frames(self) -> None:
         """Pull binary frames from the client WS, optionally denoise,
@@ -777,10 +886,7 @@ class StreamingTurnSession:
                 if self._call_recorder is not None:
                     self._call_recorder.push_user(f)
                 if self._stt_ws is not None and not self._stt_ws.closed:
-                    try:
-                        await self._stt_ws.send_bytes(f)
-                    except Exception as exc:  # noqa: BLE001
-                        _log.warning("[stream] STT send_bytes failed: %s", exc)
+                    self._enqueue_stt_send(f)
                 if self._smart is not None:
                     try:
                         await self._smart.send_pcm(f)
@@ -1116,10 +1222,28 @@ class StreamingTurnSession:
                 effective_min_delay = self._min_delay_ms
             if _looks_mid_thought(running_text):
                 effective_min_delay += 600
+            # Hysteresis state machine on UltraVAD output. Arm on entry
+            # threshold, disarm only after several consecutive ticks
+            # below the lower exit threshold. Single-tick spikes near
+            # the boundary no longer fire commit; sustained high
+            # probability arms immediately so snappy turn-taking is
+            # preserved. See ``_UV_EXIT_THRESHOLD`` / ``_UV_EXIT_TICKS``.
+            if uv_available:
+                if ultravad_p >= self._ultravad_threshold:
+                    self._state.uv_armed = True
+                    self._state.uv_below_exit_ticks = 0
+                elif ultravad_p < _UV_EXIT_THRESHOLD:
+                    self._state.uv_below_exit_ticks += 1
+                    if self._state.uv_below_exit_ticks >= _UV_EXIT_TICKS:
+                        self._state.uv_armed = False
+                else:
+                    # In the hysteresis band (between exit and entry):
+                    # hold whatever state we're in, don't decay.
+                    self._state.uv_below_exit_ticks = 0
             uv_threshold_crossed = (
                 uv_available
                 and silence_ms >= effective_min_delay
-                and ultravad_p >= self._ultravad_threshold
+                and self._state.uv_armed
             )
             uv_backstop_hit = uv_available and silence_ms >= MAX_DELAY_MS
             ultravad_commits = uv_threshold_crossed or uv_backstop_hit
@@ -1161,11 +1285,16 @@ class StreamingTurnSession:
             self._commit_rule = rule
             _log.info(
                 "[stream] commit decider=%s rule=%s silence=%dms smart=%.2f "
-                "td_p=%.4f conf=%.2fx uv_p=%.3f shadow_%s_would=%s session=%s",
+                "td_p=%.4f conf=%.2fx uv_p=%.3f uv_armed=%s shadow_%s_would=%s session=%s",
                 effective_decider, rule, silence_ms, self._state.smart_turn_p,
                 self._state.turn_detector_p, self._state.turn_detector_confidence,
-                ultravad_p, shadow_label, shadow_committed, self._session_id,
+                ultravad_p, self._state.uv_armed,
+                shadow_label, shadow_committed, self._session_id,
             )
+            # Disarm hysteresis on commit so the next turn (if reused
+            # in the same session) starts from ARMED=False.
+            self._state.uv_armed = False
+            self._state.uv_below_exit_ticks = 0
             await self._finalize_commit()
             # Reset both audio-EOU windows so the previous utterance's
             # tail doesn't bleed into the next turn.
