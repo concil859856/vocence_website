@@ -4,7 +4,7 @@ For general help, bug reports, billing issues, or feedback, email space@vocence.
 
 # Community
 
-Vocence is on X (Twitter), GitHub, Discord, and Telegram. The X account is x.com/vocence_bt. The open-source repository is github.com/vocence-78/vocence. The Discord server invite is discord.gg/TWmfwJAtXG. The Telegram channel is t.me/+UIrmzi5ZKTI4ZTg5. Updates, release notes, and roadmap discussion happen across all four.
+Vocence is on X (Twitter), GitHub, Discord, and Telegram. The X account is x.com/vocence_bt. The open-source repository is github.com/vocence-78/vocence. The Discord server invite is discord.gg/b2DTT73Usq. The Telegram channel is t.me/+UIrmzi5ZKTI4ZTg5. Updates, release notes, and roadmap discussion happen across all four.
 
 # Documentation and learning resources
 

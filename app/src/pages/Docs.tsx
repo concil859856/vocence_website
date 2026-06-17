@@ -4355,7 +4355,7 @@ print(f"credits used: {data['credits_used']}, remaining: {data['credits_remainin
           snippets in five languages, and a Try-It-Out button on the{' '}
           <Link to="/docs/api" className="text-[#DFFF00] hover:underline">API Reference</Link>{' '}
           page. If you hit a missing case here, ping us on{' '}
-          <a href="https://discord.gg/TWmfwJAtXG" className="text-[#DFFF00] hover:underline" target="_blank" rel="noopener noreferrer">
+          <a href="https://discord.gg/b2DTT73Usq" className="text-[#DFFF00] hover:underline" target="_blank" rel="noopener noreferrer">
             Discord
           </a>{' '}
           and we'll add the recipe.

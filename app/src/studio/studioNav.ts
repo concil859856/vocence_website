@@ -89,7 +89,7 @@ export const STUDIO_HELP_ITEM: StudioNavItem = {
   id: 'help',
   label: 'Help',
   icon: LifeBuoy,
-  to: 'https://discord.gg/TWmfwJAtXG',
+  to: 'https://discord.gg/b2DTT73Usq',
   external: true,
 };
 

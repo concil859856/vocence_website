@@ -19,7 +19,7 @@ Privacy Policy: https://vocence.ai/privacy
 
 X (Twitter): https://x.com/vocence_bt
 GitHub repo: https://github.com/vocence-78/vocence
-Discord: https://discord.gg/TWmfwJAtXG
+Discord: https://discord.gg/b2DTT73Usq
 Telegram: https://t.me/+UIrmzi5ZKTI4ZTg5
 Bittensor home: https://bittensor.com
 Chutes (model deployment): https://chutes.ai

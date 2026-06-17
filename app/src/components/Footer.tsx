@@ -6,7 +6,7 @@ import { useHasVoiceChatAccess } from '../lib/voicechatAccess';
 const SOCIAL_LINKS = [
   { href: 'https://x.com/vocence_bt', label: 'Twitter / X', icon: Twitter },
   { href: 'https://github.com/vocence-78/vocence', label: 'GitHub', icon: Github },
-  { href: 'https://discord.gg/TWmfwJAtXG', label: 'Discord', icon: 'discord' as const },
+  { href: 'https://discord.gg/b2DTT73Usq', label: 'Discord', icon: 'discord' as const },
   { href: TELEGRAM_INVITE_URL, label: 'Telegram', icon: Send },
 ] as const;
 
