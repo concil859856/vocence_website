@@ -48,6 +48,7 @@ from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
 from local_db import atomic_deduct_credits, get_connection, record_credit_transaction
 from routers.auth import _decode_token
+from ws_drain import registry as drain_registry
 
 
 def _decode_user_from_token(token: str | None) -> str | None:
@@ -167,6 +168,12 @@ async def streaming_tts(
       S → C  JSON  {"type": "end"}            (single utterance done)
       C → S  JSON  {"type": "stop"}            (close cleanly)
     """
+    if drain_registry().shutting_down:
+        await ws.close(code=WS_CLOSE_UPSTREAM, reason="server is restarting")
+        return
+    _task = asyncio.current_task()
+    if _task is not None:
+        drain_registry().register(_task)
     auth_user_id, is_internal = _resolve_ws_auth(ws, token, user_id_override)
     await ws.accept()
     if not auth_user_id:
@@ -335,6 +342,12 @@ async def streaming_stt(
       C → S  JSON   {"type":"stop"}        (flushes + closes)
       S → C  JSON   {"type":"end"}
     """
+    if drain_registry().shutting_down:
+        await ws.close(code=WS_CLOSE_UPSTREAM, reason="server is restarting")
+        return
+    _task = asyncio.current_task()
+    if _task is not None:
+        drain_registry().register(_task)
     auth_user_id, is_internal = _resolve_ws_auth(ws, token, user_id_override)
     await ws.accept()
     if not auth_user_id:

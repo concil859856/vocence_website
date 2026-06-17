@@ -74,6 +74,7 @@ from voicechat_service import (
 import agent_tools_service
 from call_recorder import CallRecorder
 from llm_client import stream_chat_with_tools
+from ws_drain import registry as drain_registry, track_session
 
 # Tool calling: cap how many LLM↔tool round-trips a single turn can do.
 # Most legit queries finish in 1 tool call ("what's the weather in Tokyo");
@@ -481,6 +482,21 @@ async def voicechat_session(
     agent_id: str | None = Query(default=None),
     user_id_override: str | None = Query(default=None, alias="user_id"),
 ) -> None:
+    # Graceful-shutdown gate. When the lifespan handler has flipped the
+    # ``shutting_down`` flag, reject new WS upgrades with 4503 instead
+    # of accepting them onto a process that's about to exit. Existing
+    # sessions keep running; the lifespan waits up to N seconds for
+    # them to end naturally. See ``ws_drain.request_drain``.
+    if drain_registry().shutting_down:
+        await ws.close(code=4503, reason="server is restarting")
+        return
+    # Register this handler task with the drain registry. When the
+    # task ends (clean disconnect, exception, or shutdown timeout), the
+    # registry auto-unregisters via task.add_done_callback so we don't
+    # need a try/finally around the entire (large) handler body.
+    _current_task = asyncio.current_task()
+    if _current_task is not None:
+        drain_registry().register(_current_task)
     # Auth — three accepted paths, in priority order:
     #   1. INTERNAL: service-to-service. The developer-api service
     #      (the public agent API) authenticates the API-key caller on

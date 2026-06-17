@@ -134,6 +134,26 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    # Graceful WS drain. Flips the shutdown flag (new sessions get
+    # rejected with 4503) and waits up to VOICE_DRAIN_TIMEOUT_S for
+    # active voice / streaming-TTS / streaming-STT sessions to end on
+    # their own. Topology: single-process backend behind nginx, so a
+    # restart drops every live call by default. Draining buys clean
+    # teardown time for whoever's mid-conversation. Multi-replica
+    # rolling deploys will eventually be the real fix; this is the
+    # piece that makes that possible.
+    try:
+        from ws_drain import registry as _drain_reg
+        _drain_timeout = float(os.environ.get("VOICE_DRAIN_TIMEOUT_S") or "30")
+        _remaining = await _drain_reg().request_drain(timeout=_drain_timeout)
+        if _remaining:
+            _logging.getLogger(__name__).warning(
+                "[drain] shutting down with %d voice session(s) still active",
+                _remaining,
+            )
+    except Exception:
+        _logging.getLogger(__name__).exception("ws drain failed (non-fatal)")
+
     try:
         from ops.pollers import stop_pollers
         await stop_pollers()
