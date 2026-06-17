@@ -19,6 +19,7 @@ import {
   useState,
   type MouseEvent,
 } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Pause,
   Play,
@@ -256,7 +257,14 @@ export function VideoPlayerModal({
 
   if (!open) return null;
 
-  return (
+  // Render into ``document.body`` via a Portal. Without this, the modal
+  // is positioned relative to whatever ancestor created the current
+  // stacking context — the StudioHeroBanner has ``overflow-hidden`` on
+  // its <section>, which clips the fixed-positioned backdrop and makes
+  // the modal effectively invisible. The Portal moves the DOM nodes to
+  // a top-level container so ``fixed inset-0`` actually fills the
+  // viewport regardless of where the caller renders us.
+  return createPortal(
     <div
       role="dialog"
       aria-modal="true"
@@ -401,7 +409,8 @@ export function VideoPlayerModal({
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
