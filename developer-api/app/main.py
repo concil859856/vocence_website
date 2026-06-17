@@ -21,6 +21,7 @@ app = FastAPI(
         {"name": "Audio", "description": "Audio enhancement and noise reduction."},
         {"name": "Agents", "description": "CRUD + voice WebSocket session for your Studio agents."},
         {"name": "Knowledge", "description": "Per-agent RAG knowledge ingestion (text / URL / sitemap / PDF)."},
+        {"name": "Call History", "description": "Per-agent voice-call list, per-turn transcripts, and presigned URLs to stereo WAV recordings. Recordings require `config.record_enabled = true` and are retained 30 days by default."},
         {"name": "Embed Tokens", "description": "Mint scoped tokens for the embeddable <vocence-agent> widget."},
         {"name": "Voices", "description": "Manage saved designed / cloned voices and synthesize with them."},
         {"name": "Custom Tools", "description": "Register webhook tools your agents can call mid-conversation."},

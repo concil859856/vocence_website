@@ -12,6 +12,38 @@ import {
   ExternalLink,
 } from 'lucide-react';
 import gsap from 'gsap';
+// Syntax highlighting for the docs CodeBlock. The full hljs bundle
+// auto-loads every grammar and balloons the docs page; the ``/lib/core``
+// entry leaves grammar registration to us. We hand-pick only the
+// languages used in this file (python, bash, ts/js, json, http) so the
+// bundle stays lean while still giving Cursor-like accurate coloring.
+import hljs from 'highlight.js/lib/core';
+import python from 'highlight.js/lib/languages/python';
+import bash from 'highlight.js/lib/languages/bash';
+import typescript from 'highlight.js/lib/languages/typescript';
+import javascript from 'highlight.js/lib/languages/javascript';
+import json from 'highlight.js/lib/languages/json';
+import httpLang from 'highlight.js/lib/languages/http';
+import plaintext from 'highlight.js/lib/languages/plaintext';
+// Atom One Dark — closest off-the-shelf hljs theme to the modern
+// Cursor / VSCode "One Dark" palette the user pointed at as the
+// reference look. Imported once globally via this module.
+import 'highlight.js/styles/atom-one-dark.css';
+
+hljs.registerLanguage('python', python);
+hljs.registerLanguage('py', python);
+hljs.registerLanguage('bash', bash);
+hljs.registerLanguage('sh', bash);
+hljs.registerLanguage('shell', bash);
+hljs.registerLanguage('typescript', typescript);
+hljs.registerLanguage('ts', typescript);
+hljs.registerLanguage('tsx', typescript);
+hljs.registerLanguage('javascript', javascript);
+hljs.registerLanguage('js', javascript);
+hljs.registerLanguage('json', json);
+hljs.registerLanguage('http', httpLang);
+hljs.registerLanguage('text', plaintext);
+hljs.registerLanguage('plaintext', plaintext);
 import { formatCreditsCompact } from '../utils/formatCredits';
 import {
   CREDIT_NOISE_REMOVER,
@@ -106,6 +138,30 @@ function CodeBlock({ code, language }: { code: string; language?: string }) {
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1500);
   };
+  // Run hljs once per (code, language) pair. When the language is
+  // explicitly named and registered, use the targeted highlighter for
+  // best accuracy; otherwise fall back to autodetect over the registered
+  // subset. The atom-one-dark stylesheet (imported at module top)
+  // colors the resulting span tree. Wrapped in useMemo so we don't
+  // re-tokenize on every parent re-render (the docs page re-renders
+  // frequently as the scroll-spy updates the active TOC item).
+  const highlighted = useMemo(() => {
+    try {
+      const lang = (language || '').toLowerCase();
+      if (lang && hljs.getLanguage(lang)) {
+        return hljs.highlight(code, { language: lang, ignoreIllegals: true }).value;
+      }
+      // No explicit language → autodetect across the registered set.
+      return hljs.highlightAuto(code).value;
+    } catch {
+      // Defensive: on any tokenizer error, escape and render plain so
+      // the page still works instead of a blank code block.
+      return code
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+    }
+  }, [code, language]);
   return (
     <div className="group relative">
       <button
@@ -117,10 +173,19 @@ function CodeBlock({ code, language }: { code: string; language?: string }) {
         {copied ? 'Copied' : 'Copy'}
       </button>
       <pre
-        className="overflow-x-auto rounded-lg border border-white/[0.06] bg-black/40 p-4 pr-14 font-mono text-[12px] leading-relaxed text-zinc-200"
+        className="overflow-x-auto rounded-lg border border-white/[0.06] bg-black/40 p-4 pr-14 font-mono text-[12px] leading-relaxed"
         data-language={language}
       >
-        {code}
+        <code
+          className={`hljs language-${language || 'plaintext'}`}
+          // atom-one-dark sets a solid ``#282c34`` background on
+          // ``.hljs``; inline style overrides it so the translucent
+          // ``bg-black/40`` on the outer <pre> shows through, keeping
+          // the docs page's visual rhythm intact while still getting
+          // proper token coloring from the theme stylesheet.
+          style={{ background: 'transparent', padding: 0 }}
+          dangerouslySetInnerHTML={{ __html: highlighted }}
+        />
       </pre>
     </div>
   );
@@ -698,7 +763,7 @@ export function Docs() {
             </tbody>
           </table>
         </div>
-        <CodeBlock code={`from vocence import Vocence
+        <CodeBlock language="python" code={`from vocence import Vocence
 
 client = Vocence()
 
@@ -3274,7 +3339,7 @@ X-Vocence-Signature: v1=BASE64(HMAC-SHA256(secret, "v1.{ts}.{body}"))
           typer, websockets). Two optional extras unlock platform-specific
           features.
         </p>
-        <CodeBlock code={`pip install vocence                # core: REST + WebSocket + CLI
+        <CodeBlock language="bash" code={`pip install vocence                # core: REST + WebSocket + CLI
 pip install "vocence[audio]"       # adds mic capture + speaker playback
 pip install "vocence[keyring]"     # store API key in OS keychain`} />
       </section>
@@ -3285,8 +3350,8 @@ pip install "vocence[keyring]"     # store API key in OS keychain`} />
           Authenticate once with the CLI, then your Python scripts pick up
           the key automatically.
         </p>
-        <CodeBlock code={`$ vocence login          # opens browser → click Authorize → key saved`} />
-        <CodeBlock code={`from vocence import Vocence
+        <CodeBlock language="bash" code={`$ vocence login          # opens browser → click Authorize → key saved`} />
+        <CodeBlock language="python" code={`from vocence import Vocence
 
 client = Vocence()                              # uses key saved by \`vocence login\`
 
@@ -3330,7 +3395,7 @@ enhanced.write_wav("clean.wav")`} />
         <p className="text-sm leading-relaxed text-zinc-400">
           Every resource ships in two flavors with identical method names:
         </p>
-        <CodeBlock code={`# Synchronous (scripts, REPLs, simple servers)
+        <CodeBlock language="python" code={`# Synchronous (scripts, REPLs, simple servers)
 from vocence import Vocence
 with Vocence() as client:
     audio = client.tts.speak(text="hi", voice="design-aria")
@@ -3354,7 +3419,7 @@ asyncio.run(main())`} />
           plus convenience helpers so you don't have to manage the
           download yourself.
         </p>
-        <CodeBlock code={`r = client.tts.speak(text="Hello", voice="design-aria")
+        <CodeBlock language="python" code={`r = client.tts.speak(text="Hello", voice="design-aria")
 
 # Three ways to get the audio:
 r.audio_url              # presigned URL, short TTL
@@ -3368,7 +3433,7 @@ client.tts.estimate(text="hello", voice="design-aria")
 
       <section className="space-y-3">
         <h2 className="text-lg font-semibold tracking-tight text-white">Voice cloning + design</h2>
-        <CodeBlock code={`# One-shot clone, clip → text in that voice
+        <CodeBlock language="python" code={`# One-shot clone, clip → text in that voice
 clone = client.voice_clone.create(
     audio_path="my_voice.wav",
     target_text="Hello in my voice.",
@@ -3406,7 +3471,7 @@ saved = client.voice_design.save(
           rate limits, returns ordered results, wraps per-item failures so
           one bad row doesn't kill the run.
         </p>
-        <CodeBlock code={`import asyncio
+        <CodeBlock language="python" code={`import asyncio
 from vocence import AsyncVocence, batch
 
 async def render_chapters(chapters: list[str]):
@@ -3428,7 +3493,7 @@ asyncio.run(render_chapters(chapters))`} />
           Every exception subclasses <code className="rounded bg-white/[0.06] px-1 text-zinc-300">VocenceError</code>{' '}
           and maps to a specific HTTP failure mode:
         </p>
-        <CodeBlock code={`from vocence import Vocence, errors
+        <CodeBlock language="python" code={`from vocence import Vocence, errors
 
 client = Vocence()
 try:
@@ -3457,7 +3522,7 @@ except errors.APIConnectionError:         # DNS / TLS / connection refused
 
       <section className="space-y-3">
         <h2 className="text-lg font-semibold tracking-tight text-white">Debugging</h2>
-        <CodeBlock code={`# The last response's request_id, paste in support tickets
+        <CodeBlock language="python" code={`# The last response's request_id, paste in support tickets
 client.last_request_id
 
 # Quick readiness check before a long batch, round-trips GET /v1/account
@@ -3512,7 +3577,7 @@ print(client)`} />
 
       <section className="space-y-3">
         <h2 className="text-lg font-semibold tracking-tight text-white">Authentication</h2>
-        <CodeBlock code={`vocence login                          # browser device-code flow (recommended)
+        <CodeBlock language="bash" code={`vocence login                          # browser device-code flow (recommended)
 vocence login --paste                  # prompt for an existing key value
 vocence login --api-key voc_live_xxx   # one-shot (discouraged, visible in shell history)
 vocence config show                    # print where the key is stored (masked)
@@ -3532,7 +3597,7 @@ vocence config set-base-url default    # reset`} />
 
       <section className="space-y-3">
         <h2 className="text-lg font-semibold tracking-tight text-white">Account &amp; keys</h2>
-        <CodeBlock code={`vocence account                # plan, credits, key count
+        <CodeBlock language="bash" code={`vocence account                # plan, credits, key count
 vocence account balance        # just the integer balance (machine-friendly)
 vocence usage --limit 20       # recent API calls (latency, credits, errors)
 vocence keys list              # your existing keys (secrets never shown)
@@ -3542,7 +3607,7 @@ vocence keys revoke <id>       # immediate, irreversible`} />
 
       <section className="space-y-3">
         <h2 className="text-lg font-semibold tracking-tight text-white">Voices &amp; TTS / STT</h2>
-        <CodeBlock code={`vocence voices                                       # list 16 built-in speakers
+        <CodeBlock language="bash" code={`vocence voices                                       # list 16 built-in speakers
 vocence speak "Hello" -v design-aria -o out.wav      # save as WAV
 vocence speak "Hello" -v design-aria -o -            # just print the audio URL
 vocence transcribe clip.wav --language English       # STT
@@ -3553,7 +3618,7 @@ vocence enhance noisy.wav -o clean.wav               # remove background noise`}
 
       <section className="space-y-3">
         <h2 className="text-lg font-semibold tracking-tight text-white">Agents</h2>
-        <CodeBlock code={`vocence agents list                       # id + name only (small)
+        <CodeBlock language="bash" code={`vocence agents list                       # id + name only (small)
 vocence agents show <agent-id>            # full spec including bound tools
 vocence agents create -n "Bot" -t knowledge --voice design-aria
 vocence agents delete <agent-id>`} />
@@ -3561,7 +3626,7 @@ vocence agents delete <agent-id>`} />
 
       <section className="space-y-3">
         <h2 className="text-lg font-semibold tracking-tight text-white">Interactive REPLs</h2>
-        <CodeBlock code={`vocence chat <agent-id>         # text REPL: type → see reply text + hear audio
+        <CodeBlock language="bash" code={`vocence chat <agent-id>         # text REPL: type → see reply text + hear audio
 vocence voice <agent-id>        # push-to-talk mic REPL  (requires vocence[audio])`} />
         <p className="text-sm leading-relaxed text-zinc-400">
           In <code className="rounded bg-white/[0.06] px-1 text-zinc-300">voice</code> mode
@@ -3618,7 +3683,7 @@ vocence voice <agent-id>        # push-to-talk mic REPL  (requires vocence[audio
           arrives. Use when you need token-by-token streaming or
           fine-grained barge-in.
         </p>
-        <CodeBlock code={`import asyncio
+        <CodeBlock language="python" code={`import asyncio
 from vocence import AsyncVocence, AgentEvent, AudioFrame
 
 async def main():
@@ -3649,7 +3714,7 @@ asyncio.run(main())`} />
           concatenated, audio metadata, transcript, and any tool calls the
           LLM made.
         </p>
-        <CodeBlock code={`async with client.agents.conversation("agent-id") as conv:
+        <CodeBlock language="python" code={`async with client.agents.conversation("agent-id") as conv:
     turn = await conv.say("What is the capital of Japan?")
 
     print(turn.text)            # "The capital of Japan is Tokyo."
@@ -3673,7 +3738,7 @@ asyncio.run(main())`} />
           which pulls <code className="rounded bg-white/[0.06] px-1 text-zinc-300">sounddevice</code>{' '}
           and <code className="rounded bg-white/[0.06] px-1 text-zinc-300">numpy</code>.
         </p>
-        <CodeBlock code={`async with client.agents.live_chat("agent-id") as live:
+        <CodeBlock language="python" code={`async with client.agents.live_chat("agent-id") as live:
     while True:
         input("press Enter to start speaking…")
         live.record()
@@ -3696,7 +3761,7 @@ asyncio.run(main())`} />
           WS on a background thread and bridges events into a blocking
           iterator.
         </p>
-        <CodeBlock code={`from vocence import Vocence
+        <CodeBlock language="python" code={`from vocence import Vocence
 
 with Vocence().agents.session("agent-id") as sess:
     sess.send_text("Hi")
@@ -3738,7 +3803,7 @@ with Vocence().agents.session("agent-id") as sess:
           be visible in source. Use the Python SDK on{' '}
           <em>your own backend</em> and proxy the WebSocket through:
         </p>
-        <CodeBlock code={`# FastAPI proxy: browser ↔ your server ↔ Vocence
+        <CodeBlock language="python" code={`# FastAPI proxy: browser ↔ your server ↔ Vocence
 from fastapi import FastAPI, WebSocket
 from vocence import AsyncVocence, AudioFrame
 import asyncio, json
@@ -3838,7 +3903,7 @@ async def proxy(ws: WebSocket, agent_id: str):
             </tbody>
           </table>
         </div>
-        <CodeBlock code={`from vocence import Vocence
+        <CodeBlock language="python" code={`from vocence import Vocence
 
 agent = Vocence().agents.update(
     "agent-id",
@@ -3885,7 +3950,7 @@ agent = Vocence().agents.update(
         <p className="text-sm leading-relaxed text-zinc-400">
           Two headers travel on every signed request:
         </p>
-        <CodeBlock code={`X-Vocence-Timestamp: 1731478800
+        <CodeBlock language="http" code={`X-Vocence-Timestamp: 1731478800
 X-Vocence-Signature: v1=BASE64(HMAC-SHA256(secret, f"v1.{ts}.{raw_body}"))`} />
         <p className="text-sm leading-relaxed text-zinc-400">
           The shared secret is the <code className="rounded bg-white/[0.06] px-1 text-zinc-300">auth_secret</code>{' '}
@@ -3899,7 +3964,7 @@ X-Vocence-Signature: v1=BASE64(HMAC-SHA256(secret, f"v1.{ts}.{raw_body}"))`} />
 
       <section className="space-y-3">
         <h2 className="text-lg font-semibold tracking-tight text-white">Quick start (FastAPI)</h2>
-        <CodeBlock code={`from fastapi import FastAPI, Depends, HTTPException
+        <CodeBlock language="python" code={`from fastapi import FastAPI, Depends, HTTPException
 from vocence.webhooks import fastapi_verifier
 
 app = FastAPI()
@@ -3913,7 +3978,7 @@ async def get_stock_price(payload: dict):
 
       <section className="space-y-3">
         <h2 className="text-lg font-semibold tracking-tight text-white">Quick start (any framework)</h2>
-        <CodeBlock code={`from vocence import webhooks
+        <CodeBlock language="python" code={`from vocence import webhooks
 
 # In your request handler:
 def handle(headers: dict, body: bytes, *, secret: str) -> dict:
@@ -3927,7 +3992,7 @@ def handle(headers: dict, body: bytes, *, secret: str) -> dict:
 
       <section className="space-y-3">
         <h2 className="text-lg font-semibold tracking-tight text-white">Configuration</h2>
-        <CodeBlock code={`# Tolerance is the freshness window (default 300 seconds).
+        <CodeBlock language="python" code={`# Tolerance is the freshness window (default 300 seconds).
 # Tighten in low-latency networks, loosen if your clock drifts.
 webhooks.verify(headers, body, secret, tolerance_seconds=120)
 
@@ -3942,7 +4007,7 @@ webhooks.verify(headers, body, secret, now=fake_clock())`} />
           so you can fake-sign requests as Vocence would, handy for
           unit tests and curl-based smoke tests.
         </p>
-        <CodeBlock code={`import requests
+        <CodeBlock language="python" code={`import requests
 from vocence import webhooks
 
 body = b'{"ticker": "TSLA"}'
@@ -3982,7 +4047,7 @@ print(resp.status_code)`} />
           <code>v1.&#123;ts&#125;.&#123;body&#125;</code> HMAC base string are identical, so the existing helpers work
           unchanged.
         </p>
-        <CodeBlock code={`from fastapi import FastAPI, Depends
+        <CodeBlock language="python" code={`from fastapi import FastAPI, Depends
 from vocence.webhooks import fastapi_verifier
 
 app = FastAPI()
@@ -4040,7 +4105,7 @@ async def on_event(envelope: dict):
           Useful when you don't want to clone or design a voice, just pick a
           good-sounding one off the shelf.
         </p>
-        <CodeBlock code={`import requests
+        <CodeBlock language="python" code={`import requests
 
 API_KEY = "voc_live_..."
 BASE = "https://api.vocence.ai"
@@ -4072,7 +4137,7 @@ print("Audio URL:", audio["audio_url"])  # presigned, ~10 min TTL`} />
           saves it as a reusable voice. Reuse the same voice id any number of
           times, no re-upload, no re-transcription.
         </p>
-        <CodeBlock code={`import requests
+        <CodeBlock language="python" code={`import requests
 
 API_KEY = "voc_live_..."
 BASE = "https://api.vocence.ai"
@@ -4110,7 +4175,7 @@ print(audio["audio_url"])`} />
           Classic STT → LLM → TTS pipeline. The LLM step is yours (OpenAI,
           Anthropic, local, anything). Vocence handles both ends of the audio.
         </p>
-        <CodeBlock code={`import base64, requests
+        <CodeBlock language="python" code={`import base64, requests
 
 API_KEY = "voc_live_..."
 BASE = "https://api.vocence.ai"
@@ -4150,7 +4215,7 @@ print(audio["audio_url"])`} />
           then connect the WebSocket session and stream text or audio. Vocence
           handles tool calling, transcription, the LLM, and TTS streaming.
         </p>
-        <CodeBlock code={`import requests, asyncio, json, aiohttp
+        <CodeBlock language="python" code={`import requests, asyncio, json, aiohttp
 
 API_KEY = "voc_live_..."
 BASE = "https://api.vocence.ai"
@@ -4220,7 +4285,7 @@ asyncio.run(chat())`} />
           Save the better one and you've got a brand-new reusable voice without
           ever recording a clip.
         </p>
-        <CodeBlock code={`import requests
+        <CodeBlock language="python" code={`import requests
 
 API_KEY = "voc_live_..."
 BASE = "https://api.vocence.ai"
@@ -4267,7 +4332,7 @@ print(audio["audio_url"])`} />
           Upload a noisy recording and get a clean version back. Useful for
           pre-processing audio before cloning or transcription.
         </p>
-        <CodeBlock code={`import requests, base64
+        <CodeBlock language="python" code={`import requests, base64
 from pathlib import Path
 
 API_KEY = "voc_live_..."
