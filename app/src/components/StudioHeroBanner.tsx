@@ -1,5 +1,7 @@
+import { useState } from 'react';
 import { Sparkles, Play } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { VideoPlayerModal } from './VideoPlayerModal';
 
 /**
  * Studio home page hero.
@@ -14,7 +16,10 @@ import { Link } from 'react-router-dom';
  * keyframes co-located in this file, no new deps, no Tailwind config
  * changes. Respects prefers-reduced-motion.
  */
+const DEMO_VIDEO_URL = 'https://audio.vocence.ai/vocence_intro.mp4';
+
 export function StudioHeroBanner() {
+  const [demoOpen, setDemoOpen] = useState(false);
   return (
     <section
       aria-label="Vocence Studio"
@@ -57,6 +62,7 @@ export function StudioHeroBanner() {
             </Link>
             <button
               type="button"
+              onClick={() => setDemoOpen(true)}
               className="
                 inline-flex items-center gap-2
                 rounded-full border border-white/[0.10] bg-white/[0.03]
@@ -67,7 +73,7 @@ export function StudioHeroBanner() {
               <span className="grid h-6 w-6 place-items-center rounded-full bg-white/10">
                 <Play className="h-3 w-3 fill-white text-white" />
               </span>
-              Watch the demo · 2:14
+              Watch the demo · 0:53
             </button>
           </div>
 
@@ -85,6 +91,13 @@ export function StudioHeroBanner() {
       </div>
 
       <HeroStyles />
+
+      <VideoPlayerModal
+        open={demoOpen}
+        onClose={() => setDemoOpen(false)}
+        src={DEMO_VIDEO_URL}
+        title="Vocence — product demo"
+      />
     </section>
   );
 }
