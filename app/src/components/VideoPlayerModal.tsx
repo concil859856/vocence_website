@@ -70,24 +70,57 @@ export function VideoPlayerModal({
   const [progress, setProgress] = useState(0);
   const [duration, setDuration] = useState(0);
   const [buffered, setBuffered] = useState(0);
-  const [controlsVisible, setControlsVisible] = useState(true);
+  // Controls reveal only when the cursor enters the bottom strip of the
+  // video, otherwise stay hidden. While paused or ended we force them
+  // on so the play / replay glyph is reachable.
+  const [controlsVisible, setControlsVisible] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
+  // Fraction of the container's height from the bottom that counts as
+  // the "control zone". 0.35 == bottom 35%. Generous so the cursor
+  // doesn't have to land exactly on the bar to reveal it.
+  const CONTROL_ZONE_FRAC = 0.35;
   // ``ended`` controls the replay-glyph swap on the play button so the
   // user gets a visual cue that pressing it now means "play again from
   // the start" instead of "resume from where I paused".
   const [ended, setEnded] = useState(false);
 
-  // Show controls + start the idle countdown.
-  const wakeControls = useCallback(() => {
+  // Reveal the controls. When called from a non-bottom event (e.g.
+  // keyboard shortcut, opening the modal) we still flash them briefly
+  // so the user has feedback. When called from a cursor-in-bottom-zone
+  // event the idle timer is bypassed by ``persist``.
+  const wakeControls = useCallback((persist = false) => {
     setControlsVisible(true);
     if (idleTimerRef.current) window.clearTimeout(idleTimerRef.current);
+    if (persist) return;
     idleTimerRef.current = window.setTimeout(() => {
-      // Don't hide while paused — the user wants to see the play button.
       if (videoRef.current && !videoRef.current.paused) {
         setControlsVisible(false);
       }
     }, IDLE_HIDE_MS);
   }, []);
+
+  // Track cursor position inside the container; show controls when
+  // it's in the bottom CONTROL_ZONE_FRAC, hide them otherwise. The
+  // backdrop's onMouseMove still calls wakeControls() with no args so
+  // keyboard / initial-open paths keep getting a brief flash.
+  const onContainerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const el = containerRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const yFromBottom = rect.bottom - e.clientY;
+    const inZone = yFromBottom <= rect.height * CONTROL_ZONE_FRAC;
+    if (inZone) {
+      // Pin visible while cursor is in the zone — no idle decay.
+      if (idleTimerRef.current) window.clearTimeout(idleTimerRef.current);
+      setControlsVisible(true);
+    } else {
+      // Leaving the zone — hide immediately unless paused / ended.
+      const v = videoRef.current;
+      if (v && !v.paused && !ended) {
+        setControlsVisible(false);
+      }
+    }
+  }, [ended]);
 
   // Esc to close, Space to toggle play/pause, ←/→ to seek 5s.
   useEffect(() => {
@@ -126,10 +159,11 @@ export function VideoPlayerModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, onClose, wakeControls]);
 
-  // Reset state and try to autoplay when the modal opens. Browsers
-  // block autoplay with sound, so we start muted; the user can unmute
-  // via the controls. If autoplay is blocked entirely, the play button
-  // is right there.
+  // Reset state and try to autoplay when the modal opens. The click
+  // that opened the modal counts as a user gesture, so most browsers
+  // will allow unmuted autoplay; if Chrome/Safari still block it (no
+  // prior interaction with the origin), fall back to muted-then-play
+  // so the user at least sees the video and can unmute one click in.
   useEffect(() => {
     if (!open) return;
     const v = videoRef.current;
@@ -138,11 +172,20 @@ export function VideoPlayerModal({
     setProgress(0);
     setEnded(false);
     setControlsVisible(true);
-    v.muted = true;
-    setMuted(true);
+    v.muted = false;
+    v.volume = 1;
+    setMuted(false);
+    setVolume(1);
     v.play()
       .then(() => setPlaying(true))
-      .catch(() => setPlaying(false));
+      .catch(() => {
+        // Autoplay blocked: retry muted so playback at least starts.
+        v.muted = true;
+        setMuted(true);
+        v.play()
+          .then(() => setPlaying(true))
+          .catch(() => setPlaying(false));
+      });
     wakeControls();
     return () => {
       v.pause();
@@ -185,8 +228,21 @@ export function VideoPlayerModal({
   const onPlay = () => {
     setPlaying(true);
     setEnded(false);
+    // Once playback resumes after a pause, the controls collapse back
+    // to the cursor-in-bottom-zone rule. Initial fade gives the user a
+    // visual cue that playback has started.
+    if (idleTimerRef.current) window.clearTimeout(idleTimerRef.current);
+    idleTimerRef.current = window.setTimeout(() => {
+      setControlsVisible(false);
+    }, IDLE_HIDE_MS);
   };
-  const onPause = () => setPlaying(false);
+  const onPause = () => {
+    setPlaying(false);
+    // While paused the user wants the controls reachable without
+    // hunting for the bottom strip — pin them on.
+    if (idleTimerRef.current) window.clearTimeout(idleTimerRef.current);
+    setControlsVisible(true);
+  };
   const onEnded = () => {
     setPlaying(false);
     setEnded(true);
@@ -270,8 +326,8 @@ export function VideoPlayerModal({
       aria-modal="true"
       aria-labelledby={labelId}
       onClick={onBackdropClick}
-      onMouseMove={wakeControls}
-      onTouchStart={wakeControls}
+      onMouseMove={() => wakeControls()}
+      onTouchStart={() => wakeControls()}
       className="fixed inset-0 z-[120] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 sm:p-8"
     >
       <span id={labelId} className="sr-only">{title}</span>
@@ -279,12 +335,19 @@ export function VideoPlayerModal({
       <div
         ref={containerRef}
         className="
-          group relative w-full max-w-[1080px]
+          group relative w-full max-w-[1512px]
           aspect-video overflow-hidden rounded-2xl
           bg-black shadow-[0_30px_80px_-20px_rgba(0,0,0,0.6)]
           ring-1 ring-white/[0.08]
         "
-        onMouseMove={(e) => { e.stopPropagation(); wakeControls(); }}
+        onPointerMove={(e) => { e.stopPropagation(); onContainerMove(e); }}
+        onPointerLeave={() => {
+          // Cursor left the container entirely: hide unless paused / ended.
+          const v = videoRef.current;
+          if (v && !v.paused && !ended) {
+            setControlsVisible(false);
+          }
+        }}
         onClick={(e) => {
           // Single-click anywhere on the video toggles play. Skipped if
           // the click originated on a control element — those use

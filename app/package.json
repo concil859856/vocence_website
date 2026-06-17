@@ -5,10 +5,11 @@
   "type": "module",
   "scripts": {
     "abstract:manifest": "node scripts/build-abstract-manifest.mjs",
+    "route:meta": "node scripts/build-route-meta.mjs",
     "predev": "npm run abstract:manifest",
     "prebuild": "npm run abstract:manifest",
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && npm run route:meta",
     "lint": "eslint .",
     "preview": "vite preview"
   },
