@@ -87,18 +87,26 @@ EXPECTED_FRAME_BYTES = 640  # 20 ms @ 16 kHz mono s16le
 # whole sentences.
 _STT_SEND_QUEUE_MAX = 100
 
-# UltraVAD hysteresis. The session is "armed" (ready to commit) only
-# once ``p_end_of_turn`` has crossed ``_ultravad_threshold`` (set per
-# agent, default 0.50) AND has not dropped below this exit threshold
-# for ``_UV_EXIT_TICKS`` consecutive ensembler ticks. A single-tick
-# spike from a noise burst no longer fires a premature commit — the
-# probability has to STAY high (or at least stay above ~0.35) for the
-# duration that ``silence_ms`` is also accumulating toward the configured
-# minimum delay. In the common case where speech ends and ``p_end_of_turn``
-# rises and stays high, this adds zero latency: the first tick crosses
-# entry → armed → next tick that also satisfies ``silence_ms`` commits.
-_UV_EXIT_THRESHOLD = 0.35
-_UV_EXIT_TICKS = 2
+# UltraVAD commit eligibility — sustained-signal debouncing.
+#
+# Require ``p_end_of_turn`` to stay at-or-above ``_ultravad_threshold``
+# for ``_UV_REQUIRED_TICKS`` CONSECUTIVE ensembler ticks before the
+# session is considered commit-eligible. Any sub-threshold tick resets
+# the counter immediately. With 120 ms ticks and 2 required, the
+# wait is 240 ms of sustained high probability — short enough that
+# legitimate end-of-turn moments still commit snappily, long enough
+# that a single-tick spike from a noise burst no longer fires a
+# premature commit.
+#
+# This replaces an earlier "persistent arm" hysteresis (entry / exit
+# thresholds with multi-tick disarm delay) which had the bug that
+# commits could fire WHILE THE USER WAS ACTIVELY SPEAKING: a single
+# earlier spike armed the session, and the multi-tick disarm meant
+# it stayed armed even after ``p_end_of_turn`` dropped back to
+# ~0.1–0.2 — the silence-clock condition would then trip a commit
+# mid-utterance. Sustained-signal debouncing fixes both classes:
+# noise spikes don't arm, and active speech disarms immediately.
+_UV_REQUIRED_TICKS = 2
 
 # Words that strongly suggest the user is mid-thought (function
 # words / conjunctions / determiners / hedges). When the running
@@ -198,14 +206,12 @@ class _SignalState:
     # it, so counting it as voice would wrongly extend the turn.
     last_voice_at: float = field(default_factory=time.monotonic)
     turn_active: bool = False
-    # UltraVAD hysteresis state — see ``_UV_EXIT_THRESHOLD`` /
-    # ``_UV_EXIT_TICKS``. ``uv_armed`` flips True the first tick that
-    # ``p_end_of_turn`` crosses the entry threshold, flips False after
-    # ``_UV_EXIT_TICKS`` consecutive ticks below the exit threshold.
-    # Without this a single-tick noise spike during a pause could commit
-    # the turn while the user was still mid-thought.
-    uv_armed: bool = False
-    uv_below_exit_ticks: int = 0
+    # UltraVAD sustained-signal counter — incremented on every tick
+    # where ``p_end_of_turn >= _ultravad_threshold``, reset to 0 on
+    # every tick below threshold. Commit requires
+    # ``uv_above_ticks >= _UV_REQUIRED_TICKS``. See the constants block
+    # for why this replaced the earlier persistent-arm hysteresis.
+    uv_above_ticks: int = 0
 
     def running_transcript(self) -> str:
         parts = [seg for seg in self.finals_accumulated if seg]
@@ -1222,28 +1228,20 @@ class StreamingTurnSession:
                 effective_min_delay = self._min_delay_ms
             if _looks_mid_thought(running_text):
                 effective_min_delay += 600
-            # Hysteresis state machine on UltraVAD output. Arm on entry
-            # threshold, disarm only after several consecutive ticks
-            # below the lower exit threshold. Single-tick spikes near
-            # the boundary no longer fire commit; sustained high
-            # probability arms immediately so snappy turn-taking is
-            # preserved. See ``_UV_EXIT_THRESHOLD`` / ``_UV_EXIT_TICKS``.
+            # Sustained-signal debouncing on UltraVAD. Commit only when
+            # ``p_end_of_turn`` has stayed at-or-above the threshold for
+            # ``_UV_REQUIRED_TICKS`` consecutive ticks. Any sub-threshold
+            # tick (user resumes speaking, probability drops) resets the
+            # counter immediately so we don't commit mid-utterance.
             if uv_available:
                 if ultravad_p >= self._ultravad_threshold:
-                    self._state.uv_armed = True
-                    self._state.uv_below_exit_ticks = 0
-                elif ultravad_p < _UV_EXIT_THRESHOLD:
-                    self._state.uv_below_exit_ticks += 1
-                    if self._state.uv_below_exit_ticks >= _UV_EXIT_TICKS:
-                        self._state.uv_armed = False
+                    self._state.uv_above_ticks += 1
                 else:
-                    # In the hysteresis band (between exit and entry):
-                    # hold whatever state we're in, don't decay.
-                    self._state.uv_below_exit_ticks = 0
+                    self._state.uv_above_ticks = 0
             uv_threshold_crossed = (
                 uv_available
                 and silence_ms >= effective_min_delay
-                and self._state.uv_armed
+                and self._state.uv_above_ticks >= _UV_REQUIRED_TICKS
             )
             uv_backstop_hit = uv_available and silence_ms >= MAX_DELAY_MS
             ultravad_commits = uv_threshold_crossed or uv_backstop_hit
@@ -1285,16 +1283,15 @@ class StreamingTurnSession:
             self._commit_rule = rule
             _log.info(
                 "[stream] commit decider=%s rule=%s silence=%dms smart=%.2f "
-                "td_p=%.4f conf=%.2fx uv_p=%.3f uv_armed=%s shadow_%s_would=%s session=%s",
+                "td_p=%.4f conf=%.2fx uv_p=%.3f uv_above_ticks=%d shadow_%s_would=%s session=%s",
                 effective_decider, rule, silence_ms, self._state.smart_turn_p,
                 self._state.turn_detector_p, self._state.turn_detector_confidence,
-                ultravad_p, self._state.uv_armed,
+                ultravad_p, self._state.uv_above_ticks,
                 shadow_label, shadow_committed, self._session_id,
             )
-            # Disarm hysteresis on commit so the next turn (if reused
-            # in the same session) starts from ARMED=False.
-            self._state.uv_armed = False
-            self._state.uv_below_exit_ticks = 0
+            # Reset the sustained-signal counter so the next turn (if
+            # reused in the same session) starts from 0.
+            self._state.uv_above_ticks = 0
             await self._finalize_commit()
             # Reset both audio-EOU windows so the previous utterance's
             # tail doesn't bleed into the next turn.
