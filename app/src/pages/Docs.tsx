@@ -84,17 +84,22 @@ const docLinks: DocLink[] = [
   { id: 'guide-music', label: 'Music', category: 'Studio' },
   { id: 'guide-dubbing', label: 'Noise Remover', category: 'Studio' },
   // API, everything a developer needs to integrate.
-  // API + Cookbook are admin-only until public launch; Pricing stays
-  // public since it's a marketing concern, not a developer one.
+  // API + Cookbook are admin-only until public launch.
   { id: 'api', label: 'API Reference', category: 'API', adminOnly: true },
   { id: 'cookbook', label: 'Cookbook', category: 'API', adminOnly: true },
-  { id: 'pricing', label: 'Pricing', category: 'API' },
   // SDK, official Python client library (PyPI: ``vocence``).
   // Entire SDK category is admin-only until public launch.
   { id: 'sdk-python', label: 'Python SDK', category: 'SDK', adminOnly: true },
   { id: 'sdk-cli', label: 'CLI Reference', category: 'SDK', adminOnly: true },
   { id: 'sdk-agents', label: 'Voice Agents', category: 'SDK', adminOnly: true },
   { id: 'sdk-webhooks', label: 'Webhooks', category: 'SDK', adminOnly: true },
+  // Billing — credits-and-plans reference. The canonical pricing page
+  // lives at /pricing (top-level marketing route); the docs entry here
+  // is the detailed breakdown the marketing page links to via its
+  // "Pricing in Docs" tab. Standalone category so it doesn't read as
+  // an API-only concern (it covers Studio actions too) and so the
+  // non-admin sidebar doesn't show "API" containing only Pricing.
+  { id: 'pricing', label: 'Pricing', category: 'Billing' },
   // Subnet, running infrastructure on Bittensor (SN10).
   { id: 'miner', label: 'Miner Setup', category: 'Subnet' },
   { id: 'validator', label: 'Validator Setup', category: 'Subnet' },
@@ -107,7 +112,7 @@ const ADMIN_ONLY_SECTIONS: Set<DocSection> = new Set(
   docLinks.filter((l) => l.adminOnly).map((l) => l.id),
 );
 
-const DOC_SECTIONS: DocSection[] = ['getting-started', 'core-concepts', 'architecture', 'guide-agents', 'guide-tts', 'guide-cloning', 'guide-stt', 'guide-music', 'guide-dubbing', 'cookbook', 'api', 'pricing', 'sdk-python', 'sdk-cli', 'sdk-agents', 'sdk-webhooks', 'miner', 'validator', 'faq', 'troubleshooting'];
+const DOC_SECTIONS: DocSection[] = ['getting-started', 'core-concepts', 'architecture', 'guide-agents', 'guide-tts', 'guide-cloning', 'guide-stt', 'guide-music', 'guide-dubbing', 'cookbook', 'api', 'sdk-python', 'sdk-cli', 'sdk-agents', 'sdk-webhooks', 'pricing', 'miner', 'validator', 'faq', 'troubleshooting'];
 
 /** Stable links to the open-source subnet repo (paths use `master` branch). */
 const GH = 'https://github.com/vocence-78/vocence';
