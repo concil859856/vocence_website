@@ -682,13 +682,237 @@ export function Docs() {
           </li>
         </ul>
 
-        <h3 className="text-sm font-semibold text-zinc-200 mt-4">Close codes</h3>
-        <ul className="ml-4 list-disc space-y-1 text-sm text-zinc-400 marker:text-zinc-600">
-          <li><code>4401</code> — authentication failed (missing / wrong / revoked token).</li>
-          <li><code>4404</code> — agent id not found or not owned by the calling key.</li>
-          <li><code>4502</code> — voice pipeline upstream unavailable (STT / TTS / LLM pod offline).</li>
-          <li><code>4503</code> — service misconfigured (env vars / missing pods at deploy time).</li>
-        </ul>
+      </section>
+
+      {/* ─────────────────── PER-ENDPOINT HARD CAPS ─────────────────── */}
+      <section>
+        <h2 className="text-lg font-semibold mb-3">Per-endpoint limits</h2>
+        <p className="text-sm text-zinc-400 mb-4 leading-relaxed">
+          Every endpoint has a hard input cap. Requests over the cap are rejected with{' '}
+          <code className="text-white/90">HTTP 413</code> <span className="text-zinc-500">(Payload Too Large)</span>{' '}
+          before any credits are spent. The caps match what the Studio UI accepts —
+          for longer workloads, chunk on the client side and make multiple calls.
+        </p>
+        <div className="overflow-x-auto border border-white/[0.06] rounded-xl">
+          <table className="w-full text-sm">
+            <thead className="bg-white/5 text-[#A7B0B7]">
+              <tr>
+                <th className="text-left px-4 py-3">Endpoint</th>
+                <th className="text-left px-4 py-3">Input cap</th>
+                <th className="text-left px-4 py-3">Other</th>
+              </tr>
+            </thead>
+            <tbody className="text-zinc-300">
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">POST /v1/tts/generate</code></td>
+                <td className="px-4 py-3">2,000 chars text</td>
+                <td className="px-4 py-3">style_instruction: 500 chars</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">POST /v1/tts/speak</code></td>
+                <td className="px-4 py-3">2,000 chars text</td>
+                <td className="px-4 py-3">voice id: 64 chars</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">POST /v1/voices/{`{id}`}/speak</code></td>
+                <td className="px-4 py-3">2,000 chars text</td>
+                <td className="px-4 py-3">—</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">POST /v1/voice/clone</code></td>
+                <td className="px-4 py-3">2,000 chars target_text · 50 MB reference audio</td>
+                <td className="px-4 py-3">reference clip best at 5–30 s</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">POST /v1/stt/transcribe</code></td>
+                <td className="px-4 py-3">5 min · 50 MB audio</td>
+                <td className="px-4 py-3">language hint must be a canonical name</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">POST /v1/audio/noise-remover</code></td>
+                <td className="px-4 py-3">5 min · 50 MB audio</td>
+                <td className="px-4 py-3">WAV / MP3 / M4A / OGG / FLAC / WebM / AAC</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">POST /v1/voice/design/save</code></td>
+                <td className="px-4 py-3">display_name: 20 chars</td>
+                <td className="px-4 py-3">requires preview_token from previous call</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">POST /v1/voice/clone/save</code></td>
+                <td className="px-4 py-3">display_name: 40 chars · 50 MB audio</td>
+                <td className="px-4 py-3">5–30 s reference clip recommended</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">WS /v1/agents/{`{id}`}/session</code></td>
+                <td className="px-4 py-3">30 min max · 60 sec idle timeout</td>
+                <td className="px-4 py-3">Auto-close on balance=0 (4402), max length (4408), or idle (4410)</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      {/* ─────────────────── RATE LIMITS ─────────────────── */}
+      <section>
+        <h2 className="text-lg font-semibold mb-3">Rate limits</h2>
+        <p className="text-sm text-zinc-400 mb-4 leading-relaxed">
+          Three separate limit mechanisms apply, each with its own counter and error response.
+          All three are <span className="text-white">per-account</span>, every API key you
+          create draws from the same shared bucket, so spinning up additional keys does not
+          multiply your quota.
+        </p>
+        <div className="overflow-x-auto border border-white/[0.06] rounded-xl">
+          <table className="w-full text-sm">
+            <thead className="bg-white/5 text-[#A7B0B7]">
+              <tr>
+                <th className="text-left px-4 py-3">Scope</th>
+                <th className="text-left px-4 py-3">Limit</th>
+                <th className="text-left px-4 py-3">Error</th>
+              </tr>
+            </thead>
+            <tbody className="text-zinc-300">
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3">All HTTP endpoints (shared)</td>
+                <td className="px-4 py-3">4 req/min per account (sliding 60-sec window)</td>
+                <td className="px-4 py-3"><code className="text-white/90">HTTP 429</code></td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3">Voice agent session opens</td>
+                <td className="px-4 py-3">10 opens/min per account</td>
+                <td className="px-4 py-3">WS close <code className="text-white/90">4429</code></td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3">Voice agent concurrent sessions</td>
+                <td className="px-4 py-3">5 in-flight per account</td>
+                <td className="px-4 py-3">WS close <code className="text-white/90">4429</code></td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3">Voice agent max session length</td>
+                <td className="px-4 py-3">30 min per session</td>
+                <td className="px-4 py-3">WS close <code className="text-white/90">4408</code></td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3">Voice agent idle timeout</td>
+                <td className="px-4 py-3">60 sec without a user turn → auto-close</td>
+                <td className="px-4 py-3">WS close <code className="text-white/90">4410</code></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p className="text-sm text-zinc-400 mt-4 leading-relaxed">
+          Higher per-account limits are available on request, contact us with your
+          projected peak QPS and we'll bump the cap for your account. Voice agent session
+          limits are operationally enforced and not yet self-service configurable; ping
+          us if you need more concurrent voice sessions.
+        </p>
+      </section>
+
+      {/* ─────────────────── ERROR CODES ─────────────────── */}
+      <section>
+        <h2 className="text-lg font-semibold mb-3">Error codes</h2>
+        <p className="text-sm text-zinc-400 mb-4 leading-relaxed">
+          HTTP endpoints use standard status codes. WebSocket endpoints use 4xxx close
+          codes (the 4000 series is reserved for application-level errors per RFC 6455).
+        </p>
+        <div className="overflow-x-auto border border-white/[0.06] rounded-xl">
+          <table className="w-full text-sm">
+            <thead className="bg-white/5 text-[#A7B0B7]">
+              <tr>
+                <th className="text-left px-4 py-3">Code</th>
+                <th className="text-left px-4 py-3">Meaning</th>
+                <th className="text-left px-4 py-3">What to do</th>
+              </tr>
+            </thead>
+            <tbody className="text-zinc-300">
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">HTTP 400</code></td>
+                <td className="px-4 py-3">Bad request (missing field, malformed base64)</td>
+                <td className="px-4 py-3">Fix the request, don't retry as-is</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">HTTP 401</code></td>
+                <td className="px-4 py-3">Missing or invalid API key</td>
+                <td className="px-4 py-3">Check the Authorization header format</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">HTTP 402</code></td>
+                <td className="px-4 py-3">Insufficient credits</td>
+                <td className="px-4 py-3">Top up credits; no work was performed</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">HTTP 403</code></td>
+                <td className="px-4 py-3">Resource not owned by this API key's user, or Premium gate failed</td>
+                <td className="px-4 py-3">Check ownership; purchase Premium if first-time</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">HTTP 404</code></td>
+                <td className="px-4 py-3">Agent / voice / resource not found</td>
+                <td className="px-4 py-3">Verify the id; check spelling</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">HTTP 413</code></td>
+                <td className="px-4 py-3">Payload too large (cap exceeded)</td>
+                <td className="px-4 py-3">Chunk the input, see per-endpoint limits above</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">HTTP 429</code></td>
+                <td className="px-4 py-3">Rate limit exceeded (4 req/min per account, default)</td>
+                <td className="px-4 py-3">Back off; respect <code className="text-white/90">Retry-After</code> if present</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">HTTP 502</code></td>
+                <td className="px-4 py-3">Upstream provider error (no credits charged)</td>
+                <td className="px-4 py-3">Safe to retry with exponential backoff</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">HTTP 503</code></td>
+                <td className="px-4 py-3">Feature temporarily unavailable (no pods online)</td>
+                <td className="px-4 py-3">Retry after 30–60 seconds</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">WS 4401</code></td>
+                <td className="px-4 py-3">WebSocket auth failed (missing/invalid Bearer key)</td>
+                <td className="px-4 py-3">Check the Authorization header sent during the WS handshake</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">WS 4402</code></td>
+                <td className="px-4 py-3">Insufficient credits, pre-flight or mid-session exhaustion</td>
+                <td className="px-4 py-3">Top up credits; the session is not recoverable</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">WS 4404</code></td>
+                <td className="px-4 py-3">Agent not found / not owned by this key</td>
+                <td className="px-4 py-3">Verify the agent_id and ownership</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">WS 4408</code></td>
+                <td className="px-4 py-3">Session reached max duration (30 min)</td>
+                <td className="px-4 py-3">Open a new session if the conversation needs to continue</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">WS 4410</code></td>
+                <td className="px-4 py-3">Idle timeout, no user turn for 60 seconds</td>
+                <td className="px-4 py-3">Send any user turn within 60s of the previous one to keep the session alive</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">WS 4423</code></td>
+                <td className="px-4 py-3">Agent is paused or archived</td>
+                <td className="px-4 py-3">Re-activate the agent from the Studio UI</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">WS 4429</code></td>
+                <td className="px-4 py-3">Session-rate limit (10/min open OR 5 concurrent)</td>
+                <td className="px-4 py-3">Back off; close idle sessions before opening new ones</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">WS 4502/4503</code></td>
+                <td className="px-4 py-3">Upstream voice pipeline error</td>
+                <td className="px-4 py-3">Retry; ping us if it persists</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </section>
 
       {/* All endpoints (REST + WebSocket + key management) are rendered
@@ -707,92 +931,6 @@ export function Docs() {
           Detailed pricing and billing rules for Studio and Developer API.
         </p>
       </div>
-
-      <section className="border-t border-white/[0.06] pt-8 max-w-4xl">
-        <h2 className="text-lg font-semibold tracking-tight text-white mb-3">
-          Call History — recordings &amp; transcripts
-        </h2>
-        <p className="text-sm leading-relaxed text-zinc-400 mb-4">
-          Every voice-agent call is logged. When the agent's{' '}
-          <code>config.record_enabled</code> is <code>true</code>, the session also produces a stereo WAV
-          (left channel = user mic post-denoise, right channel = agent TTS, both 16 kHz s16le, one shared
-          timeline) uploaded to Cloudflare R2. Three endpoints expose the history:
-        </p>
-        <div className="overflow-hidden rounded-xl border border-white/[0.06] bg-white/[0.02] mb-4">
-          <table className="w-full text-left text-[13px]">
-            <thead className="bg-white/[0.03] text-zinc-400">
-              <tr>
-                <th className="px-4 py-2.5 font-medium">Route</th>
-                <th className="px-4 py-2.5 font-medium">What it returns</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-white/[0.04]">
-              <tr>
-                <td className="px-4 py-3 align-top"><code className="text-white/90">GET /v1/agents/&#123;agent_id&#125;/calls?range=30d&amp;limit=100</code></td>
-                <td className="px-4 py-3 text-zinc-400 align-top">
-                  Recent calls, newest first. Each row carries <code>session_id</code>,{' '}
-                  <code>started_at</code>, <code>ended_at</code>, <code>duration_ms</code>,{' '}
-                  <code>end_reason</code>, <code>turn_count</code>, <code>user_chars</code>,{' '}
-                  <code>agent_chars</code>, and a <code>has_recording</code> boolean. <code>range</code>{' '}
-                  accepts <code>7d</code>/<code>30d</code>/<code>90d</code> (max <code>365d</code>);{' '}
-                  <code>limit</code> caps at 500.
-                </td>
-              </tr>
-              <tr>
-                <td className="px-4 py-3 align-top"><code className="text-white/90">GET /v1/agents/&#123;agent_id&#125;/calls/&#123;session_id&#125;/transcript</code></td>
-                <td className="px-4 py-3 text-zinc-400 align-top">
-                  Per-turn transcript:{' '}
-                  <code>&#123;turns: [&#123;role: "user"|"assistant", text, at_ms&#125;…]&#125;</code>. The{' '}
-                  <code>at_ms</code> offset is relative to the call's <code>started_at</code> so a player
-                  UI can seek to the exact moment of a turn.
-                </td>
-              </tr>
-              <tr>
-                <td className="px-4 py-3 align-top"><code className="text-white/90">GET /v1/agents/&#123;agent_id&#125;/calls/&#123;session_id&#125;/recording?download=false</code></td>
-                <td className="px-4 py-3 text-zinc-400 align-top">
-                  Returns <code>&#123;url, expires_in: 3600&#125;</code> — a 1-hour presigned R2 URL. Stream
-                  the WAV directly from R2 (no auth needed on the GET). Pass <code>download=true</code> to
-                  receive a URL with a <code>Content-Disposition: attachment</code> header so browsers
-                  offer a save dialog. <strong>404</strong> when the recording is missing (agent didn't
-                  have <code>record_enabled</code>, or the 30-day retention sweep already removed it).
-                </td>
-              </tr>
-              <tr>
-                <td className="px-4 py-3 align-top"><code className="text-white/90">DELETE /v1/agents/&#123;agent_id&#125;/calls/&#123;session_id&#125;/recording</code></td>
-                <td className="px-4 py-3 text-zinc-400 align-top">
-                  Purge a single recording from object storage. Returns{' '}
-                  <code>&#123;deleted: true|false&#125;</code>; <code>false</code> means it was already
-                  gone. The <code>voice_call_logs</code> row stays so analytics totals don't shift.
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-        <CodeBlock language="python" code={`from vocence import Vocence
-
-client = Vocence()
-
-# 1. List the agent's calls from the last 30 days.
-calls = client.agents.calls("agent-id").list(range="30d", limit=50)
-for c in calls:
-    print(c["session_id"], c["duration_ms"], "recording:", c["has_recording"])
-
-# 2. Fetch one call's per-turn transcript.
-turns = client.agents.calls("agent-id").transcript(calls[0]["session_id"])
-for t in turns:
-    print(f"[{t['at_ms']:>6} ms] {t['role']}: {t['text']}")
-
-# 3. Get a presigned URL for the stereo WAV.
-rec = client.agents.calls("agent-id").recording(calls[0]["session_id"])
-print(rec["url"])  # download or stream directly from R2
-`} />
-        <p className="text-xs leading-relaxed text-zinc-500 mt-3">
-          Recordings require the agent's <code>config.record_enabled = true</code> (off by default for
-          privacy). Default retention is 30 days; after that the WAV is purged but the call row stays.
-          To delete a recording on demand, call the DELETE endpoint or{' '}
-          <code>client.agents.calls(id).delete_recording(session_id)</code> from the Python SDK.
-        </p>
-      </section>
 
       <section>
         <h2 className="text-lg font-semibold mb-3">Current Plans</h2>
@@ -980,96 +1118,6 @@ print(rec["url"])  # download or stream directly from R2
         </div>
       </section>
 
-      {/* ─────────────────── FULL ENDPOINT REFERENCE ─────────────────── */}
-      <section>
-        <h2 className="text-lg font-semibold mb-3">All API endpoints</h2>
-        <p className="text-sm text-zinc-400 mb-4 leading-relaxed">
-          Complete list of every dev-API route. The Python SDK (<code className="text-white/90">pip install vocence</code>)
-          wraps every one of these — most user code never needs raw HTTP.
-        </p>
-        <div className="overflow-x-auto border border-white/[0.06] rounded-xl">
-          <table className="w-full text-sm">
-            <thead className="bg-white/5 text-[#A7B0B7]">
-              <tr>
-                <th className="text-left px-4 py-3 w-1/2">Endpoint</th>
-                <th className="text-left px-4 py-3">Description</th>
-              </tr>
-            </thead>
-            <tbody className="text-zinc-300">
-              {[
-                ['GET /health', 'Uptime probe. Always 200.'],
-                ['GET /v1/account', 'Account snapshot: credits, plan, key count.'],
-                ['GET /v1/account/keys', 'List your developer API keys (metadata only).'],
-                ['POST /v1/account/keys', 'Create a new API key (plaintext returned ONCE).'],
-                ['POST /v1/account/keys/{id}/revoke', 'Revoke an API key immediately.'],
-                ['GET /v1/account/usage', 'Recent API requests with credits + latency.'],
-                ['POST /v1/tts/generate', 'PromptTTS: speak text in a voice described in prose.'],
-                ['POST /v1/tts/speak', 'Speak text using a pre-defined speaker id.'],
-                ['POST /v1/stt/transcribe', 'Transcribe a clip (up to 5 min, 50 MB).'],
-                ['POST /v1/voice/clone', 'One-shot clone: reference clip → target text.'],
-                ['POST /v1/voice/clone/save', 'Save a clone reference for reuse via id.'],
-                ['POST /v1/voice/design/preview', 'Generate a voice from a text description.'],
-                ['POST /v1/voice/design/save', 'Save a designed voice as reusable.'],
-                ['POST /v1/audio/noise-remover', 'Remove background noise from an audio clip.'],
-                ['GET /v1/voices/builtin', 'List built-in sample voices.'],
-                ['GET /v1/voices', 'List your saved voices (designed + cloned).'],
-                ['GET /v1/voices/{id}', 'Get a saved voice by id.'],
-                ['DELETE /v1/voices/{id}', 'Delete a saved voice.'],
-                ['POST /v1/voices/{id}/speak', 'Synthesize with a saved voice id.'],
-                ['GET /v1/agents', 'List your agents (compact: id + name).'],
-                ['GET /v1/agents/{id}', 'Full agent spec including bound tools.'],
-                ['POST /v1/agents', 'Create a new agent (knowledge or goal type).'],
-                ['PATCH /v1/agents/{id}', 'Update agent fields (name, status, voice, tools, etc.).'],
-                ['DELETE /v1/agents/{id}', 'Delete an agent (cascades to bound tools).'],
-                ['GET /v1/agents/templates', 'List starter agent templates.'],
-                ['GET /v1/agents/templates/{id}', 'Get a template body (system prompt + knowledge starter).'],
-                ['GET /v1/agents/models', 'List LLM models available for voice agents.'],
-                ['GET /v1/agents/tools/builtin', 'List built-in tools (web search, weather, etc.).'],
-                ['POST /v1/agents/draft', 'One-shot: generate a complete agent spec from a description.'],
-                ['POST /v1/agents/architect/chat', 'Conversational agent architect — one turn at a time.'],
-                ['GET /v1/agents/{id}/runs', 'List recent goal-agent runs (most recent first).'],
-                ['POST /v1/agents/{id}/runs', 'Start a new goal-agent run.'],
-                ['GET /v1/agents/{id}/runs/{run_id}', 'Get a run\'s status + transcript.'],
-                ['POST /v1/agents/{id}/runs/{run_id}/cancel', 'Cancel a pending or running run.'],
-                ['GET /v1/agents/{id}/tools', 'List custom tools bound to an agent.'],
-                ['POST /v1/agents/{id}/tools/{tool_id}', 'Bind a custom tool to an agent (idempotent).'],
-                ['DELETE /v1/agents/{id}/tools/{tool_id}', 'Unbind a custom tool from an agent.'],
-                ['GET /v1/agent-tools', 'List your custom webhook tools.'],
-                ['GET /v1/agent-tools/{id}', 'Get a custom tool by id.'],
-                ['POST /v1/agent-tools', 'Register a custom webhook tool.'],
-                ['PATCH /v1/agent-tools/{id}', 'Update a custom tool (URL, schema, auth).'],
-                ['DELETE /v1/agent-tools/{id}', 'Delete a custom tool.'],
-                ['GET /v1/agents/{id}/knowledge/sources', 'List ingested knowledge sources for an agent.'],
-                ['GET /v1/agents/{id}/knowledge/jobs/{job_id}', 'Check an ingest job\'s status.'],
-                ['DELETE /v1/agents/{id}/knowledge/sources/{source_id}', 'Remove an ingested source.'],
-                ['POST /v1/agents/{id}/knowledge/ingest/text', 'Ingest a raw text document.'],
-                ['POST /v1/agents/{id}/knowledge/ingest/markdown', 'Ingest a markdown document.'],
-                ['POST /v1/agents/{id}/knowledge/ingest/url', 'Ingest a single web page by URL.'],
-                ['POST /v1/agents/{id}/knowledge/ingest/sitemap', 'Crawl an entire site via its sitemap.'],
-                ['POST /v1/agents/{id}/knowledge/ingest/pdf', 'Upload + parse a PDF.'],
-                ['GET /v1/agents/{id}/embed-tokens', 'List embed tokens for a public-website widget.'],
-                ['POST /v1/agents/{id}/embed-tokens', 'Create an embed token (allowed origins + rate limits).'],
-                ['DELETE /v1/agents/{id}/embed-tokens/{id}', 'Revoke an embed token.'],
-                ['GET /v1/agents/{id}/calls', 'List recent voice calls (range 7d/30d/90d, newest first).'],
-                ['GET /v1/agents/{id}/calls/{session_id}/transcript', 'Per-turn transcript with at_ms timestamps.'],
-                ['GET /v1/agents/{id}/calls/{session_id}/recording', 'Presigned URL for the stereo WAV (1 h TTL).'],
-                ['DELETE /v1/agents/{id}/calls/{session_id}/recording', 'Purge the recording from object storage.'],
-                ['POST /v1/feedback', 'Submit or update thumbs feedback on a generation.'],
-                ['GET /v1/feedback', 'Fetch your current rating for a single generation.'],
-                ['WS /v1/agents/{id}/session', 'Bidirectional voice-agent WebSocket (PCM in, PCM out).'],
-                ['WS /v1/voices/{id}/stream', 'Streaming TTS WebSocket with a pre-registered voice.'],
-                ['WS /v1/stt/stream', 'Streaming STT WebSocket — PCM in, transcripts out.'],
-              ].map(([path, desc]) => (
-                <tr key={path} className="border-t border-white/[0.06]">
-                  <td className="px-4 py-3"><code className="text-white/90 text-[12.5px]">{path}</code></td>
-                  <td className="px-4 py-3 text-zinc-400">{desc}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
-
       <section>
         <h2 className="text-lg font-semibold mb-3">Access Rules</h2>
         <ul className="space-y-2 text-sm text-zinc-400 leading-relaxed">
@@ -1078,130 +1126,6 @@ print(rec["url"])  # download or stream directly from R2
           <li>Each request consumes credits from the same balance shown in the Studio sidebar.</li>
           <li>When credits are insufficient the API returns <code className="text-white/90">402</code> and no work is performed.</li>
         </ul>
-      </section>
-
-      {/* ─────────────────── PER-ENDPOINT HARD CAPS ─────────────────── */}
-      <section>
-        <h2 className="text-lg font-semibold mb-3">Per-endpoint limits</h2>
-        <p className="text-sm text-zinc-400 mb-4 leading-relaxed">
-          Every endpoint has a hard input cap. Requests over the cap are rejected with{' '}
-          <code className="text-white/90">HTTP 413</code> <span className="text-zinc-500">(Payload Too Large)</span>{' '}
-          before any credits are spent. The caps match what the Studio UI accepts —
-          for longer workloads, chunk on the client side and make multiple calls.
-        </p>
-        <div className="overflow-x-auto border border-white/[0.06] rounded-xl">
-          <table className="w-full text-sm">
-            <thead className="bg-white/5 text-[#A7B0B7]">
-              <tr>
-                <th className="text-left px-4 py-3">Endpoint</th>
-                <th className="text-left px-4 py-3">Input cap</th>
-                <th className="text-left px-4 py-3">Other</th>
-              </tr>
-            </thead>
-            <tbody className="text-zinc-300">
-              <tr className="border-t border-white/[0.06]">
-                <td className="px-4 py-3"><code className="text-white/90">POST /v1/tts/generate</code></td>
-                <td className="px-4 py-3">2,000 chars text</td>
-                <td className="px-4 py-3">style_instruction: 500 chars</td>
-              </tr>
-              <tr className="border-t border-white/[0.06]">
-                <td className="px-4 py-3"><code className="text-white/90">POST /v1/tts/speak</code></td>
-                <td className="px-4 py-3">2,000 chars text</td>
-                <td className="px-4 py-3">voice id: 64 chars</td>
-              </tr>
-              <tr className="border-t border-white/[0.06]">
-                <td className="px-4 py-3"><code className="text-white/90">POST /v1/voices/{`{id}`}/speak</code></td>
-                <td className="px-4 py-3">2,000 chars text</td>
-                <td className="px-4 py-3">—</td>
-              </tr>
-              <tr className="border-t border-white/[0.06]">
-                <td className="px-4 py-3"><code className="text-white/90">POST /v1/voice/clone</code></td>
-                <td className="px-4 py-3">2,000 chars target_text · 50 MB reference audio</td>
-                <td className="px-4 py-3">reference clip best at 5–30 s</td>
-              </tr>
-              <tr className="border-t border-white/[0.06]">
-                <td className="px-4 py-3"><code className="text-white/90">POST /v1/stt/transcribe</code></td>
-                <td className="px-4 py-3">5 min · 50 MB audio</td>
-                <td className="px-4 py-3">language hint must be a canonical name</td>
-              </tr>
-              <tr className="border-t border-white/[0.06]">
-                <td className="px-4 py-3"><code className="text-white/90">POST /v1/audio/noise-remover</code></td>
-                <td className="px-4 py-3">5 min · 50 MB audio</td>
-                <td className="px-4 py-3">WAV / MP3 / M4A / OGG / FLAC / WebM / AAC</td>
-              </tr>
-              <tr className="border-t border-white/[0.06]">
-                <td className="px-4 py-3"><code className="text-white/90">POST /v1/voice/design/save</code></td>
-                <td className="px-4 py-3">display_name: 20 chars</td>
-                <td className="px-4 py-3">requires preview_token from previous call</td>
-              </tr>
-              <tr className="border-t border-white/[0.06]">
-                <td className="px-4 py-3"><code className="text-white/90">POST /v1/voice/clone/save</code></td>
-                <td className="px-4 py-3">display_name: 40 chars · 50 MB audio</td>
-                <td className="px-4 py-3">5–30 s reference clip recommended</td>
-              </tr>
-              <tr className="border-t border-white/[0.06]">
-                <td className="px-4 py-3"><code className="text-white/90">WS /v1/agents/{`{id}`}/session</code></td>
-                <td className="px-4 py-3">30 min max · 60 sec idle timeout</td>
-                <td className="px-4 py-3">Auto-close on balance=0 (4402), max length (4408), or idle (4410)</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </section>
-
-      {/* ─────────────────── RATE LIMITS ─────────────────── */}
-      <section>
-        <h2 className="text-lg font-semibold mb-3">Rate limits</h2>
-        <p className="text-sm text-zinc-400 mb-4 leading-relaxed">
-          Three separate limit mechanisms apply, each with its own counter and error response.
-          All three are <span className="text-white">per-account</span>, every API key you
-          create draws from the same shared bucket, so spinning up additional keys does not
-          multiply your quota.
-        </p>
-        <div className="overflow-x-auto border border-white/[0.06] rounded-xl">
-          <table className="w-full text-sm">
-            <thead className="bg-white/5 text-[#A7B0B7]">
-              <tr>
-                <th className="text-left px-4 py-3">Scope</th>
-                <th className="text-left px-4 py-3">Limit</th>
-                <th className="text-left px-4 py-3">Error</th>
-              </tr>
-            </thead>
-            <tbody className="text-zinc-300">
-              <tr className="border-t border-white/[0.06]">
-                <td className="px-4 py-3">All HTTP endpoints (shared)</td>
-                <td className="px-4 py-3">4 req/min per account (sliding 60-sec window)</td>
-                <td className="px-4 py-3"><code className="text-white/90">HTTP 429</code></td>
-              </tr>
-              <tr className="border-t border-white/[0.06]">
-                <td className="px-4 py-3">Voice agent session opens</td>
-                <td className="px-4 py-3">10 opens/min per account</td>
-                <td className="px-4 py-3">WS close <code className="text-white/90">4429</code></td>
-              </tr>
-              <tr className="border-t border-white/[0.06]">
-                <td className="px-4 py-3">Voice agent concurrent sessions</td>
-                <td className="px-4 py-3">5 in-flight per account</td>
-                <td className="px-4 py-3">WS close <code className="text-white/90">4429</code></td>
-              </tr>
-              <tr className="border-t border-white/[0.06]">
-                <td className="px-4 py-3">Voice agent max session length</td>
-                <td className="px-4 py-3">30 min per session</td>
-                <td className="px-4 py-3">WS close <code className="text-white/90">4408</code></td>
-              </tr>
-              <tr className="border-t border-white/[0.06]">
-                <td className="px-4 py-3">Voice agent idle timeout</td>
-                <td className="px-4 py-3">60 sec without a user turn → auto-close</td>
-                <td className="px-4 py-3">WS close <code className="text-white/90">4410</code></td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-        <p className="text-sm text-zinc-400 mt-4 leading-relaxed">
-          Higher per-account limits are available on request, contact us with your
-          projected peak QPS and we'll bump the cap for your account. Voice agent session
-          limits are operationally enforced and not yet self-service configurable; ping
-          us if you need more concurrent voice sessions.
-        </p>
       </section>
 
       {/* ─────────────────── WORKED BILLING EXAMPLES ─────────────────── */}
@@ -1302,141 +1226,14 @@ print(rec["url"])  # download or stream directly from R2
         </ul>
         <p className="text-sm text-zinc-400 mt-4 leading-relaxed">
           Pre-flight check: at connect time we verify the user has at least 20 credits
-          (the 30-sec floor). Sessions below that balance are rejected with WS close{' '}
-          <code className="text-white/90">4402</code>. While the session is live, when
-          the balance can no longer cover the next 6-sec increment we send a{' '}
-          <code className="text-white/90">billing_exhausted</code> JSON event and close
-          with the same 4402 code. Build your SDK to surface this as a "top up credits"
-          banner rather than an unexpected disconnect.
+          (the 30-sec floor). Sessions below that balance are rejected before any work
+          starts. While a session is live, when the balance can no longer cover the next
+          6-sec increment we send a <code className="text-white/90">billing_exhausted</code>{' '}
+          event and close the session. Build your client to surface this as a "top up
+          credits" banner rather than an unexpected disconnect. The full set of WS close
+          codes and HTTP error codes is in the{' '}
+          <Link to="/docs/api" className="text-[#DFFF00] hover:underline">API Reference</Link>.
         </p>
-
-        <p className="text-sm text-zinc-400 mt-4 leading-relaxed">
-          Two additional auto-close conditions protect users and our pipeline:
-        </p>
-        <ul className="space-y-2 text-sm text-zinc-400 leading-relaxed list-disc list-inside ml-2 mt-2">
-          <li>
-            <span className="text-white">Max session length: 30 minutes.</span> Hard ceiling
-            per WebSocket. When reached we send{' '}
-            <code className="text-white/90">{`{"type":"session_timeout","code":"max_duration"}`}</code>{' '}
-            and close with WS code <code className="text-white/90">4408</code>. To continue,
-            open a new session, it counts as a new conversation for billing.
-          </li>
-          <li>
-            <span className="text-white">Idle timeout: 60 seconds.</span> If no user turn
-            (<code className="text-white/90">voice</code> or <code className="text-white/90">text</code>{' '}
-            message) arrives for 60 seconds, the session auto-closes with{' '}
-            <code className="text-white/90">{`{"type":"session_timeout","code":"idle_timeout"}`}</code>{' '}
-            and WS code <code className="text-white/90">4410</code>. A <code className="text-white/90">cancel</code>{' '}
-            does not count as activity. The credits already accrued are still billed.
-          </li>
-        </ul>
-      </section>
-
-      {/* ─────────────────── ERROR CODES ─────────────────── */}
-      <section>
-        <h2 className="text-lg font-semibold mb-3">Error codes</h2>
-        <p className="text-sm text-zinc-400 mb-4 leading-relaxed">
-          HTTP endpoints use standard status codes. WebSocket endpoints use 4xxx close
-          codes (the 4000 series is reserved for application-level errors per RFC 6455).
-        </p>
-        <div className="overflow-x-auto border border-white/[0.06] rounded-xl">
-          <table className="w-full text-sm">
-            <thead className="bg-white/5 text-[#A7B0B7]">
-              <tr>
-                <th className="text-left px-4 py-3">Code</th>
-                <th className="text-left px-4 py-3">Meaning</th>
-                <th className="text-left px-4 py-3">What to do</th>
-              </tr>
-            </thead>
-            <tbody className="text-zinc-300">
-              <tr className="border-t border-white/[0.06]">
-                <td className="px-4 py-3"><code className="text-white/90">HTTP 400</code></td>
-                <td className="px-4 py-3">Bad request (missing field, malformed base64)</td>
-                <td className="px-4 py-3">Fix the request, don't retry as-is</td>
-              </tr>
-              <tr className="border-t border-white/[0.06]">
-                <td className="px-4 py-3"><code className="text-white/90">HTTP 401</code></td>
-                <td className="px-4 py-3">Missing or invalid API key</td>
-                <td className="px-4 py-3">Check the Authorization header format</td>
-              </tr>
-              <tr className="border-t border-white/[0.06]">
-                <td className="px-4 py-3"><code className="text-white/90">HTTP 402</code></td>
-                <td className="px-4 py-3">Insufficient credits</td>
-                <td className="px-4 py-3">Top up credits; no work was performed</td>
-              </tr>
-              <tr className="border-t border-white/[0.06]">
-                <td className="px-4 py-3"><code className="text-white/90">HTTP 403</code></td>
-                <td className="px-4 py-3">Resource not owned by this API key's user, or Premium gate failed</td>
-                <td className="px-4 py-3">Check ownership; purchase Premium if first-time</td>
-              </tr>
-              <tr className="border-t border-white/[0.06]">
-                <td className="px-4 py-3"><code className="text-white/90">HTTP 404</code></td>
-                <td className="px-4 py-3">Agent / voice / resource not found</td>
-                <td className="px-4 py-3">Verify the id; check spelling</td>
-              </tr>
-              <tr className="border-t border-white/[0.06]">
-                <td className="px-4 py-3"><code className="text-white/90">HTTP 413</code></td>
-                <td className="px-4 py-3">Payload too large (cap exceeded)</td>
-                <td className="px-4 py-3">Chunk the input, see per-endpoint limits above</td>
-              </tr>
-              <tr className="border-t border-white/[0.06]">
-                <td className="px-4 py-3"><code className="text-white/90">HTTP 429</code></td>
-                <td className="px-4 py-3">Rate limit exceeded (4 req/min per account, default)</td>
-                <td className="px-4 py-3">Back off; respect <code className="text-white/90">Retry-After</code> if present</td>
-              </tr>
-              <tr className="border-t border-white/[0.06]">
-                <td className="px-4 py-3"><code className="text-white/90">HTTP 502</code></td>
-                <td className="px-4 py-3">Upstream provider error (no credits charged)</td>
-                <td className="px-4 py-3">Safe to retry with exponential backoff</td>
-              </tr>
-              <tr className="border-t border-white/[0.06]">
-                <td className="px-4 py-3"><code className="text-white/90">HTTP 503</code></td>
-                <td className="px-4 py-3">Feature temporarily unavailable (no pods online)</td>
-                <td className="px-4 py-3">Retry after 30–60 seconds</td>
-              </tr>
-              <tr className="border-t border-white/[0.06]">
-                <td className="px-4 py-3"><code className="text-white/90">WS 4401</code></td>
-                <td className="px-4 py-3">WebSocket auth failed (missing/invalid Bearer key)</td>
-                <td className="px-4 py-3">Check the Authorization header sent during the WS handshake</td>
-              </tr>
-              <tr className="border-t border-white/[0.06]">
-                <td className="px-4 py-3"><code className="text-white/90">WS 4402</code></td>
-                <td className="px-4 py-3">Insufficient credits, pre-flight or mid-session exhaustion</td>
-                <td className="px-4 py-3">Top up credits; the session is not recoverable</td>
-              </tr>
-              <tr className="border-t border-white/[0.06]">
-                <td className="px-4 py-3"><code className="text-white/90">WS 4404</code></td>
-                <td className="px-4 py-3">Agent not found / not owned by this key</td>
-                <td className="px-4 py-3">Verify the agent_id and ownership</td>
-              </tr>
-              <tr className="border-t border-white/[0.06]">
-                <td className="px-4 py-3"><code className="text-white/90">WS 4423</code></td>
-                <td className="px-4 py-3">Agent is paused or archived</td>
-                <td className="px-4 py-3">Re-activate the agent from the Studio UI</td>
-              </tr>
-              <tr className="border-t border-white/[0.06]">
-                <td className="px-4 py-3"><code className="text-white/90">WS 4408</code></td>
-                <td className="px-4 py-3">Session reached max duration (30 min)</td>
-                <td className="px-4 py-3">Open a new session if the conversation needs to continue</td>
-              </tr>
-              <tr className="border-t border-white/[0.06]">
-                <td className="px-4 py-3"><code className="text-white/90">WS 4410</code></td>
-                <td className="px-4 py-3">Idle timeout, no user turn for 60 seconds</td>
-                <td className="px-4 py-3">Send any user turn within 60s of the previous one to keep the session alive</td>
-              </tr>
-              <tr className="border-t border-white/[0.06]">
-                <td className="px-4 py-3"><code className="text-white/90">WS 4429</code></td>
-                <td className="px-4 py-3">Session-rate limit (10/min open OR 5 concurrent)</td>
-                <td className="px-4 py-3">Back off; close idle sessions before opening new ones</td>
-              </tr>
-              <tr className="border-t border-white/[0.06]">
-                <td className="px-4 py-3"><code className="text-white/90">WS 4502/4503</code></td>
-                <td className="px-4 py-3">Upstream voice pipeline error</td>
-                <td className="px-4 py-3">Retry; ping us if it persists</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
       </section>
 
       {/* ─────────────────── BILLING FLOW ─────────────────── */}
@@ -4351,6 +4148,95 @@ r = requests.post(f"{BASE}/v1/audio/noise-remover", headers=H, json={
 data = r.json()
 print("enhanced:", data["audio_url"])
 print(f"credits used: {data['credits_used']}, remaining: {data['credits_remaining']}")`} />
+      </section>
+
+      <section className="space-y-3">
+        <h2 className="text-lg font-semibold tracking-tight text-white">List a voice agent's call history + grab a recording</h2>
+        <p className="text-sm leading-relaxed text-zinc-400">
+          Every voice-agent call is logged. When the agent's{' '}
+          <code className="rounded bg-white/[0.06] px-1 text-zinc-300">config.record_enabled</code> is{' '}
+          <code className="rounded bg-white/[0.06] px-1 text-zinc-300">true</code>, the session also
+          produces a stereo WAV (left channel = user mic post-denoise, right channel = agent TTS,
+          both 16 kHz s16le on one shared timeline) uploaded to Cloudflare R2. Default retention
+          is 30 days; after that the WAV is purged but the call row stays for analytics.
+        </p>
+        <div className="overflow-hidden rounded-xl border border-white/[0.06] bg-white/[0.02]">
+          <table className="w-full text-left text-[13px]">
+            <thead className="bg-white/[0.03] text-zinc-400">
+              <tr>
+                <th className="px-4 py-2.5 font-medium">Route</th>
+                <th className="px-4 py-2.5 font-medium">What it returns</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-white/[0.04]">
+              <tr>
+                <td className="px-4 py-3 align-top"><code className="text-white/90">GET /v1/agents/&#123;agent_id&#125;/calls?range=30d&amp;limit=100</code></td>
+                <td className="px-4 py-3 text-zinc-400 align-top">
+                  Recent calls, newest first. Each row carries <code>session_id</code>,{' '}
+                  <code>started_at</code>, <code>ended_at</code>, <code>duration_ms</code>,{' '}
+                  <code>end_reason</code>, <code>turn_count</code>, <code>user_chars</code>,{' '}
+                  <code>agent_chars</code>, and a <code>has_recording</code> boolean. <code>range</code>{' '}
+                  accepts <code>7d</code>/<code>30d</code>/<code>90d</code> (max <code>365d</code>);{' '}
+                  <code>limit</code> caps at 500.
+                </td>
+              </tr>
+              <tr>
+                <td className="px-4 py-3 align-top"><code className="text-white/90">GET /v1/agents/&#123;agent_id&#125;/calls/&#123;session_id&#125;/transcript</code></td>
+                <td className="px-4 py-3 text-zinc-400 align-top">
+                  Per-turn transcript:{' '}
+                  <code>&#123;turns: [&#123;role: "user"|"assistant", text, at_ms&#125;…]&#125;</code>. The{' '}
+                  <code>at_ms</code> offset is relative to the call's <code>started_at</code> so a player
+                  UI can seek to the exact moment of a turn.
+                </td>
+              </tr>
+              <tr>
+                <td className="px-4 py-3 align-top"><code className="text-white/90">GET /v1/agents/&#123;agent_id&#125;/calls/&#123;session_id&#125;/recording?download=false</code></td>
+                <td className="px-4 py-3 text-zinc-400 align-top">
+                  Returns <code>&#123;url, expires_in: 3600&#125;</code> — a 1-hour presigned R2 URL. Stream
+                  the WAV directly from R2 (no auth needed on the GET). Pass <code>download=true</code> to
+                  receive a URL with a <code>Content-Disposition: attachment</code> header so browsers
+                  offer a save dialog. <strong>404</strong> when the recording is missing (agent didn't
+                  have <code>record_enabled</code>, or the 30-day retention sweep already removed it).
+                </td>
+              </tr>
+              <tr>
+                <td className="px-4 py-3 align-top"><code className="text-white/90">DELETE /v1/agents/&#123;agent_id&#125;/calls/&#123;session_id&#125;/recording</code></td>
+                <td className="px-4 py-3 text-zinc-400 align-top">
+                  Purge a single recording from object storage. Returns{' '}
+                  <code>&#123;deleted: true|false&#125;</code>; <code>false</code> means it was already
+                  gone. The <code>voice_call_logs</code> row stays so analytics totals don't shift.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <CodeBlock language="python" code={`from vocence import Vocence
+
+client = Vocence()
+
+# 1. List the agent's calls from the last 30 days.
+calls = client.agents.calls("agent-id").list(range="30d", limit=50)
+for c in calls:
+    print(c["session_id"], c["duration_ms"], "recording:", c["has_recording"])
+
+# 2. Fetch one call's per-turn transcript.
+turns = client.agents.calls("agent-id").transcript(calls[0]["session_id"])
+for t in turns:
+    print(f"[{t['at_ms']:>6} ms] {t['role']}: {t['text']}")
+
+# 3. Get a presigned URL for the stereo WAV.
+rec = client.agents.calls("agent-id").recording(calls[0]["session_id"])
+print(rec["url"])  # download or stream directly from R2
+`} />
+        <p className="text-[12px] leading-relaxed text-zinc-500">
+          Endpoints used:{' '}
+          <code className="text-zinc-300">GET /v1/agents/&#123;id&#125;/calls</code>,{' '}
+          <code className="text-zinc-300">GET /v1/agents/&#123;id&#125;/calls/&#123;session_id&#125;/transcript</code>,{' '}
+          <code className="text-zinc-300">GET /v1/agents/&#123;id&#125;/calls/&#123;session_id&#125;/recording</code>,{' '}
+          <code className="text-zinc-300">DELETE /v1/agents/&#123;id&#125;/calls/&#123;session_id&#125;/recording</code>.
+          Recordings require <code className="text-zinc-300">config.record_enabled = true</code> on
+          the agent (off by default for privacy).
+        </p>
       </section>
 
       <section className="space-y-3">
