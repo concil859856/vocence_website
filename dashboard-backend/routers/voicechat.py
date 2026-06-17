@@ -3433,7 +3433,17 @@ async def _run_turn(
         if bot_text_joined:
             conversation.append(ChatMessage(role="assistant", content=bot_text_joined))
 
-        await ws.send_json({"type": "turn_end"})
+        # The client may have already closed the WS by the time the turn
+        # finishes (typical race: user hangs up while the LLM is mid-
+        # generation). Sending ``turn_end`` on a closed socket raises
+        # ``RuntimeError('Cannot call "send" once a close message has been
+        # sent')`` which Starlette surfaces and the exception handler
+        # below logs as ``voicechat turn failed`` — misleading, the turn
+        # actually completed fine, the client just left. Mirror the
+        # ``with suppress(Exception)`` pattern every other send site in
+        # this module already uses.
+        with suppress(Exception):
+            await ws.send_json({"type": "turn_end"})
 
         # ---------- 3) opportunistic summarization ----------
         # Once the dialogue exceeds the trigger we collapse the oldest turns
