@@ -75,6 +75,15 @@ import agent_tools_service
 from call_recorder import CallRecorder
 from llm_client import stream_chat_with_tools
 from ws_drain import registry as drain_registry, track_session
+from barge_in_listener import BargeInListener
+
+# Server-side continuous barge-in detection during agent reply (matches
+# videosdk's pipeline_orchestrator._monitor_interruption_duration).
+# Off by default — echo behavior varies wildly across user setups
+# (headphones vs speakers, room reverb, mic AGC), so we ship gated
+# and roll out per-deployment after dogfooding. See
+# barge_in_listener.py + _design/SERVER_SIDE_BARGE_IN.md.
+VOICE_SERVER_BARGE_IN = (os.environ.get("VOICE_SERVER_BARGE_IN") or "off").strip().lower() == "on"
 
 # Tool calling: cap how many LLM↔tool round-trips a single turn can do.
 # Most legit queries finish in 1 tool call ("what's the weather in Tokyo");
@@ -1413,10 +1422,38 @@ async def voicechat_session(
     bot_speaking_evt: asyncio.Event = asyncio.Event()
     gate_safety_task: asyncio.Task | None = None
 
+    # Server-side barge-in listener — fed PCM frames during agent
+    # reply; fires _on_server_barge_in when sustained user speech is
+    # detected. Idle until ``arm()`` and back to idle on ``pause()``.
+    # See VOICE_SERVER_BARGE_IN flag at the top of this module.
+    barge_listener: BargeInListener | None = (
+        BargeInListener() if VOICE_SERVER_BARGE_IN else None
+    )
+
+    async def _on_server_barge_in() -> None:
+        """Listener callback: cancel the in-flight agent reply and
+        tell the client to flush its audio buffer. The client's own
+        VAD will fire shortly after and open a new turn via
+        stream_start, picking up the user's continuation via the
+        preroll buffer that's still being accumulated."""
+        _log.info(
+            "[stream] trace session=%s phase=server_barge_in "
+            "(sustained user speech detected during agent reply)",
+            session_id,
+        )
+        await _cancel_current()
+        with suppress(Exception):
+            await ws.send_json({"type": "flush_player"})
+        # Clear the mic-mute gate so the next stream_start (or
+        # already-flowing audio) reaches downstream processing.
+        bot_speaking_evt.clear()
+
     def _gate_set_from_client() -> None:
         """Latch the mute gate. Triggered by ``client_audio_started``."""
         nonlocal gate_safety_task
         bot_speaking_evt.set()
+        if barge_listener is not None:
+            barge_listener.arm(_on_server_barge_in)
         if gate_safety_task and not gate_safety_task.done():
             gate_safety_task.cancel()
 
@@ -1452,6 +1489,8 @@ async def voicechat_session(
                     GATE_MAX_HOLD_S, session_id,
                 )
                 bot_speaking_evt.clear()
+                if barge_listener is not None:
+                    barge_listener.pause()
             except asyncio.CancelledError:
                 pass
 
@@ -1470,6 +1509,8 @@ async def voicechat_session(
         later) saw was_set=False and never fired mark_turn_ended."""
         nonlocal gate_safety_task
         bot_speaking_evt.clear()
+        if barge_listener is not None:
+            barge_listener.pause()
         if gate_safety_task and not gate_safety_task.done():
             gate_safety_task.cancel()
             gate_safety_task = None
@@ -1731,6 +1772,11 @@ async def voicechat_session(
                     if call_recorder is not None:
                         call_recorder.push_user(frame_bytes)
                     _preroll_append(frame_bytes)
+                    # Feed the same frame to the barge-in listener.
+                    # No-op when the listener is paused (i.e. not
+                    # during agent reply). See VOICE_SERVER_BARGE_IN.
+                    if barge_listener is not None:
+                        barge_listener.push_audio(frame_bytes)
                 continue
             raw = msg.get("text")
             if raw is None:
