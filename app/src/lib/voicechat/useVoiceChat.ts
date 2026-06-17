@@ -157,8 +157,18 @@ export function useVoiceChat(opts: UseVoiceChatOptions): UseVoiceChatResult {
   // the burst is treated as a backchannel: no barge-in, no submission,
   // agent keeps talking. Longer bursts go through the normal barge-in
   // path. Outside agent playback, barge-in fires immediately as before.
-  const BACKCHANNEL_GRACE_MS = 250;   // how long to wait before committing to a barge-in
-  const BACKCHANNEL_MAX_MS = 400;     // total speech duration that counts as a backchannel
+  //
+  // Tuned down from 250/400 ms after user feedback: voice barge-in
+  // felt distinctly laggier than text submission (which is instant).
+  // 250 ms grace was the dominant source of that perceived lag. 120 ms
+  // still catches most backchannels (most "uh-huh" / "yeah" pulses
+  // are 200-400 ms long but the VAD typically fires inside the first
+  // 60-80 ms of voicing — so a 120 ms grace + ≤ 250 ms max gives us
+  // ~170 ms of trailing edge to detect the end). Trade-off: brief
+  // sub-120 ms sounds now barge in instantly; this only affects users
+  // who interject very short syllables during agent playback.
+  const BACKCHANNEL_GRACE_MS = 120;   // how long to wait before committing to a barge-in
+  const BACKCHANNEL_MAX_MS = 250;     // total speech duration that counts as a backchannel
   const pendingBargeInRef = useRef<number | null>(null);   // setTimeout id
   const bargeInDeferredRef = useRef<boolean>(false);       // true while grace window is open
   const isAgentSpeakingRef = useRef<boolean>(false);       // mirrors ``state === 'speaking'``

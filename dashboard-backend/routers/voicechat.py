@@ -1199,12 +1199,25 @@ async def voicechat_session(
     # gets the warm WS that was opened in the background while the
     # user was speaking. Cuts ~500 ms off TTS time-to-first-audio per
     # turn — your single biggest fixed latency floor.
-    from voicechat_service import make_tts_warmer_for_voice  # local: keep cold-start lean
+    from voicechat_service import make_tts_warmer_for_voice, TurnTtsPodPin  # local: keep cold-start lean
     session_tts_warmer = make_tts_warmer_for_voice(agent_voice)
     if session_tts_warmer is not None:
         # Open the first WS in the background NOW so it's ready by
         # the time the user finishes their first turn.
         session_tts_warmer.schedule_prewarm()
+
+    # ── TTS pod pin (session-scoped) ──────────────────────────────────
+    # One pinned tts_streaming pod for the entire session, not per
+    # turn. The voice-cloning model has per-pod state plus per-WS
+    # settling; different pods produce subtly different voices even
+    # against the same reference clip. Per-turn pinning made the
+    # voice CHANGE between short consecutive turns ("voice changes
+    # turn-to-turn" — user-reported bug). Session pinning keeps every
+    # turn on the same pod for the whole call. Trade-off: one
+    # dispatcher slot is held for the session's duration instead of
+    # only its in-flight turns; for typical session lengths this is
+    # cheaper than re-pinning + re-settling on every turn.
+    session_tts_pod_pin = TurnTtsPodPin()
 
     # ── STT pod prewarm (silence-pump) ────────────────────────────────
     # Two observed truths drive this design:
@@ -1512,11 +1525,11 @@ async def voicechat_session(
         token stream + TTS path WITHOUT calling the LLM. Used for
         the first_message greeting. Cancellable like any normal turn
         so user barge-in tears it down cleanly via ``_cancel_current``."""
-        from voicechat_service import stream_tts_for_voice, TurnTtsPodPin
-        # Greeting is one utterance so pinning is less critical here,
-        # but use the same shape as regular turns for consistency and
-        # so a future multi-sentence greeting wouldn't regress.
-        greeting_pod_pin = TurnTtsPodPin()
+        from voicechat_service import stream_tts_for_voice
+        # Use the session-scoped pin so the greeting lands on the
+        # same pod the rest of the call will use — keeps the voice
+        # consistent from "Hello!" through every later turn.
+        greeting_pod_pin = session_tts_pod_pin
         # Open the recorder's agent-turn gate so push_agent calls
         # below land in the buffer. Without this the greeting's
         # audio would be silently dropped — push_agent rejects
@@ -1593,8 +1606,9 @@ async def voicechat_session(
                 call_recorder.notify_agent_tts_done()
                 if was_open and not call_recorder.agent_turn_open:
                     billing.mark_turn_ended()
-            with suppress(Exception):
-                await greeting_pod_pin.release()
+            # Session-scoped pin — do NOT release here. The whole
+            # session shares it; ``voicechat_session``'s outer
+            # finally releases it at WS close.
 
     if agent_first_message:
         # Append BEFORE kicking off TTS so a fast user barge-in
@@ -1994,6 +2008,7 @@ async def voicechat_session(
                     enabled_tools=enabled_tools_set,
                     bot_speaking_evt=bot_speaking_evt,
                     tts_warmer=session_tts_warmer,
+                    tts_pod_pin=session_tts_pod_pin,
                     denoise_enabled=bool(_agent_cfg.get("denoise_enabled", False)),
                     turn_decider=str(_agent_cfg.get("turn_decider", "fusion")),
                     ultravad_threshold=float(_agent_cfg.get("ultravad_threshold", 0.50)),
@@ -2119,6 +2134,12 @@ async def voicechat_session(
         if session_tts_warmer is not None:
             with suppress(Exception, asyncio.CancelledError):
                 await session_tts_warmer.close()
+        # Release the session-scoped TTS pod pin (drops the dispatcher
+        # slot it held for the whole call). Safe to call when the
+        # pin was never actually used — ``release`` no-ops if no
+        # context manager was entered.
+        with suppress(Exception, asyncio.CancelledError):
+            await session_tts_pod_pin.release()
         # Release any unconsumed STT prewarm — happens when the user
         # disconnects before their first stream_start (greeting then
         # close), or when the prewarm task is still mid-handshake.
@@ -2260,6 +2281,11 @@ async def _run_turn(
     enabled_tools: set[str] | None = None,
     bot_speaking_evt: asyncio.Event | None = None,
     tts_warmer: Any | None = None,
+    # Session-scoped TTS pod pin: every turn in the session sends its
+    # TTS WSes against the SAME pod so the voice doesn't drift between
+    # consecutive short turns. Owned by ``voicechat_session``; we
+    # borrow it here, never release.
+    tts_pod_pin: Any | None = None,
     # Voice-pipeline knobs from agent.config — see AgentConfigIn,
     # ULTRAVAD_POD_SPEC.md, DENOISER_STREAMING_POD_SPEC.md. Defaults
     # match the AgentConfigIn defaults so existing agents keep their
@@ -3226,14 +3252,17 @@ async def _run_turn(
         # docstring in ``voicechat_session``. No server-side byte-count
         # bookkeeping here.
 
-        # Per-turn pod pin: every sentence in this turn lands on the
-        # SAME tts_streaming pod so the voice doesn't change between
-        # sentences. The pin acquires one dispatcher slot at first use
-        # (inside stream_tts_for_voice) and holds it until release()
-        # below — closing it on natural turn end AND on exception so
-        # we never leak the slot.
+        # Pod pin: prefer the session-scoped pin (voice stays the
+        # same across every turn of the session). Fall back to a
+        # per-turn pin only if the caller didn't supply one — keeps
+        # the function callable standalone (tests, legacy paths).
         from voicechat_service import TurnTtsPodPin
-        turn_pod_pin = TurnTtsPodPin()
+        if tts_pod_pin is not None:
+            turn_pod_pin = tts_pod_pin
+            _owns_pod_pin = False
+        else:
+            turn_pod_pin = TurnTtsPodPin()
+            _owns_pod_pin = True
         # Open the recorder's agent-turn gate. The gate is closed by
         # ``mark_agent_barge_in`` at the previous barge-in and by
         # ``_maybe_complete_agent_turn`` after the previous natural
@@ -3375,11 +3404,14 @@ async def _run_turn(
                 call_recorder.notify_agent_tts_done()
                 if was_open and not call_recorder.agent_turn_open:
                     billing.mark_turn_ended()
-            # Release the per-turn pinned pod (drops the dispatcher
-            # slot it held for this turn). Runs whether the gather
-            # ended normally or via a barge-in cancel.
-            with suppress(Exception):
-                await turn_pod_pin.release()
+            # Release the pinned pod ONLY if this turn owns it.
+            # Session-scoped pins live for the whole call and are
+            # released by ``voicechat_session``'s outer finally — see
+            # ``session_tts_pod_pin``. Releasing here would defeat
+            # the cross-turn voice consistency.
+            if _owns_pod_pin:
+                with suppress(Exception):
+                    await turn_pod_pin.release()
 
         bot_text_joined = "".join(bot_text_full).strip()
         if bot_text_joined:
