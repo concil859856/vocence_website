@@ -136,17 +136,33 @@ _INCOMPLETE_TAIL_WORDS = frozenset({
 
 
 def _looks_mid_thought(text: str) -> bool:
-    """True if the text ends mid-sentence (function word, no terminator).
+    """True if the text very likely ends mid-sentence.
+
+    Two signals, either fires:
+
+      1. Ends with a function / hedge word (and / to / the / uh / …).
+         Strong evidence the speaker is mid-clause.
+      2. ≥ 4 spoken words AND no sentence terminator (. ! ?).
+         Anything substantial without punctuation is usually a
+         brief breath inside a longer utterance — the STT pod may
+         not have had time to emit a final-with-terminator yet.
+         Short fragments (1–3 words) skip this check: "Yeah." with
+         no terminator IS plausibly a complete reply.
+
     Used to extend EOU silence requirements so the agent doesn't cut
-    in the middle of a longer thought."""
+    in the middle of a longer thought.
+    """
     if not text:
         return False
     stripped = text.rstrip()
-    if stripped.endswith((".", "!", "?")):
-        return False
+    ends_with_terminator = stripped.endswith((".", "!", "?"))
     last = stripped.rsplit(None, 1)[-1] if stripped else ""
     last_clean = last.lower().strip(",.;:!?\"'()[]")
-    return last_clean in _INCOMPLETE_TAIL_WORDS
+    if last_clean in _INCOMPLETE_TAIL_WORDS:
+        return True
+    if not ends_with_terminator and len(stripped.split()) >= 4:
+        return True
+    return False
 
 # STT provider selection. ``vocence`` (default) uses the self-hosted
 # vocence/stt-streaming pod via the gpu_pool dispatcher. ``deepgram``
@@ -1002,13 +1018,40 @@ class StreamingTurnSession:
                     pass
             elif mtype == "final":
                 text = (data.get("text") or "").strip()
+                longest = self._state.longest_partial_in_window
                 if text:
-                    self._state.finals_accumulated.append(text)
+                    # Final-truncation rescue. The STT pod sometimes
+                    # emits a ``final`` that's SHORTER than the longest
+                    # partial it streamed for the same utterance. The
+                    # user has already seen the longer text in the UI
+                    # (interim) and would notice the trailing content
+                    # vanish at commit. When the final is a strict prefix
+                    # of the longest partial AND the partial has at
+                    # least 2 more words, promote the longest partial
+                    # instead — the pod gave us better hypotheses
+                    # earlier than its own final. Fall back to trusting
+                    # the pod's final when the shapes don't match (the
+                    # pod genuinely restructured the transcript).
+                    final_words = len(text.split())
+                    longest_words = len(longest.split())
+                    if (
+                        longest
+                        and longest_words >= final_words + 2
+                        and longest.lower().startswith(text.lower())
+                    ):
+                        self._state.finals_accumulated.append(longest)
+                        _log.info(
+                            "[stream] trace session=%s phase=stt_final_truncation_rescue "
+                            "final=%r longest_partial=%r",
+                            self._session_id, text[:80], longest[:160],
+                        )
+                    else:
+                        self._state.finals_accumulated.append(text)
                 self._state.partial_text = ""
                 # Reset the rescue tracker — anything in the previous
                 # partial window is either now in finals_accumulated
-                # (via the rescue path) or in this final, so we start
-                # fresh for the next utterance segment.
+                # (via the rescue path or the final itself) or in this
+                # final, so we start fresh for the next utterance.
                 self._state.longest_partial_in_window = ""
                 lang = data.get("language_detected")
                 if lang:

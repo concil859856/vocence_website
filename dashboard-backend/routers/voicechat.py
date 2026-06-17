@@ -2357,7 +2357,17 @@ async def _run_turn(
             # voicechat_stream.StreamingTurnSession for the details.
             from voicechat_stream import StreamingTurnSession  # local import; module pulls in ops.pool
 
-            language = (payload.get("language") or "").strip() or None
+            # Resolve the per-turn STT language. The client may pass
+            # ``language`` on ``stream_start`` (e.g. browser UI lets the
+            # user pick). When absent, fall back to the agent's
+            # configured language so the per-turn lang matches what the
+            # prewarm pod was started with — without this fallback,
+            # configured-English agents land in "auto" mode and the
+            # prewarmed pod is discarded for ``lang_mismatch``, forcing
+            # a cold STT open on every first turn (which the user sees
+            # as a weak or mistranscribed first reply).
+            client_language = (payload.get("language") or "").strip() or None
+            language = client_language or (agent_language if agent_language else None)
             history_for_detector = [
                 {"role": m.role, "content": m.content}
                 for m in conversation[-8:]
