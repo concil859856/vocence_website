@@ -1,0 +1,437 @@
+# Vocence — Full Developer Reference
+
+> Self-contained reference for AI agents. Covers what Vocence is, how to authenticate, every REST and WebSocket endpoint, the streaming voice-agent protocol, credit pricing, rate limits, and complete error tables. Hand-curated; the live docs at https://www.vocence.ai/docs are the source of truth — links throughout point to the full page for each topic.
+
+## About Vocence
+
+Vocence is a developer platform for voice AI: text-to-speech (TTS), voice cloning, voice design from prose, streaming speech-to-text (STT), music generation, noise removal, and real-time voice agents (LLM + TTS over a WebSocket).
+
+Inference runs across the Bittensor SN10 subnet — miners contribute models, validators score them, and the Vocence dispatcher routes each request to whichever miner currently scores best for that task. From the developer side it looks like a normal REST + WebSocket API.
+
+Sign-up grants 300 free credits. Heavier use unlocks via plan packs (Stripe card or NOWPayments crypto).
+
+## Authentication
+
+REST endpoints use a Bearer API key in the `Authorization` header:
+
+```
+Authorization: Bearer voc_live_…
+```
+
+Create a key at https://www.vocence.ai/account/developer. The plaintext key is shown ONCE on creation. Keys are revocable.
+
+WebSockets accept two auth shapes:
+
+- `Authorization: Bearer voc_live_…` — server-side clients (Python, Go, Node).
+- `?token=<embed-token>` query param — browsers using a per-agent embed token minted in Studio → Embed. Origin-locked when configured.
+
+Developer API access requires at least one successful Premium plan purchase. The free 300-credit signup grant gives access to Studio only.
+
+## Base URLs
+
+- REST + WebSocket: `https://api.vocence.ai` / `wss://api.vocence.ai`
+- OpenAPI spec (machine-readable, source of truth for the live explorer): `https://api.vocence.ai/openapi.json`
+
+## REST endpoints
+
+### Account
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/v1/account` | Account snapshot: credits, plan, key count. |
+| GET | `/v1/account/keys` | List API keys (metadata only). |
+| POST | `/v1/account/keys` | Create an API key. Plaintext returned ONCE. |
+| POST | `/v1/account/keys/{id}/revoke` | Revoke an API key immediately. |
+| GET | `/v1/account/usage` | Recent API requests with credits + latency. |
+
+### TTS + STT + Audio
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/v1/tts/generate` | PromptTTS — speak text in a voice described in prose. |
+| POST | `/v1/tts/speak` | Speak text using a pre-defined speaker id. |
+| POST | `/v1/stt/transcribe` | Transcribe a clip. Up to 5 min / 50 MB. |
+| POST | `/v1/voice/clone` | One-shot clone: reference clip → target text. |
+| POST | `/v1/voice/clone/save` | Save a clone reference for reuse via id. |
+| POST | `/v1/voice/design/preview` | Generate a voice from a prose description (A/B). |
+| POST | `/v1/voice/design/save` | Save a designed voice as reusable. |
+| POST | `/v1/audio/noise-remover` | Strip background noise. Up to 5 min / 50 MB. |
+
+### Voices
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/v1/voices/builtin` | List built-in sample voices. |
+| GET | `/v1/voices` | List your saved voices (designed + cloned). |
+| GET | `/v1/voices/{id}` | Get a saved voice by id. |
+| DELETE | `/v1/voices/{id}` | Delete a saved voice. |
+| POST | `/v1/voices/{id}/speak` | Synthesize with a saved voice id. |
+
+### Agents (CRUD + meta)
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/v1/agents` | List your agents (id + name only). |
+| GET | `/v1/agents/{id}` | Full agent spec including bound tools. |
+| POST | `/v1/agents` | Create a new agent. |
+| PATCH | `/v1/agents/{id}` | Update agent fields. |
+| DELETE | `/v1/agents/{id}` | Delete an agent (cascades to bound tools). |
+| GET | `/v1/agents/templates` | List starter agent templates. |
+| GET | `/v1/agents/templates/{id}` | Get a template body (prompt + knowledge starter). |
+| GET | `/v1/agents/models` | List LLM models available for voice agents. |
+| GET | `/v1/agents/tools/builtin` | List built-in tools (web search, weather, etc.). |
+| POST | `/v1/agents/draft` | One-shot: generate a complete agent spec from a description. |
+| POST | `/v1/agents/architect/chat` | Conversational agent architect — one turn at a time. |
+
+### Agents — runs (goal agents)
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/v1/agents/{id}/runs` | List recent goal-agent runs. |
+| POST | `/v1/agents/{id}/runs` | Start a new goal-agent run. |
+| GET | `/v1/agents/{id}/runs/{run_id}` | Get a run's status + transcript. |
+| POST | `/v1/agents/{id}/runs/{run_id}/cancel` | Cancel a pending or running run. |
+
+### Agents — tools
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/v1/agents/{id}/tools` | List custom tools bound to an agent. |
+| POST | `/v1/agents/{id}/tools/{tool_id}` | Bind a custom tool (idempotent). |
+| DELETE | `/v1/agents/{id}/tools/{tool_id}` | Unbind a custom tool. |
+| GET | `/v1/agent-tools` | List your custom webhook tools. |
+| GET | `/v1/agent-tools/{id}` | Get a custom tool by id. |
+| POST | `/v1/agent-tools` | Register a custom webhook tool. |
+| PATCH | `/v1/agent-tools/{id}` | Update a custom tool. |
+| DELETE | `/v1/agent-tools/{id}` | Delete a custom tool. |
+
+### Agents — knowledge (RAG)
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/v1/agents/{id}/knowledge/sources` | List ingested knowledge sources. |
+| GET | `/v1/agents/{id}/knowledge/jobs/{job_id}` | Check an ingest job's status. |
+| DELETE | `/v1/agents/{id}/knowledge/sources/{source_id}` | Remove an ingested source. |
+| POST | `/v1/agents/{id}/knowledge/ingest/text` | Ingest a raw text document. |
+| POST | `/v1/agents/{id}/knowledge/ingest/markdown` | Ingest a markdown document. |
+| POST | `/v1/agents/{id}/knowledge/ingest/url` | Ingest a single web page by URL. |
+| POST | `/v1/agents/{id}/knowledge/ingest/sitemap` | Crawl an entire site via its sitemap. |
+| POST | `/v1/agents/{id}/knowledge/ingest/pdf` | Upload + parse a PDF. |
+
+### Agents — embed tokens
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/v1/agents/{id}/embed-tokens` | List embed tokens for a public-website widget. |
+| POST | `/v1/agents/{id}/embed-tokens` | Create an embed token (origins + rate limits). |
+| DELETE | `/v1/agents/{id}/embed-tokens/{id}` | Revoke an embed token. |
+
+### Agents — call history
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/v1/agents/{id}/calls?range=30d&limit=100` | List recent voice calls, newest first. `range` accepts `7d`/`30d`/`90d` (max `365d`); `limit` caps at 500. Each row includes `session_id`, `started_at`, `ended_at`, `duration_ms`, `end_reason`, `turn_count`, `user_chars`, `agent_chars`, `has_recording`. |
+| GET | `/v1/agents/{id}/calls/{session_id}/transcript` | Per-turn transcript with `at_ms` offsets relative to call start. Shape: `{turns: [{role: "user"\|"assistant", text, at_ms}…]}`. |
+| GET | `/v1/agents/{id}/calls/{session_id}/recording?download=false` | Presigned R2 URL for the stereo WAV. Returns `{url, expires_in: 3600}`. Set `download=true` for a `Content-Disposition: attachment` URL. `404` when no recording (agent didn't have `record_enabled`, or 30-day retention expired). |
+| DELETE | `/v1/agents/{id}/calls/{session_id}/recording` | Purge a single recording. Returns `{deleted: true\|false}`. The log row stays so analytics totals don't shift. |
+
+Recordings require the agent's `config.record_enabled = true` (off by default for privacy). Default retention is 30 days. The WAV is stereo 16 kHz s16le: left channel = user mic post-denoise, right channel = agent TTS, both on one shared timeline.
+
+### Feedback
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/v1/feedback` | Submit / update thumbs feedback on a generation. |
+| GET | `/v1/feedback` | Fetch your current rating for a generation. |
+
+## WebSocket endpoints
+
+### `WS /v1/agents/{agent_id}/session` — voice agent
+
+Bidirectional. Drives every voice agent — Studio UI, embed snippet, SDK, your own clients.
+
+Three turn modes:
+
+| Mode | Client → server | Use when |
+|---|---|---|
+| `text` | `{"type":"text","text":"…"}` | Chat-style. No audio input. Fastest TTFA. |
+| `voice` | `{"type":"voice","audio_b64":"…","mime":"audio/wav"}` | Press-to-talk. Whole clip in one shot. |
+| `stream_start` | `{"type":"stream_start","language":"en"}` then 20 ms PCM16LE @ 16 kHz binary frames then `{"type":"stream_commit"}` | Continuous live conversation. Server runs STT + turn detection. Lowest latency. Requires `capabilities.voice_stream=true` in the `ready` event. |
+
+Server → client events (typical order per turn):
+1. `transcript` — final user text (STT result).
+2. Optional `tool_call_started` → `tool_call_completed`.
+3. Stream of `token` events — LLM deltas.
+4. Per-sentence `audio_meta` → binary PCM frames → `audio_end`.
+5. `turn_end`.
+
+Terminal events: `error`, `session_timeout` (idle / max-duration), `billing_exhausted`.
+
+Barge-in protocol:
+- Send `{"type":"cancel"}` to interrupt. The server flushes in-flight TTS, drops straggling audio chunks, trims the recording's right channel to the moment of barge-in, and acks with `{"type":"cancelled"}`.
+- When a NEW turn begins (`stream_start` / `voice` / `text`) while previous reply still playing: server cancels previous LLM/TTS AND sends `{"type":"flush_player"}`. Handle `flush_player` like the audio-flush part of `cancelled` — but do NOT close the streaming session (the new turn just opened it).
+
+Audio formats:
+- Client → server (stream_start mode): PCM16LE, 16 kHz, mono, 20 ms frames (640 bytes/frame).
+- Server → client (every mode): PCM16LE, 24 kHz, mono, 40 ms frames (1920 bytes/frame), preceded by an `audio_meta` JSON envelope.
+- Frames are raw binary over the WS, NOT base64-encoded. Base64 is only the one-shot `voice` upload.
+
+### `WS /v1/voices/{id}/stream` — streaming TTS
+
+Bidirectional. Send text chunks, receive PCM audio chunks. Pre-registered voice id (built-in or saved).
+
+### `WS /v1/stt/stream` — streaming STT
+
+Send PCM audio frames, receive transcripts (interim + final). Per-second billing.
+
+## Voice-agent config knobs
+
+The `config` block on an agent record. All optional unless noted.
+
+| Field | Default | Purpose |
+|---|---|---|
+| `purpose` | "" | Short one-line purpose, surfaced in the LLM system prompt. |
+| `system_prompt` | "" | Full system prompt. Up to 12,000 chars. |
+| `knowledge` | "" | Short knowledge dump (≤ a few KB) baked into the prompt; larger bodies switch to retrieval. |
+| `voice` | — | Voice id (built-in slug or saved-voice id). |
+| `language` | — | Spoken language (canonical name). |
+| `llm_model` | — | LLM model id. See `GET /v1/agents/models`. |
+| `temperature` | 0.6 | LLM sampling temperature. 0.0–2.0. |
+| `enabled_tools` | null | `null` = all tools, `[]` = no tools, `[…]` = subset. |
+| `first_message` | — | Greeting played at session open before the user speaks. |
+| `goal` | — | Goal-agent target. Only for `type='goal'`. |
+| `success_metric` | — | How a goal-agent knows it succeeded. |
+| `max_iterations` | — | Hard upper bound on goal-agent loop iterations (1–50). |
+| `denoise_enabled` | false | Insert DeepFilterNet 3 denoise upstream of STT + UltraVAD. ~30 ms latency cost. |
+| `turn_decider` | "ultravad" | "ultravad" or "fusion". Picks the primary end-of-turn detector. |
+| `ultravad_threshold` | 0.50 | UltraVAD end-of-turn probability threshold. Lower = snappier turn-taking. |
+| `min_delay_ms` | 500 | Minimum silence (ms) before commit, regardless of model confidence. |
+| `record_enabled` | false | Record both legs of every call to stereo WAV in R2. Required for call-history endpoints to return audio. |
+
+## Pricing
+
+Baseline credit rate: **1 credit ≈ $0.0025** (the crypto pack rate of 8,000 credits per $20).
+
+Plan packs (one-time purchases):
+
+| Plan | Card (Stripe) | Crypto (NOWPayments) |
+|---|---|---|
+| Normal | $12 → 4,000 credits | $20 → 8,000 credits |
+| Premium | $24 → 8,000 credits | $40 → 16,000 credits |
+
+Premium unlocks Developer API access. New accounts get 300 free credits at signup.
+
+### Studio per-action costs
+
+| Studio action | Credits |
+|---|---|
+| Text-to-Speech | 30 / generation |
+| Speech-to-Text | 10 / transcription |
+| Voice clone | 30 / generation |
+| Voice design (preview) | 70 / voice (saving is free) |
+| My voice (designed), generate | 30 / generation |
+| Music generation | 50 / generation |
+| Noise remover | 20 / generation |
+
+### Developer API rates
+
+| Endpoint | Credit rate | $ equivalent |
+|---|---|---|
+| `POST /v1/tts/generate` | 4,000 / 1M chars | $10 / 1M chars |
+| `POST /v1/tts/speak` | 4,000 / 1M chars | $10 / 1M chars |
+| `POST /v1/voices/{id}/speak` | 4,000 / 1M chars | $10 / 1M chars |
+| `POST /v1/voice/clone` | 4,000 / 1M chars | $10 / 1M chars |
+| `POST /v1/stt/transcribe` | 3 / min, 5 min cap | $0.0075 / min |
+| `POST /v1/audio/noise-remover` | 1 / min, 5 min / 50 MB cap | $0.0025 / min |
+| `POST /v1/voice/design/preview` | 70 / voice | $0.175 / voice |
+| `POST /v1/voice/design/save`, `POST /v1/voice/clone/save` | 20 / save | $0.05 / save |
+| `WS /v1/agents/{id}/session` | 40 / min, 6-sec billing, 30-sec floor | $0.10 / min |
+| `WS /v1/voices/{id}/stream` | 4,000 / 1M chars | $10 / 1M chars |
+| `WS /v1/stt/stream` | 20 / min, per-second billing | $0.05 / min |
+
+### Voice agent billing model
+
+- Rate: **40 credits/minute** ($0.10/min at baseline rate).
+- Granularity: 6-second increments. The billing loop deducts 4 credits every 6 seconds while the WS is open. A 35-sec call rounds up to 6 increments = 24 credits.
+- Floor: **30-second minimum charge**. A session that hangs up before 30 sec is still billed 20 credits. Prevents flap-attacks.
+- Pre-flight check: at connect time we verify ≥ 20 credits (the floor). Sessions below are rejected with WS 4402.
+- Mid-session: when the balance can no longer cover the next 6-sec increment, server sends `billing_exhausted` event and closes with WS 4402.
+
+Credits are deducted only after work succeeds. No charge on 5xx or 413.
+
+## Rate limits
+
+All limits are **per-account**. Multiple API keys share the same bucket.
+
+| Scope | Limit | Error |
+|---|---|---|
+| All HTTP endpoints (shared) | 4 req/min per account (sliding 60-sec window) | HTTP 429 |
+| Voice agent session opens | 10 opens/min per account | WS close 4429 |
+| Voice agent concurrent sessions | 5 in-flight per account | WS close 4429 |
+| Voice agent max session length | 30 min per session | WS close 4408 |
+| Voice agent idle timeout | 60 sec without a user turn | WS close 4410 |
+
+Higher per-account limits available on request — contact for projected peak QPS.
+
+## Per-endpoint input caps (HTTP 413 if exceeded — no credits charged)
+
+| Endpoint | Input cap | Other |
+|---|---|---|
+| `POST /v1/tts/generate` | 2,000 chars | `style_instruction`: 500 chars |
+| `POST /v1/tts/speak` | 2,000 chars | voice id: 64 chars |
+| `POST /v1/voices/{id}/speak` | 2,000 chars | — |
+| `POST /v1/voice/clone` | 2,000 chars target_text · 50 MB reference audio | best clip 5–30 s |
+| `POST /v1/stt/transcribe` | 5 min · 50 MB audio | language hint = canonical name |
+| `POST /v1/audio/noise-remover` | 5 min · 50 MB audio | WAV / MP3 / M4A / OGG / FLAC / WebM / AAC |
+| `POST /v1/voice/design/save` | display_name 20 chars | requires `preview_token` |
+| `POST /v1/voice/clone/save` | display_name 40 chars · 50 MB audio | 5–30 s reference clip |
+| `WS /v1/agents/{id}/session` | 30 min max · 60 sec idle | Auto-close on balance=0 (4402), max length (4408), idle (4410) |
+
+## Error codes
+
+HTTP endpoints use standard status codes. WebSocket endpoints use 4xxx close codes (RFC 6455 application-level range).
+
+| Code | Meaning | What to do |
+|---|---|---|
+| HTTP 400 | Bad request | Fix the request, don't retry as-is |
+| HTTP 401 | Missing/invalid API key | Check Authorization header format |
+| HTTP 402 | Insufficient credits | Top up; no work performed |
+| HTTP 403 | Not owned by this key's user, or Premium gate failed | Check ownership / buy Premium |
+| HTTP 404 | Resource not found | Verify id |
+| HTTP 413 | Payload too large | Chunk input |
+| HTTP 429 | Rate limit | Back off; respect `Retry-After` |
+| HTTP 502 | Upstream provider error | Safe to retry |
+| HTTP 503 | Feature unavailable (no pods) | Retry after 30–60 s |
+| WS 4401 | WebSocket auth failed | Check Authorization header on WS handshake |
+| WS 4402 | Insufficient credits (pre-flight or mid-session) | Top up; session not recoverable |
+| WS 4404 | Agent not found / not owned | Verify agent_id |
+| WS 4408 | Max session duration (30 min) | Open a new session |
+| WS 4410 | Idle timeout (60 sec without user turn) | Send a turn within 60s |
+| WS 4423 | Agent paused or archived | Re-activate from Studio UI |
+| WS 4429 | Session-rate limit (10/min open or 5 concurrent) | Back off; close idle sessions |
+| WS 4502 / 4503 | Upstream voice pipeline error | Retry |
+
+## Python SDK
+
+Install: `pip install vocence` (core REST + WS + CLI). For mic playback: `pip install "vocence[audio]"`.
+
+Login: `vocence login` opens a browser device-code flow.
+
+Sync usage:
+```python
+from vocence import Vocence
+client = Vocence()
+r = client.tts.speak(text="Hello", voice="design-aria")
+r.write_wav("out.wav")
+```
+
+Async usage:
+```python
+import asyncio
+from vocence import AsyncVocence
+
+async def main():
+    async with AsyncVocence() as client:
+        r = await client.tts.speak(text="Hello", voice="design-aria")
+        r.write_wav("out.wav")
+
+asyncio.run(main())
+```
+
+Voice agent — three layers:
+1. **Layer 1 (raw)**: `client.agents.session(agent_id)` — iterate every event manually.
+2. **Layer 2 (Conversation)**: `client.agents.conversation(agent_id)` — `.say(text)` returns a `Turn` with assistant text + concatenated audio + tool calls.
+3. **Layer 3 (live mic)**: `client.agents.live_chat(agent_id)` — push-to-talk via local mic / speakers.
+
+Call history:
+```python
+calls = client.agents.calls(agent_id).list(range="30d", limit=50)
+turns = client.agents.calls(agent_id).transcript(session_id)
+rec = client.agents.calls(agent_id).recording(session_id)  # {"url": "...", "expires_in": 3600}
+client.agents.calls(agent_id).delete_recording(session_id)
+```
+
+Create agent with voice-pipeline tuning:
+```python
+agent = client.agents.create(
+    name="Linda",
+    type="knowledge",
+    system_prompt="...",
+    voice="design-aria",
+    language="English",
+    first_message="Hi, I'm Linda.",
+    denoise_enabled=True,
+    turn_decider="ultravad",
+    ultravad_threshold=0.50,
+    min_delay_ms=500,
+    record_enabled=True,
+)
+```
+
+Errors are typed: `vocence.errors.AuthenticationError`, `InsufficientCredits`, `RateLimited`, `InvalidRequest`, `UpstreamError`, `APIError`. Every response carries a `request_id` to paste in support tickets.
+
+## CLI
+
+Highlights from `vocence --help`:
+
+| Command | Purpose |
+|---|---|
+| `vocence login` | Browser device-code login. Saves key to `~/.config/vocence/`. |
+| `vocence account` | Show plan, credits, key count. |
+| `vocence voices` | List built-in speakers. |
+| `vocence agents list` / `agents create` / `agents delete` | Manage agents. |
+| `vocence chat <agent-id>` | Text REPL — type → see reply + hear audio. |
+| `vocence voice <agent-id>` | Push-to-talk live chat. |
+
+## Webhooks
+
+Sign-verify outgoing webhooks from Vocence using the shared secret. The header `X-Vocence-Timestamp` + `X-Vocence-Signature` together form an HMAC. The Python SDK ships `vocence.webhooks.verify(body, signature, timestamp, secret, tolerance=300)`. Tolerance is the freshness window in seconds.
+
+Build a FastAPI receiver:
+```python
+from fastapi import FastAPI, Depends, HTTPException
+from vocence import webhooks
+
+app = FastAPI()
+SECRET = "whsec_…"
+
+async def verify(req):
+    body = await req.body()
+    ts = req.headers.get("X-Vocence-Timestamp")
+    sig = req.headers.get("X-Vocence-Signature")
+    if not webhooks.verify(body, sig, ts, SECRET):
+        raise HTTPException(401, "bad signature")
+    return body
+
+@app.post("/webhooks/vocence")
+async def receive(body: bytes = Depends(verify)):
+    ...
+```
+
+## FAQ highlights
+
+- **Free credits**: 300 at signup. No card required.
+- **API access**: Requires at least one Premium plan purchase (Stripe or Crypto). The free signup grant is Studio-only.
+- **Voice cloning**: Reference clip should be 5–30 seconds of clear speech in the target voice. One speaker per clip.
+- **Languages**: STT supports auto-detection. TTS / cloning works best in English but accepts other canonical language names.
+- **Recordings**: Off by default. Set `config.record_enabled=true` on the agent to enable. 30-day retention. Stereo WAV (user left / agent right) on a single timeline.
+- **Self-hosting**: The subnet (SN10) is open-source on GitHub. The Vocence API is hosted.
+- **GitHub**: https://github.com/vocence-78/vocence (miner + validator code).
+- **Discord**: https://discord.gg/b2DTT73Usq (community + support).
+
+## Where the live docs live
+
+| Topic | Page |
+|---|---|
+| API explorer (live OpenAPI) | https://www.vocence.ai/docs/api |
+| Cookbook recipes | https://www.vocence.ai/docs/cookbook |
+| Python SDK | https://www.vocence.ai/docs/sdk-python |
+| Voice Agents SDK | https://www.vocence.ai/docs/sdk-agents |
+| CLI | https://www.vocence.ai/docs/sdk-cli |
+| Webhooks | https://www.vocence.ai/docs/sdk-webhooks |
+| Studio guides | https://www.vocence.ai/docs/guide-tts (and siblings) |
+| Pricing detail | https://www.vocence.ai/docs/pricing |
+| Pricing checkout | https://www.vocence.ai/pricing |
+| FAQ | https://www.vocence.ai/docs/faq |
+| Troubleshooting | https://www.vocence.ai/docs/troubleshooting |
+| OpenAPI JSON | https://api.vocence.ai/openapi.json |

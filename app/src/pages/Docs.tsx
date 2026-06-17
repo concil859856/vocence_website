@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import { useLocation, Link, useParams, useNavigate } from 'react-router-dom';
 import { ApiExplorer } from '../components/ApiExplorer';
 import { useHasVoiceChatAccess } from '../lib/voicechatAccess';
+import { usePageMeta } from '../lib/seo';
 import {
   ChevronRight,
   BookOpen,
@@ -113,6 +114,98 @@ const ADMIN_ONLY_SECTIONS: Set<DocSection> = new Set(
 );
 
 const DOC_SECTIONS: DocSection[] = ['getting-started', 'core-concepts', 'architecture', 'guide-agents', 'guide-tts', 'guide-cloning', 'guide-stt', 'guide-music', 'guide-dubbing', 'cookbook', 'api', 'sdk-python', 'sdk-cli', 'sdk-agents', 'sdk-webhooks', 'pricing', 'miner', 'validator', 'faq', 'troubleshooting'];
+
+/**
+ * Per-section SEO meta. Picked up by ``usePageMeta`` so Googlebot (and
+ * any other JS-capable crawler) sees a focused title + description as
+ * the user navigates. Non-JS agents are served via ``llms.txt`` /
+ * ``llms-full.txt`` so they still find the same content.
+ *
+ * Keep titles under ~60 chars and descriptions under ~155 chars —
+ * Google truncates beyond those in the SERP.
+ */
+const SECTION_META: Record<DocSection, { title: string; description: string }> = {
+  'getting-started': {
+    title: 'Getting Started — Vocence Docs',
+    description: 'Sign up, claim 300 free credits, and make your first speech, transcription, voice clone, or voice agent in five minutes.',
+  },
+  'core-concepts': {
+    title: 'Core Concepts — Vocence Docs',
+    description: 'Voices, agents, credits, embeddings, and the request lifecycle — the vocabulary every Vocence integration shares.',
+  },
+  'architecture': {
+    title: 'Architecture — Vocence Docs',
+    description: 'How Vocence routes a request across the Bittensor SN10 network: dashboard, developer API, and the streaming voice pipeline.',
+  },
+  'guide-agents': {
+    title: 'Voice Agents Guide — Vocence Studio',
+    description: 'Build a voice agent in Studio: pick a voice, write a system prompt, attach knowledge or tools, and deploy via web embed, SDK, or phone.',
+  },
+  'guide-tts': {
+    title: 'Text-to-Speech Guide — Vocence Studio',
+    description: 'PromptTTS and SpeakerTTS: generate natural speech from text using 16 built-in voices or a one-line prose voice description.',
+  },
+  'guide-cloning': {
+    title: 'Voice Cloning Guide — Vocence Studio',
+    description: 'Clone any voice from a 5–30s reference clip. Reuse the saved voice across TTS, agents, and live conversations.',
+  },
+  'guide-stt': {
+    title: 'Speech-to-Text Guide — Vocence Studio',
+    description: 'Transcribe up to 5 minutes of audio with accurate timestamps, language detection, and one-shot REST or streaming WebSocket.',
+  },
+  'guide-music': {
+    title: 'Music Generation Guide — Vocence Studio',
+    description: 'Generate background music and ambient tracks from a text prompt, ready to drop into agents, podcasts, or videos.',
+  },
+  'guide-dubbing': {
+    title: 'Noise Remover Guide — Vocence Studio',
+    description: 'Strip background noise from voice recordings while preserving speech fidelity. Up to 5 minutes / 50 MB per request.',
+  },
+  'cookbook': {
+    title: 'API Cookbook — Vocence Docs',
+    description: 'Runnable Python recipes for the most-asked integrations: synthesize, clone, transcribe, build a voice agent, fetch call recordings.',
+  },
+  'api': {
+    title: 'API Reference — Vocence Developer Docs',
+    description: 'Complete REST + WebSocket reference. Live API explorer powered by OpenAPI: per-endpoint params, request body schema, error codes, rate limits.',
+  },
+  'sdk-python': {
+    title: 'Python SDK Reference — Vocence',
+    description: 'Official Vocence Python client. Sync and async APIs, typed responses, structured errors, voice-agent helpers, no manual HTTP.',
+  },
+  'sdk-cli': {
+    title: 'CLI Reference — Vocence',
+    description: 'The vocence command-line tool. Browser-based login, scripted TTS/STT, listing agents and voices, live agent chat in the terminal.',
+  },
+  'sdk-agents': {
+    title: 'Voice Agents SDK — Vocence',
+    description: 'Drive a voice agent in three layers: raw WebSocket events, Conversation helper, or live mic ↔ speaker. Press-to-talk or continuous streaming.',
+  },
+  'sdk-webhooks': {
+    title: 'Webhooks SDK — Vocence',
+    description: 'Sign and verify Vocence webhooks. Build a FastAPI receiver with signature checking and replay-tolerance.',
+  },
+  'pricing': {
+    title: 'Pricing Details — Vocence Docs',
+    description: 'How credits convert to dollars across Studio and the Developer API, plan tiers, per-endpoint cost reference, billing model and worked examples.',
+  },
+  'miner': {
+    title: 'Miner Setup — Vocence Subnet (SN10)',
+    description: 'Stand up a Vocence miner on Bittensor: prerequisites, model wrappers, Chute deployment, scoring contract, and example commands.',
+  },
+  'validator': {
+    title: 'Validator Setup — Vocence Subnet (SN10)',
+    description: 'Run a Vocence validator on Bittensor: Docker setup, scoring methodology, weight setting, and credentials.',
+  },
+  'faq': {
+    title: 'FAQ — Vocence Docs',
+    description: 'Common questions about credits, voice cloning, custom voices, agents, the Vocence subnet, and how Vocence differs from cloud-only APIs.',
+  },
+  'troubleshooting': {
+    title: 'Troubleshooting — Vocence Docs',
+    description: 'Diagnose audio dropouts, slow first-byte latency, WebSocket close codes, voice cloning failures, and authentication issues.',
+  },
+};
 
 /** Stable links to the open-source subnet repo (paths use `master` branch). */
 const GH = 'https://github.com/vocence-78/vocence';
@@ -329,6 +422,17 @@ export function Docs() {
       setActiveSection(sectionParamRaw as DocSection);
     }
   }, [sectionParamRaw]);
+
+  // Per-section SEO meta. Crawlers + AI agents that DO run JS (Googlebot)
+  // see the right title/description as the user navigates between sections.
+  // Non-JS crawlers still see only the static homepage meta — they're
+  // served via ``llms.txt`` + ``llms-full.txt`` + the expanded sitemap.
+  const sectionMeta = SECTION_META[activeSection] ?? SECTION_META['getting-started'];
+  usePageMeta({
+    title: sectionMeta.title,
+    description: sectionMeta.description,
+    path: `/docs/${activeSection}`,
+  });
 
   // Whenever the active section changes (initial mount or sidebar
   // navigation), un-collapse the category that contains it. This
@@ -1240,7 +1344,7 @@ export function Docs() {
       <section>
         <h2 className="text-lg font-semibold mb-3">End-to-end billing flow</h2>
         <ol className="space-y-2 text-sm text-zinc-400 leading-relaxed list-decimal list-inside">
-          <li>Sign in and purchase credits from the Pricing page (Stripe or Crypto).</li>
+          <li>Sign in and purchase credits from the <Link to="/pricing" className="text-[#DFFF00] hover:underline">pricing page</Link> (Stripe or Crypto).</li>
           <li>Purchase the Premium pack at least once to unlock the Developer API.</li>
           <li>Create an API key in Account → Developer tab. Copy the <code className="text-white/90">voc_live_…</code> token once, it isn't shown again.</li>
           <li>
@@ -4236,6 +4340,63 @@ print(rec["url"])  # download or stream directly from R2
           <code className="text-zinc-300">DELETE /v1/agents/&#123;id&#125;/calls/&#123;session_id&#125;/recording</code>.
           Recordings require <code className="text-zinc-300">config.record_enabled = true</code> on
           the agent (off by default for privacy).
+        </p>
+      </section>
+
+      <section className="space-y-3">
+        <h2 className="text-lg font-semibold tracking-tight text-white">Create a voice agent with custom pipeline tuning</h2>
+        <p className="text-sm leading-relaxed text-zinc-400">
+          The voice pipeline exposes per-agent knobs for noise removal, turn-end detection,
+          how patient the agent is before replying, and whether calls are recorded. Most
+          agents work fine on defaults; reach for these when an agent runs in a noisy
+          environment, talks over the user, or needs to keep recordings for compliance.
+        </p>
+        <CodeBlock language="python" code={`from vocence import Vocence
+
+client = Vocence()
+
+agent = client.agents.create(
+    name="Linda — front desk",
+    type="knowledge",
+    system_prompt="You are Linda, the front-desk assistant. Be brief.",
+    voice="design-aria",
+    language="English",
+    llm_model="gemini-3.5-flash",
+    first_message="Hi, this is Linda. How can I help?",
+
+    # ── Voice-pipeline tuning (all optional) ──
+    # DeepFilterNet 3 denoise upstream of STT + VAD. On for noisy
+    # environments (offices, retail floors); off saves ~30 ms latency.
+    denoise_enabled=True,
+
+    # Primary end-of-turn detector. "ultravad" is snappier on short
+    # questions; "fusion" combines Smart-Turn prosody + text completeness
+    # for longer multi-clause utterances. Default: "ultravad".
+    turn_decider="ultravad",
+
+    # UltraVAD end-of-turn probability threshold. Lower = snappier
+    # turn-taking; higher = more patient. Default 0.50.
+    ultravad_threshold=0.50,
+
+    # Minimum silence (ms) before committing the turn, regardless of
+    # model confidence. Bumped to 800 ms for callers who pause a lot
+    # mid-thought; default 500 ms.
+    min_delay_ms=800,
+
+    # Record both legs of every call to a stereo WAV in R2 (left = user,
+    # right = agent). Required for the call-history endpoints to return
+    # any audio. Off by default for privacy.
+    record_enabled=True,
+)
+
+print(agent.id, "—", agent.name)
+`} />
+        <p className="text-[12px] leading-relaxed text-zinc-500">
+          Endpoints used: <code className="text-zinc-300">POST /v1/agents</code>. All
+          voice-pipeline fields are also accepted by{' '}
+          <code className="text-zinc-300">PATCH /v1/agents/&#123;id&#125;</code> so you can
+          re-tune a live agent without recreating it. The same fields appear in the
+          Studio agent settings under "Turn detection" and "Privacy".
         </p>
       </section>
 

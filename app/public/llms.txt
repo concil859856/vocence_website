@@ -1,0 +1,50 @@
+# Vocence
+
+> Decentralized voice AI — text-to-speech, voice cloning, voice design, streaming speech-to-text, music generation, and real-time voice agents. Powered by the Bittensor SN10 network. 300 free credits on signup.
+
+Vocence is a developer platform for voice. The Studio web app gives non-technical users a UI for every feature. The Developer API exposes the same capabilities as REST endpoints, streaming WebSockets, and an official Python SDK. The Subnet section is for Bittensor miners and validators contributing or scoring inference.
+
+## Docs — Introduction
+
+- [Getting Started](https://www.vocence.ai/docs/getting-started): Sign up, claim 300 free credits, first speech / clone / agent in five minutes.
+- [Core Concepts](https://www.vocence.ai/docs/core-concepts): Voices, agents, credits, embeddings, request lifecycle — the shared vocabulary.
+- [Architecture](https://www.vocence.ai/docs/architecture): How requests route across SN10 — dashboard, developer API, streaming voice pipeline.
+
+## Docs — Studio guides
+
+- [Voice Agents](https://www.vocence.ai/docs/guide-agents): Build a voice agent — system prompt, knowledge, tools, deploy via embed / SDK / phone.
+- [Text-to-Speech](https://www.vocence.ai/docs/guide-tts): PromptTTS + SpeakerTTS — natural speech from text using 16 built-in voices or a prose voice description.
+- [Voice Cloning](https://www.vocence.ai/docs/guide-cloning): Clone any voice from a 5–30s reference clip. Reusable across TTS / agents / live.
+- [Speech-to-Text](https://www.vocence.ai/docs/guide-stt): Transcribe up to 5 minutes with timestamps, language detection, REST or streaming WS.
+- [Music Generation](https://www.vocence.ai/docs/guide-music): Generate background music and ambient tracks from a text prompt.
+- [Noise Remover](https://www.vocence.ai/docs/guide-dubbing): Strip background noise while preserving speech fidelity. Up to 5 min / 50 MB per request.
+
+## Docs — API + SDK
+
+- [API Reference](https://www.vocence.ai/docs/api): REST + WebSocket reference. Live API explorer over OpenAPI. Per-endpoint params, schemas, error codes, rate limits.
+- [API Cookbook](https://www.vocence.ai/docs/cookbook): Runnable Python recipes — synthesize, clone, transcribe, build a voice agent, fetch call recordings.
+- [Python SDK](https://www.vocence.ai/docs/sdk-python): Official Vocence Python client. Sync + async APIs, typed responses, voice-agent helpers.
+- [CLI](https://www.vocence.ai/docs/sdk-cli): The `vocence` command-line tool — browser login, scripted TTS / STT, agent / voice management, live chat in terminal.
+- [Voice Agents SDK](https://www.vocence.ai/docs/sdk-agents): Drive an agent at three layers — raw WS events, Conversation helper, or live mic ↔ speaker.
+- [Webhooks SDK](https://www.vocence.ai/docs/sdk-webhooks): Sign + verify Vocence webhooks, build a FastAPI receiver.
+
+## Docs — Billing
+
+- [Pricing Details](https://www.vocence.ai/docs/pricing): Credit-to-dollar conversion across Studio + Developer API, plan tiers, per-endpoint cost, billing model, worked examples.
+- [Plans + Checkout](https://www.vocence.ai/pricing): Top-level marketing page with Stripe / NOWPayments checkout.
+
+## Docs — Subnet (Bittensor SN10)
+
+- [Miner Setup](https://www.vocence.ai/docs/miner): Stand up a Vocence miner — prerequisites, model wrappers, Chute deployment, scoring contract.
+- [Validator Setup](https://www.vocence.ai/docs/validator): Run a Vocence validator — Docker setup, scoring methodology, weight setting.
+
+## Docs — Support
+
+- [FAQ](https://www.vocence.ai/docs/faq): Common questions about credits, cloning, custom voices, agents, the subnet.
+- [Troubleshooting](https://www.vocence.ai/docs/troubleshooting): Audio dropouts, slow first-byte latency, WebSocket close codes, cloning failures, auth issues.
+
+## Optional
+
+- [llms-full.txt](https://www.vocence.ai/llms-full.txt): Full markdown of every doc page in one file, for AI agents that want to ingest the whole surface in a single fetch.
+- [OpenAPI spec](https://api.vocence.ai/openapi.json): Machine-readable REST API definition. Source of truth for the live API Reference explorer.
+- [GitHub](https://github.com/vocence-78/vocence): Subnet code (miners, validators, scoring).
