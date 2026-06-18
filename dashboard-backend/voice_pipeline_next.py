@@ -213,11 +213,15 @@ def _build_llm_plugin(llm_model: str, agent_config: dict[str, Any]) -> Any:
 
     For Gemini we use the framework's ``GoogleLLM`` directly. For
     Cerebras / GLM / Grok we wrap our existing routing client in a
-    thin shim that satisfies ``the framework LLM base class`` — written
-    as part of Phase A.5 (this stub returns a temporary GoogleLLM
-    fallback so the scaffold compiles). The shim itself is small
-    and lives in ``_llm_router.py`` so this module stays focused on
-    orchestration glue.
+    thin shim (``VocenceRouterLLM``) that satisfies the framework's
+    LLM base class — that shim already has Grok-fallback baked in via
+    ``llm_client.stream_chat_with_tools``.
+
+    Gemini is the odd one out: ``GoogleLLM`` calls Google's API
+    directly with no built-in fallback. Wrap it in the framework's
+    ``FallbackLLM`` with a ``VocenceRouterLLM(grok:…)`` backup so
+    503s + other transient Google failures transparently fail over
+    to Grok. Same SLA as every other provider, no user-visible knob.
     """
     temperature = float(agent_config.get("temperature") or 0.6)
     if llm_model.startswith("gemini:"):
@@ -228,12 +232,52 @@ def _build_llm_plugin(llm_model: str, agent_config: dict[str, Any]) -> Any:
         # framework's GoogleLLM defaults to ``thinking_budget=0`` today
         # but we pin it explicitly so a future plugin update can't
         # silently regress us.
-        return GoogleLLM(model=model_id, temperature=temperature, thinking_budget=0)
+        primary = GoogleLLM(model=model_id, temperature=temperature, thinking_budget=0)
+        return _wrap_with_grok_fallback(primary, temperature)
     # Everything else (cerebras: / glm: / grok: / unprefixed default)
     # goes through our router shim so the existing multi-provider
     # routing + key rotation + Grok-fallback behavior is preserved.
     from voice_pipeline_next_llm import VocenceRouterLLM
     return VocenceRouterLLM(model=llm_model, temperature=temperature)
+
+
+def _wrap_with_grok_fallback(primary: Any, temperature: float) -> Any:
+    """Wrap ``primary`` in ``FallbackLLM`` with a Grok backup so any
+    transient upstream failure (Google 503, key rotation exhaustion,
+    rate-limit, network blip) transparently fails over to xAI Grok.
+
+    Backup is the same Grok model the legacy ``stream_chat_with_tools``
+    fallback path uses (``VOICECHAT_GROK_FALLBACK_MODEL``), routed via
+    ``VocenceRouterLLM`` so it picks up our internal key pool. Falls
+    back to just the primary if xAI isn't configured on this deploy
+    (no GROK_API_KEYS) — no point in a fallback that can't run.
+    """
+    try:
+        import llm_client  # local import keeps cold-start light
+        from videosdk.agents.llm.fallback_llm import FallbackLLM  # type: ignore[import-not-found]
+        from voice_pipeline_next_llm import VocenceRouterLLM
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("[voice-pipeline-next] Grok fallback unavailable: %s", exc)
+        return primary
+
+    grok_model = getattr(llm_client, "VOICECHAT_GROK_FALLBACK_MODEL", None)
+    is_xai_ready = getattr(llm_client, "xai_llm_configured", lambda: False)()
+    if not grok_model or not is_xai_ready:
+        _log.info(
+            "[voice-pipeline-next] Grok fallback disabled (XAI_API_KEY not set) "
+            "— primary LLM will not have a backup"
+        )
+        return primary
+    backup = VocenceRouterLLM(model=f"grok:{grok_model}", temperature=temperature)
+    return FallbackLLM(
+        providers=[primary, backup],
+        # Re-enable the primary after 60 s — long enough for a brief
+        # spike to clear without permanently demoting it.
+        temporary_disable_sec=60.0,
+        # Three consecutive errors → primary stays disabled for the
+        # rest of the session.
+        permanent_disable_after_attempts=3,
+    )
 
 
 def _translate_eou_config(agent_config: dict[str, Any]) -> Any:
