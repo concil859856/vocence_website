@@ -322,12 +322,15 @@ async def run_videosdk_session(
     )
     first_message = (agent_config.get("first_message") or "").strip() or None
 
-    # Tool list — built-in tools the agent has enabled. Custom
-    # webhook tools (per-agent /v1/agent-tools registrations) are
-    # bridged in a follow-up commit; the wrapper signature is the
-    # same so adding them is local to build_tools_for_agent.
+    # Tool list — built-in tools (per agent.config.enabled_tools)
+    # AND custom webhook tools bound to this agent. The bridge in
+    # voice_pipeline_videosdk_tools handles both: built-ins via
+    # the agent_tools_service registry, custom tools via the
+    # existing _load_custom_tools_for_agent loader + dispatch_custom_tool.
     from voice_pipeline_videosdk_tools import build_tools_for_agent
-    tools_list = build_tools_for_agent(agent_config)
+    tools_list = await build_tools_for_agent(
+        agent_config, agent_id=agent_id, user_id=user_id,
+    )
 
     class _VocenceAgent(Agent):  # type: ignore[name-defined,misc]
         def __init__(self) -> None:
