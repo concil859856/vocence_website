@@ -626,6 +626,18 @@ async def run_next_session(
     # call time without UnboundLocalError.
     _session_holder: dict[str, Any] = {"session": None}
 
+    # Per-turn state for the studio_voicechat_history INSERT and the
+    # recorder's TTS-turn gate. Defined here (before _on_text_frame)
+    # so typed-text turns can populate user_text directly — typed
+    # turns never fire transcript_ready or user_turn_start, so we
+    # have to capture the user side ourselves. STT turns are filled
+    # by _send_user_transcript (registered on user_turn_start below).
+    _turn_state: dict[str, Any] = {
+        "user_text": "",
+        "agent_text_parts": [],
+        "turn_started_at": None,
+    }
+
     def _reset_pipeline_interrupt_flags() -> None:
         """Clear the orchestrator's interrupt flags before starting a
         new typed turn. process_text doesn't reset these (only the STT
@@ -657,6 +669,15 @@ async def run_next_session(
         # those flags here so process_text's content_generation can
         # actually run instead of bailing out on the first chunk.
         _reset_pipeline_interrupt_flags()
+        # Capture the typed text into _turn_state so the per-turn
+        # studio_voicechat_history INSERT (fired from the TTS wrap
+        # below) has both user_text + agent_text. process_text does
+        # NOT emit transcript_ready or trigger user_turn_start, so
+        # neither of those listeners populate state for typed turns.
+        from time import monotonic as _mono
+        _turn_state["user_text"] = body
+        _turn_state["agent_text_parts"] = []
+        _turn_state["turn_started_at"] = _mono()
         try:
             await pipeline.process_text(body)
         except Exception as exc:  # noqa: BLE001
@@ -762,23 +783,6 @@ async def run_next_session(
         except Exception as exc:  # noqa: BLE001
             _log.debug("[voice-pipeline-next] send_json failed: %s", exc)
 
-    def _on_transcript_ready(data: Any) -> None:
-        # We don't SEND the transcript from here (the user_turn_start
-        # hook does that, awaited before LLM). But this event fires
-        # for both STT-driven AND typed-text turns, so it's the only
-        # reliable place to capture user_text into _turn_state for
-        # the studio_voicechat_history INSERT. user_turn_start fires
-        # only for STT path; transcript_ready covers both.
-        text = ""
-        if isinstance(data, dict):
-            text = (data.get("text") or "").strip()
-        if not text:
-            return
-        from time import monotonic as _mono
-        _turn_state["user_text"] = text
-        _turn_state["agent_text_parts"] = []
-        _turn_state["turn_started_at"] = _mono()
-
     def _on_content_generated(_data: Any) -> None:
         # No-op now that the @pipeline.on("llm") streaming hook
         # below sends per-token deltas as they materialize. We
@@ -798,7 +802,6 @@ async def run_next_session(
             "type": "error", "code": "pipeline_error", "message": msg,
         }))
 
-    pipeline.on("transcript_ready", _on_transcript_ready)
     pipeline.on("content_generated", _on_content_generated)
     pipeline.on("synthesis_complete", _on_synthesis_complete)
     pipeline.on("backchannel_detected", _on_synthesis_interrupted)
@@ -1008,19 +1011,10 @@ async def run_next_session(
     # {type:'token'} from the LLM stream. Without this the agent's
     # reply bubble could appear above the user's transcript bubble in
     # the chat (token-send wins the race against fire-and-forget
-    # transcript_ready listener).
-    # Per-turn state for the studio_voicechat_history INSERT and
-    # for the recorder's TTS-turn gate (both need user text + agent
-    # text + timing for each turn). Mutated by the user_turn_start
-    # hook (captures user text) and by the @pipeline.on("llm") hook
-    # (accumulates agent text). Drained + reset by the TTS wrap
-    # below at end-of-turn.
-    _turn_state: dict[str, Any] = {
-        "user_text": "",
-        "agent_text_parts": [],
-        "turn_started_at": None,
-    }
-
+    # transcript_ready listener). _turn_state is initialized higher
+    # up so typed-text turns (which never fire user_turn_start) can
+    # populate it from _on_text_frame; this hook fills it for the
+    # STT path.
     async def _send_user_transcript(transcript: Any) -> None:
         text = transcript if isinstance(transcript, str) else \
             (transcript.get("text") if isinstance(transcript, dict) else "")
