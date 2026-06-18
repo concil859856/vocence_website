@@ -86,11 +86,11 @@ def _ensure_videosdk_loaded() -> None:
             DeepgramSTT,
             GoogleLLM,
         )
-        from vocence_agents_plugins import VocenceTTS, VocenceSTT  # type: ignore[import-not-found]
+        from vocence_plugins import VocenceTTS, VocenceSTT  # type: ignore[import-not-found]
     except ImportError as exc:
         raise RuntimeError(
             "VOICE_PIPELINE=videosdk requires the videosdk-agents framework "
-            "and vocence-agents-plugins to be installed in the backend venv. "
+            "and vocence-plugins to be installed in the backend venv. "
             f"Import failed: {exc}"
         ) from exc
 
@@ -206,25 +206,16 @@ def _build_llm_plugin(llm_model: str, agent_config: dict[str, Any]) -> Any:
     and lives in ``_llm_router.py`` so this module stays focused on
     orchestration glue.
     """
+    temperature = float(agent_config.get("temperature") or 0.6)
     if llm_model.startswith("gemini:"):
         from videosdk.agents.plugins import GoogleLLM  # type: ignore[import-not-found]
         model_id = llm_model.split(":", 1)[1] or "gemini-2.5-flash"
-        temperature = float(agent_config.get("temperature") or 0.6)
         return GoogleLLM(model=model_id, temperature=temperature)
-    # TODO Phase A.5: import and instantiate VocenceRouterLLM here
-    # for cerebras: / glm: / grok: model prefixes. Until the shim
-    # exists, fall back to Gemini Flash so the scaffold runs end-to-
-    # end during dogfooding. This intentional fallback is logged so
-    # operators see when an agent's configured LLM hasn't been
-    # ported yet.
-    _log.warning(
-        "[voice-pipeline-videosdk] llm_model=%r not yet supported on the new "
-        "path; falling back to gemini-2.5-flash. Implement VocenceRouterLLM "
-        "in Phase A.5 to restore the configured model.",
-        llm_model,
-    )
-    from videosdk.agents.plugins import GoogleLLM  # type: ignore[import-not-found]
-    return GoogleLLM(model="gemini-2.5-flash")
+    # Everything else (cerebras: / glm: / grok: / unprefixed default)
+    # goes through our router shim so the existing multi-provider
+    # routing + key rotation + Grok-fallback behavior is preserved.
+    from voice_pipeline_videosdk_llm import VocenceRouterLLM
+    return VocenceRouterLLM(model=llm_model, temperature=temperature)
 
 
 def _translate_eou_config(agent_config: dict[str, Any]) -> Any:
