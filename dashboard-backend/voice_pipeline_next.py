@@ -43,6 +43,30 @@ from typing import Any
 _log = logging.getLogger(__name__)
 
 
+# Voice-style guidance layered IN BETWEEN the framework's base voice
+# persona and the agent's own system_prompt. The framework base
+# already covers "no markdown, no bullet lists, speak numbers
+# naturally" — this block adds the things that specifically trip up
+# TTS output in our cloning pipeline:
+#   • parenthetical asides ("(or B)", "(see also...)") that the pod
+#     reads literally as "open paren or B close paren"
+#   • inline citations / source markers
+#   • math notation ("x = 5", "f(x) = ...", "Σ", subscripts)
+#   • robotic delivery — every reply sounding like a doc-page
+#
+# The framework's base instructions tell the model the user's
+# instructions take precedence on conflict; this block sits BEFORE
+# the user's system_prompt, so a user can still override any of it
+# explicitly if they want a more formal persona.
+_VOICE_STYLE_RULES = """\
+Voice style — strict:
+- Your output is spoken aloud through a voice synthesizer. Never write anything a person wouldn't naturally say in conversation: no parenthetical asides like "(or B)" or "(see also X)", no inline citations or source markers like "(source)" or numbered footnotes, no math notation like "x = 5" or "f(x) = ...". Phrase everything the way you would actually say it out loud.
+- Match the rhythm of real human speech. Where it sounds natural, use occasional fillers like "hmm,", "alright,", "yeah,", "you know,", or a brief comma pause to think — sparingly, only where a person would genuinely pause. Don't sprinkle them mechanically.
+- Acknowledge naturally before answering when it fits: "Alright, so...", "Yeah, basically...", "Hmm, good question." Mid-sentence pauses for emphasis are fine.
+- Keep replies to one to three sentences unless more detail is explicitly asked for. When a longer answer is genuinely needed, deliver it as a flowing, connected explanation — never a structured list.
+"""
+
+
 # Feature flag — mirrors the .env entry. Read at module-import time
 # so a process restart picks up the change. ``legacy`` is the
 # fail-safe default until the new path is validated end-to-end.
@@ -429,9 +453,17 @@ async def run_next_session(
     # system prompt drives the LLM's instructions; the first_message
     # is the on_enter greeting the framework's pipeline plays once
     # the session is live.
-    instructions = (agent_config.get("system_prompt") or "").strip() or (
+    #
+    # Instructions stack (top→bottom, LLM sees in this order):
+    #   1. Framework BASE_VOICE_INSTRUCTIONS (added by Agent.__init__
+    #      via use_base_instructions=True)
+    #   2. _VOICE_STYLE_RULES (TTS-specific style: no parens, no math,
+    #      use natural fillers — see comment at the top of this file)
+    #   3. Agent's own system_prompt (verbatim)
+    _user_prompt = (agent_config.get("system_prompt") or "").strip() or (
         "You are a helpful voice assistant. Speak naturally and concisely."
     )
+    instructions = f"{_VOICE_STYLE_RULES}\n\n{_user_prompt}"
     first_message = (agent_config.get("first_message") or "").strip() or None
 
     # Tool list — built-in tools (per agent.config.enabled_tools)
