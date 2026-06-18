@@ -200,11 +200,7 @@ export function AgentChat({ agent, session }: Props) {
                     </div>
                   )}
                   {m.pending && !m.text ? (
-                    <span className="inline-flex gap-1 py-0.5">
-                      <span className="w-1.5 h-1.5 rounded-full bg-current opacity-60 animate-pulse" />
-                      <span className="w-1.5 h-1.5 rounded-full bg-current opacity-60 animate-pulse [animation-delay:120ms]" />
-                      <span className="w-1.5 h-1.5 rounded-full bg-current opacity-60 animate-pulse [animation-delay:240ms]" />
-                    </span>
+                    <PendingIndicator state={state} />
                   ) : m.role === 'assistant' ? (
                     renderMessage(m.text)
                   ) : (
@@ -327,5 +323,64 @@ export function AgentChat({ agent, session }: Props) {
         )}
       </div>
     </div>
+  );
+}
+
+
+/**
+ * Pending-state indicator for an assistant bubble whose text hasn't
+ * arrived yet. Used to be a static three-dot pulse — replaced with a
+ * state-aware variant so the user can tell at a glance whether the
+ * agent is THINKING (LLM running), about to SPEAK (TTS warming), or
+ * generally connecting/idle. Communicates progress without text.
+ */
+function PendingIndicator({ state }: { state: string }) {
+  if (state === 'thinking') {
+    // Travelling-wave dots: stagger by 160 ms so the group reads as
+    // one motion rather than three flickers. Bouncier than the old
+    // static pulse to signal "active work happening."
+    return (
+      <span className="inline-flex gap-1 py-0.5 items-end h-3.5" aria-label="Thinking">
+        <span className="w-1.5 h-1.5 rounded-full bg-current animate-[chatdot_1.1s_ease-in-out_infinite]" />
+        <span className="w-1.5 h-1.5 rounded-full bg-current animate-[chatdot_1.1s_ease-in-out_infinite] [animation-delay:160ms]" />
+        <span className="w-1.5 h-1.5 rounded-full bg-current animate-[chatdot_1.1s_ease-in-out_infinite] [animation-delay:320ms]" />
+      </span>
+    );
+  }
+  if (state === 'speaking') {
+    // Audio-bars EQ — speaking state usually has tokens too, so this
+    // mostly shows for the brief gap between first audio byte and
+    // first token. Three bars of varying heights pulsing convey
+    // "audio output happening."
+    return (
+      <span className="inline-flex gap-[3px] py-0.5 items-end h-4" aria-label="Speaking">
+        <span className="w-[3px] rounded-sm bg-current animate-[eqbar_0.9s_ease-in-out_infinite] origin-bottom" style={{ height: '60%' }} />
+        <span className="w-[3px] rounded-sm bg-current animate-[eqbar_0.9s_ease-in-out_infinite] [animation-delay:150ms] origin-bottom" style={{ height: '100%' }} />
+        <span className="w-[3px] rounded-sm bg-current animate-[eqbar_0.9s_ease-in-out_infinite] [animation-delay:300ms] origin-bottom" style={{ height: '70%' }} />
+      </span>
+    );
+  }
+  if (state === 'listening' || state === 'recording') {
+    // Mic-active indicator: pulsing ring around a dot. Signals the
+    // backend is listening for the user's speech (VAD primed). Mostly
+    // visible during the user-just-finalized → agent-about-to-reply
+    // handoff window for STT-driven turns.
+    return (
+      <span className="inline-flex items-center gap-1.5 py-0.5" aria-label="Listening">
+        <span className="relative inline-flex w-2 h-2">
+          <span className="absolute inset-0 rounded-full bg-current opacity-60 animate-ping" />
+          <span className="relative inline-flex w-2 h-2 rounded-full bg-current" />
+        </span>
+      </span>
+    );
+  }
+  // Fallback: subtle static dots for connecting / idle / unknown.
+  // Kept slow to convey "waiting, no specific signal yet."
+  return (
+    <span className="inline-flex gap-1 py-0.5" aria-label="Working">
+      <span className="w-1.5 h-1.5 rounded-full bg-current opacity-50 animate-pulse" />
+      <span className="w-1.5 h-1.5 rounded-full bg-current opacity-50 animate-pulse [animation-delay:200ms]" />
+      <span className="w-1.5 h-1.5 rounded-full bg-current opacity-50 animate-pulse [animation-delay:400ms]" />
+    </span>
   );
 }

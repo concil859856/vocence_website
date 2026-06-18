@@ -299,6 +299,22 @@ img {
   .architect-dot { animation: none; opacity: 0.7; }
 }
 
+/* Voice-chat pending-bubble indicators. Used by PendingIndicator in
+ * AgentChat.tsx. ``chatdot`` is a travelling wave for the thinking
+ * state — bouncier than animate-pulse to convey "active work."
+ * ``eqbar`` is a vertical scale-Y pulse for the speaking state. */
+@keyframes chatdot {
+  0%, 100% { transform: translateY(0)    scale(1);    opacity: 0.55; }
+  40%      { transform: translateY(-3px) scale(1.18); opacity: 1;    }
+}
+@keyframes eqbar {
+  0%, 100% { transform: scaleY(0.35); }
+  50%      { transform: scaleY(1);    }
+}
+@media (prefers-reduced-motion: reduce) {
+  [class*="chatdot"], [class*="eqbar"] { animation: none !important; }
+}
+
 /* Architect chat scroll — subtle, low-contrast scrollbar that doesn't
  * draw the eye away from the conversation. Default browser bars
  * (especially on Windows/Linux) are too chunky for a 480-620 px side
