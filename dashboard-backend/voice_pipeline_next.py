@@ -389,6 +389,12 @@ async def run_next_session(
     # We also hand the transport two callbacks for the client-protocol
     # control frames the existing frontend sends — text input and cancel
     # — so the legacy WS contract works unchanged.
+    #
+    # session is constructed below but the callbacks need a forward
+    # reference. Use a dict holder so the closures resolve lazily at
+    # call time without UnboundLocalError.
+    _session_holder: dict[str, Any] = {"session": None}
+
     async def _on_text_frame(body: str) -> None:
         """User typed a message in the chat UI. Route through
         pipeline.process_text — it bypasses STT/VAD, runs the LLM, and
@@ -400,14 +406,39 @@ async def run_next_session(
             _log.warning("[voice-pipeline-next] process_text failed: %s", exc)
 
     async def _on_cancel_frame() -> None:
-        """User barge-in via the UI cancel button. Tell the pipeline to
-        interrupt the in-flight utterance — TTS will fade out and the
-        UI gets a {type:'cancelled'} envelope via the existing event
-        bridge below."""
+        """User barge-in via the UI cancel button OR the reflexive cancel
+        the frontend sends before any new text input.
+
+        Frontend behavior: when the user submits a typed message, it sends
+        ``{cancel}`` THEN ``{text}``. That cancel always fires regardless
+        of whether the agent is speaking — it's a "stop whatever was
+        playing locally" signal. If we forward every cancel to
+        ``pipeline.interrupt()``, the framework's orchestrator sets
+        ``_is_interrupted=True`` and cancels in-flight tasks, which then
+        kills the very turn the text frame right behind it is trying to
+        start (the agent never replies, content_generation discards the
+        turn). Only fire the framework interrupt when the agent is
+        actually producing speech (SPEAKING) or generating a response
+        (THINKING). Otherwise just echo ``{cancelled}`` so the frontend
+        flushes its local audio buffer (e.g. greeting tail still draining
+        through the worklet) without disturbing orchestrator state.
+        """
         try:
-            pipeline.interrupt()
-        except Exception as exc:  # noqa: BLE001
-            _log.warning("[voice-pipeline-next] interrupt failed: %s", exc)
+            from videosdk.agents.utils import AgentState  # type: ignore[import-not-found]
+        except Exception:  # noqa: BLE001
+            AgentState = None  # type: ignore[assignment]
+        s = _session_holder.get("session")
+        state = getattr(s, "agent_state", None) if s is not None else None
+        is_active = AgentState is not None and state in (AgentState.SPEAKING, AgentState.THINKING)
+        if is_active:
+            try:
+                pipeline.interrupt()
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("[voice-pipeline-next] interrupt failed: %s", exc)
+            # The bridge below catches backchannel_detected and sends
+            # {cancelled} — no manual echo needed.
+        else:
+            await _send_safely({"type": "cancelled"})
 
     transport = FastAPIWebSocketTransport(
         loop=loop,
@@ -434,6 +465,11 @@ async def run_next_session(
     pipeline._set_loop_and_audio_track(loop, transport.audio_track)
 
     session = AgentSession(agent=agent, pipeline=pipeline)  # type: ignore[name-defined]
+    # Publish the session into the forward-reference holder so the
+    # cancel-frame callback (defined earlier than session) can query
+    # ``session.agent_state`` to distinguish a real barge-in from a
+    # reflexive frontend cancel.
+    _session_holder["session"] = session
     _log.info(
         "[voice-pipeline-next] session start session=%s agent_id_in_config=%s "
         "llm=%s stt=%s tts=%s voice=%s lang=%s",
