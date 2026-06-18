@@ -359,7 +359,21 @@ async def run_next_session(
 
         async def on_enter(self) -> None:
             if first_message:
+                # session.say() drives the TTS but bypasses the LLM —
+                # so the @pipeline.on('llm') token bridge never fires
+                # for the greeting and the chat UI gets no text bubble.
+                # Mirror the legacy behavior by hand-sending the
+                # greeting as a single token frame + a turn_end. The
+                # frontend's reveal timer paints the text at speaking
+                # pace as the audio plays.
+                await _send_safely({"type": "token", "text": first_message})
                 await self.session.say(first_message)
+                # turn_end is normally fired by synthesis_complete, but
+                # send a fallback here so the reveal buffer terminates
+                # even if synthesis_complete doesn't reach us in time
+                # for very short greetings. _on_synthesis_complete is
+                # idempotent on the frontend side (it just marks the
+                # current bubble non-pending).
 
         async def on_exit(self) -> None:
             # No teardown hook needed — session cleanup happens in the
@@ -372,7 +386,36 @@ async def run_next_session(
     # Bridge transport. The framework's AgentSession reads
     # pipeline.audio_track for outbound audio and pipeline.on_audio_delta
     # for inbound — both are wired up by the transport during connect().
-    transport = FastAPIWebSocketTransport(loop=loop, pipeline=pipeline, ws=ws)
+    # We also hand the transport two callbacks for the client-protocol
+    # control frames the existing frontend sends — text input and cancel
+    # — so the legacy WS contract works unchanged.
+    async def _on_text_frame(body: str) -> None:
+        """User typed a message in the chat UI. Route through
+        pipeline.process_text — it bypasses STT/VAD, runs the LLM, and
+        the existing @pipeline.on('llm') hook streams tokens back to
+        the UI."""
+        try:
+            await pipeline.process_text(body)
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("[voice-pipeline-next] process_text failed: %s", exc)
+
+    async def _on_cancel_frame() -> None:
+        """User barge-in via the UI cancel button. Tell the pipeline to
+        interrupt the in-flight utterance — TTS will fade out and the
+        UI gets a {type:'cancelled'} envelope via the existing event
+        bridge below."""
+        try:
+            pipeline.interrupt()
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("[voice-pipeline-next] interrupt failed: %s", exc)
+
+    transport = FastAPIWebSocketTransport(
+        loop=loop,
+        pipeline=pipeline,
+        ws=ws,
+        on_text_frame=_on_text_frame,
+        on_cancel_frame=_on_cancel_frame,
+    )
     try:
         await transport.connect()
     except Exception as exc:  # noqa: BLE001
@@ -602,12 +645,21 @@ async def run_next_session(
         pipeline.on("synthesis_complete", _on_tts_done)
 
     # Send the initial ``ready`` envelope so the frontend transitions
-    # out of its "connecting" state. Mirrors what the legacy handler
-    # emits right after auth + agent load complete.
+    # out of its "connecting" state. The ``capabilities`` block tells
+    # the frontend that streaming voice + turn-detection are available
+    # on this session (both are always on under the new pipeline, since
+    # the framework owns VAD/STT/turn_detector internally — there's no
+    # per-call provision step like the legacy path had). Frame format
+    # matches what the transport actually expects from the mic.
     await _send_safely({
         "type": "ready",
         "session_id": session_id,
         "agent": {"name": agent_config.get("name") or "Agent"},
+        "capabilities": {
+            "voice_stream": True,
+            "turn_detection": True,
+            "frame": {"sample_rate": 16000, "encoding": "pcm_s16le", "frame_ms": 20},
+        },
     })
 
     try:

@@ -50,9 +50,17 @@ class FastAPIWebSocketTransport(BaseTransportHandler):
         loop: asyncio.AbstractEventLoop,
         pipeline: Any,
         ws: WebSocket,
+        on_text_frame: Optional[Any] = None,
+        on_cancel_frame: Optional[Any] = None,
     ) -> None:
         super().__init__(loop=loop, pipeline=pipeline)
         self._ws = ws
+        # Callbacks injected by run_next_session. The transport speaks
+        # the framework's audio API but the client protocol's control
+        # frames (text input, cancel) belong to the session layer, so
+        # we hand them up rather than handling them here.
+        self._on_text_frame = on_text_frame
+        self._on_cancel_frame = on_cancel_frame
         # Audio track the framework writes to during TTS playback.
         # Reusing ``WebSocketAudioTrack`` gives us the framework's
         # fade-out + interrupt handling for free; the only thing it
@@ -210,11 +218,34 @@ class FastAPIWebSocketTransport(BaseTransportHandler):
                         await on_audio(frame)
                     except Exception as exc:  # noqa: BLE001
                         logger.warning("on_audio_delta raised: %s", exc)
-                # Text messages: future hook — currently the outer
-                # voicechat router consumes JSON control frames
-                # (client_audio_started, cancel, etc.) before this
-                # transport's read loop sees them. Once those move
-                # into the new path, route them here.
+                    continue
+                # Text frames are client-protocol control messages. The
+                # framework doesn't define a vocabulary here — the legacy
+                # voicechat router defines it (text, cancel, voice,
+                # stream_start, etc). Dispatch to the session-layer
+                # callbacks for the ones we care about; ignore the rest
+                # (stream_start/voice are STT-stream control, redundant
+                # in the new path where the framework owns audio).
+                text = msg.get("text")
+                if not text:
+                    continue
+                try:
+                    payload = json.loads(text)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                mtype = (payload.get("type") or "").lower() if isinstance(payload, dict) else ""
+                if mtype == "text" and self._on_text_frame is not None:
+                    body = (payload.get("text") or "").strip() if isinstance(payload, dict) else ""
+                    if body:
+                        try:
+                            await self._on_text_frame(body)
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning("on_text_frame raised: %s", exc)
+                elif mtype == "cancel" and self._on_cancel_frame is not None:
+                    try:
+                        await self._on_cancel_frame()
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("on_cancel_frame raised: %s", exc)
         except asyncio.CancelledError:
             pass
         finally:
