@@ -42,7 +42,14 @@ _READY_TIMEOUT_SEC = 10.0
 # accumulated transcript is stranded in memory, and the agent never
 # replies. The grace lets the wait timer settle naturally; new
 # utterances after this window still flow through.
-_POST_FINAL_INTERIM_GRACE_SEC = 1.0
+#
+# Lowered 1.0 → 0.5: the original 1s window was generous enough that
+# real barge-in attempts during the next turn's first second got
+# suppressed (HYBRID interrupt mode triggers on STT INTERIMs as well
+# as VAD, so suppressing interims hurts barge-in responsiveness).
+# 500ms is enough to absorb the pod's echo while leaving the rest
+# of the turn responsive.
+_POST_FINAL_INTERIM_GRACE_SEC = 0.5
 
 # ISO-639-1 mapping mirrors voicechat_stream._stt_language_code so the
 # new pipeline behaves identically to legacy on agent-config strings.
@@ -105,10 +112,12 @@ class InternalVocenceSTT(STT):
         self._reader_task: asyncio.Task | None = None
         self._connect_lock = asyncio.Lock()
         self._closed = False
-        # Monotonic timestamp of last final we emitted upstream.
-        # Used to suppress echo / pre-roll interims that the pod
-        # sometimes emits right after a final — see comment on
-        # _POST_FINAL_INTERIM_GRACE_SEC.
+        # Echo-suppression state. The pod sometimes re-emits a partial
+        # right after a final whose text matches (or is a prefix of)
+        # the final — that's the echo we want to drop. Anything with
+        # genuinely new text is real next-utterance speech and must
+        # flow through unchanged so HYBRID-mode barge-in fires fast.
+        self._last_final_text: str = ""
         self._last_final_at: float | None = None
 
     # ----- abstract overrides ---------------------------------------------
@@ -263,15 +272,23 @@ class InternalVocenceSTT(STT):
             text = (data.get("text") or "").strip()
             if not text:
                 return None
-            # Suppress interims that arrive within the post-final grace
-            # window. See _POST_FINAL_INTERIM_GRACE_SEC for the full
-            # rationale — TL;DR: the framework cancels its EOU wait
-            # timer on any event, only restarts on finals, so an echo
-            # interim immediately after a final strands the accumulated
-            # transcript and the agent silently never replies.
-            if self._last_final_at is not None and (
-                time.monotonic() - self._last_final_at
-                < _POST_FINAL_INTERIM_GRACE_SEC
+            # Echo-suppression. The pod can re-emit a partial right
+            # after a final whose text matches or is a prefix of the
+            # just-emitted final — that's the echo (same utterance,
+            # repeated). Drop ONLY those, and only within the grace
+            # window. Anything with new text (a different prefix, or
+            # text longer than the previous final) is real
+            # next-utterance speech and must flow through immediately
+            # so HYBRID-mode interrupt monitoring sees it. This is
+            # what made voice_agent/agent.py feel responsive to
+            # brief barge-ins — Deepgram doesn't emit echo partials,
+            # so it doesn't need any suppression at all.
+            if (
+                self._last_final_at is not None
+                and self._last_final_text
+                and (time.monotonic() - self._last_final_at
+                     < _POST_FINAL_INTERIM_GRACE_SEC)
+                and self._last_final_text.startswith(text)
             ):
                 return None
             return STTResponse(
@@ -283,6 +300,7 @@ class InternalVocenceSTT(STT):
             if not text:
                 return None
             self._last_final_at = time.monotonic()
+            self._last_final_text = text
             return STTResponse(
                 event_type=SpeechEventType.FINAL,
                 data=SpeechData(

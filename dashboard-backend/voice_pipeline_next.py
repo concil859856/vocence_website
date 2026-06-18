@@ -367,7 +367,14 @@ def _translate_interrupt_config(agent_config: dict[str, Any]) -> Any:
     _ensure_next_pipeline_loaded()
     return InterruptConfig(  # type: ignore[name-defined]
         mode="HYBRID",
-        interrupt_min_duration=0.2,
+        # Dropped 0.2 → 0.1: brief barge-in attempts ("hey", "stop")
+        # that are too short to sustain 200ms of continuous speech
+        # were getting their interrupt-monitor task cancelled before
+        # firing (VAD END_OF_SPEECH cancels the monitor). 100ms catches
+        # those without significantly increasing false interrupts —
+        # the framework still requires ``interrupt_min_words=1`` so
+        # background noise alone won't fire.
+        interrupt_min_duration=0.1,
         interrupt_min_words=1,
         interrupt_fade_duration=0.1,
         resume_on_false_interrupt=False,
