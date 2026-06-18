@@ -57,7 +57,7 @@ import {
   CREDIT_VOICE_DESIGN_PREVIEW,
 } from '../studio/creditCosts';
 
-type DocSection = 'getting-started' | 'core-concepts' | 'architecture' | 'api' | 'pricing' | 'faq' | 'troubleshooting' | 'guide-tts' | 'guide-cloning' | 'guide-stt' | 'guide-music' | 'guide-dubbing' | 'guide-agents' | 'cookbook' | 'sdk-python' | 'sdk-cli' | 'sdk-agents' | 'sdk-webhooks' | 'miner' | 'validator';
+type DocSection = 'getting-started' | 'core-concepts' | 'architecture' | 'api' | 'pricing' | 'faq' | 'troubleshooting' | 'guide-tts' | 'guide-cloning' | 'guide-stt' | 'guide-music' | 'guide-dubbing' | 'guide-agents' | 'cookbook' | 'sdk-python' | 'sdk-cli' | 'sdk-agents' | 'sdk-webhooks' | 'sdk-plugins' | 'miner' | 'validator';
 
 interface DocLink {
   id: DocSection;
@@ -94,6 +94,7 @@ const docLinks: DocLink[] = [
   { id: 'sdk-cli', label: 'CLI Reference', category: 'SDK', adminOnly: true },
   { id: 'sdk-agents', label: 'Voice Agents', category: 'SDK', adminOnly: true },
   { id: 'sdk-webhooks', label: 'Webhooks', category: 'SDK', adminOnly: true },
+  { id: 'sdk-plugins', label: 'Voice Plugins', category: 'SDK', adminOnly: true },
   // Billing — credits-and-plans reference. The canonical pricing page
   // lives at /pricing (top-level marketing route); the docs entry here
   // is the detailed breakdown the marketing page links to via its
@@ -113,7 +114,7 @@ const ADMIN_ONLY_SECTIONS: Set<DocSection> = new Set(
   docLinks.filter((l) => l.adminOnly).map((l) => l.id),
 );
 
-const DOC_SECTIONS: DocSection[] = ['getting-started', 'core-concepts', 'architecture', 'guide-agents', 'guide-tts', 'guide-cloning', 'guide-stt', 'guide-music', 'guide-dubbing', 'cookbook', 'api', 'sdk-python', 'sdk-cli', 'sdk-agents', 'sdk-webhooks', 'pricing', 'miner', 'validator', 'faq', 'troubleshooting'];
+const DOC_SECTIONS: DocSection[] = ['getting-started', 'core-concepts', 'architecture', 'guide-agents', 'guide-tts', 'guide-cloning', 'guide-stt', 'guide-music', 'guide-dubbing', 'cookbook', 'api', 'sdk-python', 'sdk-cli', 'sdk-agents', 'sdk-webhooks', 'sdk-plugins', 'pricing', 'miner', 'validator', 'faq', 'troubleshooting'];
 
 /**
  * Per-section SEO meta. Picked up by ``usePageMeta`` so Googlebot (and
@@ -184,6 +185,10 @@ const SECTION_META: Record<DocSection, { title: string; description: string }> =
   'sdk-webhooks': {
     title: 'Webhooks SDK — Vocence',
     description: 'Sign and verify Vocence webhooks. Build a FastAPI receiver with signature checking and replay-tolerance.',
+  },
+  'sdk-plugins': {
+    title: 'Voice Plugins — Vocence',
+    description: 'Drop Vocence custom voices and streaming speech recognition into your own voice-agent pipeline. VocenceTTS + VocenceSTT from the vocence-plugins Python package.',
   },
   'pricing': {
     title: 'Pricing Details — Vocence Docs',
@@ -3971,6 +3976,301 @@ async def on_event(envelope: dict):
     </div>
   );
 
+  const renderSdkPlugins = () => (
+    <div className="space-y-8">
+      <nav className="flex items-center gap-1.5 text-xs text-zinc-500">
+        <span>Documentation</span>
+        <ChevronRight size={12} className="opacity-60" aria-hidden />
+        <span>SDK</span>
+        <ChevronRight size={12} className="opacity-60" aria-hidden />
+        <span className="font-medium text-zinc-400">Voice Plugins</span>
+      </nav>
+
+      <header className="space-y-3 border-b border-white/[0.06] pb-6">
+        <h1 className="text-2xl font-semibold tracking-tight text-white">Voice plugins for your own pipeline</h1>
+        <p className="max-w-2xl text-sm leading-relaxed text-zinc-400">
+          <code className="rounded bg-white/[0.06] px-1 text-zinc-300">vocence-plugins</code>{' '}
+          is a small Python package that exposes two drop-in components — <code className="rounded bg-white/[0.06] px-1 text-zinc-300">VocenceTTS</code>{' '}
+          for streaming text-to-speech with the Vocence voice library and <code className="rounded bg-white/[0.06] px-1 text-zinc-300">VocenceSTT</code>{' '}
+          for streaming speech recognition. Both run over persistent WebSockets and conform to the standard streaming TTS / STT abstract interfaces, so they slot into whatever voice-agent stack you're already running.
+        </p>
+      </header>
+
+      <section className="space-y-3">
+        <h2 className="text-lg font-semibold tracking-tight text-white">When to reach for this</h2>
+        <div className="overflow-x-auto rounded-lg border border-white/[0.06]">
+          <table className="min-w-full text-sm">
+            <thead className="bg-white/[0.03] text-left text-xs uppercase tracking-wide text-zinc-400">
+              <tr>
+                <th className="px-4 py-2">Use case</th>
+                <th className="px-4 py-2">Use</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-white/[0.04] text-zinc-300">
+              <tr>
+                <td className="px-4 py-3 align-top">Talk to a Vocence-hosted voice agent over REST / WebSocket — agent owns its own STT, LLM, TTS, knowledge base.</td>
+                <td className="px-4 py-3 align-top">
+                  <Link to="/docs/sdk-python" className="text-[#DFFF00] hover:underline"><code className="rounded bg-white/[0.06] px-1">vocence</code> SDK</Link>
+                </td>
+              </tr>
+              <tr>
+                <td className="px-4 py-3 align-top">Build your own voice-agent pipeline (you own the orchestration) and want to swap in Vocence voices + recognition.</td>
+                <td className="px-4 py-3 align-top">This package</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p className="text-sm leading-relaxed text-zinc-400">
+          Both authenticate with the same{' '}
+          <code className="rounded bg-white/[0.06] px-1 text-zinc-300">voc_live_…</code>{' '}
+          developer key. The two products don't overlap.
+        </p>
+      </section>
+
+      <section className="space-y-3">
+        <h2 className="text-lg font-semibold tracking-tight text-white">Install</h2>
+        <CodeBlock language="bash" code={`pip install vocence-plugins`} />
+        <p className="text-sm leading-relaxed text-zinc-400">
+          Requires Python 3.11 or newer. The package only depends on{' '}
+          <code className="rounded bg-white/[0.06] px-1 text-zinc-300">aiohttp</code>{' '}
+          (for the WebSocket transport) and the abstract base classes from your pipeline framework — no heavy ML runtime, the model work happens server-side on the Vocence network.
+        </p>
+        <CodeBlock language="bash" code={`export VOCENCE_API_KEY=voc_live_...`} />
+        <p className="text-sm leading-relaxed text-zinc-400">
+          Or pass it explicitly:{' '}
+          <code className="rounded bg-white/[0.06] px-1 text-zinc-300">VocenceTTS(api_key="voc_live_…", voice="design-aria")</code>.
+          Get a key at{' '}
+          <a href="https://www.vocence.ai/account/developer" className="text-[#DFFF00] hover:underline">vocence.ai/account/developer</a>.
+        </p>
+      </section>
+
+      <section className="space-y-3">
+        <h2 className="text-lg font-semibold tracking-tight text-white">VocenceTTS</h2>
+        <p className="text-sm leading-relaxed text-zinc-400">
+          Streaming text-to-speech. One persistent WebSocket is reused across every{' '}
+          <code className="rounded bg-white/[0.06] px-1 text-zinc-300">synthesize()</code>{' '}
+          call so subsequent turns skip the handshake. Audio output is mono <strong>PCM16LE @ 24 kHz</strong>,
+          pushed frame-by-frame to the audio sink your pipeline wires onto{' '}
+          <code className="rounded bg-white/[0.06] px-1 text-zinc-300">tts.audio_track</code>.
+        </p>
+        <div className="overflow-x-auto rounded-lg border border-white/[0.06]">
+          <table className="min-w-full text-sm">
+            <thead className="bg-white/[0.03] text-left text-xs uppercase tracking-wide text-zinc-400">
+              <tr>
+                <th className="px-4 py-2">Arg</th>
+                <th className="px-4 py-2">Default</th>
+                <th className="px-4 py-2">Notes</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-white/[0.04] text-zinc-300">
+              <tr>
+                <td className="px-4 py-3 align-top"><code className="rounded bg-white/[0.06] px-1">api_key</code></td>
+                <td className="px-4 py-3 align-top"><code className="rounded bg-white/[0.06] px-1">VOCENCE_API_KEY</code> env</td>
+                <td className="px-4 py-3 align-top">Required (<code className="rounded bg-white/[0.06] px-1">voc_live_…</code>).</td>
+              </tr>
+              <tr>
+                <td className="px-4 py-3 align-top"><code className="rounded bg-white/[0.06] px-1">voice</code></td>
+                <td className="px-4 py-3 align-top">—</td>
+                <td className="px-4 py-3 align-top">Required. Built-in slug (<code className="rounded bg-white/[0.06] px-1">"design-aria"</code>, <code className="rounded bg-white/[0.06] px-1">"design-jasper"</code>, …) or numeric id of a saved designed / cloned voice. Bound at construction; build a fresh instance to switch voice.</td>
+              </tr>
+              <tr>
+                <td className="px-4 py-3 align-top"><code className="rounded bg-white/[0.06] px-1">language</code></td>
+                <td className="px-4 py-3 align-top"><code className="rounded bg-white/[0.06] px-1">None</code></td>
+                <td className="px-4 py-3 align-top">Optional language hint sent on every speak.</td>
+              </tr>
+              <tr>
+                <td className="px-4 py-3 align-top"><code className="rounded bg-white/[0.06] px-1">base_url</code></td>
+                <td className="px-4 py-3 align-top"><code className="rounded bg-white/[0.06] px-1">https://api.vocence.ai</code></td>
+                <td className="px-4 py-3 align-top">Override for staging / self-hosted.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p className="text-sm leading-relaxed text-zinc-400">
+          Key methods:{' '}
+          <code className="rounded bg-white/[0.06] px-1 text-zinc-300">await synthesize(text)</code>{' '}
+          (accepts a plain string or an async iterator of token chunks for live LLM streaming);{' '}
+          <code className="rounded bg-white/[0.06] px-1 text-zinc-300">await interrupt()</code>{' '}
+          to stop an in-flight synthesis on barge-in;{' '}
+          <code className="rounded bg-white/[0.06] px-1 text-zinc-300">await aclose()</code>{' '}
+          to tear down the connection at session end.
+        </p>
+      </section>
+
+      <section className="space-y-3">
+        <h2 className="text-lg font-semibold tracking-tight text-white">VocenceSTT</h2>
+        <p className="text-sm leading-relaxed text-zinc-400">
+          Streaming speech-to-text. The WebSocket is lazy-opened on the first audio frame, then a background reader translates pod events into the standard transcript callback shape (interim, final, speech_started, speech_stopped). Accepts <strong>16 kHz mono PCM16LE</strong> input.
+        </p>
+        <div className="overflow-x-auto rounded-lg border border-white/[0.06]">
+          <table className="min-w-full text-sm">
+            <thead className="bg-white/[0.03] text-left text-xs uppercase tracking-wide text-zinc-400">
+              <tr>
+                <th className="px-4 py-2">Arg</th>
+                <th className="px-4 py-2">Default</th>
+                <th className="px-4 py-2">Notes</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-white/[0.04] text-zinc-300">
+              <tr>
+                <td className="px-4 py-3 align-top"><code className="rounded bg-white/[0.06] px-1">api_key</code></td>
+                <td className="px-4 py-3 align-top"><code className="rounded bg-white/[0.06] px-1">VOCENCE_API_KEY</code> env</td>
+                <td className="px-4 py-3 align-top">Required.</td>
+              </tr>
+              <tr>
+                <td className="px-4 py-3 align-top"><code className="rounded bg-white/[0.06] px-1">language</code></td>
+                <td className="px-4 py-3 align-top"><code className="rounded bg-white/[0.06] px-1">"auto"</code></td>
+                <td className="px-4 py-3 align-top">ISO-639-1 (<code className="rounded bg-white/[0.06] px-1">"en"</code>), full name (<code className="rounded bg-white/[0.06] px-1">"English"</code>), or <code className="rounded bg-white/[0.06] px-1">"auto"</code>. Normalized to ISO before send. Bound at WS open; build a fresh instance to switch language.</td>
+              </tr>
+              <tr>
+                <td className="px-4 py-3 align-top"><code className="rounded bg-white/[0.06] px-1">sample_rate</code></td>
+                <td className="px-4 py-3 align-top">16000</td>
+                <td className="px-4 py-3 align-top">PCM16LE mono. Only 16 kHz is accepted today; kept as an argument for forward-compat.</td>
+              </tr>
+              <tr>
+                <td className="px-4 py-3 align-top"><code className="rounded bg-white/[0.06] px-1">enable_partials</code></td>
+                <td className="px-4 py-3 align-top"><code className="rounded bg-white/[0.06] px-1">True</code></td>
+                <td className="px-4 py-3 align-top">Stream interim hypotheses for live captions. Disable for batch / archival use cases that only want finals.</td>
+              </tr>
+              <tr>
+                <td className="px-4 py-3 align-top"><code className="rounded bg-white/[0.06] px-1">vad_events</code></td>
+                <td className="px-4 py-3 align-top"><code className="rounded bg-white/[0.06] px-1">True</code></td>
+                <td className="px-4 py-3 align-top">Emit speech-start / silence events from the pod's internal VAD. Independent of any local VAD you wire alongside.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p className="text-sm leading-relaxed text-zinc-400">
+          Key methods:{' '}
+          <code className="rounded bg-white/[0.06] px-1 text-zinc-300">await process_audio(frame)</code>{' '}
+          for each captured PCM frame (hot path — typically called every 20–40 ms);{' '}
+          <code className="rounded bg-white/[0.06] px-1 text-zinc-300">await flush()</code>{' '}
+          to ask the pod to commit the current partial as a final without waiting for its silence timer;{' '}
+          <code className="rounded bg-white/[0.06] px-1 text-zinc-300">await aclose()</code>{' '}
+          at session end.
+        </p>
+      </section>
+
+      <section className="space-y-3">
+        <h2 className="text-lg font-semibold tracking-tight text-white">Python example</h2>
+        <p className="text-sm leading-relaxed text-zinc-400">
+          The plugins don't ship their own pipeline orchestrator — that's deliberately left to whatever voice-agent stack you're already running. The example below shows raw construction plus the call shape each component exposes, so you can wire them into your loop directly.
+        </p>
+        <CodeBlock language="python" code={`import asyncio
+from vocence_plugins import VocenceTTS, VocenceSTT
+
+
+async def main() -> None:
+    # --- Build the components -----------------------------------------
+    # Both pick up VOCENCE_API_KEY from the environment. Pass api_key=...
+    # explicitly if you prefer to load it from elsewhere.
+    tts = VocenceTTS(voice="design-aria", language="English")
+    stt = VocenceSTT(language="English")
+
+    # --- TTS: stream a reply ------------------------------------------
+    # synthesize() pushes 24 kHz mono PCM16LE frames to tts.audio_track
+    # as they arrive from the pod. Wire your speaker output (or a
+    # WebSocket forward, or a recorder) into tts.audio_track before
+    # calling synthesize. See your pipeline's docs for how to bind a
+    # sink — most frameworks expose audio_track.add_sink(callable).
+    await tts.synthesize("Hi there — how can I help you today?")
+
+    # synthesize() also accepts an async iterator of string chunks for
+    # live LLM streaming, so the first audio plays before the LLM has
+    # finished generating:
+    async def token_stream():
+        for token in ["Sure, ", "let me ", "check that ", "for you."]:
+            yield token
+    await tts.synthesize(token_stream())
+
+    # Barge-in: cancel an in-flight synthesis the moment the user
+    # speaks. The WebSocket stays warm for the next turn.
+    await tts.interrupt()
+
+    # --- STT: stream audio in ----------------------------------------
+    # Bind a callback that receives transcript events. The shape is
+    # the standard {event_type, data: {text, language, ...}} envelope
+    # most pipelines work with. event_type is INTERIM / FINAL /
+    # SPEECH_START / SPEECH_END.
+    async def on_transcript(event):
+        if event.event_type.name == "FINAL":
+            print("user said:", event.data.text)
+
+    stt._transcript_callback = on_transcript  # framework-specific binding
+
+    # Feed PCM16LE mono @ 16 kHz frames from your mic. Typical frame
+    # cadence is 20–40 ms; the hot path is just an awaited byte send.
+    # Replace this with your real capture loop.
+    mic_frames: list[bytes] = capture_mic_at_16k_mono_pcm16le()
+    for frame in mic_frames:
+        await stt.process_audio(frame)
+
+    # At end-of-utterance, ask the pod to finalize without waiting
+    # for its own silence timer.
+    await stt.flush()
+
+    # --- Teardown ----------------------------------------------------
+    await tts.aclose()
+    await stt.aclose()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())`} />
+        <p className="text-sm leading-relaxed text-zinc-400">
+          The full orchestration — capturing the mic, running VAD locally, deciding when to call{' '}
+          <code className="rounded bg-white/[0.06] px-1 text-zinc-300">flush()</code>, holding chat history, dispatching tool calls — belongs to your pipeline framework.{' '}
+          <code className="rounded bg-white/[0.06] px-1 text-zinc-300">VocenceTTS</code>{' '}
+          and{' '}
+          <code className="rounded bg-white/[0.06] px-1 text-zinc-300">VocenceSTT</code>{' '}
+          slot in as the speech components and stay out of the way of everything else.
+        </p>
+      </section>
+
+      <section className="space-y-3">
+        <h2 className="text-lg font-semibold tracking-tight text-white">Audio formats at a glance</h2>
+        <div className="overflow-x-auto rounded-lg border border-white/[0.06]">
+          <table className="min-w-full text-sm">
+            <thead className="bg-white/[0.03] text-left text-xs uppercase tracking-wide text-zinc-400">
+              <tr>
+                <th className="px-4 py-2">Component</th>
+                <th className="px-4 py-2">Direction</th>
+                <th className="px-4 py-2">Format</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-white/[0.04] text-zinc-300">
+              <tr>
+                <td className="px-4 py-3"><code className="rounded bg-white/[0.06] px-1">VocenceTTS</code></td>
+                <td className="px-4 py-3">out (pod → your sink)</td>
+                <td className="px-4 py-3">PCM16LE, 24 kHz, mono</td>
+              </tr>
+              <tr>
+                <td className="px-4 py-3"><code className="rounded bg-white/[0.06] px-1">VocenceSTT</code></td>
+                <td className="px-4 py-3">in (your mic → pod)</td>
+                <td className="px-4 py-3">PCM16LE, 16 kHz, mono</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="space-y-3">
+        <h2 className="text-lg font-semibold tracking-tight text-white">Source &amp; releases</h2>
+        <p className="text-sm leading-relaxed text-zinc-400">
+          Package on PyPI:{' '}
+          <a href="https://pypi.org/project/vocence-plugins/" className="text-[#DFFF00] hover:underline">pypi.org/project/vocence-plugins</a>.
+          Releases follow semver; see the in-tree{' '}
+          <code className="rounded bg-white/[0.06] px-1 text-zinc-300">CHANGELOG.md</code>{' '}
+          for breaking-change notes.
+        </p>
+        <p className="text-sm leading-relaxed text-zinc-400">
+          For the hosted agent path (managed STT + LLM + TTS, knowledge base, call recordings, the full Studio experience), use the{' '}
+          <Link to="/docs/sdk-python" className="text-[#DFFF00] hover:underline">Vocence Python SDK</Link>{' '}
+          instead.
+        </p>
+      </section>
+    </div>
+  );
+
   const renderCookbook = () => (
     <div className="space-y-8">
       <nav className="flex items-center gap-1.5 text-xs text-zinc-500">
@@ -4436,6 +4736,8 @@ print(agent.id, "—", agent.name)
         return renderSdkAgents();
       case 'sdk-webhooks':
         return renderSdkWebhooks();
+      case 'sdk-plugins':
+        return renderSdkPlugins();
       case 'miner':
         return renderMinerSetup();
       case 'validator':
