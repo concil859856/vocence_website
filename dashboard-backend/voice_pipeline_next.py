@@ -198,8 +198,13 @@ def build_pipeline_from_agent_config(
     stt_provider = (agent_config.get("stt_provider") or "vocence").lower()
     language = agent_config.get("language") or "auto"
     if stt_provider == "deepgram":
+        # Defaults match voice_agent/agent.py (which the user
+        # validated as working well): nova-2 model, en-US language.
+        # nova-3 is newer but has different streaming behavior in
+        # this config — felt noticeably worse in real testing.
+        # DEEPGRAM_MODEL env var can still override per deployment.
         stt = DeepgramSTT(  # type: ignore[name-defined]
-            model=os.environ.get("DEEPGRAM_MODEL") or "nova-3",
+            model=os.environ.get("DEEPGRAM_MODEL") or "nova-2",
             language=_to_deepgram_lang(language),
             # Frontend mic frames are 16 kHz PCM16LE. Without this
             # override DeepgramSTT defaults to sample_rate=48000 and
@@ -263,10 +268,18 @@ def build_pipeline_from_agent_config(
 
 def _to_deepgram_lang(language: str) -> str:
     """Map agent-config language names → Deepgram's BCP-47 codes.
-    Deepgram accepts ``en``/``en-US``/etc. We err on the side of the
-    region-tagged variant for English to get Deepgram's best model."""
+
+    Default fallback is ``en-US`` (matching voice_agent/agent.py).
+    NOTE: ``multi`` (Deepgram's multilingual auto-detect) is a
+    Nova-3-only feature. With our default model (nova-2), sending
+    "multi" silently degrades behavior — so we map agent
+    ``language="auto"`` to ``en-US`` instead. Users on Nova-3 can
+    still get multilingual by setting agent ``language`` to one of
+    the explicit codes below or by setting DEEPGRAM_MODEL=nova-3
+    AND switching the fallback to ``multi`` here.
+    """
     if not language or language == "auto":
-        return "multi"
+        return "en-US"
     table = {
         "English": "en-US",
         "Spanish": "es",
@@ -279,7 +292,7 @@ def _to_deepgram_lang(language: str) -> str:
         "Chinese": "zh",
         "Russian": "ru",
     }
-    return table.get(language, "multi")
+    return table.get(language, "en-US")
 
 
 def _build_llm_plugin(llm_model: str, agent_config: dict[str, Any]) -> Any:
