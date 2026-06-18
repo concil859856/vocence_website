@@ -379,6 +379,17 @@ async def run_next_session(
         _log.exception("[voice-pipeline-next] transport.connect failed: %s", exc)
         raise
 
+    # Wire the transport's audio_track onto the pipeline. In the
+    # framework's hosted entry point (job.py), this happens via
+    # ``pipeline._set_loop_and_audio_track(loop, room.audio_track)``
+    # right after the meeting room joins. We skip job.py entirely
+    # (the room is a videosdk meeting concept, irrelevant here), so we
+    # have to call the same hook ourselves — otherwise pipeline.tts
+    # never gets an audio sink and the agent's TTS output silently
+    # vanishes (logged upstream as "Audio track not initialized -
+    # skipping last audio callback registration").
+    pipeline._set_loop_and_audio_track(loop, transport.audio_track)
+
     session = AgentSession(agent=agent, pipeline=pipeline)  # type: ignore[name-defined]
     _log.info(
         "[voice-pipeline-next] session start session=%s agent_id_in_config=%s "
