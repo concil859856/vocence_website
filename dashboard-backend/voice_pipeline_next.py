@@ -1202,24 +1202,34 @@ async def run_next_session(
 
         def _recorder_on_speech_started(_d: Any = None) -> None:
             try:
-                _last_speech_started_ms_holder["ms"] = recorder._now_ms()
+                snap = recorder._now_ms()
+                _last_speech_started_ms_holder["ms"] = snap
+                _log.info(
+                    "[voice-pipeline-next] recorder: speech_started snapshot=%dms",
+                    snap,
+                )
             except Exception:  # noqa: BLE001
-                _log.debug(
-                    "[voice-pipeline-next] capture speech_started ms failed",
-                    exc_info=True,
+                _log.exception(
+                    "[voice-pipeline-next] capture speech_started ms failed"
                 )
 
-        def _recorder_barge_in(_d: Any = None) -> None:
+        def _recorder_barge_in(source: str, _d: Any = None) -> None:
             try:
                 at_ms = _last_speech_started_ms_holder["ms"]
+                now_ms = recorder._now_ms()
+                _log.info(
+                    "[voice-pipeline-next] recorder: barge-in via %s "
+                    "trim_at=%s now=%dms delta=%sms",
+                    source,
+                    at_ms if at_ms is not None else "now(fallback)",
+                    now_ms,
+                    (now_ms - at_ms) if at_ms is not None else "n/a",
+                )
                 recorder.mark_agent_barge_in(at_ms=at_ms)
-                # Reset so the next turn's barge-in doesn't reuse a
-                # stale timestamp.
                 _last_speech_started_ms_holder["ms"] = None
             except Exception:  # noqa: BLE001
-                _log.debug(
-                    "[voice-pipeline-next] recorder.mark_agent_barge_in failed",
-                    exc_info=True,
+                _log.exception(
+                    "[voice-pipeline-next] recorder.mark_agent_barge_in failed"
                 )
 
         _orch_for_rec = getattr(pipeline, "orchestrator", None)
@@ -1229,11 +1239,23 @@ async def run_next_session(
         _su_for_rec = (
             getattr(_orch_for_rec, "speech_understanding", None) if _orch_for_rec else None
         )
+        _log.info(
+            "[voice-pipeline-next] recorder hooks: orch=%s sg=%s su=%s",
+            _orch_for_rec is not None,
+            _sg_for_rec is not None,
+            _su_for_rec is not None,
+        )
         if _su_for_rec is not None:
             _su_for_rec.on("speech_started", _recorder_on_speech_started)
         if _sg_for_rec is not None:
-            _sg_for_rec.on("synthesis_interrupted", _recorder_barge_in)
-        pipeline.on("backchannel_detected", _recorder_barge_in)
+            _sg_for_rec.on(
+                "synthesis_interrupted",
+                lambda d=None: _recorder_barge_in("synthesis_interrupted", d),
+            )
+        pipeline.on(
+            "backchannel_detected",
+            lambda d=None: _recorder_barge_in("backchannel_detected", d),
+        )
 
     # Per-turn studio_voicechat_history INSERT. Same purpose as
     # legacy's _record_turn — without this, the call-history modal
