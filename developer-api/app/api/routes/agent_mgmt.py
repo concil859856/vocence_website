@@ -269,7 +269,7 @@ def _agent_row_to_response(row: dict) -> dict:
             "max_iterations": cfg.get("max_iterations") or None,
             # Voice-pipeline knobs.
             "denoise_enabled": bool(cfg.get("denoise_enabled", False)),
-            "turn_decider": cfg.get("turn_decider") or "ultravad",
+            # turn_decider removed in Phase C — kept out of the response.
             "ultravad_threshold": (
                 float(cfg.get("ultravad_threshold"))
                 if cfg.get("ultravad_threshold") is not None else 0.50
@@ -396,15 +396,9 @@ class AgentCreateIn(BaseModel):
             "for agents that expect noisy mics (call-center, mobile-in-public)."
         ),
     )
-    turn_decider: Optional[Literal["ultravad", "fusion"]] = Field(
-        default=None,
-        description=(
-            "Primary end-of-turn detector. `ultravad` (default) uses the "
-            "UltraVAD pod's prosody model; `fusion` uses Smart-Turn + "
-            "LiveKit. Falls back automatically when the configured pod "
-            "is offline."
-        ),
-    )
+    # ``turn_decider`` removed in Phase C — the new pipeline uses
+    # one turn detector; the field has no consumer. Existing rows
+    # are stripped by phase_c_drop_turn_decider migration.
     ultravad_threshold: Optional[float] = Field(
         default=None,
         ge=0.0,
@@ -477,7 +471,7 @@ class AgentPatchIn(BaseModel):
     max_iterations: Optional[int] = Field(default=None, ge=1, le=50)
     # Voice-pipeline knobs (see AgentCreateIn for descriptions).
     denoise_enabled: Optional[bool] = Field(default=None)
-    turn_decider: Optional[Literal["ultravad", "fusion"]] = Field(default=None)
+    # turn_decider: removed in Phase C
     ultravad_threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     min_delay_ms: Optional[int] = Field(default=None, ge=200, le=2000)
     record_enabled: Optional[bool] = Field(default=None)
@@ -624,7 +618,7 @@ async def create_agent(body: AgentCreateIn, auth_ctx: dict = Depends(require_api
         # Voice-pipeline knobs. Omitted ⇒ defaults applied by the
         # voicechat router at session-open time.
         "denoise_enabled": bool(body.denoise_enabled) if body.denoise_enabled is not None else False,
-        "turn_decider": body.turn_decider or "ultravad",
+        # turn_decider: removed in Phase C
         "ultravad_threshold": (
             float(body.ultravad_threshold) if body.ultravad_threshold is not None else 0.50
         ),
@@ -686,7 +680,7 @@ async def patch_agent(agent_id: str, body: AgentPatchIn, auth_ctx: dict = Depend
         "max_iterations": body.max_iterations,
         # Voice-pipeline knobs.
         "denoise_enabled": body.denoise_enabled,
-        "turn_decider": body.turn_decider,
+        # turn_decider: removed in Phase C
         "ultravad_threshold": body.ultravad_threshold,
         "min_delay_ms": body.min_delay_ms,
         "record_enabled": body.record_enabled,

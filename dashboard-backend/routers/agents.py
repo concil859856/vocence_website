@@ -73,13 +73,10 @@ class AgentConfigIn(BaseModel):
     # latency, only worth it for agents that expect noisy mics
     # (call-center, mobile-in-public). See DENOISER_STREAMING_POD_SPEC.md.
     denoise_enabled: bool = False
-    # Which end-of-turn detector to use as PRIMARY. Both paths share
-    # the same fallback story: if the primary pod is unhealthy, the
-    # other path takes over. Default "ultravad" once that pod is
-    # deployed and validated; "fusion" routes to the existing Smart
-    # Turn + LiveKit ensembler. See ULTRAVAD_POD_SPEC.md.
-    turn_decider: str = "ultravad"  # "ultravad" | "fusion"
-    # Threshold the UltraVAD primary path uses to fire commit. Range
+    # ``turn_decider`` removed in Phase C — the new pipeline uses
+    # one turn detector (no user choice). The phase_c_drop_turn_decider
+    # migration strips the field from existing config_json blobs.
+    # Threshold the EOU-decider uses to fire commit. Range
     # [0, 1]; higher = more conservative (waits for stronger model
     # confidence, lets brief mid-sentence pauses through), lower =
     # more eager (snappier but more likely to cut mid-utterance).

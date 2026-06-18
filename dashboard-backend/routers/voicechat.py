@@ -2108,7 +2108,7 @@ async def voicechat_session(
                     tts_warmer=session_tts_warmer,
                     tts_pod_pin=session_tts_pod_pin,
                     denoise_enabled=bool(_agent_cfg.get("denoise_enabled", False)),
-                    turn_decider=str(_agent_cfg.get("turn_decider", "fusion")),
+                    turn_decider="ultravad",  # Phase C: no longer per-agent — videosdk has one detector
                     ultravad_threshold=float(_agent_cfg.get("ultravad_threshold", 0.50)),
                     min_delay_ms=_agent_cfg.get("min_delay_ms"),
                     prewarmed_stt=adopted_prewarm_stt,

@@ -3771,14 +3771,6 @@ async def proxy(ws: WebSocket, agent_id: str):
                 </td>
               </tr>
               <tr>
-                <td className="px-4 py-3 font-mono text-cyan-300 align-top">turn_decider</td>
-                <td className="px-4 py-3 text-zinc-400 align-top"><code>"ultravad" | "fusion"</code> · <code>"ultravad"</code></td>
-                <td className="px-4 py-3 text-zinc-400 align-top">
-                  Primary end-of-turn detector. UltraVAD is the snappier, model-based path; fusion ensembles Smart Turn
-                  with the LiveKit turn detector. Either path falls back to the other if its pod is unhealthy.
-                </td>
-              </tr>
-              <tr>
                 <td className="px-4 py-3 font-mono text-cyan-300 align-top">ultravad_threshold</td>
                 <td className="px-4 py-3 text-zinc-400 align-top"><code>float [0, 1]</code> · <code>0.50</code></td>
                 <td className="px-4 py-3 text-zinc-400 align-top">
@@ -3815,7 +3807,6 @@ agent = Vocence().agents.update(
     "agent-id",
     config={
         "denoise_enabled": True,         # noisy call-center mic
-        "turn_decider": "ultravad",
         "ultravad_threshold": 0.55,      # slightly more patient than the 0.50 default
         "min_delay_ms": 800,             # require 800 ms silence before commit
         "record_enabled": True,          # capture WAVs for review
@@ -4369,12 +4360,7 @@ agent = client.agents.create(
     # environments (offices, retail floors); off saves ~30 ms latency.
     denoise_enabled=True,
 
-    # Primary end-of-turn detector. "ultravad" is snappier on short
-    # questions; "fusion" combines Smart-Turn prosody + text completeness
-    # for longer multi-clause utterances. Default: "ultravad".
-    turn_decider="ultravad",
-
-    # UltraVAD end-of-turn probability threshold. Lower = snappier
+    # End-of-turn probability threshold. Lower = snappier
     # turn-taking; higher = more patient. Default 0.50.
     ultravad_threshold=0.50,
 
