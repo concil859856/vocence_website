@@ -290,16 +290,19 @@ class InternalVocenceSTT(STT):
                     language=data.get("language_detected") or self.language,
                 ),
             )
-        if mtype == "vad_speech":
-            return STTResponse(
-                event_type=SpeechEventType.START,
-                data=SpeechData(text=""),
-            )
-        if mtype == "vad_silence":
-            return STTResponse(
-                event_type=SpeechEventType.END,
-                data=SpeechData(text=""),
-            )
+        # Pod VAD events (vad_speech / vad_silence) are intentionally
+        # dropped here. The framework runs its OWN SileroVAD locally
+        # for turn-taking, and routes ALL STT events — including START
+        # / END — through speech_understanding._on_stt_transcript,
+        # which cancels its EOU wait timer on any event but only
+        # reschedules on FINALs. Forwarding pod VAD events would
+        # therefore strand the accumulated transcript and kill the
+        # turn (this was the symptom: VAD detected speech, pod
+        # returned text, EOU computed, wait scheduled, agent silent).
+        # Local SileroVAD already drives speech_started/stopped, so
+        # nothing is lost.
+        if mtype in ("vad_speech", "vad_silence"):
+            return None
         if mtype == "error":
             _log.warning(
                 "[voice_pipeline_next_stt] pod error: %s: %s",
