@@ -1094,36 +1094,50 @@ async def run_next_session(
             try:
                 await _synth_pre_history(text, voice_id=voice_id, **kwargs)
             finally:
+                # Drain per-turn state synchronously (snapshot), then
+                # fire-and-forget the DB write so a slow / failing
+                # _record_turn can NEVER stall the TTS coroutine.
+                # Stalling would block the next turn since the
+                # framework's speech_generation holds tts_lock until
+                # synthesize returns.
                 user_text = (_turn_state.get("user_text") or "").strip()
                 agent_text = "".join(_turn_state.get("agent_text_parts") or []).strip()
-                if not user_text and not agent_text:
-                    return
-                try:
-                    from time import monotonic as _mono
-                    from routers.voicechat import _record_turn
-                    started_at = _turn_state.get("turn_started_at")
-                    latency_ms = (
-                        int((_mono() - started_at) * 1000) if started_at else 0
-                    )
-                    await _record_turn(
-                        user_id=user_id,
-                        user_text=user_text,
-                        bot_text=agent_text,
-                        mode="voice_next",
-                        latency_ms=latency_ms,
-                        ttft_ms=0,
-                        ttfa_ms=None,
-                        error=None,
-                        session_id=session_id,
-                        agent_id=agent_id,
-                    )
-                except Exception:  # noqa: BLE001
-                    _log.exception("[voice-pipeline-next] _record_turn failed")
-                # Reset for the next turn; user_turn_start will
-                # re-populate user_text on the next user STT-final.
+                started_at = _turn_state.get("turn_started_at")
+                # Reset state up-front so the next user_turn_start
+                # is never confused by a stale buffer.
                 _turn_state["user_text"] = ""
                 _turn_state["agent_text_parts"] = []
                 _turn_state["turn_started_at"] = None
+                if not user_text and not agent_text:
+                    return
+                from time import monotonic as _mono
+                latency_ms = (
+                    int((_mono() - started_at) * 1000) if started_at else 0
+                )
+
+                async def _persist() -> None:
+                    try:
+                        from routers.voicechat import _record_turn
+                        await _record_turn(
+                            user_id=user_id,
+                            user_text=user_text,
+                            bot_text=agent_text,
+                            mode="voice_next",
+                            latency_ms=latency_ms,
+                            ttft_ms=0,
+                            ttfa_ms=None,
+                            error=None,
+                            session_id=session_id,
+                            agent_id=agent_id,
+                        )
+                    except Exception:  # noqa: BLE001
+                        _log.exception("[voice-pipeline-next] _record_turn failed")
+
+                # ``asyncio.create_task`` returns immediately; the
+                # synthesize coroutine returns to the framework
+                # without waiting on the DB.
+                with _suppress():
+                    asyncio.create_task(_persist())
 
         _tts_for_history.synthesize = _synth_with_history  # type: ignore[assignment]
 
