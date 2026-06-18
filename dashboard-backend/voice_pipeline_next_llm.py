@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import uuid
 from typing import Any, AsyncIterator, Optional
 
 from videosdk.agents import (  # type: ignore[import-not-found]
@@ -104,7 +105,6 @@ class VocenceRouterLLM(LLM):
             reasoning_effort=self.reasoning_effort,
         )
 
-        tool_call_accumulators: dict[str, dict[str, Any]] = {}
         try:
             async for event in gen:
                 etype = event.get("type")
@@ -117,58 +117,48 @@ class VocenceRouterLLM(LLM):
                         role=ChatRole.ASSISTANT,
                     )
                 elif etype == "tool_call":
-                    # Accumulate streaming tool-call deltas (OpenAI
-                    # protocol streams the arguments piece by piece).
-                    call_id = event.get("id") or "call_0"
-                    acc = tool_call_accumulators.setdefault(
-                        call_id,
-                        {"name": "", "arguments": ""},
-                    )
-                    if event.get("name"):
-                        acc["name"] += event["name"]
-                    if event.get("arguments"):
-                        acc["arguments"] += event["arguments"]
-                elif etype == "done":
-                    # Emit each accumulated tool call as its OWN
-                    # LLMResponse — the framework's content_generation
-                    # consumer reads metadata["function_call"]
-                    # (singular dict) per response and dispatches one
-                    # at a time. The earlier shape
-                    # (metadata={"tool_calls": [...]}) was silently
-                    # dropped, leaving the LLM to hallucinate tool
-                    # calls as inline JSON text on the next iteration.
-                    #
-                    # arguments must be a DICT (the framework does
-                    # ``tool(**self._safe_tool_kwargs(t, args))``).
-                    # The accumulator builds a JSON string from the
-                    # streaming deltas; parse it here.
-                    for cid, v in tool_call_accumulators.items():
-                        args_obj: Any
-                        raw = (v.get("arguments") or "").strip()
-                        if not raw:
-                            args_obj = {}
-                        else:
-                            try:
-                                args_obj = json.loads(raw)
-                                if not isinstance(args_obj, dict):
-                                    args_obj = {"value": args_obj}
-                            except json.JSONDecodeError:
-                                _log.warning(
-                                    "VocenceRouterLLM: tool args not valid JSON; "
-                                    "passing as raw string. raw=%r", raw[:200],
-                                )
-                                args_obj = {"raw": raw}
-                        yield LLMResponse(
-                            content="",
-                            role=ChatRole.ASSISTANT,
-                            metadata={
-                                "function_call": {
-                                    "name": v.get("name") or "",
-                                    "arguments": args_obj,
-                                    "call_id": cid,
-                                }
-                            },
+                    # llm_client.stream_chat_with_tools already
+                    # accumulates streaming tool-call deltas internally
+                    # and emits one complete event per tool with the
+                    # shape {"type":"tool_call", "tool_call":{id,name,arguments}}
+                    # where arguments is a JSON STRING. Just translate
+                    # to the framework's per-LLMResponse function_call
+                    # shape — one yield per tool, dict arguments.
+                    tc = event.get("tool_call") or {}
+                    name = tc.get("name") or ""
+                    if not name:
+                        _log.warning(
+                            "VocenceRouterLLM: dropping tool_call with no name "
+                            "(router emitted incomplete event: %r)", tc,
                         )
+                        continue
+                    raw_args = (tc.get("arguments") or "").strip()
+                    args_obj: Any
+                    if not raw_args:
+                        args_obj = {}
+                    else:
+                        try:
+                            args_obj = json.loads(raw_args)
+                            if not isinstance(args_obj, dict):
+                                args_obj = {"value": args_obj}
+                        except json.JSONDecodeError:
+                            _log.warning(
+                                "VocenceRouterLLM: tool args not valid JSON; "
+                                "passing as raw string. raw=%r", raw_args[:200],
+                            )
+                            args_obj = {"raw": raw_args}
+                    yield LLMResponse(
+                        content="",
+                        role=ChatRole.ASSISTANT,
+                        metadata={
+                            "function_call": {
+                                "name": name,
+                                "arguments": args_obj,
+                                "call_id": tc.get("id") or f"call_{uuid.uuid4().hex[:12]}",
+                            }
+                        },
+                    )
+                elif etype == "done":
                     return
                 # Drop unknown event types silently — the router
                 # may add new ones over time.
