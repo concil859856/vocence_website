@@ -423,9 +423,24 @@ async def run_next_session(
     # voice_pipeline_next_tools handles both: built-ins via
     # the agent_tools_service registry, custom tools via the
     # existing _load_custom_tools_for_agent loader + dispatch_custom_tool.
+    #
+    # ``on_tool_event`` lets the wrappers emit tool_call_started /
+    # tool_call_completed JSON envelopes back to the frontend so the
+    # tool chip (e.g. "🔍 Searching the web…") renders on the
+    # current assistant bubble — same envelope shape the legacy
+    # voicechat router used.
+    async def _on_tool_event(event_type: str, payload: dict[str, Any]) -> None:
+        try:
+            await ws.send_json({"type": event_type, **payload})
+        except Exception as exc:  # noqa: BLE001
+            _log.debug("[voice-pipeline-next] tool event send failed: %s", exc)
+
     from voice_pipeline_next_tools import build_tools_for_agent
     tools_list = await build_tools_for_agent(
-        agent_config, agent_id=agent_id, user_id=user_id,
+        agent_config,
+        agent_id=agent_id,
+        user_id=user_id,
+        on_tool_event=_on_tool_event,
     )
 
     class _VocenceAgent(Agent):  # type: ignore[name-defined,misc]

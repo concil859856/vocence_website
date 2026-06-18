@@ -22,11 +22,18 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Awaitable, Callable
+import uuid
+from typing import Any, Awaitable, Callable, Optional
 
 from videosdk.agents.utils import FunctionToolInfo  # type: ignore[import-not-found]
 
 _log = logging.getLogger(__name__)
+
+# Callback shape the session layer can inject: (event_type, payload)
+# where event_type is "tool_call_started" or "tool_call_completed" and
+# payload matches the legacy frontend's JSON envelope shape
+# (see ``case 'tool_call_started'`` in app/src/lib/voicechat/useVoiceChat.ts).
+ToolEventCallback = Callable[[str, dict[str, Any]], Awaitable[None]]
 
 
 async def build_tools_for_agent(
@@ -34,6 +41,7 @@ async def build_tools_for_agent(
     *,
     agent_id: str | None = None,
     user_id: str | None = None,
+    on_tool_event: Optional[ToolEventCallback] = None,
 ) -> list[Callable[..., Awaitable[Any]]]:
     """Materialize the framework-shaped tool list for an agent.
 
@@ -67,7 +75,7 @@ async def build_tools_for_agent(
         tool = _REGISTRY.get(name)
         if tool is None:
             continue
-        tools.append(_wrap_tool_as_function_tool(tool))
+        tools.append(_wrap_tool_as_function_tool(tool, on_tool_event=on_tool_event))
 
     # Custom webhook tools (per-agent bindings).
     if agent_id is not None and user_id is not None:
@@ -81,7 +89,7 @@ async def build_tools_for_agent(
             )
             custom = []
         for c in custom:
-            tools.append(_wrap_custom_tool_as_function_tool(c))
+            tools.append(_wrap_custom_tool_as_function_tool(c, on_tool_event=on_tool_event))
 
     _log.info(
         "[voice-pipeline-next] tools materialized: builtin=%s custom=%d "
@@ -93,8 +101,39 @@ async def build_tools_for_agent(
     return tools
 
 
+async def _emit_tool_event(
+    on_tool_event: Optional[ToolEventCallback],
+    event_type: str,
+    payload: dict[str, Any],
+) -> None:
+    """Best-effort emit. Tool execution must not fail because the UI
+    bridge is unavailable; we suppress any callback exception."""
+    if on_tool_event is None:
+        return
+    try:
+        await on_tool_event(event_type, payload)
+    except Exception as exc:  # noqa: BLE001
+        _log.debug("[voice-pipeline-next] on_tool_event %s raised: %s", event_type, exc)
+
+
+def _result_preview(result: Any, *, max_chars: int = 280) -> str:
+    """Mirror legacy: stringify the tool result and trim. Frontend
+    parses this as JSON to detect errors ({"error": ...} → red chip),
+    so dicts/lists must round-trip through json.dumps."""
+    if isinstance(result, str):
+        s = result
+    else:
+        try:
+            s = json.dumps(result)
+        except Exception:  # noqa: BLE001
+            s = str(result)
+    return s[:max_chars]
+
+
 def _wrap_tool_as_function_tool(
     tool: Any,
+    *,
+    on_tool_event: Optional[ToolEventCallback] = None,
 ) -> Callable[..., Awaitable[Any]]:
     """Build a framework FunctionTool from a legacy Tool dataclass.
 
@@ -103,6 +142,12 @@ def _wrap_tool_as_function_tool(
     tool_call, it calls the wrapper with the deserialized arguments
     as kwargs. Our existing executors take a single ``args: dict``
     parameter, so the wrapper repacks kwargs into that shape.
+
+    If ``on_tool_event`` is provided, the wrapper emits
+    ``tool_call_started`` before the executor runs and
+    ``tool_call_completed`` after — same JSON envelopes the legacy
+    voicechat router emitted, so the frontend's tool-chip rendering
+    works unchanged.
     """
     info = FunctionToolInfo(
         name=tool.name,
@@ -111,23 +156,34 @@ def _wrap_tool_as_function_tool(
     )
 
     async def _wrapper(**kwargs: Any) -> Any:
-        # Our executors expect ``args: dict``. Repack the kwargs the
-        # framework provides (deserialized from the LLM's tool_call
-        # arguments JSON) into that shape.
+        # Per-invocation id so the frontend can match start ↔ completed.
+        # Framework doesn't expose the LLM's tool_call id to the
+        # wrapper, so we mint our own.
+        call_id = uuid.uuid4().hex[:12]
+        await _emit_tool_event(on_tool_event, "tool_call_started", {
+            "id": call_id,
+            "name": tool.name,
+            "arguments": kwargs,
+            "kind": "builtin",
+        })
         try:
             result = await tool.executor(kwargs)
         except Exception as exc:  # noqa: BLE001
             _log.exception("tool %r executor failed: %s", tool.name, exc)
-            return json.dumps({"error": str(exc)})
-        # The framework expects a string-or-JSON-serializable return
-        # value — we already normalize complex results to dicts in
-        # the executors, so this is usually direct.
+            err_payload = {"error": str(exc)}
+            await _emit_tool_event(on_tool_event, "tool_call_completed", {
+                "id": call_id,
+                "name": tool.name,
+                "result_preview": _result_preview(err_payload),
+            })
+            return json.dumps(err_payload)
+        await _emit_tool_event(on_tool_event, "tool_call_completed", {
+            "id": call_id,
+            "name": tool.name,
+            "result_preview": _result_preview(result),
+        })
         return result
 
-    # Attach the framework's introspection hooks. ``_tool_info`` is
-    # what the framework checks (see utils.get_tool_info / Agent.register_tools).
-    # ``__name__`` matters for log lines and the FunctionToolInfo's
-    # default when no explicit name is set.
     _wrapper.__name__ = tool.name
     _wrapper.__doc__ = tool.description
     setattr(_wrapper, "_tool_info", info)
@@ -136,6 +192,8 @@ def _wrap_tool_as_function_tool(
 
 def _wrap_custom_tool_as_function_tool(
     custom_tool: Any,
+    *,
+    on_tool_event: Optional[ToolEventCallback] = None,
 ) -> Callable[..., Awaitable[Any]]:
     """Build a framework FunctionTool from a CustomToolDef row.
 
@@ -143,6 +201,10 @@ def _wrap_custom_tool_as_function_tool(
     webhook-POST + auth + SSRF-guarded path the legacy voicechat
     used. The wrapper repackages the framework's kwargs into the
     JSON-string-arguments shape ``dispatch_custom_tool`` expects.
+
+    Emits ``tool_call_started`` / ``tool_call_completed`` with
+    ``kind="custom"`` so the frontend can tag the chip differently
+    from built-in tools (the legacy router did the same).
     """
     info = FunctionToolInfo(
         name=custom_tool.name,
@@ -152,13 +214,32 @@ def _wrap_custom_tool_as_function_tool(
 
     async def _wrapper(**kwargs: Any) -> Any:
         from agent_tools_service import dispatch_custom_tool  # late import
+        call_id = uuid.uuid4().hex[:12]
+        await _emit_tool_event(on_tool_event, "tool_call_started", {
+            "id": call_id,
+            "name": custom_tool.name,
+            "arguments": kwargs,
+            "kind": "custom",
+        })
         try:
-            return await dispatch_custom_tool(custom_tool, json.dumps(kwargs))
+            result = await dispatch_custom_tool(custom_tool, json.dumps(kwargs))
         except Exception as exc:  # noqa: BLE001
             _log.exception(
                 "custom tool %r dispatch failed: %s", custom_tool.name, exc,
             )
-            return json.dumps({"error": str(exc)})
+            err_payload = {"error": str(exc)}
+            await _emit_tool_event(on_tool_event, "tool_call_completed", {
+                "id": call_id,
+                "name": custom_tool.name,
+                "result_preview": _result_preview(err_payload),
+            })
+            return json.dumps(err_payload)
+        await _emit_tool_event(on_tool_event, "tool_call_completed", {
+            "id": call_id,
+            "name": custom_tool.name,
+            "result_preview": _result_preview(result),
+        })
+        return result
 
     _wrapper.__name__ = custom_tool.name
     _wrapper.__doc__ = custom_tool.description
