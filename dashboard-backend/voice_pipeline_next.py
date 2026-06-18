@@ -361,6 +361,12 @@ async def run_next_session(
             if first_message:
                 await self.session.say(first_message)
 
+        async def on_exit(self) -> None:
+            # No teardown hook needed — session cleanup happens in the
+            # ``finally`` block of run_next_session (transport, pipeline,
+            # billing, recorder all close there).
+            pass
+
     agent = _VocenceAgent()
 
     # Bridge transport. The framework's AgentSession reads
