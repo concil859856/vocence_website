@@ -388,16 +388,12 @@ async def run_videosdk_session(
             return
         loop.create_task(_send_safely({"type": "transcript", "text": text}))
 
-    def _on_content_generated(data: Any) -> None:
-        text = ""
-        if isinstance(data, dict):
-            text = (data.get("text") or "").strip()
-        if text:
-            # Single token event with the full reply — replaces the
-            # legacy token-stream UX (text appears all at once when
-            # ready instead of typing-style stream). Real streaming
-            # lands in Phase A.6+ via @pipeline.on("llm").
-            loop.create_task(_send_safely({"type": "token", "text": text}))
+    def _on_content_generated(_data: Any) -> None:
+        # No-op now that the @pipeline.on("llm") streaming hook
+        # below sends per-token deltas as they materialize. We
+        # keep the listener registered so future code can add
+        # content-complete telemetry without re-wiring.
+        return
 
     def _on_synthesis_complete(_data: Any = None) -> None:
         loop.create_task(_send_safely({"type": "turn_end"}))
@@ -416,6 +412,22 @@ async def run_videosdk_session(
     pipeline.on("synthesis_complete", _on_synthesis_complete)
     pipeline.on("backchannel_detected", _on_synthesis_interrupted)
     pipeline.on("error", _on_error)
+
+    # Phase A.10 — streaming token deltas. The framework's
+    # @pipeline.on("llm") hook is an async-generator middleware that
+    # wraps the text stream between LLM and TTS. Every chunk MUST be
+    # yielded through (or TTS gets no input) — alongside, we send a
+    # ``token`` event to the frontend so the chat bubble paces with
+    # the audio instead of dumping the full reply when it's done.
+    @pipeline.on("llm")
+    async def _on_llm_stream(text_stream):  # type: ignore[misc]
+        async for chunk in text_stream:
+            if chunk:
+                try:
+                    await ws.send_json({"type": "token", "text": chunk})
+                except Exception as exc:  # noqa: BLE001
+                    _log.debug("[voice-pipeline-videosdk] token send failed: %s", exc)
+            yield chunk
 
     # ---- Billing (Phase A.7) -------------------------------------------
     # Same VoiceAgentBilling class the legacy path uses — instantiated

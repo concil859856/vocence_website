@@ -276,6 +276,7 @@ def _agent_row_to_response(row: dict) -> dict:
             ),
             "min_delay_ms": cfg.get("min_delay_ms"),
             "record_enabled": bool(cfg.get("record_enabled", False)),
+            "stt_provider": str(cfg.get("stt_provider") or "vocence"),
         },
         "created_at": row["created_at"] or "",
         "updated_at": row["updated_at"] or "",
@@ -432,6 +433,14 @@ class AgentCreateIn(BaseModel):
             "recordings appear under GET /v1/agents/{id}/calls."
         ),
     )
+    stt_provider: Optional[Literal["vocence", "deepgram"]] = Field(
+        default=None,
+        description=(
+            "Speech-to-text provider for this agent. ``vocence`` "
+            "(default) uses our streaming pod; ``deepgram`` opts "
+            "into hosted Nova-3 for accuracy-critical English agents."
+        ),
+    )
 
 
 class AgentPatchIn(BaseModel):
@@ -472,6 +481,7 @@ class AgentPatchIn(BaseModel):
     ultravad_threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     min_delay_ms: Optional[int] = Field(default=None, ge=200, le=2000)
     record_enabled: Optional[bool] = Field(default=None)
+    stt_provider: Optional[Literal["vocence", "deepgram"]] = Field(default=None)
 
 
 class CustomToolCreateIn(BaseModel):
@@ -620,6 +630,7 @@ async def create_agent(body: AgentCreateIn, auth_ctx: dict = Depends(require_api
         ),
         "min_delay_ms": body.min_delay_ms,
         "record_enabled": bool(body.record_enabled) if body.record_enabled is not None else False,
+        "stt_provider": body.stt_provider or "vocence",
     }
     agent_id = uuid.uuid4().hex
     conn = await get_db()
@@ -679,6 +690,7 @@ async def patch_agent(agent_id: str, body: AgentPatchIn, auth_ctx: dict = Depend
         "ultravad_threshold": body.ultravad_threshold,
         "min_delay_ms": body.min_delay_ms,
         "record_enabled": body.record_enabled,
+        "stt_provider": body.stt_provider,
     }
     # ``first_message`` is special: callers pass an empty string to
     # clear the greeting (start silent) and ``null`` to leave it

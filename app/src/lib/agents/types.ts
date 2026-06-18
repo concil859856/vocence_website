@@ -56,6 +56,13 @@ export interface AgentConfig {
    *  the backend's MIN_DELAY_MS env-var default (500 ms). Mirrors
    *  AgentConfigIn.min_delay_ms on the backend. */
   min_delay_ms?: number | null;
+  /** Speech-to-text provider for this agent. ``"vocence"`` uses our
+   *  streaming pod (default, included in the per-minute rate);
+   *  ``"deepgram"`` opts into hosted Nova-3 for accuracy-critical
+   *  English agents. Undefined defaults to vocence on the backend.
+   *  Honored by the new voice pipeline (VOICE_PIPELINE=videosdk).
+   *  Mirrors AgentConfigIn.stt_provider on the backend. */
+  stt_provider?: 'vocence' | 'deepgram';
 }
 
 export interface Agent {

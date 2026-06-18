@@ -497,6 +497,33 @@ export function AgentConfigForm({ name, type, config, availableModels, onChange,
         </Field>
       </Section>
 
+      {/* Speech-to-text provider. Vocence default for cost + cloning
+          consistency; Deepgram opt-in when high English accuracy is
+          worth the per-minute fee. Selector lives per-agent so a
+          customer-support agent can use Deepgram while a test agent
+          uses our pod. Read by the new voice pipeline; legacy path
+          honors it via the STT_PROVIDER env-var equivalent. */}
+      <Section
+        title="Speech recognition"
+        hint="Which provider transcribes the user's speech. Vocence is the default; Deepgram opt-in for accuracy-critical agents."
+      >
+        <Field
+          label="STT provider"
+          hint="Vocence: our streaming pod, included in the per-minute rate. Deepgram: hosted Nova-3, extra cost per minute, often higher English accuracy on noisy lines."
+        >
+          <select
+            value={config.stt_provider ?? 'vocence'}
+            onChange={(e) =>
+              onChange({ config: { stt_provider: e.target.value as 'vocence' | 'deepgram' } })
+            }
+            className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white"
+          >
+            <option value="vocence">Vocence (default)</option>
+            <option value="deepgram">Deepgram</option>
+          </select>
+        </Field>
+      </Section>
+
       {/* Tools, built-in capabilities the agent can call mid-conversation.
           Web search, weather, time, URL fetch, Wikipedia. Tools the
           deployment can't run (missing API key) render disabled with

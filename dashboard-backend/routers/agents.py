@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import RedirectResponse, StreamingResponse
@@ -101,6 +101,14 @@ class AgentConfigIn(BaseModel):
     # surface a download. Off by default for privacy — owners
     # explicitly turn it on in agent settings.
     record_enabled: bool = False
+    # Speech-to-text provider for THIS agent. "vocence" routes audio
+    # to our streaming pod (default — included in the per-minute rate
+    # and consistent with cloning TTS); "deepgram" opts into hosted
+    # Nova-3 at extra cost for accuracy-critical English agents.
+    # Honored by the new voice pipeline (VOICE_PIPELINE=videosdk);
+    # the legacy path follows the deployment-wide STT_PROVIDER env
+    # so a per-agent override there is a future improvement.
+    stt_provider: Literal["vocence", "deepgram"] = "vocence"
 
 
 class AgentCreateIn(BaseModel):
