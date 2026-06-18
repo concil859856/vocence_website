@@ -275,6 +275,8 @@ async def run_videosdk_session(
     agent_config: dict[str, Any],
     user_id: str,
     session_id: str,
+    agent_id: str | None = None,
+    free_mode: bool = False,
 ) -> None:
     """Entry point for a voicechat session on the new pipeline.
 
@@ -320,11 +322,19 @@ async def run_videosdk_session(
     )
     first_message = (agent_config.get("first_message") or "").strip() or None
 
+    # Tool list — built-in tools the agent has enabled. Custom
+    # webhook tools (per-agent /v1/agent-tools registrations) are
+    # bridged in a follow-up commit; the wrapper signature is the
+    # same so adding them is local to build_tools_for_agent.
+    from voice_pipeline_videosdk_tools import build_tools_for_agent
+    tools_list = build_tools_for_agent(agent_config)
+
     class _VocenceAgent(Agent):  # type: ignore[name-defined,misc]
         def __init__(self) -> None:
             super().__init__(
                 use_base_instructions=True,
                 instructions=instructions,
+                tools=tools_list,
             )
 
         async def on_enter(self) -> None:
@@ -407,6 +417,141 @@ async def run_videosdk_session(
     pipeline.on("backchannel_detected", _on_synthesis_interrupted)
     pipeline.on("error", _on_error)
 
+    # ---- Billing (Phase A.7) -------------------------------------------
+    # Same VoiceAgentBilling class the legacy path uses — instantiated
+    # here so the new path bills consistently. on_session_end fires on
+    # billing-exhausted / max-duration / idle-timeout; on_deduct
+    # surfaces the new balance to the frontend after each tick.
+    from voice_agent_billing import VoiceAgentBilling  # local import
+    billing: Any | None = None
+    if agent_id is not None:
+        async def _on_session_end(reason: str) -> None:
+            await _send_safely({"type": "session_timeout", "code": reason})
+            with _suppress():
+                await ws.close(code=4408)
+
+        async def _on_deduct(remaining: int) -> None:
+            await _send_safely({
+                "type": "billing_update", "credits_remaining": remaining,
+            })
+
+        billing = VoiceAgentBilling(
+            user_id=user_id,
+            session_id=session_id,
+            agent_id=agent_id,
+            on_session_end=_on_session_end,
+            on_deduct=_on_deduct,
+            free_mode=free_mode,
+        )
+        # Framework lifecycle hooks → billing turn tracker.
+        # synthesis_complete = agent's TTS finished playing, so the
+        # turn is "ended" from a billing standpoint (per-second tick
+        # stops). transcript_ready = user committed a new turn → start.
+        def _billing_turn_start(_d: Any = None) -> None:
+            if billing is not None:
+                billing.mark_turn_started()
+
+        def _billing_turn_end(_d: Any = None) -> None:
+            if billing is not None:
+                billing.mark_turn_ended()
+
+        pipeline.on("transcript_ready", _billing_turn_start)
+        pipeline.on("synthesis_complete", _billing_turn_end)
+        pipeline.on("backchannel_detected", _billing_turn_end)
+
+    # ---- Knowledge-base RAG (Phase A.8) -------------------------------
+    # When an agent has a knowledge base, every user turn should be
+    # enriched with the top-k most relevant chunks before the LLM
+    # sees it. agent_knowledge.search_agent_knowledge is cheap when
+    # no KB is attached (returns empty list), so we wire it
+    # unconditionally and let it no-op when there's nothing to find.
+    if agent_id is not None:
+        from agent_knowledge import search_agent_knowledge
+        from voicechat_knowledge import VOICE_CHAT_FORMAT_RULES
+
+        _last_enriched_user_msg: dict[str, Any] = {}
+
+        async def _enrich_with_rag(transcript: str) -> None:
+            """Fire RAG retrieval + mutate the last user message in
+            chat_context to prepend the retrieved chunks. Runs in a
+            tight window between transcript_ready and the LLM call."""
+            text = (transcript or "").strip()
+            if not text:
+                return
+            try:
+                chunks = await search_agent_knowledge(agent_id, text, top_k=5)
+            except Exception:  # noqa: BLE001
+                _log.exception("[voice-pipeline-videosdk] RAG search failed")
+                return
+            if not chunks:
+                return
+            try:
+                items = agent.chat_context.items  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001
+                return
+            # Find the LAST user message — that's the one the LLM
+            # is about to act on. Prepend the RAG block as context.
+            for item in reversed(items):
+                if getattr(item, "role", None) is not None and \
+                   str(item.role).endswith("user"):
+                    rag_block = (
+                        "\n\n[KNOWLEDGE-BASE CONTEXT — use to ground "
+                        "your reply, do not quote this block verbatim]\n"
+                        + "\n---\n".join(chunks)
+                        + "\n[END KNOWLEDGE-BASE CONTEXT]\n\n"
+                    )
+                    original = item.content if isinstance(item.content, str) else ""
+                    item.content = rag_block + original  # type: ignore[assignment]
+                    _last_enriched_user_msg["text"] = original
+                    break
+
+        def _on_user_turn_start(transcript: Any) -> None:
+            text = transcript if isinstance(transcript, str) else \
+                (transcript.get("text") if isinstance(transcript, dict) else "")
+            loop.create_task(_enrich_with_rag(text or ""))
+
+        pipeline.on("user_turn_start", _on_user_turn_start)
+
+    # ---- Call recorder (Phase A.6) ------------------------------------
+    # Stereo WAV recording when the agent has record_enabled. The
+    # recorder needs raw PCM frames on BOTH legs:
+    #   - user channel (left): from transport's inbound read loop
+    #   - agent channel (right): from TTS via pipeline.audio_track
+    # Hook by wrapping the transport's audio sink + pipeline.on_audio_delta.
+    from call_recorder import CallRecorder  # local import
+    recorder: Any | None = None
+    if bool(agent_config.get("record_enabled")):
+        recorder = CallRecorder(user_id=user_id, session_id=session_id)
+
+    # Wrap the transport's inbound read with a user-leg tee. The
+    # transport itself routes audio to pipeline.on_audio_delta —
+    # we wrap that so the recorder sees every user PCM frame too.
+    if recorder is not None:
+        _orig_on_audio_delta = getattr(pipeline, "on_audio_delta", None)
+        if _orig_on_audio_delta is not None:
+            async def _on_audio_delta_with_recorder(frame: bytes) -> None:
+                recorder.push_user(frame)
+                await _orig_on_audio_delta(frame)
+            pipeline.on_audio_delta = _on_audio_delta_with_recorder  # type: ignore[attr-defined]
+        # Agent-leg tee: register a sink on the pipeline's TTS audio
+        # track that pushes every outbound PCM chunk into the
+        # recorder's agent buffer. Same sink shape as the WS forward.
+        async def _agent_recording_sink(data: bytes) -> None:
+            recorder.push_agent(data)
+        pl_track = getattr(pipeline, "audio_track", None)
+        if pl_track is not None and hasattr(pl_track, "add_sink"):
+            pl_track.add_sink(_agent_recording_sink)
+        # Pair the recorder's agent-turn gate with TTS lifecycle so
+        # mid-stream barge-ins trim the right channel correctly.
+        def _on_tts_started(_d: Any = None) -> None:
+            recorder.notify_agent_turn_started()
+
+        def _on_tts_done(_d: Any = None) -> None:
+            recorder.notify_agent_tts_done()
+
+        pipeline.on("synthesis_started", _on_tts_started)
+        pipeline.on("synthesis_complete", _on_tts_done)
+
     # Send the initial ``ready`` envelope so the frontend transitions
     # out of its "connecting" state. Mirrors what the legacy handler
     # emits right after auth + agent load complete.
@@ -440,6 +585,37 @@ async def run_videosdk_session(
         with _suppress():
             if hasattr(pipeline, "cleanup"):
                 await pipeline.cleanup()
+        # Billing reconciliation — final tick + transaction row.
+        if billing is not None:
+            with _suppress():
+                await billing.stop()
+        # Recording: build + upload the stereo WAV, persist on the
+        # voice_call_logs row. Mirrors the legacy session_close path.
+        if recorder is not None:
+            try:
+                bucket, key, n_bytes = await recorder.close()
+                if bucket and key and n_bytes > 0 and agent_id is not None:
+                    _log.info(
+                        "[voice-pipeline-videosdk] recording_uploaded "
+                        "session=%s bucket=%s key=%s bytes=%d",
+                        session_id, bucket, key, n_bytes,
+                    )
+                    # Persist on voice_call_logs row so the call-history
+                    # endpoints can later mint a presigned URL.
+                    with _suppress():
+                        from local_db import get_connection
+                        conn = await get_connection()
+                        try:
+                            await conn.execute(
+                                "UPDATE voice_call_logs SET recording_bucket=?, "
+                                "recording_path=?, recording_bytes=? WHERE session_id=?",
+                                (bucket, key, n_bytes, session_id),
+                            )
+                            await conn.commit()
+                        finally:
+                            await conn.close()
+            except Exception:  # noqa: BLE001
+                _log.exception("[voice-pipeline-videosdk] recorder.close failed")
         _log.info(
             "[voice-pipeline-videosdk] session end session=%s",
             session_id,

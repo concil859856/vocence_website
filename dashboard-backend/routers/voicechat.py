@@ -706,6 +706,7 @@ async def voicechat_session(
                 agent_config=agent_ctx.get("config") or {},
                 user_id=auth_user_id,
                 session_id=session_id,
+                agent_id=agent_id,
             )
             return
         except NotImplementedError as exc:
