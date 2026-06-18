@@ -213,7 +213,16 @@ def build_pipeline_from_agent_config(
         # default, 16 kHz bytes get interpreted as 48 kHz audio,
         # making VAD timing 3x slower than real-time (END_OF_SPEECH
         # fires after 3x the actual silence). Explicit match.
-        vad=SileroVAD(input_sample_rate=16000),  # type: ignore[name-defined]
+        #
+        # min_silence_duration bumped 0.4 → 0.5 — gives a bit more
+        # breathing room mid-sentence so a natural quarter-second
+        # pause ("uh", "you know") doesn't fire END_OF_SPEECH and
+        # commit the turn prematurely. The framework default felt
+        # too aggressive in real conversations.
+        vad=SileroVAD(  # type: ignore[name-defined]
+            input_sample_rate=16000,
+            min_silence_duration=0.5,
+        ),
         turn_detector=TurnDetector(),  # type: ignore[name-defined]
         eou_config=eou_cfg,
         interrupt_config=interrupt_cfg,
