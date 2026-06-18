@@ -727,6 +727,34 @@ async def run_next_session(
         flushes its local audio buffer (e.g. greeting tail still draining
         through the worklet) without disturbing orchestrator state.
         """
+        # CRITICAL: trim the recording's agent buffer at this moment,
+        # UNCONDITIONALLY — even if the framework decides not to
+        # interrupt (because agent_state already transitioned to
+        # LISTENING in the gap between TTS finishing and the cancel
+        # arriving). Otherwise the buffer keeps all the bytes the
+        # framework already produced and gets flushed only at the
+        # NEXT turn's notify_agent_turn_started call, which uses
+        # _now_ms() at that later moment — resulting in a recording
+        # where the agent's voice continues past the user's
+        # interruption all the way to where the next agent reply
+        # begins (typically a couple seconds AFTER the user finished
+        # interrupting). mark_agent_barge_in is a no-op if no agent
+        # turn is open AND if record_enabled is off (recorder=None
+        # is guarded by the if below).
+        if recorder is not None:
+            try:
+                _log.info(
+                    "[voice-pipeline-next] recorder: cancel-frame trim "
+                    "at now=%dms (unconditional)",
+                    recorder._now_ms(),
+                )
+                recorder.mark_agent_barge_in()
+            except Exception:  # noqa: BLE001
+                _log.exception(
+                    "[voice-pipeline-next] recorder.mark_agent_barge_in "
+                    "from cancel-frame failed"
+                )
+
         try:
             from videosdk.agents.utils import AgentState  # type: ignore[import-not-found]
         except Exception:  # noqa: BLE001
