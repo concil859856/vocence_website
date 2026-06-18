@@ -1116,6 +1116,18 @@ async def run_next_session(
     recorder: Any | None = None
     if bool(agent_config.get("record_enabled")):
         recorder = CallRecorder(user_id=user_id, session_id=session_id)
+        # ``start()`` anchors the recorder's monotonic clock AND flips
+        # ``_started=True`` — without this every push_user / push_agent
+        # bails at the ``if not self.started`` guard and the session
+        # ends with zero bytes captured (recorder.close returns
+        # (None, None, 0) and the call log shows "No recording"). The
+        # legacy router calls start() right after constructing the
+        # recorder; we missed that detail in the new pipeline.
+        recorder.start()
+        _log.info(
+            "[voice-pipeline-next] recording_started session=%s user=%s",
+            session_id, user_id,
+        )
 
     # Wrap the transport's inbound read with a user-leg tee. The
     # transport itself routes audio to pipeline.on_audio_delta —
