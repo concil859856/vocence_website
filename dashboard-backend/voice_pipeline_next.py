@@ -747,10 +747,21 @@ async def run_next_session(
                     _last_enriched_user_msg["text"] = original
                     break
 
-        def _on_user_turn_start(transcript: Any) -> None:
+        async def _on_user_turn_start(transcript: Any) -> None:
+            # Must be ``async def`` — the framework's pipeline_hooks
+            # does ``await hook(transcript)``. A sync ``def`` returns
+            # None and ``await None`` raises
+            # "object NoneType can't be used in 'await' expression".
+            #
+            # AWAIT the enrichment (don't fire-and-forget with
+            # create_task) — the framework calls this hook synchronously
+            # before content_generation runs, so awaiting here is what
+            # actually guarantees the RAG block lands in the prompt
+            # before the LLM sees it. The previous create_task version
+            # raced the LLM call and the RAG was usually missed.
             text = transcript if isinstance(transcript, str) else \
                 (transcript.get("text") if isinstance(transcript, dict) else "")
-            loop.create_task(_enrich_with_rag(text or ""))
+            await _enrich_with_rag(text or "")
 
         pipeline.on("user_turn_start", _on_user_turn_start)
 
