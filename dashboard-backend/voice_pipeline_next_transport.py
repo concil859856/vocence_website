@@ -195,6 +195,15 @@ class FastAPIWebSocketTransport(BaseTransportHandler):
         messages which the wrapping router handles before / after
         this transport runs).
         """
+        # Per-session counters surface in the session-end log so a
+        # missing-audio diagnosis takes one log read, not a
+        # second-round repro: zero-audio + nonzero ctrl frames means
+        # the FRONTEND didn't ship PCM (mic mute / VAD never fired /
+        # ``stream_start`` was never sent); nonzero audio + STT silent
+        # means the pipeline is the suspect.
+        bytes_frames = 0
+        bytes_total = 0
+        ctrl_frames: dict[str, int] = {}
         try:
             while not self._closed.is_set():
                 try:
@@ -211,6 +220,13 @@ class FastAPIWebSocketTransport(BaseTransportHandler):
                     frame = msg["bytes"]
                     if not frame or self.pipeline is None:
                         continue
+                    bytes_frames += 1
+                    bytes_total += len(frame)
+                    if bytes_frames == 1:
+                        logger.info(
+                            "FastAPIWebSocketTransport: first PCM frame "
+                            "received (%d bytes)", len(frame),
+                        )
                     on_audio = getattr(self.pipeline, "on_audio_delta", None)
                     if on_audio is None:
                         continue
@@ -234,6 +250,7 @@ class FastAPIWebSocketTransport(BaseTransportHandler):
                 except (json.JSONDecodeError, TypeError):
                     continue
                 mtype = (payload.get("type") or "").lower() if isinstance(payload, dict) else ""
+                ctrl_frames[mtype] = ctrl_frames.get(mtype, 0) + 1
                 if mtype == "text" and self._on_text_frame is not None:
                     body = (payload.get("text") or "").strip() if isinstance(payload, dict) else ""
                     if body:
@@ -250,6 +267,11 @@ class FastAPIWebSocketTransport(BaseTransportHandler):
             pass
         finally:
             self._closed.set()
+            logger.info(
+                "FastAPIWebSocketTransport: read loop end "
+                "pcm_frames=%d pcm_bytes=%d ctrl=%s",
+                bytes_frames, bytes_total, dict(ctrl_frames),
+            )
 
 
 class _suppress:
