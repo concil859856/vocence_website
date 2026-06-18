@@ -26,10 +26,106 @@ _log = logging.getLogger(__name__)
 
 _DEFAULT_SAMPLE_RATE = 24_000
 _DEFAULT_CHANNELS = 1
-# Per-segment text cap. Mirrors the legacy clone-service limit so we
-# don't get truncated mid-segment. The framework's sentence chunker
-# upstream should keep segments well under this.
-_MAX_TEXT_CHARS_PER_SPEAK = 4000
+# Hard cap per ``speak`` frame on the pod side: the cloning service
+# rejects any start.text over 1000 chars with bad_request. We chunk
+# anything longer onto sentence boundaries (see _chunk_for_speak)
+# and send each piece as a separate speak — the pod plays them
+# back-to-back so the listener hears continuous speech.
+_MAX_TEXT_CHARS_PER_SPEAK = 900
+# Sentence-end punctuation we split on. Keeps the chunker simple
+# while handling ~99% of natural speech text. Question marks and
+# exclamation marks join the period to handle "Sure thing! Here's…"
+# style replies without losing the boundary.
+_SENTENCE_TERMINATORS = ".!?\n"
+# Fallback terminators when a single sentence already exceeds the
+# cap — split on clause boundaries so we don't break a word.
+_CLAUSE_TERMINATORS = ",;:"
+
+
+def _chunk_for_speak(text: str) -> list[str]:
+    """Pack ``text`` into chunks each ≤ ``_MAX_TEXT_CHARS_PER_SPEAK``.
+
+    Priority order:
+      1. Split on sentence terminators (. ! ? newline). Pack adjacent
+         sentences into a single chunk while it stays under the cap.
+      2. If one sentence is itself over the cap, split it on clause
+         terminators (, ; :) and pack the same way.
+      3. Last resort: hard-cut at the cap. Rare in practice — would
+         only happen for a single 900+ char run with no punctuation
+         (URLs, code blocks, etc.).
+    """
+    text = (text or "").strip()
+    if not text:
+        return []
+    if len(text) <= _MAX_TEXT_CHARS_PER_SPEAK:
+        return [text]
+    sentences = _split_keeping_delim(text, _SENTENCE_TERMINATORS)
+    out: list[str] = []
+    buf = ""
+    for s in sentences:
+        s = s.strip()
+        if not s:
+            continue
+        if len(s) > _MAX_TEXT_CHARS_PER_SPEAK:
+            if buf:
+                out.append(buf)
+                buf = ""
+            out.extend(_split_oversize_sentence(s))
+            continue
+        candidate = (buf + " " + s).strip() if buf else s
+        if len(candidate) > _MAX_TEXT_CHARS_PER_SPEAK:
+            if buf:
+                out.append(buf)
+            buf = s
+        else:
+            buf = candidate
+    if buf:
+        out.append(buf)
+    return out
+
+
+def _split_oversize_sentence(sentence: str) -> list[str]:
+    """A single sentence over the cap — split on clauses, fallback to
+    a hard char cut."""
+    parts = _split_keeping_delim(sentence, _CLAUSE_TERMINATORS)
+    out: list[str] = []
+    buf = ""
+    for p in parts:
+        p = p.strip()
+        if not p:
+            continue
+        if len(p) > _MAX_TEXT_CHARS_PER_SPEAK:
+            if buf:
+                out.append(buf)
+                buf = ""
+            for i in range(0, len(p), _MAX_TEXT_CHARS_PER_SPEAK):
+                out.append(p[i:i + _MAX_TEXT_CHARS_PER_SPEAK])
+            continue
+        candidate = (buf + " " + p).strip() if buf else p
+        if len(candidate) > _MAX_TEXT_CHARS_PER_SPEAK:
+            if buf:
+                out.append(buf)
+            buf = p
+        else:
+            buf = candidate
+    if buf:
+        out.append(buf)
+    return out
+
+
+def _split_keeping_delim(text: str, delims: str) -> list[str]:
+    """Split ``text`` on any character in ``delims``, keeping the
+    delimiter attached to the preceding piece (so we don't lose
+    end-of-sentence punctuation in the output)."""
+    out: list[str] = []
+    start = 0
+    for i, ch in enumerate(text):
+        if ch in delims:
+            out.append(text[start:i + 1])
+            start = i + 1
+    if start < len(text):
+        out.append(text[start:])
+    return out
 
 
 class InternalVocenceTTS(TTS):
@@ -170,15 +266,22 @@ class InternalVocenceTTS(TTS):
                 self._warmer = make_tts_warmer_for_voice(self.voice)
 
     async def _speak_once(self, text: str) -> None:
+        """Synthesize ``text``. If it exceeds the pod's per-frame cap,
+        chunk on sentence boundaries and feed the pod one piece at a
+        time — the pod-side pin keeps all chunks of one reply on the
+        same model instance so the listener hears continuous speech,
+        not piecewise re-warm.
+        """
         if not text:
             return
-        if len(text) > _MAX_TEXT_CHARS_PER_SPEAK:
-            _log.warning(
-                "[voice_pipeline_next_tts] truncating %d-char segment to %d",
-                len(text), _MAX_TEXT_CHARS_PER_SPEAK,
-            )
-            text = text[:_MAX_TEXT_CHARS_PER_SPEAK]
+        for piece in _chunk_for_speak(text):
+            if self._interrupted:
+                return
+            await self._speak_piece(piece)
 
+    async def _speak_piece(self, text: str) -> None:
+        """Single pod ``speak`` round-trip. Pre-condition: ``text`` is
+        already ≤ ``_MAX_TEXT_CHARS_PER_SPEAK``."""
         from voicechat_service import stream_tts_for_voice  # type: ignore[import-not-found]
 
         try:
