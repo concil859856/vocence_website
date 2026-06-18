@@ -554,7 +554,14 @@ async def run_next_session(
     # call-history endpoints in Studio + the developer API). Updated
     # below as billing/end signals come in.
     _session_started_at = datetime.now(timezone.utc)
-    _end_reason_holder: dict[str, str] = {"reason": "client_closed"}
+    # Default end-reason: ``user_hangup`` matches the legacy router AND
+    # the frontend's CallEndReason TS enum (also accepted values:
+    # max_duration / idle_timeout / billing_exhausted / free_time_up /
+    # error / unknown). Writing an unrecognized string here makes the
+    # replay page's END_REASON_CHIP lookup throw, which crashes the
+    # whole React tree → black screen. Overwritten by _on_session_end
+    # when billing/idle/duration close the WS for a known reason.
+    _end_reason_holder: dict[str, str] = {"reason": "user_hangup"}
     pipeline = build_pipeline_from_agent_config(agent_config, user_id=user_id)
 
     # Build a minimal Agent subclass from the agent config. The

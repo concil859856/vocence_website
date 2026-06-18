@@ -41,6 +41,19 @@ const END_REASON_CHIP: Record<CallEndReason, { label: string; chip: string }> = 
   unknown:            { label: 'Unknown',        chip: 'bg-white/[0.06] text-white/50' },
 };
 
+// Defensive lookup so a row whose end_reason came from a newer
+// backend (or an old row whose value was never normalized — e.g.
+// "client_closed" written by an early build of the new pipeline)
+// doesn't crash the whole replay page. END_REASON_CHIP[X] on an
+// unknown key returns undefined, then .chip throws "Cannot read
+// property 'chip' of undefined" → React unmounts → black screen.
+function endReasonChip(reason: string): { label: string; chip: string } {
+  return (
+    END_REASON_CHIP[reason as CallEndReason] ??
+    { label: reason || 'Unknown', chip: 'bg-white/[0.06] text-white/50' }
+  );
+}
+
 function formatDuration(ms: number): string {
   if (ms < 1000) return '0s';
   const sec = Math.round(ms / 1000);
@@ -207,9 +220,14 @@ export function AgentSessionReplay() {
                 <div className="bg-white/[0.02] border border-white/10 rounded-xl px-4 py-3">
                   <div className="text-[11px] uppercase tracking-wider text-white/40">Ended</div>
                   <div className="mt-1">
-                    <span className={`px-2 py-0.5 rounded-full text-xs ${END_REASON_CHIP[call.end_reason].chip}`}>
-                      {END_REASON_CHIP[call.end_reason].label}
-                    </span>
+                    {(() => {
+                      const c = endReasonChip(call.end_reason);
+                      return (
+                        <span className={`px-2 py-0.5 rounded-full text-xs ${c.chip}`}>
+                          {c.label}
+                        </span>
+                      );
+                    })()}
                   </div>
                 </div>
               </div>
