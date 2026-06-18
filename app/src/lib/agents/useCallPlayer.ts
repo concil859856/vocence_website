@@ -15,7 +15,7 @@
  * so callers can disable buttons / show toasts while in flight.
  */
 
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { useStudioPlayer, type Track } from '../../contexts/StudioPlayerContext';
 import { agentsApi } from './api';
 
@@ -50,6 +50,34 @@ export function useCallPlayer(token: string | null) {
   // visual cue without subscribing to the global track URL.
   const [loadedSessionId, setLoadedSessionId] = useState<string | null>(null);
 
+  // Per-session presigned-URL cache. R2 issues a different signed URL
+  // every time we call getCallAudioUrl (the signature has a timestamp
+  // + nonce), so re-fetching makes ``track.src`` change between
+  // clicks on the same call. That defeats the player's "same track
+  // already loaded → just seek" fast path and triggers a full audio
+  // element re-load on every transcript-row click — the user perceives
+  // it as the player restarting / seeking to the wrong spot rather
+  // than smoothly jumping. Cache the URL by session_id so subsequent
+  // playAt() calls on the same call reuse the same src.
+  //
+  // Presigned URLs expire (R2 default ~7 days, our endpoint uses
+  // server default). Worth invalidating on a 403/expired error, but
+  // a single session-replay sitting won't outlast even a 1-hour
+  // signature; refresh-on-error is a follow-up if it becomes a
+  // problem.
+  const urlCacheRef = useRef<Map<string, string>>(new Map());
+
+  const fetchOrCachedUrl = useCallback(
+    async (agentId: string, sessionId: string): Promise<string> => {
+      const cached = urlCacheRef.current.get(sessionId);
+      if (cached) return cached;
+      const url = await agentsApi.getCallAudioUrl(token!, agentId, sessionId);
+      urlCacheRef.current.set(sessionId, url);
+      return url;
+    },
+    [token],
+  );
+
   const buildTrack = useCallback(
     (meta: CallTrackMeta, url: string): Track => ({
       src: url,
@@ -79,7 +107,7 @@ export function useCallPlayer(token: string | null) {
       setStatus('loading');
       setError(null);
       try {
-        const url = await agentsApi.getCallAudioUrl(token, meta.agentId, meta.sessionId);
+        const url = await fetchOrCachedUrl(meta.agentId, meta.sessionId);
         player.play(buildTrack(meta, url));
         setLoadedSessionId(meta.sessionId);
         setStatus('idle');
@@ -89,7 +117,7 @@ export function useCallPlayer(token: string | null) {
         setStatus('error');
       }
     },
-    [token, player, buildTrack],
+    [token, player, buildTrack, fetchOrCachedUrl],
   );
 
   const playAt = useCallback(
@@ -98,7 +126,7 @@ export function useCallPlayer(token: string | null) {
       setStatus('loading');
       setError(null);
       try {
-        const url = await agentsApi.getCallAudioUrl(token, meta.agentId, meta.sessionId);
+        const url = await fetchOrCachedUrl(meta.agentId, meta.sessionId);
         player.playAt(buildTrack(meta, url), startSec);
         setLoadedSessionId(meta.sessionId);
         setStatus('idle');
@@ -108,7 +136,7 @@ export function useCallPlayer(token: string | null) {
         setStatus('error');
       }
     },
-    [token, player, buildTrack],
+    [token, player, buildTrack, fetchOrCachedUrl],
   );
 
   return { play, playAt, status, error, loadedSessionId };

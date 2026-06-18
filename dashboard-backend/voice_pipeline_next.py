@@ -1181,6 +1181,39 @@ async def run_next_session(
 
             _tts_for_recorder.synthesize = _synth_with_recorder  # type: ignore[assignment]
 
+        # Barge-in → trim the open agent turn at the wall-clock moment
+        # the user took the floor. Without this, the recording keeps
+        # all the over-produced TTS bytes that were synthesized AFTER
+        # the user interrupted (TTS streams faster than realtime, so
+        # the buffer often holds 1-3 seconds of "agent kept talking"
+        # audio the user never heard). ``mark_agent_barge_in`` keeps
+        # only the bytes the user could have heard before the cancel,
+        # and closes the gate so straggling push_agent calls from the
+        # cancelled TTS task (1 s cooperative-cancellation grace) get
+        # dropped instead of bleeding into the next turn's recording.
+        #
+        # The framework fires ``synthesis_interrupted`` on the
+        # ``speech_generation`` component when the orchestrator's
+        # _interrupt_pipeline runs. Pipeline-level
+        # ``backchannel_detected`` also fires on backchannel detection.
+        # Both are barge-in signals from the recorder's POV.
+        def _recorder_barge_in(_d: Any = None) -> None:
+            try:
+                recorder.mark_agent_barge_in()
+            except Exception:  # noqa: BLE001
+                _log.debug(
+                    "[voice-pipeline-next] recorder.mark_agent_barge_in failed",
+                    exc_info=True,
+                )
+
+        _orch_for_rec = getattr(pipeline, "orchestrator", None)
+        _sg_for_rec = (
+            getattr(_orch_for_rec, "speech_generation", None) if _orch_for_rec else None
+        )
+        if _sg_for_rec is not None:
+            _sg_for_rec.on("synthesis_interrupted", _recorder_barge_in)
+        pipeline.on("backchannel_detected", _recorder_barge_in)
+
     # Per-turn studio_voicechat_history INSERT. Same purpose as
     # legacy's _record_turn — without this, the call-history modal
     # in Studio is empty for every session served by the new
