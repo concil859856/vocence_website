@@ -113,8 +113,37 @@ def _ensure_next_pipeline_loaded() -> None:
         "InternalVocenceTTS": InternalVocenceTTS,
         "InternalVocenceSTT": InternalVocenceSTT,
     })
+    _disable_framework_analytics()
     _next_pipeline_loaded = True
     _log.info("[voice-pipeline-next] framework + plugins loaded")
+
+
+def _disable_framework_analytics() -> None:
+    """Silence + opt out of the framework's hosted analytics phone-home.
+
+    Every turn the framework's ``AnalyticsClient`` tries to POST to
+    ``https://api.videosdk.live/v2/sessions/{id}/agent-analytics``.
+    We don't use their hosted infra (no meeting room, no session id
+    against their backend), so:
+
+      1. Every call logs ``Failed sending session data : No session ID``
+         as ERROR — noise that masks real errors.
+      2. If they ever did get a session id, this would leak voice-call
+         metadata (turn count, latency, model ids) to their endpoint.
+
+    Both reasons are sufficient on their own. Patch the bound method
+    on the class itself to a no-op so every session's AnalyticsClient
+    instance silently drops the data.
+    """
+    try:
+        from videosdk.agents.metrics.analytics import AnalyticsClient  # type: ignore[import-not-found]
+    except ImportError:
+        return
+
+    def _noop_send(self: Any, _interaction_data: Any) -> None:
+        return None
+
+    AnalyticsClient.send_interaction_analytics_safe = _noop_send  # type: ignore[assignment]
 
 
 def build_pipeline_from_agent_config(
