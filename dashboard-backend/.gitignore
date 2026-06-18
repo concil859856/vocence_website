@@ -10,3 +10,4 @@ htmlcov/
 *.log
 uploads/
 data/
+venv_3.12/
