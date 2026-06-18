@@ -20,6 +20,7 @@ same treatment in a follow-up — they're per-agent and bound via
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
@@ -168,6 +169,20 @@ def _wrap_tool_as_function_tool(
         })
         try:
             result = await tool.executor(kwargs)
+        except asyncio.CancelledError:
+            # Barge-in mid-tool-execution: the framework cancels the
+            # generation task and the tool coroutine raises Cancelled.
+            # Without this branch the chip on the UI spins forever
+            # because tool_call_completed was never emitted. Mark it
+            # cancelled, suppress the cancellation so the framework's
+            # gather doesn't blow up, but DO re-raise so the LLM's
+            # generation loop unwinds cleanly.
+            await _emit_tool_event(on_tool_event, "tool_call_completed", {
+                "id": call_id,
+                "name": tool.name,
+                "result_preview": _result_preview({"error": "cancelled"}),
+            })
+            raise
         except Exception as exc:  # noqa: BLE001
             _log.exception("tool %r executor failed: %s", tool.name, exc)
             err_payload = {"error": str(exc)}
@@ -223,6 +238,16 @@ def _wrap_custom_tool_as_function_tool(
         })
         try:
             result = await dispatch_custom_tool(custom_tool, json.dumps(kwargs))
+        except asyncio.CancelledError:
+            # See _wrap_tool_as_function_tool — same barge-in
+            # situation. Emit completion so the chip stops spinning,
+            # then re-raise so the framework unwinds.
+            await _emit_tool_event(on_tool_event, "tool_call_completed", {
+                "id": call_id,
+                "name": custom_tool.name,
+                "result_preview": _result_preview({"error": "cancelled"}),
+            })
+            raise
         except Exception as exc:  # noqa: BLE001
             _log.exception(
                 "custom tool %r dispatch failed: %s", custom_tool.name, exc,

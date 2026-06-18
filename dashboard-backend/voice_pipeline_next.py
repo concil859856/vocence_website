@@ -682,6 +682,28 @@ async def run_next_session(
     import re as _re
     _RE_PUNCT_LETTER = _re.compile(r"([.!?,:;])([A-Za-z])")
     _prev_tail_holder = {"ch": ""}
+    # Cross-chunk citation-marker stripper state. Some LLMs
+    # (especially Cerebras/GLM after a tool call) like to splice
+    # source citations like 【web_search】 inline into prose. They
+    # leak into the chat bubble AND the TTS audio ("dot dot dot
+    # web search dot dot dot"). Strip them character-by-character so
+    # brackets that span chunk boundaries still close cleanly.
+    _marker_state = {"inside": False}
+
+    def _strip_markers(chunk_str: str) -> str:
+        if not chunk_str:
+            return chunk_str
+        out: list[str] = []
+        for ch in chunk_str:
+            if _marker_state["inside"]:
+                if ch == "】":
+                    _marker_state["inside"] = False
+                continue
+            if ch == "【":
+                _marker_state["inside"] = True
+                continue
+            out.append(ch)
+        return "".join(out)
 
     def _fix_spacing(chunk_str: str) -> str:
         if not chunk_str:
@@ -697,9 +719,17 @@ async def run_next_session(
     @pipeline.on("llm")
     async def _on_llm_stream(text_stream):  # type: ignore[misc]
         _prev_tail_holder["ch"] = ""
+        _marker_state["inside"] = False
         async for chunk in text_stream:
             if isinstance(chunk, str) and chunk:
-                fixed = _fix_spacing(chunk)
+                stripped = _strip_markers(chunk)
+                if not stripped:
+                    # Entire chunk was inside a marker — nothing to
+                    # send to UI or TTS. Yield empty string to keep
+                    # the stream protocol intact.
+                    yield ""
+                    continue
+                fixed = _fix_spacing(stripped)
                 try:
                     await ws.send_json({"type": "token", "text": fixed})
                 except Exception as exc:  # noqa: BLE001
