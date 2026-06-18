@@ -625,13 +625,17 @@ async def run_next_session(
         except Exception as exc:  # noqa: BLE001
             _log.debug("[voice-pipeline-next] send_json failed: %s", exc)
 
-    def _on_transcript_ready(data: Any) -> None:
-        text = ""
-        if isinstance(data, dict):
-            text = (data.get("text") or "").strip()
-        if not text:
-            return
-        loop.create_task(_send_safely({"type": "transcript", "text": text}))
+    def _on_transcript_ready(_data: Any) -> None:
+        # No-op. The transcript is sent to the frontend from the
+        # user_turn_start hook below — that's an async hook the
+        # framework AWAITS before kicking off content_generation,
+        # so the {type:'transcript'} envelope is guaranteed to
+        # reach the UI before any {type:'token'} from the LLM.
+        # Listening on transcript_ready (which the framework emits
+        # synchronously and we can only respond to via fire-and-
+        # forget create_task) raced the awaited token stream and
+        # the user bubble appeared AFTER the agent reply.
+        return
 
     def _on_content_generated(_data: Any) -> None:
         # No-op now that the @pipeline.on("llm") streaming hook
@@ -730,6 +734,24 @@ async def run_next_session(
     # sees it. agent_knowledge.search_agent_knowledge is cheap when
     # no KB is attached (returns empty list), so we wire it
     # unconditionally and let it no-op when there's nothing to find.
+
+    # Always-on: send the user transcript to the frontend BEFORE the
+    # LLM starts. The framework awaits all user_turn_start hooks before
+    # kicking off content_generation, so registering this here
+    # guarantees {type:'transcript'} reaches the UI before any
+    # {type:'token'} from the LLM stream. Without this the agent's
+    # reply bubble could appear above the user's transcript bubble in
+    # the chat (token-send wins the race against fire-and-forget
+    # transcript_ready listener).
+    async def _send_user_transcript(transcript: Any) -> None:
+        text = transcript if isinstance(transcript, str) else \
+            (transcript.get("text") if isinstance(transcript, dict) else "")
+        text = (text or "").strip()
+        if text:
+            await _send_safely({"type": "transcript", "text": text})
+
+    pipeline.on("user_turn_start", _send_user_transcript)
+
     if agent_id is not None:
         from agent_knowledge import search_agent_knowledge
         from voicechat_knowledge import VOICE_CHAT_FORMAT_RULES
