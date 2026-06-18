@@ -316,27 +316,28 @@ def _wrap_with_grok_fallback(primary: Any, temperature: float) -> Any:
 
 def _translate_eou_config(agent_config: dict[str, Any]) -> Any:
     """Map legacy EOU knobs (min_delay_ms, ultravad_threshold) to the
-    the framework ``EOUConfig`` shape. Mapping rules:
+    framework's ``EOUConfig`` shape.
 
-      - ``min_delay_ms`` becomes the LOW end of
-        ``min_max_speech_wait_timeout``. We use ``min_delay_ms * 1.6``
-        as the high end (mirroring the ratio in the voice_agent
-        example the user validated: ``[0.8, 1.6]``).
-      - ``ultravad_threshold`` (a turn-end probability) maps onto
-        ``eou_certainty_threshold``. Same semantic, slight scale
-        adjustment — old default 0.50 maps to new default 0.75 which
-        is the framework's recommended starting point for English.
+    Defaults pinned to the voice_agent example the user validated as
+    working well (``[0.8, 1.6]`` window, ``0.8`` certainty threshold) —
+    those values produce the most natural turn-taking. Legacy field
+    overrides are still respected: if an agent's config_json sets
+    ``min_delay_ms``, that becomes the low end of the window; if it
+    sets ``ultravad_threshold``, that maps onto the certainty
+    threshold via the same 0.5+0.5*x rescale used before.
     """
     _ensure_next_pipeline_loaded()
-    min_ms = int(agent_config.get("min_delay_ms") or 500)
-    min_sec = min_ms / 1000.0
-    max_sec = min_sec * 1.6
-    threshold = float(agent_config.get("ultravad_threshold") or 0.50)
-    # Rescale: 0.5 (legacy default) → 0.75 (the framework recommended). A
-    # straight linear map: new = 0.5 + 0.5 * old gets close enough for
-    # day one. The Phase B Studio UI will expose the new slider
-    # directly so users can tune in the new scale.
-    eou_certainty = min(max(0.5 + 0.5 * threshold, 0.0), 1.0)
+    min_delay_ms_set = agent_config.get("min_delay_ms")
+    if min_delay_ms_set:
+        min_sec = int(min_delay_ms_set) / 1000.0
+        max_sec = min_sec * 2.0
+    else:
+        min_sec, max_sec = 0.8, 1.6  # voice_agent's validated values
+    threshold = agent_config.get("ultravad_threshold")
+    if threshold is None:
+        eou_certainty = 0.8  # voice_agent's validated value
+    else:
+        eou_certainty = min(max(0.5 + 0.5 * float(threshold), 0.0), 1.0)
     return EOUConfig(  # type: ignore[name-defined]
         min_max_speech_wait_timeout=[min_sec, max_sec],
         eou_certainty_threshold=eou_certainty,
