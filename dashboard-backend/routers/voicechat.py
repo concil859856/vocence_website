@@ -76,6 +76,7 @@ from call_recorder import CallRecorder
 from llm_client import stream_chat_with_tools
 from ws_drain import registry as drain_registry, track_session
 from barge_in_listener import BargeInListener
+from voice_pipeline_videosdk import is_videosdk_pipeline, run_videosdk_session
 
 # Server-side continuous barge-in detection during agent reply (matches
 # videosdk's pipeline_orchestrator._monitor_interruption_duration).
@@ -690,6 +691,35 @@ async def voicechat_session(
     # ``vc-<millis>-<user_prefix>`` pattern's same-millisecond collision
     # risk is gone.
     session_id = f"vc-{uuid.uuid4().hex[:16]}"
+
+    # New-pipeline dispatch. When VOICE_PIPELINE=videosdk AND we have an
+    # agent_ctx to drive it, hand the session off to the videosdk-based
+    # handler. Today this is gated on the flag AND the run_videosdk_session
+    # implementation being live (it raises NotImplementedError while the
+    # transport bridge is still pending — Phase A.4). If the stub raises,
+    # we log and fall through to the legacy handler so a misconfigured
+    # deployment can't kill live calls.
+    if is_videosdk_pipeline() and agent_ctx is not None:
+        try:
+            await run_videosdk_session(
+                ws=ws,
+                agent_config=agent_ctx.get("config") or {},
+                user_id=auth_user_id,
+                session_id=session_id,
+            )
+            return
+        except NotImplementedError as exc:
+            _log.warning(
+                "[stream] VOICE_PIPELINE=videosdk set but new path not "
+                "implemented yet — falling back to legacy. (%s)",
+                str(exc).split(".")[0],
+            )
+        except Exception:  # noqa: BLE001
+            _log.exception(
+                "[stream] videosdk pipeline crashed on session=%s — "
+                "falling back to legacy handler",
+                session_id,
+            )
     _session_open_perf = time.perf_counter()
     _session_started_iso = _utcnow_iso()
     _log.info(

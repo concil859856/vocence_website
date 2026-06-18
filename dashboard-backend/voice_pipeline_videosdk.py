@@ -268,8 +268,8 @@ def _translate_interrupt_config(agent_config: dict[str, Any]) -> Any:
     )
 
 
-# Placeholder — the actual voicechat WS handler will call this
-# (Phase A.4). Signature TBD once the integration shape stabilizes.
+# Entry point for the new path. Stub until the custom transport
+# bridge is built — see the docstring for the open design problem.
 async def run_videosdk_session(
     *,
     ws: Any,
@@ -277,24 +277,63 @@ async def run_videosdk_session(
     user_id: str,
     session_id: str,
 ) -> None:
-    """Entry point for a voicechat session running on the new pipeline.
+    """Entry point for a voicechat session on the new pipeline.
 
-    Phase A.4 will fill this in by:
-      1. Constructing an ``Agent`` subclass with the system prompt and
-         function tools resolved from ``agent_config``.
-      2. Building a Pipeline via ``build_pipeline_from_agent_config``.
-      3. Starting an ``AgentSession`` and bridging its events to the
-         outer WS (transcript_started / token / audio_meta / turn_end /
-         etc.) so the existing frontend's wire protocol keeps working.
-      4. Wiring the recorder + billing + RAG + custom tools via
-         ``@pipeline.on(...)`` hooks (Phase A.6 / A.7 / A.8).
+    Phase A.4 implementation plan
+    -----------------------------
+    The framework's ``AgentSession`` owns its own audio transport via
+    ``RoomOptions(transport_mode="websocket")``. Inside an existing
+    FastAPI WS handler, we can't let it bind a second WS — we need a
+    custom transport that lets the framework treat OUR already-open
+    WS as its audio source/sink.
 
-    Until then this is a stub that immediately raises so a deployment
-    that flips ``VOICE_PIPELINE=videosdk`` doesn't silently misroute
-    sessions to nowhere.
+    Concrete sub-steps:
+      1. Subclass / monkey-patch the framework's audio_track such
+         that ``audio_track.add_new_bytes()`` writes PCM into our
+         existing WS as binary frames (server → client TTS path).
+      2. Build an inbound audio stream that pulls PCM from our WS
+         and feeds it to ``Pipeline.speech_understanding.process_audio()``
+         (client → server STT/VAD path).
+      3. Construct the ``Agent`` subclass with:
+           - ``instructions`` from agent_config["system_prompt"]
+           - first-message greeting via ``on_enter()`` calling
+             ``self.session.say(first_message)``
+           - ``@function_tool``-decorated methods for each
+             enabled built-in tool (web_search, get_weather, etc.)
+             and dynamically-registered custom webhook tools
+             (Phase A.7 / A.9).
+      4. Build the Pipeline via build_pipeline_from_agent_config.
+      5. Start the AgentSession with our custom transport (NOT
+         ``run_until_shutdown=True`` — we manage the lifetime,
+         it just runs the conversation loop).
+      6. Wire pipeline hooks:
+           - ``@pipeline.on("user_turn_start")`` → send transcript
+             event to client + push to call_recorder + RAG context
+             enrichment (Phase A.8)
+           - ``@pipeline.on("llm")`` → stream tokens to client +
+             accumulate for final assistant message
+           - ``first_audio_byte`` / ``last_audio_byte`` → drive
+             billing.mark_turn_started / .mark_turn_ended
+             (Phase A.7) AND call_recorder.notify_agent_turn_*
+             (Phase A.6)
+           - ``synthesis_interrupted`` → flush recorder, signal
+             billing, send ``cancelled`` to client (existing
+             frontend protocol)
+      7. Outer try/finally:
+           - billing reconciliation
+           - call_recorder.finalize_and_upload
+           - Pipeline.cleanup()
+
+    Until that lands, this is a stub that immediately raises so a
+    deployment with ``VOICE_PIPELINE=videosdk`` set on a stale
+    backend doesn't silently misroute live calls.
     """
     raise NotImplementedError(
-        "run_videosdk_session is the Phase A.4 stub — implementation lands "
-        "in a follow-up commit. The voicechat router should keep dispatching "
-        "to the legacy handler until then."
+        "run_videosdk_session is the Phase A.4 stub. The audio-transport "
+        "bridge between FastAPI's WS and the framework's AgentSession is "
+        "the next chunk of work — see the docstring above for sub-steps. "
+        "The voicechat router currently keeps dispatching to the legacy "
+        "handler unconditionally; do NOT set VOICE_PIPELINE=videosdk in "
+        "production until this stub is replaced with a working session "
+        "loop AND the dispatch in voicechat.voicechat_session is wired."
     )
