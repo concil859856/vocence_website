@@ -388,25 +388,25 @@ async def run_next_session(
       - authenticated the user
       - loaded the agent config
 
-    What's NOT yet wired here (Phase A.6-9 — separate commits):
-      - call_recorder integration (push_user + push_agent + finalize)
-      - voice_agent_billing integration (mark_turn_started / _ended)
-      - knowledge_base RAG bridge (function_tool that fetches context)
-      - built-in tools (web_search, weather, etc. as @function_tool)
-      - custom webhook tools (dynamically registered per-agent)
-      - client-protocol JSON event forwarding (token / audio_meta /
-        turn_end / cancelled / etc.) — the legacy frontend expects
-        these; the framework emits them differently and we need a
-        bridge layer over the pipeline.on(...) hooks.
-
-    These are deliberate gaps for the next session — getting the
-    audio round-trip working end-to-end first establishes the
-    structural skeleton; the feature wiring fills the bones.
+    Deliberate scope boundary: the Vocence Assistant / Logos path
+    (when no agent_id is supplied) stays on legacy. That path uses
+    free_mode billing and anonymous users which the new pipeline
+    doesn't model yet, and Logos works fine on legacy today — no
+    point in regressing it just to converge implementations.
+    routers/voicechat.py gates the dispatch on ``agent_ctx is not
+    None`` for this reason.
     """
     _ensure_next_pipeline_loaded()
     from voice_pipeline_next_transport import FastAPIWebSocketTransport
+    from datetime import datetime, timezone
 
     loop = asyncio.get_running_loop()
+
+    # Stamp session start for the voice_call_logs row (drives the
+    # call-history endpoints in Studio + the developer API). Updated
+    # below as billing/end signals come in.
+    _session_started_at = datetime.now(timezone.utc)
+    _end_reason_holder: dict[str, str] = {"reason": "client_closed"}
     pipeline = build_pipeline_from_agent_config(agent_config, user_id=user_id)
 
     # Build a minimal Agent subclass from the agent config. The
@@ -687,6 +687,7 @@ async def run_next_session(
     billing: Any | None = None
     if agent_id is not None:
         async def _on_session_end(reason: str) -> None:
+            _end_reason_holder["reason"] = reason
             await _send_safely({"type": "session_timeout", "code": reason})
             with _suppress():
                 await ws.close(code=4408)
@@ -896,33 +897,54 @@ async def run_next_session(
         if billing is not None:
             with _suppress():
                 await billing.stop()
-        # Recording: build + upload the stereo WAV, persist on the
-        # voice_call_logs row. Mirrors the legacy session_close path.
+        # Recording: build + upload the stereo WAV. Fields get folded
+        # into the voice_call_logs row below.
+        _recording_bucket: str | None = None
+        _recording_key: str | None = None
+        _recording_bytes: int = 0
         if recorder is not None:
             try:
                 bucket, key, n_bytes = await recorder.close()
-                if bucket and key and n_bytes > 0 and agent_id is not None:
+                if bucket and key and n_bytes > 0:
+                    _recording_bucket = bucket
+                    _recording_key = key
+                    _recording_bytes = n_bytes
                     _log.info(
                         "[voice-pipeline-next] recording_uploaded "
                         "session=%s bucket=%s key=%s bytes=%d",
                         session_id, bucket, key, n_bytes,
                     )
-                    # Persist on voice_call_logs row so the call-history
-                    # endpoints can later mint a presigned URL.
-                    with _suppress():
-                        from local_db import get_connection
-                        conn = await get_connection()
-                        try:
-                            await conn.execute(
-                                "UPDATE voice_call_logs SET recording_bucket=?, "
-                                "recording_path=?, recording_bytes=? WHERE session_id=?",
-                                (bucket, key, n_bytes, session_id),
-                            )
-                            await conn.commit()
-                        finally:
-                            await conn.close()
             except Exception:  # noqa: BLE001
                 _log.exception("[voice-pipeline-next] recorder.close failed")
+
+        # voice_call_logs row — one INSERT OR REPLACE per session.
+        # Legacy did this from routers/voicechat.py's session_close
+        # path; without it the call history in Studio (and the
+        # developer-API /voice/calls endpoints) stays empty for every
+        # call served by the new pipeline. The helper itself sums
+        # turn_count + char totals from studio_voicechat_history rows
+        # that already share this session_id, so the row stays in
+        # sync with per-turn data without duplicating storage.
+        try:
+            from routers.voicechat import _log_call_session
+            _ended_at = datetime.now(timezone.utc)
+            duration_ms = int((_ended_at - _session_started_at).total_seconds() * 1000)
+            await _log_call_session(
+                session_id=session_id,
+                user_id=user_id,
+                agent_id=agent_id,
+                agent_name=(agent_config.get("name") or None),
+                started_at_iso=_session_started_at.isoformat(),
+                ended_at_iso=_ended_at.isoformat(),
+                duration_ms=duration_ms,
+                end_reason=_end_reason_holder["reason"],
+                recording_path=_recording_key,
+                recording_bucket=_recording_bucket,
+                recording_bytes=_recording_bytes or None,
+            )
+        except Exception:  # noqa: BLE001
+            _log.exception("[voice-pipeline-next] _log_call_session failed")
+
         _log.info(
             "[voice-pipeline-next] session end session=%s",
             session_id,
