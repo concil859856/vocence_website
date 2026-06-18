@@ -35,6 +35,7 @@ default while this is dogfooded.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from typing import Any
@@ -268,8 +269,6 @@ def _translate_interrupt_config(agent_config: dict[str, Any]) -> Any:
     )
 
 
-# Entry point for the new path. Stub until the custom transport
-# bridge is built — see the docstring for the open design problem.
 async def run_videosdk_session(
     *,
     ws: Any,
@@ -279,61 +278,120 @@ async def run_videosdk_session(
 ) -> None:
     """Entry point for a voicechat session on the new pipeline.
 
-    Phase A.4 implementation plan
-    -----------------------------
-    The framework's ``AgentSession`` owns its own audio transport via
-    ``RoomOptions(transport_mode="websocket")``. Inside an existing
-    FastAPI WS handler, we can't let it bind a second WS — we need a
-    custom transport that lets the framework treat OUR already-open
-    WS as its audio source/sink.
+    Wires our already-open FastAPI WebSocket to a framework AgentSession
+    via the custom ``FastAPIWebSocketTransport``. The transport handles
+    audio I/O (PCM in over the WS → pipeline VAD/STT, pipeline TTS →
+    PCM out over the WS). Everything else (interrupt handling, EOU,
+    LLM routing, tool calling, transcript events) is the framework's
+    job.
 
-    Concrete sub-steps:
-      1. Subclass / monkey-patch the framework's audio_track such
-         that ``audio_track.add_new_bytes()`` writes PCM into our
-         existing WS as binary frames (server → client TTS path).
-      2. Build an inbound audio stream that pulls PCM from our WS
-         and feeds it to ``Pipeline.speech_understanding.process_audio()``
-         (client → server STT/VAD path).
-      3. Construct the ``Agent`` subclass with:
-           - ``instructions`` from agent_config["system_prompt"]
-           - first-message greeting via ``on_enter()`` calling
-             ``self.session.say(first_message)``
-           - ``@function_tool``-decorated methods for each
-             enabled built-in tool (web_search, get_weather, etc.)
-             and dynamically-registered custom webhook tools
-             (Phase A.7 / A.9).
-      4. Build the Pipeline via build_pipeline_from_agent_config.
-      5. Start the AgentSession with our custom transport (NOT
-         ``run_until_shutdown=True`` — we manage the lifetime,
-         it just runs the conversation loop).
-      6. Wire pipeline hooks:
-           - ``@pipeline.on("user_turn_start")`` → send transcript
-             event to client + push to call_recorder + RAG context
-             enrichment (Phase A.8)
-           - ``@pipeline.on("llm")`` → stream tokens to client +
-             accumulate for final assistant message
-           - ``first_audio_byte`` / ``last_audio_byte`` → drive
-             billing.mark_turn_started / .mark_turn_ended
-             (Phase A.7) AND call_recorder.notify_agent_turn_*
-             (Phase A.6)
-           - ``synthesis_interrupted`` → flush recorder, signal
-             billing, send ``cancelled`` to client (existing
-             frontend protocol)
-      7. Outer try/finally:
-           - billing reconciliation
-           - call_recorder.finalize_and_upload
-           - Pipeline.cleanup()
+    Caller has already:
+      - accepted the WS upgrade
+      - authenticated the user
+      - loaded the agent config
 
-    Until that lands, this is a stub that immediately raises so a
-    deployment with ``VOICE_PIPELINE=videosdk`` set on a stale
-    backend doesn't silently misroute live calls.
+    What's NOT yet wired here (Phase A.6-9 — separate commits):
+      - call_recorder integration (push_user + push_agent + finalize)
+      - voice_agent_billing integration (mark_turn_started / _ended)
+      - knowledge_base RAG bridge (function_tool that fetches context)
+      - built-in tools (web_search, weather, etc. as @function_tool)
+      - custom webhook tools (dynamically registered per-agent)
+      - client-protocol JSON event forwarding (token / audio_meta /
+        turn_end / cancelled / etc.) — the legacy frontend expects
+        these; the framework emits them differently and we need a
+        bridge layer over the pipeline.on(...) hooks.
+
+    These are deliberate gaps for the next session — getting the
+    audio round-trip working end-to-end first establishes the
+    structural skeleton; the feature wiring fills the bones.
     """
-    raise NotImplementedError(
-        "run_videosdk_session is the Phase A.4 stub. The audio-transport "
-        "bridge between FastAPI's WS and the framework's AgentSession is "
-        "the next chunk of work — see the docstring above for sub-steps. "
-        "The voicechat router currently keeps dispatching to the legacy "
-        "handler unconditionally; do NOT set VOICE_PIPELINE=videosdk in "
-        "production until this stub is replaced with a working session "
-        "loop AND the dispatch in voicechat.voicechat_session is wired."
+    _ensure_videosdk_loaded()
+    from voice_pipeline_videosdk_transport import FastAPIWebSocketTransport
+
+    loop = asyncio.get_running_loop()
+    pipeline = build_pipeline_from_agent_config(agent_config)
+
+    # Build a minimal Agent subclass from the agent config. The
+    # system prompt drives the LLM's instructions; the first_message
+    # is the on_enter greeting the framework's pipeline plays once
+    # the session is live.
+    instructions = (agent_config.get("system_prompt") or "").strip() or (
+        "You are a helpful voice assistant. Speak naturally and concisely."
     )
+    first_message = (agent_config.get("first_message") or "").strip() or None
+
+    class _VocenceAgent(Agent):  # type: ignore[name-defined,misc]
+        def __init__(self) -> None:
+            super().__init__(
+                use_base_instructions=True,
+                instructions=instructions,
+            )
+
+        async def on_enter(self) -> None:
+            if first_message:
+                await self.session.say(first_message)
+
+    agent = _VocenceAgent()
+
+    # Bridge transport. The framework's AgentSession reads
+    # pipeline.audio_track for outbound audio and pipeline.on_audio_delta
+    # for inbound — both are wired up by the transport during connect().
+    transport = FastAPIWebSocketTransport(loop=loop, pipeline=pipeline, ws=ws)
+    try:
+        await transport.connect()
+    except Exception as exc:  # noqa: BLE001
+        _log.exception("[voice-pipeline-videosdk] transport.connect failed: %s", exc)
+        raise
+
+    session = AgentSession(agent=agent, pipeline=pipeline)  # type: ignore[name-defined]
+    _log.info(
+        "[voice-pipeline-videosdk] session start session=%s agent_id_in_config=%s "
+        "llm=%s stt=%s tts=%s voice=%s lang=%s",
+        session_id,
+        agent_config.get("name") or "unknown",
+        type(pipeline.llm).__name__,
+        type(pipeline.stt).__name__,
+        type(pipeline.tts).__name__,
+        agent_config.get("voice"),
+        agent_config.get("language"),
+    )
+
+    try:
+        # NOT run_until_shutdown=True — the FastAPI handler owns the
+        # process lifecycle. We just start the conversation loop and
+        # let it run until either the WS disconnects (transport read
+        # loop ends) or the agent calls session.leave() etc.
+        await session.start(wait_for_participant=False)
+
+        # Keep the coroutine alive until the transport's read loop
+        # signals disconnect. We block on the transport's _closed
+        # event because the framework's session.start() returns once
+        # the loop is wired but doesn't itself block on disconnect.
+        await transport._closed.wait()
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        _log.exception("[voice-pipeline-videosdk] session crashed: %s", exc)
+    finally:
+        with _suppress():
+            await session.aclose()  # type: ignore[attr-defined]
+        with _suppress():
+            await transport.cleanup()
+        with _suppress():
+            if hasattr(pipeline, "cleanup"):
+                await pipeline.cleanup()
+        _log.info(
+            "[voice-pipeline-videosdk] session end session=%s",
+            session_id,
+        )
+
+
+class _suppress:
+    """Inline contextlib.suppress(Exception) — kept local so the
+    module's import surface is just stdlib + the framework."""
+
+    def __enter__(self) -> None:
+        return None
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        return exc_type is not None and issubclass(exc_type, Exception)
