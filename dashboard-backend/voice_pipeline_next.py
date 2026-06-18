@@ -395,11 +395,37 @@ async def run_next_session(
     # call time without UnboundLocalError.
     _session_holder: dict[str, Any] = {"session": None}
 
+    def _reset_pipeline_interrupt_flags() -> None:
+        """Clear the orchestrator's interrupt flags before starting a
+        new typed turn. process_text doesn't reset these (only the STT
+        path's _generate_and_synthesize does), so without this reset a
+        preceding {cancel} would leave content_generation thinking
+        it's still interrupted and the new turn dies on the first
+        LLM chunk."""
+        orchestrator = getattr(pipeline, "orchestrator", None)
+        if orchestrator is None:
+            return
+        try:
+            orchestrator._is_interrupted = False
+            if getattr(orchestrator, "content_generation", None):
+                orchestrator.content_generation.reset_interrupt()
+            if getattr(orchestrator, "speech_generation", None):
+                orchestrator.speech_generation.reset_interrupt()
+        except Exception as exc:  # noqa: BLE001
+            _log.debug("[voice-pipeline-next] reset_interrupt_flags failed: %s", exc)
+
     async def _on_text_frame(body: str) -> None:
         """User typed a message in the chat UI. Route through
         pipeline.process_text — it bypasses STT/VAD, runs the LLM, and
         the existing @pipeline.on('llm') hook streams tokens back to
         the UI."""
+        # Frontend sends {cancel} immediately before any typed text
+        # when an assistant bubble is still pending. Our cancel
+        # handler above synchronously awaits _interrupt_pipeline, which
+        # leaves _is_interrupted=True on the orchestrator. Reset
+        # those flags here so process_text's content_generation can
+        # actually run instead of bailing out on the first chunk.
+        _reset_pipeline_interrupt_flags()
         try:
             await pipeline.process_text(body)
         except Exception as exc:  # noqa: BLE001
@@ -431,12 +457,21 @@ async def run_next_session(
         state = getattr(s, "agent_state", None) if s is not None else None
         is_active = AgentState is not None and state in (AgentState.SPEAKING, AgentState.THINKING)
         if is_active:
-            try:
-                pipeline.interrupt()
-            except Exception as exc:  # noqa: BLE001
-                _log.warning("[voice-pipeline-next] interrupt failed: %s", exc)
-            # The bridge below catches backchannel_detected and sends
-            # {cancelled} — no manual echo needed.
+            # AWAIT the interrupt to completion so the next frame
+            # (typically the typed text right behind this cancel) sees
+            # a settled pipeline state. pipeline.interrupt() spawns a
+            # task — if we let it run async, the text frame's
+            # process_text starts first and then gets killed when the
+            # interrupt task finally fires. Calling _interrupt_pipeline
+            # directly (it's the underlying coroutine) lets us await.
+            orchestrator = getattr(pipeline, "orchestrator", None)
+            if orchestrator is not None and hasattr(orchestrator, "_interrupt_pipeline"):
+                try:
+                    await orchestrator._interrupt_pipeline()
+                except Exception as exc:  # noqa: BLE001
+                    _log.warning("[voice-pipeline-next] interrupt failed: %s", exc)
+            # The bridge below catches synthesis_interrupted /
+            # backchannel_detected and sends {cancelled} downstream.
         else:
             await _send_safely({"type": "cancelled"})
 
