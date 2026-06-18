@@ -264,8 +264,27 @@ def build_pipeline_from_agent_config(
     _ensure_next_pipeline_loaded()
 
     # ---- STT plugin (per-agent selectable; default Vocence) ----
+    # Deepgram is TEMPORARILY DISABLED. The framework's hardcoded
+    # channels=2 bug (patched at load time) plus a still-untraced
+    # quality regression made Deepgram noticeably worse than the
+    # voice_agent/agent.py reference. Until that's resolved, every
+    # session uses Vocence STT regardless of the agent's saved
+    # ``stt_provider`` value. The branch below (DeepgramSTT
+    # construction) is kept intact behind ``VOICE_STT_ALLOW_DEEPGRAM``
+    # so re-enabling is a single env flag flip when the regression
+    # is fixed. UI dropdown only shows "Vocence" today; the schema
+    # still accepts "deepgram" so old saved configs don't fail
+    # validation, they just fall through to Vocence here.
     stt_provider = (agent_config.get("stt_provider") or "vocence").lower()
     language = agent_config.get("language") or "auto"
+    _allow_deepgram = (os.environ.get("VOICE_STT_ALLOW_DEEPGRAM") or "0").strip() in ("1", "true", "yes")
+    if stt_provider == "deepgram" and not _allow_deepgram:
+        _log.info(
+            "[voice-pipeline-next] agent requested stt_provider=deepgram but "
+            "Deepgram is temporarily disabled; falling back to Vocence STT. "
+            "Set VOICE_STT_ALLOW_DEEPGRAM=1 to re-enable."
+        )
+        stt_provider = "vocence"
     if stt_provider == "deepgram":
         # Defaults match voice_agent/agent.py (which the user
         # validated as working well): nova-2 model, en-US language.
