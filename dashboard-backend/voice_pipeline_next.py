@@ -668,15 +668,45 @@ async def run_next_session(
     # yielded through (or TTS gets no input) — alongside, we send a
     # ``token`` event to the frontend so the chat bubble paces with
     # the audio instead of dumping the full reply when it's done.
+    #
+    # Spacing fix: some LLMs (Cerebras / GLM in particular) stream
+    # sub-token deltas where punctuation marks arrive as their own
+    # chunk without a trailing space, and the next chunk starts with
+    # a letter — concatenated, that's "thing!I can" instead of
+    # "thing! I can". The pod's punctuation parser handles audio
+    # pacing fine, but the chat bubble (which just concatenates the
+    # raw chunks) shows the missing space verbatim. Inject a space
+    # at every punctuation→letter boundary, both within a chunk
+    # (regex) and across chunk boundaries (track prev tail). Yield
+    # the corrected text to TTS too so the pod hears the same.
+    import re as _re
+    _RE_PUNCT_LETTER = _re.compile(r"([.!?,:;])([A-Za-z])")
+    _prev_tail_holder = {"ch": ""}
+
+    def _fix_spacing(chunk_str: str) -> str:
+        if not chunk_str:
+            return chunk_str
+        prev = _prev_tail_holder["ch"]
+        head = chunk_str
+        if prev and prev in ".!?,:;" and head[0].isalpha():
+            head = " " + head
+        fixed = _RE_PUNCT_LETTER.sub(r"\1 \2", head)
+        _prev_tail_holder["ch"] = fixed[-1] if fixed else prev
+        return fixed
+
     @pipeline.on("llm")
     async def _on_llm_stream(text_stream):  # type: ignore[misc]
+        _prev_tail_holder["ch"] = ""
         async for chunk in text_stream:
-            if chunk:
+            if isinstance(chunk, str) and chunk:
+                fixed = _fix_spacing(chunk)
                 try:
-                    await ws.send_json({"type": "token", "text": chunk})
+                    await ws.send_json({"type": "token", "text": fixed})
                 except Exception as exc:  # noqa: BLE001
                     _log.debug("[voice-pipeline-next] token send failed: %s", exc)
-            yield chunk
+                yield fixed
+            else:
+                yield chunk
 
     # ---- Billing (Phase A.7) -------------------------------------------
     # Same VoiceAgentBilling class the legacy path uses — instantiated
@@ -720,6 +750,21 @@ async def run_next_session(
         pipeline.on("transcript_ready", _billing_turn_start)
         pipeline.on("synthesis_complete", _billing_turn_end)
         pipeline.on("backchannel_detected", _billing_turn_end)
+
+        # synthesis_complete is only emitted by the framework on the
+        # process_text (typed) path — STT-driven turns instead fire
+        # speech_generation's last_audio_byte / synthesis_interrupted
+        # directly without re-emitting at pipeline level. Without
+        # listening to those, _billing_turn_end never fires on voice
+        # turns, in_flight_turns never drops to 0, and the idle
+        # watchdog's `_in_flight_turns == 0` gate is never satisfied
+        # — session stays connected forever. Reach into the
+        # orchestrator to wire them.
+        _orch = getattr(pipeline, "orchestrator", None)
+        _sg = getattr(_orch, "speech_generation", None) if _orch else None
+        if _sg is not None:
+            _sg.on("last_audio_byte", _billing_turn_end)
+            _sg.on("synthesis_interrupted", _billing_turn_end)
 
         # Kick off the billing watchdog loop — this is what drives the
         # per-second credit tick, the idle-timeout check (default 60 s
