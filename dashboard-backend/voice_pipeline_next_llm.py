@@ -129,23 +129,44 @@ class VocenceRouterLLM(LLM):
                     if event.get("arguments"):
                         acc["arguments"] += event["arguments"]
                 elif etype == "done":
-                    # Emit any accumulated tool calls as a single
-                    # response carrying tool-call metadata. The
-                    # framework's content_generation consumer reads
-                    # metadata.tool_calls to dispatch.
-                    if tool_call_accumulators:
+                    # Emit each accumulated tool call as its OWN
+                    # LLMResponse — the framework's content_generation
+                    # consumer reads metadata["function_call"]
+                    # (singular dict) per response and dispatches one
+                    # at a time. The earlier shape
+                    # (metadata={"tool_calls": [...]}) was silently
+                    # dropped, leaving the LLM to hallucinate tool
+                    # calls as inline JSON text on the next iteration.
+                    #
+                    # arguments must be a DICT (the framework does
+                    # ``tool(**self._safe_tool_kwargs(t, args))``).
+                    # The accumulator builds a JSON string from the
+                    # streaming deltas; parse it here.
+                    for cid, v in tool_call_accumulators.items():
+                        args_obj: Any
+                        raw = (v.get("arguments") or "").strip()
+                        if not raw:
+                            args_obj = {}
+                        else:
+                            try:
+                                args_obj = json.loads(raw)
+                                if not isinstance(args_obj, dict):
+                                    args_obj = {"value": args_obj}
+                            except json.JSONDecodeError:
+                                _log.warning(
+                                    "VocenceRouterLLM: tool args not valid JSON; "
+                                    "passing as raw string. raw=%r", raw[:200],
+                                )
+                                args_obj = {"raw": raw}
                         yield LLMResponse(
                             content="",
                             role=ChatRole.ASSISTANT,
                             metadata={
-                                "tool_calls": [
-                                    {
-                                        "id": cid,
-                                        "name": v["name"],
-                                        "arguments": v["arguments"],
-                                    }
-                                    for cid, v in tool_call_accumulators.items()
-                                ]
+                                "function_call": {
+                                    "name": v.get("name") or "",
+                                    "arguments": args_obj,
+                                    "call_id": cid,
+                                }
                             },
                         )
                     return
@@ -228,18 +249,18 @@ def _function_tools_to_openai(
     """Translate the framework's FunctionTool list to OpenAI's tool
     JSON shape, which is what our router expects.
 
-    ``FunctionTool`` is a Protocol — the framework attaches a
-    ``__the framework_function_info__`` attribute when the decorator runs.
-    We pull name / description / schema from there. If a passed tool
-    doesn't carry that attribute (e.g. user wrote a custom tool by
-    hand) it's silently dropped — the framework's own checks will
-    have flagged it before this point.
+    Each FunctionTool carries a ``_tool_info`` attribute (a
+    ``FunctionToolInfo`` dataclass with name / description /
+    parameters_schema) — that's what both ``@function_tool``
+    decorated tools and our own dynamic wrappers in
+    voice_pipeline_next_tools set. Tools missing the attribute are
+    silently dropped.
     """
     if not tools:
         return None
     out: list[dict[str, Any]] = []
     for t in tools:
-        info = getattr(t, "__the framework_function_info__", None)
+        info = getattr(t, "_tool_info", None)
         if info is None:
             continue
         out.append({
