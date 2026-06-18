@@ -76,7 +76,7 @@ async def build_tools_for_agent(
             custom = await _load_custom_tools_for_agent(agent_id, user_id)
         except Exception:  # noqa: BLE001
             _log.exception(
-                "[voice-pipeline-videosdk] failed to load custom tools "
+                "[voice-pipeline-next] failed to load custom tools "
                 "for agent=%s; built-in tools only", agent_id,
             )
             custom = []
@@ -84,7 +84,7 @@ async def build_tools_for_agent(
             tools.append(_wrap_custom_tool_as_function_tool(c))
 
     _log.info(
-        "[voice-pipeline-videosdk] tools materialized: builtin=%s custom=%d "
+        "[voice-pipeline-next] tools materialized: builtin=%s custom=%d "
         "(enabled=%r)",
         [t.__name__ for t in tools[:len(names)]],
         max(0, len(tools) - len(names)),

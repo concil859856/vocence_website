@@ -1,10 +1,10 @@
-"""New voice-agent backend built on the videosdk-agents framework.
+"""New voice-agent backend built on the agent framework.
 
 The legacy implementation in ``voicechat_stream.py`` opens a new
 streaming session per turn and orchestrates STT / VAD / EOU / LLM /
 TTS via custom code (~2.5 kLOC). This module is the replacement:
 one continuous session per call, with the pipeline composition
-delegated to ``videosdk.agents.Pipeline`` (the same framework the
+delegated to ``the framework Pipeline class`` (the same framework
 user validated in ``voice_agent/agent.py``).
 
 Day-1 component picks
@@ -22,8 +22,8 @@ Day-1 component picks
 What this module does NOT do yet
 --------------------------------
 - Not wired to the WS endpoint yet (Phase A.4 will route the
-  ``voicechat_session`` handler through ``run_videosdk_session()``
-  when ``VOICE_PIPELINE=videosdk``).
+  ``voicechat_session`` handler through ``run_next_session()``
+  when ``VOICE_PIPELINE=next``).
 - No call recorder / billing / RAG / custom-tool bridge yet — those
   are Phase A.6 / A.7 / A.8. Stubs / TODOs marked inline.
 - No Studio UI changes — agent settings continue to feed in via the
@@ -49,25 +49,25 @@ _log = logging.getLogger(__name__)
 VOICE_PIPELINE = (os.environ.get("VOICE_PIPELINE") or "legacy").strip().lower()
 
 
-def is_videosdk_pipeline() -> bool:
+def is_next_pipeline() -> bool:
     """True when the deployment has opted into the new path. Callers
     in ``routers/voicechat.py`` switch on this flag to pick which
     session handler runs."""
-    return VOICE_PIPELINE == "videosdk"
+    return VOICE_PIPELINE == "next"
 
 
-# Defer the heavy imports until ``is_videosdk_pipeline()`` is true.
+# Defer the heavy imports until ``is_next_pipeline()`` is true.
 # When the flag is off, importing this module is free — no
-# videosdk-agents load (which pulls in onnxruntime + torch, ~150 MB
+# the agent framework load (which pulls in onnxruntime + torch, ~150 MB
 # RAM on the first import). Production processes that haven't opted
 # in pay nothing.
-_videosdk_loaded = False
+_next_pipeline_loaded = False
 
 
-def _ensure_videosdk_loaded() -> None:
+def _ensure_next_pipeline_loaded() -> None:
     """Lazy-import the framework + plugins on first opt-in."""
-    global _videosdk_loaded
-    if _videosdk_loaded:
+    global _next_pipeline_loaded
+    if _next_pipeline_loaded:
         return
     # Import inside the function so the legacy path doesn't pay the
     # framework's startup cost. Names are kept in module globals via
@@ -90,7 +90,7 @@ def _ensure_videosdk_loaded() -> None:
         from vocence_plugins import VocenceTTS, VocenceSTT  # type: ignore[import-not-found]
     except ImportError as exc:
         raise RuntimeError(
-            "VOICE_PIPELINE=videosdk requires the videosdk-agents framework "
+            "VOICE_PIPELINE=next requires the agent framework "
             "and vocence-plugins to be installed in the backend venv. "
             f"Import failed: {exc}"
         ) from exc
@@ -108,24 +108,24 @@ def _ensure_videosdk_loaded() -> None:
         "VocenceTTS": VocenceTTS,
         "VocenceSTT": VocenceSTT,
     })
-    _videosdk_loaded = True
-    _log.info("[voice-pipeline-videosdk] framework + plugins loaded")
+    _next_pipeline_loaded = True
+    _log.info("[voice-pipeline-next] framework + plugins loaded")
 
 
 def build_pipeline_from_agent_config(agent_config: dict[str, Any]) -> Any:
-    """Translate a Vocence agent config row to a videosdk Pipeline.
+    """Translate a Vocence agent config row to a the framework Pipeline.
 
     This is the boundary between the existing data model (agent_config
     fields written by Studio UI / dev-API) and the new pipeline's
     config knobs. Old fields with no direct equivalent (turn_decider,
-    ultravad_threshold) are mapped to the closest videosdk knob; new
+    ultravad_threshold) are mapped to the closest framework knob; new
     fields (interrupt_min_duration, etc.) use sensible defaults that
     Studio will surface in Phase B.
 
     Returns a constructed ``Pipeline`` ready to hand to
     ``AgentSession(agent=..., pipeline=pipeline)``.
     """
-    _ensure_videosdk_loaded()
+    _ensure_next_pipeline_loaded()
 
     # ---- STT plugin (per-agent selectable; default Vocence) ----
     stt_provider = (agent_config.get("stt_provider") or "vocence").lower()
@@ -144,7 +144,7 @@ def build_pipeline_from_agent_config(agent_config: dict[str, Any]) -> Any:
 
     # ---- LLM plugin ----
     # The agent_config stores model ids like "cerebras:gpt-oss-120b"
-    # or "gemini:gemini-3.5-flash". We route to the right videosdk
+    # or "gemini:gemini-3.5-flash". We route to the right framework
     # plugin based on the prefix. Day 1 supports Gemini natively via
     # GoogleLLM; Cerebras + GLM + Grok need a thin wrapper around our
     # existing llm_client router — that wrapper is _build_router_llm
@@ -197,11 +197,11 @@ def _to_deepgram_lang(language: str) -> str:
 
 
 def _build_llm_plugin(llm_model: str, agent_config: dict[str, Any]) -> Any:
-    """Pick a videosdk-compatible LLM plugin for the agent's model id.
+    """Pick a framework-compatible LLM plugin for the agent's model id.
 
     For Gemini we use the framework's ``GoogleLLM`` directly. For
     Cerebras / GLM / Grok we wrap our existing routing client in a
-    thin shim that satisfies ``videosdk.agents.llm.LLM`` — written
+    thin shim that satisfies ``the framework LLM base class`` — written
     as part of Phase A.5 (this stub returns a temporary GoogleLLM
     fallback so the scaffold compiles). The shim itself is small
     and lives in ``_llm_router.py`` so this module stays focused on
@@ -215,13 +215,13 @@ def _build_llm_plugin(llm_model: str, agent_config: dict[str, Any]) -> Any:
     # Everything else (cerebras: / glm: / grok: / unprefixed default)
     # goes through our router shim so the existing multi-provider
     # routing + key rotation + Grok-fallback behavior is preserved.
-    from voice_pipeline_videosdk_llm import VocenceRouterLLM
+    from voice_pipeline_next_llm import VocenceRouterLLM
     return VocenceRouterLLM(model=llm_model, temperature=temperature)
 
 
 def _translate_eou_config(agent_config: dict[str, Any]) -> Any:
     """Map legacy EOU knobs (min_delay_ms, ultravad_threshold) to the
-    videosdk ``EOUConfig`` shape. Mapping rules:
+    the framework ``EOUConfig`` shape. Mapping rules:
 
       - ``min_delay_ms`` becomes the LOW end of
         ``min_max_speech_wait_timeout``. We use ``min_delay_ms * 1.6``
@@ -230,14 +230,14 @@ def _translate_eou_config(agent_config: dict[str, Any]) -> Any:
       - ``ultravad_threshold`` (a turn-end probability) maps onto
         ``eou_certainty_threshold``. Same semantic, slight scale
         adjustment — old default 0.50 maps to new default 0.75 which
-        is videosdk's recommended starting point for English.
+        is the framework's recommended starting point for English.
     """
-    _ensure_videosdk_loaded()
+    _ensure_next_pipeline_loaded()
     min_ms = int(agent_config.get("min_delay_ms") or 500)
     min_sec = min_ms / 1000.0
     max_sec = min_sec * 1.6
     threshold = float(agent_config.get("ultravad_threshold") or 0.50)
-    # Rescale: 0.5 (legacy default) → 0.75 (videosdk recommended). A
+    # Rescale: 0.5 (legacy default) → 0.75 (the framework recommended). A
     # straight linear map: new = 0.5 + 0.5 * old gets close enough for
     # day one. The Phase B Studio UI will expose the new slider
     # directly so users can tune in the new scale.
@@ -249,17 +249,17 @@ def _translate_eou_config(agent_config: dict[str, Any]) -> Any:
 
 
 def _translate_interrupt_config(agent_config: dict[str, Any]) -> Any:
-    """Map legacy barge-in tuning to videosdk's ``InterruptConfig``.
+    """Map legacy barge-in tuning to the framework's ``InterruptConfig``.
 
     The legacy frontend used ``BACKCHANNEL_GRACE_MS=60``,
     ``BACKCHANNEL_MAX_MS=180``, ``BARGE_IN_FADE_MS=80`` (from our
-    most recent tuning). videosdk's defaults are gentler: 0.5 s
+    most recent tuning). the framework's defaults are gentler: 0.5 s
     duration, 2 words, 0.4 s fade. The voice_agent example the user
     validated tuned aggressive: 0.2 s / 1 word / 0.1 s fade. We
     pick the aggressive defaults for snappier UX, since the user
     explicitly liked that example's feel.
     """
-    _ensure_videosdk_loaded()
+    _ensure_next_pipeline_loaded()
     return InterruptConfig(  # type: ignore[name-defined]
         mode="HYBRID",
         interrupt_min_duration=0.2,
@@ -269,7 +269,7 @@ def _translate_interrupt_config(agent_config: dict[str, Any]) -> Any:
     )
 
 
-async def run_videosdk_session(
+async def run_next_session(
     *,
     ws: Any,
     agent_config: dict[str, Any],
@@ -307,8 +307,8 @@ async def run_videosdk_session(
     audio round-trip working end-to-end first establishes the
     structural skeleton; the feature wiring fills the bones.
     """
-    _ensure_videosdk_loaded()
-    from voice_pipeline_videosdk_transport import FastAPIWebSocketTransport
+    _ensure_next_pipeline_loaded()
+    from voice_pipeline_next_transport import FastAPIWebSocketTransport
 
     loop = asyncio.get_running_loop()
     pipeline = build_pipeline_from_agent_config(agent_config)
@@ -324,10 +324,10 @@ async def run_videosdk_session(
 
     # Tool list — built-in tools (per agent.config.enabled_tools)
     # AND custom webhook tools bound to this agent. The bridge in
-    # voice_pipeline_videosdk_tools handles both: built-ins via
+    # voice_pipeline_next_tools handles both: built-ins via
     # the agent_tools_service registry, custom tools via the
     # existing _load_custom_tools_for_agent loader + dispatch_custom_tool.
-    from voice_pipeline_videosdk_tools import build_tools_for_agent
+    from voice_pipeline_next_tools import build_tools_for_agent
     tools_list = await build_tools_for_agent(
         agent_config, agent_id=agent_id, user_id=user_id,
     )
@@ -353,12 +353,12 @@ async def run_videosdk_session(
     try:
         await transport.connect()
     except Exception as exc:  # noqa: BLE001
-        _log.exception("[voice-pipeline-videosdk] transport.connect failed: %s", exc)
+        _log.exception("[voice-pipeline-next] transport.connect failed: %s", exc)
         raise
 
     session = AgentSession(agent=agent, pipeline=pipeline)  # type: ignore[name-defined]
     _log.info(
-        "[voice-pipeline-videosdk] session start session=%s agent_id_in_config=%s "
+        "[voice-pipeline-next] session start session=%s agent_id_in_config=%s "
         "llm=%s stt=%s tts=%s voice=%s lang=%s",
         session_id,
         agent_config.get("name") or "unknown",
@@ -381,7 +381,7 @@ async def run_videosdk_session(
         try:
             await ws.send_json(payload)
         except Exception as exc:  # noqa: BLE001
-            _log.debug("[voice-pipeline-videosdk] send_json failed: %s", exc)
+            _log.debug("[voice-pipeline-next] send_json failed: %s", exc)
 
     def _on_transcript_ready(data: Any) -> None:
         text = ""
@@ -429,7 +429,7 @@ async def run_videosdk_session(
                 try:
                     await ws.send_json({"type": "token", "text": chunk})
                 except Exception as exc:  # noqa: BLE001
-                    _log.debug("[voice-pipeline-videosdk] token send failed: %s", exc)
+                    _log.debug("[voice-pipeline-next] token send failed: %s", exc)
             yield chunk
 
     # ---- Billing (Phase A.7) -------------------------------------------
@@ -496,7 +496,7 @@ async def run_videosdk_session(
             try:
                 chunks = await search_agent_knowledge(agent_id, text, top_k=5)
             except Exception:  # noqa: BLE001
-                _log.exception("[voice-pipeline-videosdk] RAG search failed")
+                _log.exception("[voice-pipeline-next] RAG search failed")
                 return
             if not chunks:
                 return
@@ -591,7 +591,7 @@ async def run_videosdk_session(
     except asyncio.CancelledError:
         raise
     except Exception as exc:  # noqa: BLE001
-        _log.exception("[voice-pipeline-videosdk] session crashed: %s", exc)
+        _log.exception("[voice-pipeline-next] session crashed: %s", exc)
     finally:
         with _suppress():
             await session.aclose()  # type: ignore[attr-defined]
@@ -611,7 +611,7 @@ async def run_videosdk_session(
                 bucket, key, n_bytes = await recorder.close()
                 if bucket and key and n_bytes > 0 and agent_id is not None:
                     _log.info(
-                        "[voice-pipeline-videosdk] recording_uploaded "
+                        "[voice-pipeline-next] recording_uploaded "
                         "session=%s bucket=%s key=%s bytes=%d",
                         session_id, bucket, key, n_bytes,
                     )
@@ -630,9 +630,9 @@ async def run_videosdk_session(
                         finally:
                             await conn.close()
             except Exception:  # noqa: BLE001
-                _log.exception("[voice-pipeline-videosdk] recorder.close failed")
+                _log.exception("[voice-pipeline-next] recorder.close failed")
         _log.info(
-            "[voice-pipeline-videosdk] session end session=%s",
+            "[voice-pipeline-next] session end session=%s",
             session_id,
         )
 

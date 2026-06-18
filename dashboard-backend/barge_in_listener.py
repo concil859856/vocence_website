@@ -1,6 +1,6 @@
 """Server-side barge-in detection during agent reply.
 
-Bridges the architectural gap with videosdk's
+Bridges the architectural gap with the framework's
 ``pipeline_orchestrator._monitor_interruption_duration``: their pipeline
 runs continuous VAD over the audio stream and fires
 ``_interrupt_pipeline()`` when sustained user speech is detected during

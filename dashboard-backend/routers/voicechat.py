@@ -76,10 +76,10 @@ from call_recorder import CallRecorder
 from llm_client import stream_chat_with_tools
 from ws_drain import registry as drain_registry, track_session
 from barge_in_listener import BargeInListener
-from voice_pipeline_videosdk import is_videosdk_pipeline, run_videosdk_session
+from voice_pipeline_next import is_next_pipeline, run_next_session
 
 # Server-side continuous barge-in detection during agent reply (matches
-# videosdk's pipeline_orchestrator._monitor_interruption_duration).
+# the framework's pipeline_orchestrator._monitor_interruption_duration).
 # Off by default — echo behavior varies wildly across user setups
 # (headphones vs speakers, room reverb, mic AGC), so we ship gated
 # and roll out per-deployment after dogfooding. See
@@ -692,16 +692,16 @@ async def voicechat_session(
     # risk is gone.
     session_id = f"vc-{uuid.uuid4().hex[:16]}"
 
-    # New-pipeline dispatch. When VOICE_PIPELINE=videosdk AND we have an
-    # agent_ctx to drive it, hand the session off to the videosdk-based
-    # handler. Today this is gated on the flag AND the run_videosdk_session
+    # New-pipeline dispatch. When VOICE_PIPELINE=next AND we have an
+    # agent_ctx to drive it, hand the session off to the framework-based
+    # handler. Today this is gated on the flag AND the run_next_session
     # implementation being live (it raises NotImplementedError while the
     # transport bridge is still pending — Phase A.4). If the stub raises,
     # we log and fall through to the legacy handler so a misconfigured
     # deployment can't kill live calls.
-    if is_videosdk_pipeline() and agent_ctx is not None:
+    if is_next_pipeline() and agent_ctx is not None:
         try:
-            await run_videosdk_session(
+            await run_next_session(
                 ws=ws,
                 agent_config=agent_ctx.get("config") or {},
                 user_id=auth_user_id,
@@ -711,13 +711,13 @@ async def voicechat_session(
             return
         except NotImplementedError as exc:
             _log.warning(
-                "[stream] VOICE_PIPELINE=videosdk set but new path not "
+                "[stream] VOICE_PIPELINE=next set but new path not "
                 "implemented yet — falling back to legacy. (%s)",
                 str(exc).split(".")[0],
             )
         except Exception:  # noqa: BLE001
             _log.exception(
-                "[stream] videosdk pipeline crashed on session=%s — "
+                "[stream] the new pipeline crashed on session=%s — "
                 "falling back to legacy handler",
                 session_id,
             )
@@ -2108,7 +2108,7 @@ async def voicechat_session(
                     tts_warmer=session_tts_warmer,
                     tts_pod_pin=session_tts_pod_pin,
                     denoise_enabled=bool(_agent_cfg.get("denoise_enabled", False)),
-                    turn_decider="ultravad",  # Phase C: no longer per-agent — videosdk has one detector
+                    turn_decider="ultravad",  # Phase C: no longer per-agent — the framework has one detector
                     ultravad_threshold=float(_agent_cfg.get("ultravad_threshold", 0.50)),
                     min_delay_ms=_agent_cfg.get("min_delay_ms"),
                     prewarmed_stt=adopted_prewarm_stt,

@@ -102,7 +102,7 @@ class AgentConfigIn(BaseModel):
     # to our streaming pod (default — included in the per-minute rate
     # and consistent with cloning TTS); "deepgram" opts into hosted
     # Nova-3 at extra cost for accuracy-critical English agents.
-    # Honored by the new voice pipeline (VOICE_PIPELINE=videosdk);
+    # Honored by the new voice pipeline (VOICE_PIPELINE=next);
     # the legacy path follows the deployment-wide STT_PROVIDER env
     # so a per-agent override there is a future improvement.
     stt_provider: Literal["vocence", "deepgram"] = "vocence"

@@ -4,7 +4,7 @@ Our existing routing logic lives in ``llm_client.stream_chat_with_tools``:
 based on the ``model`` prefix (``cerebras:``, ``gemini:``, ``glm:``,
 ``grok:``), it picks an upstream provider, multi-key-rotates within
 that provider, and falls back to Grok if everything else is down.
-This module wraps that router in a ``videosdk.agents.llm.LLM``
+This module wraps that router in a ``the framework LLM base class``
 subclass so the new pipeline can use it as a drop-in LLM plugin.
 
 Gemini (``gemini:*``) is already handled by the framework's
@@ -229,7 +229,7 @@ def _function_tools_to_openai(
     JSON shape, which is what our router expects.
 
     ``FunctionTool`` is a Protocol — the framework attaches a
-    ``__videosdk_function_info__`` attribute when the decorator runs.
+    ``__the framework_function_info__`` attribute when the decorator runs.
     We pull name / description / schema from there. If a passed tool
     doesn't carry that attribute (e.g. user wrote a custom tool by
     hand) it's silently dropped — the framework's own checks will
@@ -239,7 +239,7 @@ def _function_tools_to_openai(
         return None
     out: list[dict[str, Any]] = []
     for t in tools:
-        info = getattr(t, "__videosdk_function_info__", None)
+        info = getattr(t, "__the framework_function_info__", None)
         if info is None:
             continue
         out.append({

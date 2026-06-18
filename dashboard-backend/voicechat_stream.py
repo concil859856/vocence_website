@@ -89,7 +89,7 @@ _STT_SEND_QUEUE_MAX = 100
 
 # Post-final grace period. After STT emits a ``final`` we hold off
 # committing the turn for this long, even if silence_ms is already
-# past the configured minimum delay. Matches videosdk's
+# past the configured minimum delay. Matches the framework's
 # ``_wait_for_additional_speech`` pattern (see speech_understanding.py
 # in their repo) — STT pods emit finals at their own internal
 # silence threshold (~800 ms), but real speakers routinely pause
@@ -286,7 +286,7 @@ class _SignalState:
     # Used by the post-final grace period in the decision loop —
     # after a final, the user often pauses briefly before resuming
     # their sentence ("…well, [pause] …I was thinking…"). silence_ms
-    # alone treats those pauses as turn-end; videosdk's wait timer
+    # alone treats those pauses as turn-end; the framework's wait timer
     # protects against this by holding off commit for ~600 ms after
     # any final. ``0.0`` = no final has fired this turn.
     last_final_at: float = 0.0
@@ -1085,7 +1085,7 @@ class StreamingTurnSession:
                 longest = self._state.longest_partial_in_window
                 # Stamp the wall-clock so the decision loop's
                 # post-final grace knows how long ago this fired.
-                # Mirrors videosdk's wait_started_at — the moment a
+                # Mirrors the framework's wait_started_at — the moment a
                 # final lands is when their wait timer arms.
                 self._state.last_final_at = time.monotonic()
                 if text:
@@ -1353,7 +1353,7 @@ class StreamingTurnSession:
             # Post-final grace gate. After STT emits a ``final`` the
             # user often pauses briefly between clauses ("…well, …I was
             # thinking…"). silence_ms alone treats those pauses as
-            # turn-end; videosdk's _wait_for_additional_speech wraps
+            # turn-end; the framework's _wait_for_additional_speech wraps
             # exactly this case. We refuse to commit until the grace
             # period is exhausted unless the silence is already very
             # long (user definitely done, can't keep them waiting).
