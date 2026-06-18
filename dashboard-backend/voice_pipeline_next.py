@@ -87,11 +87,16 @@ def _ensure_next_pipeline_loaded() -> None:
             DeepgramSTT,
             GoogleLLM,
         )
-        from vocence_plugins import VocenceTTS, VocenceSTT  # type: ignore[import-not-found]
+        # Internal adapters — same interface as the public plugins but
+        # talk to our STT/TTS pods directly through gpu_pool, so the
+        # backend doesn't round-trip through the public api.vocence.ai
+        # gateway just to reach its own pods.
+        from voice_pipeline_next_stt import InternalVocenceSTT
+        from voice_pipeline_next_tts import InternalVocenceTTS
     except ImportError as exc:
         raise RuntimeError(
             "VOICE_PIPELINE=next requires the agent framework "
-            "and vocence-plugins to be installed in the backend venv. "
+            "to be installed in the backend venv. "
             f"Import failed: {exc}"
         ) from exc
 
@@ -105,14 +110,18 @@ def _ensure_next_pipeline_loaded() -> None:
         "TurnDetector": TurnDetector,
         "DeepgramSTT": DeepgramSTT,
         "GoogleLLM": GoogleLLM,
-        "VocenceTTS": VocenceTTS,
-        "VocenceSTT": VocenceSTT,
+        "InternalVocenceTTS": InternalVocenceTTS,
+        "InternalVocenceSTT": InternalVocenceSTT,
     })
     _next_pipeline_loaded = True
     _log.info("[voice-pipeline-next] framework + plugins loaded")
 
 
-def build_pipeline_from_agent_config(agent_config: dict[str, Any]) -> Any:
+def build_pipeline_from_agent_config(
+    agent_config: dict[str, Any],
+    *,
+    user_id: str | None = None,
+) -> Any:
     """Translate a Vocence agent config row to a the framework Pipeline.
 
     This is the boundary between the existing data model (agent_config
@@ -122,6 +131,11 @@ def build_pipeline_from_agent_config(agent_config: dict[str, Any]) -> Any:
     fields (interrupt_min_duration, etc.) use sensible defaults that
     Studio will surface in Phase B.
 
+    ``user_id`` is only needed when the agent's ``voice`` is a
+    ``dv:<id>`` designed voice — the resolver enforces per-user
+    ownership. Built-in sample voices and the fallback path don't need
+    it.
+
     Returns a constructed ``Pipeline`` ready to hand to
     ``AgentSession(agent=..., pipeline=pipeline)``.
     """
@@ -129,7 +143,6 @@ def build_pipeline_from_agent_config(agent_config: dict[str, Any]) -> Any:
 
     # ---- STT plugin (per-agent selectable; default Vocence) ----
     stt_provider = (agent_config.get("stt_provider") or "vocence").lower()
-    api_key_env = os.environ.get("VOCENCE_INTERNAL_API_KEY")
     language = agent_config.get("language") or "auto"
     if stt_provider == "deepgram":
         stt = DeepgramSTT(  # type: ignore[name-defined]
@@ -137,14 +150,13 @@ def build_pipeline_from_agent_config(agent_config: dict[str, Any]) -> Any:
             language=_to_deepgram_lang(language),
         )
     else:
-        stt = VocenceSTT(  # type: ignore[name-defined]
-            api_key=api_key_env,
+        stt = InternalVocenceSTT(  # type: ignore[name-defined]
             language=language,
         )
 
     # ---- LLM plugin ----
     # The agent_config stores model ids like "cerebras:gpt-oss-120b"
-    # or "gemini:gemini-3.5-flash". We route to the right framework
+    # or "gemini:gemini-2.5-flash". We route to the right framework
     # plugin based on the prefix. Day 1 supports Gemini natively via
     # GoogleLLM; Cerebras + GLM + Grok need a thin wrapper around our
     # existing llm_client router — that wrapper is _build_router_llm
@@ -153,10 +165,10 @@ def build_pipeline_from_agent_config(agent_config: dict[str, Any]) -> Any:
     llm = _build_llm_plugin(llm_model, agent_config)
 
     # ---- TTS plugin (always Vocence — voice cloning is the diff) ----
-    tts = VocenceTTS(  # type: ignore[name-defined]
-        api_key=api_key_env,
+    tts = InternalVocenceTTS(  # type: ignore[name-defined]
         voice=str(agent_config.get("voice") or "design-aria"),
         language=language if language != "auto" else None,
+        user_id=user_id,
     )
 
     # ---- EOU + Interrupt config (translation from legacy knobs) ----
@@ -316,7 +328,7 @@ async def run_next_session(
     from voice_pipeline_next_transport import FastAPIWebSocketTransport
 
     loop = asyncio.get_running_loop()
-    pipeline = build_pipeline_from_agent_config(agent_config)
+    pipeline = build_pipeline_from_agent_config(agent_config, user_id=user_id)
 
     # Build a minimal Agent subclass from the agent config. The
     # system prompt drives the LLM's instructions; the first_message
