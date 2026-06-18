@@ -356,6 +356,66 @@ async def run_videosdk_session(
         agent_config.get("language"),
     )
 
+    # ---- minimal client-protocol event bridge --------------------------
+    # The existing frontend expects ``{type: "transcript"|"token"|
+    # "audio_meta"|"turn_end"|"cancelled"|...}`` JSON frames. Mirror
+    # the most critical ones from the framework's emitted events so
+    # the UI keeps working without code changes. Token-stream wiring
+    # (per-token deltas) needs the @pipeline.on("llm") decorator
+    # pattern and lands in a follow-up — for now the chat bubble
+    # paces with the final transcript on ``content_generated``.
+    async def _send_safely(payload: dict[str, Any]) -> None:
+        try:
+            await ws.send_json(payload)
+        except Exception as exc:  # noqa: BLE001
+            _log.debug("[voice-pipeline-videosdk] send_json failed: %s", exc)
+
+    def _on_transcript_ready(data: Any) -> None:
+        text = ""
+        if isinstance(data, dict):
+            text = (data.get("text") or "").strip()
+        if not text:
+            return
+        loop.create_task(_send_safely({"type": "transcript", "text": text}))
+
+    def _on_content_generated(data: Any) -> None:
+        text = ""
+        if isinstance(data, dict):
+            text = (data.get("text") or "").strip()
+        if text:
+            # Single token event with the full reply — replaces the
+            # legacy token-stream UX (text appears all at once when
+            # ready instead of typing-style stream). Real streaming
+            # lands in Phase A.6+ via @pipeline.on("llm").
+            loop.create_task(_send_safely({"type": "token", "text": text}))
+
+    def _on_synthesis_complete(_data: Any = None) -> None:
+        loop.create_task(_send_safely({"type": "turn_end"}))
+
+    def _on_synthesis_interrupted(_data: Any = None) -> None:
+        loop.create_task(_send_safely({"type": "cancelled"}))
+
+    def _on_error(data: Any) -> None:
+        msg = (data.get("error") if isinstance(data, dict) else str(data)) or "error"
+        loop.create_task(_send_safely({
+            "type": "error", "code": "pipeline_error", "message": msg,
+        }))
+
+    pipeline.on("transcript_ready", _on_transcript_ready)
+    pipeline.on("content_generated", _on_content_generated)
+    pipeline.on("synthesis_complete", _on_synthesis_complete)
+    pipeline.on("backchannel_detected", _on_synthesis_interrupted)
+    pipeline.on("error", _on_error)
+
+    # Send the initial ``ready`` envelope so the frontend transitions
+    # out of its "connecting" state. Mirrors what the legacy handler
+    # emits right after auth + agent load complete.
+    await _send_safely({
+        "type": "ready",
+        "session_id": session_id,
+        "agent": {"name": agent_config.get("name") or "Agent"},
+    })
+
     try:
         # NOT run_until_shutdown=True — the FastAPI handler owns the
         # process lifecycle. We just start the conversation loop and
