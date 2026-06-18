@@ -693,17 +693,22 @@ async def run_next_session(
         except Exception as exc:  # noqa: BLE001
             _log.debug("[voice-pipeline-next] send_json failed: %s", exc)
 
-    def _on_transcript_ready(_data: Any) -> None:
-        # No-op. The transcript is sent to the frontend from the
-        # user_turn_start hook below — that's an async hook the
-        # framework AWAITS before kicking off content_generation,
-        # so the {type:'transcript'} envelope is guaranteed to
-        # reach the UI before any {type:'token'} from the LLM.
-        # Listening on transcript_ready (which the framework emits
-        # synchronously and we can only respond to via fire-and-
-        # forget create_task) raced the awaited token stream and
-        # the user bubble appeared AFTER the agent reply.
-        return
+    def _on_transcript_ready(data: Any) -> None:
+        # We don't SEND the transcript from here (the user_turn_start
+        # hook does that, awaited before LLM). But this event fires
+        # for both STT-driven AND typed-text turns, so it's the only
+        # reliable place to capture user_text into _turn_state for
+        # the studio_voicechat_history INSERT. user_turn_start fires
+        # only for STT path; transcript_ready covers both.
+        text = ""
+        if isinstance(data, dict):
+            text = (data.get("text") or "").strip()
+        if not text:
+            return
+        from time import monotonic as _mono
+        _turn_state["user_text"] = text
+        _turn_state["agent_text_parts"] = []
+        _turn_state["turn_started_at"] = _mono()
 
     def _on_content_generated(_data: Any) -> None:
         # No-op now that the @pipeline.on("llm") streaming hook
