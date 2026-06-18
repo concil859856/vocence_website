@@ -201,6 +201,13 @@ def build_pipeline_from_agent_config(
         stt = DeepgramSTT(  # type: ignore[name-defined]
             model=os.environ.get("DEEPGRAM_MODEL") or "nova-3",
             language=_to_deepgram_lang(language),
+            # Frontend mic frames are 16 kHz PCM16LE. Without this
+            # override DeepgramSTT defaults to sample_rate=48000 and
+            # tells Deepgram "expect 48k" — Deepgram then interprets
+            # our 16k bytes as 48k audio and silently returns no
+            # transcripts. Same sample-rate-mismatch bug we hit on
+            # SileroVAD earlier.
+            sample_rate=16000,
         )
     else:
         stt = InternalVocenceSTT(  # type: ignore[name-defined]
