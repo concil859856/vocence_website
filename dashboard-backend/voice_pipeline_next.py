@@ -211,7 +211,12 @@ def _build_llm_plugin(llm_model: str, agent_config: dict[str, Any]) -> Any:
     if llm_model.startswith("gemini:"):
         from videosdk.agents.plugins import GoogleLLM  # type: ignore[import-not-found]
         model_id = llm_model.split(":", 1)[1] or "gemini-2.5-flash"
-        return GoogleLLM(model=model_id, temperature=temperature)
+        # Force thinking OFF for voice — Gemini 2.5 Pro/Flash will burn
+        # 5+ s on the thinking pass otherwise, which destroys TTFT. The
+        # framework's GoogleLLM defaults to ``thinking_budget=0`` today
+        # but we pin it explicitly so a future plugin update can't
+        # silently regress us.
+        return GoogleLLM(model=model_id, temperature=temperature, thinking_budget=0)
     # Everything else (cerebras: / glm: / grok: / unprefixed default)
     # goes through our router shim so the existing multi-provider
     # routing + key rotation + Grok-fallback behavior is preserved.

@@ -511,16 +511,14 @@ export function AgentConfigForm({ name, type, config, availableModels, onChange,
           label="STT provider"
           hint="Vocence: our streaming pod, included in the per-minute rate. Deepgram: hosted Nova-3, extra cost per minute, often higher English accuracy on noisy lines."
         >
-          <select
-            value={config.stt_provider ?? 'vocence'}
-            onChange={(e) =>
-              onChange({ config: { stt_provider: e.target.value as 'vocence' | 'deepgram' } })
-            }
-            className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white"
-          >
-            <option value="vocence">Vocence (default)</option>
-            <option value="deepgram">Deepgram</option>
-          </select>
+          <Select<'vocence' | 'deepgram'>
+            value={(config.stt_provider ?? 'vocence') as 'vocence' | 'deepgram'}
+            onChange={(v) => onChange({ config: { stt_provider: v } })}
+            options={[
+              { value: 'vocence', label: 'Vocence (default)', hint: 'Our streaming pod — included in the per-minute rate' },
+              { value: 'deepgram', label: 'Deepgram', hint: 'Nova-3 hosted, extra per-minute cost — best on noisy English' },
+            ]}
+          />
         </Field>
       </Section>
 

@@ -275,17 +275,30 @@ async def list_models(user_id: str = Depends(require_auth)) -> dict:
             },
         ])
 
-    # Gemini 3.5 Flash with reasoning disabled — sub-second TTFT
-    # plus measurably higher general-knowledge quality than the
-    # gpt-oss-120b baseline (Artificial Analysis Intelligence Index
-    # 43 vs 33). The ``reasoning_effort="none"`` injection lives in
-    # llm_client so a future caller can't accidentally turn thinking
-    # back on and quietly regress voice TTFT to 5+ s.
+    # Gemini family. Thinking is force-disabled (``reasoning_effort="none"``
+    # on the legacy OpenAI-compat path; ``thinking_budget=0`` by default
+    # on the new pipeline's GoogleLLM) so voice TTFT stays sub-second —
+    # without this Gemini 2.5 Pro/Flash burn 5+ s on the thinking pass.
+    # All listed variants support function calling / custom tools.
     if llm_client.google_llm_configured():
-        models.append({
-            "id": "gemini:gemini-3.5-flash",
-            "label": "Google · Gemini 3.5 Flash (high quality, sub-second TTFT)",
-        })
+        models.extend([
+            {
+                "id": "gemini:gemini-2.5-flash",
+                "label": "Google · Gemini 2.5 Flash (recommended, sub-second TTFT)",
+            },
+            {
+                "id": "gemini:gemini-2.5-flash-lite",
+                "label": "Google · Gemini 2.5 Flash-Lite (lowest latency)",
+            },
+            {
+                "id": "gemini:gemini-2.5-pro",
+                "label": "Google · Gemini 2.5 Pro (highest quality, slightly slower)",
+            },
+            {
+                "id": "gemini:gemini-3.5-flash",
+                "label": "Google · Gemini 3.5 Flash (high quality, sub-second TTFT)",
+            },
+        ])
 
     # Surface legacy default if Cerebras isn't configured — keeps the
     # picker non-empty in dev setups without a Cerebras key.
