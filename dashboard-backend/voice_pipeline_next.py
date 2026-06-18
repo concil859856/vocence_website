@@ -831,6 +831,9 @@ async def run_next_session(
                     yield ""
                     continue
                 fixed = _fix_spacing(stripped)
+                # Accumulate the cleaned text for the end-of-turn
+                # studio_voicechat_history INSERT.
+                _turn_state["agent_text_parts"].append(fixed)
                 try:
                     await ws.send_json({"type": "token", "text": fixed})
                 except Exception as exc:  # noqa: BLE001
@@ -932,12 +935,29 @@ async def run_next_session(
     # reply bubble could appear above the user's transcript bubble in
     # the chat (token-send wins the race against fire-and-forget
     # transcript_ready listener).
+    # Per-turn state for the studio_voicechat_history INSERT and
+    # for the recorder's TTS-turn gate (both need user text + agent
+    # text + timing for each turn). Mutated by the user_turn_start
+    # hook (captures user text) and by the @pipeline.on("llm") hook
+    # (accumulates agent text). Drained + reset by the TTS wrap
+    # below at end-of-turn.
+    _turn_state: dict[str, Any] = {
+        "user_text": "",
+        "agent_text_parts": [],
+        "turn_started_at": None,
+    }
+
     async def _send_user_transcript(transcript: Any) -> None:
         text = transcript if isinstance(transcript, str) else \
             (transcript.get("text") if isinstance(transcript, dict) else "")
         text = (text or "").strip()
         if text:
             await _send_safely({"type": "transcript", "text": text})
+            # Capture for studio_voicechat_history at end-of-turn.
+            from time import monotonic as _mono
+            _turn_state["user_text"] = text
+            _turn_state["agent_text_parts"] = []
+            _turn_state["turn_started_at"] = _mono()
 
     pipeline.on("user_turn_start", _send_user_transcript)
 
@@ -1028,16 +1048,84 @@ async def run_next_session(
         pl_track = getattr(pipeline, "audio_track", None)
         if pl_track is not None and hasattr(pl_track, "add_sink"):
             pl_track.add_sink(_agent_recording_sink)
-        # Pair the recorder's agent-turn gate with TTS lifecycle so
-        # mid-stream barge-ins trim the right channel correctly.
-        def _on_tts_started(_d: Any = None) -> None:
-            recorder.notify_agent_turn_started()
+        # Pair the recorder's agent-turn gate with TTS lifecycle.
+        # ``synthesis_started`` / ``synthesis_complete`` only emit on
+        # the typed-text path — STT-driven turns never fire them
+        # (same bug pattern as the idle-timeout fix). Wrap
+        # pipeline.tts.synthesize instead so notify_agent_turn_started
+        # fires when the TTS coroutine begins, and
+        # notify_agent_tts_done fires in the finally block on every
+        # turn including barge-ins and exceptions.
+        _tts_for_recorder = pipeline.tts
+        if _tts_for_recorder is not None and hasattr(_tts_for_recorder, "synthesize"):
+            _synth_pre_recorder = _tts_for_recorder.synthesize
 
-        def _on_tts_done(_d: Any = None) -> None:
-            recorder.notify_agent_tts_done()
+            async def _synth_with_recorder(text: Any, voice_id: Any = None, **kwargs: Any) -> None:
+                try:
+                    recorder.notify_agent_turn_started()
+                except Exception:  # noqa: BLE001
+                    pass
+                try:
+                    await _synth_pre_recorder(text, voice_id=voice_id, **kwargs)
+                finally:
+                    try:
+                        recorder.notify_agent_tts_done()
+                    except Exception:  # noqa: BLE001
+                        pass
 
-        pipeline.on("synthesis_started", _on_tts_started)
-        pipeline.on("synthesis_complete", _on_tts_done)
+            _tts_for_recorder.synthesize = _synth_with_recorder  # type: ignore[assignment]
+
+    # Per-turn studio_voicechat_history INSERT. Same purpose as
+    # legacy's _record_turn — without this, the call-history modal
+    # in Studio is empty for every session served by the new
+    # pipeline (the per-turn rows are what drives the transcript
+    # view, even when recording is off).
+    #
+    # Wrap pipeline.tts.synthesize one more time so we run AFTER the
+    # recorder + billing + UI-end wraps. user_text comes from the
+    # state captured by _send_user_transcript; agent_text comes from
+    # the @pipeline.on("llm") accumulator above. Both are reset on
+    # the next user_turn_start.
+    _tts_for_history = pipeline.tts
+    if _tts_for_history is not None and hasattr(_tts_for_history, "synthesize"):
+        _synth_pre_history = _tts_for_history.synthesize
+
+        async def _synth_with_history(text: Any, voice_id: Any = None, **kwargs: Any) -> None:
+            try:
+                await _synth_pre_history(text, voice_id=voice_id, **kwargs)
+            finally:
+                user_text = (_turn_state.get("user_text") or "").strip()
+                agent_text = "".join(_turn_state.get("agent_text_parts") or []).strip()
+                if not user_text and not agent_text:
+                    return
+                try:
+                    from time import monotonic as _mono
+                    from routers.voicechat import _record_turn
+                    started_at = _turn_state.get("turn_started_at")
+                    latency_ms = (
+                        int((_mono() - started_at) * 1000) if started_at else 0
+                    )
+                    await _record_turn(
+                        user_id=user_id,
+                        user_text=user_text,
+                        bot_text=agent_text,
+                        mode="voice_next",
+                        latency_ms=latency_ms,
+                        ttft_ms=0,
+                        ttfa_ms=None,
+                        error=None,
+                        session_id=session_id,
+                        agent_id=agent_id,
+                    )
+                except Exception:  # noqa: BLE001
+                    _log.exception("[voice-pipeline-next] _record_turn failed")
+                # Reset for the next turn; user_turn_start will
+                # re-populate user_text on the next user STT-final.
+                _turn_state["user_text"] = ""
+                _turn_state["agent_text_parts"] = []
+                _turn_state["turn_started_at"] = None
+
+        _tts_for_history.synthesize = _synth_with_history  # type: ignore[assignment]
 
     # Send the initial ``ready`` envelope so the frontend transitions
     # out of its "connecting" state. The ``capabilities`` block tells
