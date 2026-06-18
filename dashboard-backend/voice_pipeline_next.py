@@ -662,19 +662,38 @@ async def run_next_session(
     pipeline.on("backchannel_detected", _on_synthesis_interrupted)
     pipeline.on("error", _on_error)
 
-    # synthesis_complete only fires on the typed-text path. For
-    # STT-driven turns the framework instead emits last_audio_byte on
-    # speech_generation directly. Without bridging those, the
-    # frontend never gets {type:'turn_end'} → audioStartedForTurnRef
-    # never resets → the binary-frame handler skips startRevealTimer
-    # on the NEXT turn → that turn's reply text never paints in the
-    # bubble. Especially visible on tool-call turns where the bubble
-    # is "pending" the longest (waiting through tool execution).
-    _orchestrator_for_endhooks = getattr(pipeline, "orchestrator", None)
-    _sg_for_endhooks = getattr(_orchestrator_for_endhooks, "speech_generation", None) if _orchestrator_for_endhooks else None
-    if _sg_for_endhooks is not None:
-        _sg_for_endhooks.on("last_audio_byte", _on_synthesis_complete)
-        _sg_for_endhooks.on("synthesis_interrupted", _on_synthesis_interrupted)
+    # Synthesis-complete signal. The framework normally fires
+    # last_audio_byte from inside audio_track.recv() — but recv() is
+    # only called when something CONSUMES the track (videosdk
+    # meeting room's RTP outbound). We don't have a meeting room —
+    # we push bytes directly via audio_track.add_sink() → WS, so
+    # recv() never runs and last_audio_byte never fires. Same story
+    # for synthesis_complete on the pipeline (typed-text path only).
+    #
+    # The reliable end-of-turn signal in our setup is when our TTS
+    # adapter's synthesize() coroutine returns — at that moment, all
+    # pod bytes have been pushed through the sink to the WS. Wrap
+    # the TTS plugin's synthesize so we fire our own turn-end hooks
+    # in the finally block. Both UI (turn_end) and billing
+    # (mark_turn_ended) need this signal.
+    _tts_plugin = pipeline.tts
+    if _tts_plugin is not None and hasattr(_tts_plugin, "synthesize"):
+        _original_synthesize = _tts_plugin.synthesize
+
+        async def _wrapped_synthesize(text: Any, voice_id: Any = None, **kwargs: Any) -> None:
+            try:
+                await _original_synthesize(text, voice_id=voice_id, **kwargs)
+            finally:
+                # Fire our turn-end signal exactly once per synthesize
+                # call. _on_synthesis_complete sends {type:'turn_end'}
+                # to the UI (resets audioStartedForTurnRef so the
+                # next turn's reveal timer kicks). The billing
+                # handler (registered below) decrements in_flight so
+                # the idle watchdog can fire.
+                with _suppress():
+                    _on_synthesis_complete(None)
+
+        _tts_plugin.synthesize = _wrapped_synthesize  # type: ignore[assignment]
 
     # Phase A.10 — streaming token deltas. The framework's
     # @pipeline.on("llm") hook is an async-generator middleware that
@@ -795,20 +814,32 @@ async def run_next_session(
         pipeline.on("synthesis_complete", _billing_turn_end)
         pipeline.on("backchannel_detected", _billing_turn_end)
 
-        # synthesis_complete is only emitted by the framework on the
-        # process_text (typed) path — STT-driven turns instead fire
-        # speech_generation's last_audio_byte / synthesis_interrupted
-        # directly without re-emitting at pipeline level. Without
-        # listening to those, _billing_turn_end never fires on voice
-        # turns, in_flight_turns never drops to 0, and the idle
-        # watchdog's `_in_flight_turns == 0` gate is never satisfied
-        # — session stays connected forever. Reach into the
-        # orchestrator to wire them.
+        # For STT-driven turns the framework's synthesis_complete /
+        # last_audio_byte don't fire in our WS-only setup (no
+        # audio_track.recv() consumer to drain the buffer). Instead
+        # we wrap pipeline.tts.synthesize above to fire turn-end
+        # signals when our TTS coroutine returns. Hook the billing
+        # turn-end into the same wrap so in_flight_turns decrements
+        # and the idle watchdog can actually fire.
         _orch = getattr(pipeline, "orchestrator", None)
         _sg = getattr(_orch, "speech_generation", None) if _orch else None
         if _sg is not None:
-            _sg.on("last_audio_byte", _billing_turn_end)
             _sg.on("synthesis_interrupted", _billing_turn_end)
+        # Wrap the (already-wrapped-for-UI) synthesize to ALSO
+        # decrement billing. Order matters: UI signal first (so the
+        # frontend sees turn_end before any subsequent activity),
+        # billing second.
+        _tts_for_billing = pipeline.tts
+        if _tts_for_billing is not None and hasattr(_tts_for_billing, "synthesize"):
+            _synth_with_ui_end = _tts_for_billing.synthesize
+
+            async def _synth_with_billing_end(text: Any, voice_id: Any = None, **kwargs: Any) -> None:
+                try:
+                    await _synth_with_ui_end(text, voice_id=voice_id, **kwargs)
+                finally:
+                    _billing_turn_end()
+
+            _tts_for_billing.synthesize = _synth_with_billing_end  # type: ignore[assignment]
 
         # Kick off the billing watchdog loop — this is what drives the
         # per-second credit tick, the idle-timeout check (default 60 s
