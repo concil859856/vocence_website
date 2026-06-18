@@ -662,6 +662,20 @@ async def run_next_session(
     pipeline.on("backchannel_detected", _on_synthesis_interrupted)
     pipeline.on("error", _on_error)
 
+    # synthesis_complete only fires on the typed-text path. For
+    # STT-driven turns the framework instead emits last_audio_byte on
+    # speech_generation directly. Without bridging those, the
+    # frontend never gets {type:'turn_end'} → audioStartedForTurnRef
+    # never resets → the binary-frame handler skips startRevealTimer
+    # on the NEXT turn → that turn's reply text never paints in the
+    # bubble. Especially visible on tool-call turns where the bubble
+    # is "pending" the longest (waiting through tool execution).
+    _orchestrator_for_endhooks = getattr(pipeline, "orchestrator", None)
+    _sg_for_endhooks = getattr(_orchestrator_for_endhooks, "speech_generation", None) if _orchestrator_for_endhooks else None
+    if _sg_for_endhooks is not None:
+        _sg_for_endhooks.on("last_audio_byte", _on_synthesis_complete)
+        _sg_for_endhooks.on("synthesis_interrupted", _on_synthesis_interrupted)
+
     # Phase A.10 — streaming token deltas. The framework's
     # @pipeline.on("llm") hook is an async-generator middleware that
     # wraps the text stream between LLM and TTS. Every chunk MUST be
