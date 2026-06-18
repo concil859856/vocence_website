@@ -234,15 +234,26 @@ class CallRecorder:
             self._flush_open_turn_trimmed()
         self._agent_turn_open = True
 
-    def _flush_open_turn_trimmed(self) -> None:
+    def _flush_open_turn_trimmed(self, *, trim_at_ms: int | None = None) -> None:
         """Commit the open turn's buffer as a segment, trimmed to the
-        max audio the user could have heard (wall-clock since the turn
-        opened). Used by both ``mark_agent_barge_in`` (user interrupted)
-        and ``notify_agent_turn_started`` (next-turn safety path: a
-        previous turn ended without an explicit barge-in OR a
-        ``settled`` signal). Always resets the per-turn state."""
+        max audio the user could have heard. Used by both
+        ``mark_agent_barge_in`` (user interrupted) and
+        ``notify_agent_turn_started`` (next-turn safety path: a previous
+        turn ended without an explicit barge-in OR a ``settled``
+        signal). Always resets the per-turn state.
+
+        ``trim_at_ms`` overrides the wall-clock trim point. The default
+        (None) uses ``self._now_ms()`` — correct for end-of-turn cases.
+        For barge-in, callers should pass the moment the USER STARTED
+        speaking (captured from the VAD speech_started event), not the
+        moment the interrupt was confirmed: the framework's interrupt
+        monitor needs 100-300 ms of sustained speech before firing
+        synthesis_interrupted, so by then the agent has 1-3 extra
+        chunks of audio in the buffer that the user never actually
+        heard before they cut in."""
         if self._agent_turn_start_ms is not None:
-            elapsed_ms = self._now_ms() - self._agent_turn_start_ms
+            end_ms = trim_at_ms if trim_at_ms is not None else self._now_ms()
+            elapsed_ms = end_ms - self._agent_turn_start_ms
             if elapsed_ms < 0:
                 elapsed_ms = 0
             max_played_bytes = elapsed_ms * BYTES_PER_MS
@@ -291,7 +302,7 @@ class CallRecorder:
         except Exception:
             _log.debug("recorder: push_agent swallowed", exc_info=False)
 
-    def mark_agent_barge_in(self) -> None:
+    def mark_agent_barge_in(self, *, at_ms: int | None = None) -> None:
         """User took the floor. Trim the open turn's buffer to the
         wall-clock elapsed since the turn started and commit it as a
         segment, then CLOSE the agent-turn gate so any straggling
@@ -300,13 +311,22 @@ class CallRecorder:
         turn won't accept pushes until ``notify_agent_turn_started``
         re-opens the gate.
 
-        Called from the voicechat router on receipt of ``cancel``.
+        ``at_ms`` is the moment to trim to, expressed in recorder
+        offset milliseconds (``recorder._now_ms()`` at the time of the
+        event). For barge-in, callers should pass the moment the user
+        STARTED speaking (VAD speech_started timestamp) rather than
+        the default of "now" — the interrupt monitor takes 100-300 ms
+        to confirm a barge-in, during which the agent's TTS buffer
+        accumulates extra bytes the user never heard before they cut
+        in. When omitted, falls back to ``self._now_ms()`` for
+        backwards-compatible behavior (legacy router cancel path).
+
         No-op (but still closes the gate) if there's no buffered
         audio yet.
         """
         if not self.started:
             return
-        self._flush_open_turn_trimmed()
+        self._flush_open_turn_trimmed(trim_at_ms=at_ms)
         # Close the gate. Orphan pushes from the cancelled TTS
         # task's grace window land here with the gate False and
         # are dropped — that's the fix for "in the recording,

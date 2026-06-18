@@ -1181,25 +1181,41 @@ async def run_next_session(
 
             _tts_for_recorder.synthesize = _synth_with_recorder  # type: ignore[assignment]
 
-        # Barge-in → trim the open agent turn at the wall-clock moment
-        # the user took the floor. Without this, the recording keeps
-        # all the over-produced TTS bytes that were synthesized AFTER
-        # the user interrupted (TTS streams faster than realtime, so
-        # the buffer often holds 1-3 seconds of "agent kept talking"
-        # audio the user never heard). ``mark_agent_barge_in`` keeps
-        # only the bytes the user could have heard before the cancel,
-        # and closes the gate so straggling push_agent calls from the
-        # cancelled TTS task (1 s cooperative-cancellation grace) get
-        # dropped instead of bleeding into the next turn's recording.
+        # Barge-in → trim the open agent turn at the moment the user
+        # STARTED speaking (not at synthesis_interrupted, which fires
+        # 100-300 ms later — by then the agent's TTS buffer holds
+        # extra bytes the user never heard before they cut in).
         #
-        # The framework fires ``synthesis_interrupted`` on the
-        # ``speech_generation`` component when the orchestrator's
-        # _interrupt_pipeline runs. Pipeline-level
-        # ``backchannel_detected`` also fires on backchannel detection.
-        # Both are barge-in signals from the recorder's POV.
+        # Two-step coordination:
+        #   1. speech_understanding.on("speech_started") fires the
+        #      instant VAD detects the user took the floor. Snapshot
+        #      recorder._now_ms() into _last_speech_started_ms.
+        #   2. speech_generation.on("synthesis_interrupted") fires
+        #      after the interrupt monitor confirms barge-in. Trim the
+        #      recording to the snapshot — NOT to "now".
+        #
+        # If speech_started never fires (e.g. backchannel_detected via
+        # text-based barge-in path), fall back to "now" via at_ms=None.
+        # That's strictly worse than the speech_started path but still
+        # better than no trim at all.
+        _last_speech_started_ms_holder: dict[str, int | None] = {"ms": None}
+
+        def _recorder_on_speech_started(_d: Any = None) -> None:
+            try:
+                _last_speech_started_ms_holder["ms"] = recorder._now_ms()
+            except Exception:  # noqa: BLE001
+                _log.debug(
+                    "[voice-pipeline-next] capture speech_started ms failed",
+                    exc_info=True,
+                )
+
         def _recorder_barge_in(_d: Any = None) -> None:
             try:
-                recorder.mark_agent_barge_in()
+                at_ms = _last_speech_started_ms_holder["ms"]
+                recorder.mark_agent_barge_in(at_ms=at_ms)
+                # Reset so the next turn's barge-in doesn't reuse a
+                # stale timestamp.
+                _last_speech_started_ms_holder["ms"] = None
             except Exception:  # noqa: BLE001
                 _log.debug(
                     "[voice-pipeline-next] recorder.mark_agent_barge_in failed",
@@ -1210,6 +1226,11 @@ async def run_next_session(
         _sg_for_rec = (
             getattr(_orch_for_rec, "speech_generation", None) if _orch_for_rec else None
         )
+        _su_for_rec = (
+            getattr(_orch_for_rec, "speech_understanding", None) if _orch_for_rec else None
+        )
+        if _su_for_rec is not None:
+            _su_for_rec.on("speech_started", _recorder_on_speech_started)
         if _sg_for_rec is not None:
             _sg_for_rec.on("synthesis_interrupted", _recorder_barge_in)
         pipeline.on("backchannel_detected", _recorder_barge_in)
