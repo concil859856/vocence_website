@@ -716,6 +716,14 @@ async def run_next_session(
         pipeline.on("synthesis_complete", _billing_turn_end)
         pipeline.on("backchannel_detected", _billing_turn_end)
 
+        # Kick off the billing watchdog loop — this is what drives the
+        # per-second credit tick, the idle-timeout check (default 60 s
+        # of no user activity → on_session_end('idle_timeout') → WS
+        # close), and the max-duration cap. Without this call the
+        # billing object exists but the loop never runs, so an idle
+        # tab stays connected forever.
+        billing.start()
+
     # ---- Knowledge-base RAG (Phase A.8) -------------------------------
     # When an agent has a knowledge base, every user turn should be
     # enriched with the top-k most relevant chunks before the LLM

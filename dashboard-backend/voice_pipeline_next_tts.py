@@ -192,24 +192,31 @@ class InternalVocenceTTS(TTS):
             await self._speak_once(text)
             return
 
-        # Async iterator: collect into segments separated by FlushMarker.
+        # Async iterator: accumulate the ENTIRE reply across every
+        # FlushMarker, then send to the pod as a single _speak_once.
+        # The framework's speech_generation always wraps the stream
+        # with a terminal FlushMarker, and the upstream text chunker
+        # may insert mid-stream FlushMarkers at sentence boundaries.
+        # If we honor those as "flush to pod now", each sentence
+        # becomes its own pod ``speak`` round-trip — and since the
+        # pod plays each speak independently with no guaranteed
+        # inter-speak silence, the listener hears run-on audio with
+        # no pauses between sentences. Dropping FlushMarkers and
+        # sending the full reply as one speak lets the pod's own
+        # punctuation parser produce natural pacing.
+        # _speak_once still chunks via _chunk_for_speak when the
+        # accumulated text exceeds the pod's 1000-char cap.
         buf: list[str] = []
         async for chunk in text:
             if self._interrupted:
                 return
             if isinstance(chunk, FlushMarker):
-                segment = "".join(buf).strip()
-                buf = []
-                if segment:
-                    await self._speak_once(segment)
-                    if self._interrupted:
-                        return
                 continue
             if chunk:
                 buf.append(chunk)
-        tail = "".join(buf).strip()
-        if tail and not self._interrupted:
-            await self._speak_once(tail)
+        full = "".join(buf).strip()
+        if full and not self._interrupted:
+            await self._speak_once(full)
 
     async def interrupt(self) -> None:
         """Stop the in-flight synthesis. The TtsChunk iterator checks
