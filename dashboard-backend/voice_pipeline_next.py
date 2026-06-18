@@ -138,8 +138,77 @@ def _ensure_next_pipeline_loaded() -> None:
         "InternalVocenceSTT": InternalVocenceSTT,
     })
     _disable_framework_analytics()
+    _patch_deepgram_stt_channels()
     _next_pipeline_loaded = True
     _log.info("[voice-pipeline-next] framework + plugins loaded")
+
+
+def _patch_deepgram_stt_channels() -> None:
+    """Force the framework's DeepgramSTT to declare ``channels=1`` on
+    its WS connection.
+
+    The shipped plugin hardcodes ``channels=2`` in the query string
+    (see ``videosdk/plugins/deepgram/stt.py`` line 164) regardless of
+    whether the caller is sending mono or stereo audio. Our frontend
+    ships 16 kHz mono PCM16 — telling Deepgram "stereo" makes it
+    interleave adjacent mono samples as L+R pairs and process the
+    stream at half the per-channel rate it expects. Net effect at
+    16 kHz mono input: Deepgram believes the audio is playing back
+    at half-speed AND is two-channel — accuracy drops badly. At 48 kHz
+    (voice_agent's default) it's still wrong but Deepgram has enough
+    redundancy to keep accuracy passable, which is why the bug only
+    became obvious on our 16 kHz path.
+
+    Fix: monkey-patch the URL builder to emit ``channels=1``. The rest
+    of the connect path is unchanged (same model/language/endpointing/
+    nova-3 keyterm handling). We patch the bound method on the class
+    itself so every InternalVocenceSTT-free Deepgram session benefits
+    automatically.
+    """
+    try:
+        from videosdk.plugins.deepgram.stt import DeepgramSTT as _DG  # type: ignore[import-not-found]
+        import aiohttp
+        from urllib.parse import urlencode
+    except ImportError:
+        return
+
+    async def _patched_connect_ws(self: Any) -> None:
+        if not self._session:
+            self._session = aiohttp.ClientSession()
+        endpointing = "false" if self.endpointing < 0 else self.endpointing
+        query_params = {
+            "model": self.model,
+            "language": self.language,
+            "interim_results": str(self.interim_results).lower(),
+            "punctuate": str(self.punctuate).lower(),
+            "smart_format": str(self.smart_format).lower(),
+            "encoding": "linear16",
+            "sample_rate": str(self.sample_rate),
+            "channels": 1,
+            "endpointing": endpointing,
+            "filler_words": str(self.filler_words).lower(),
+            "vad_events": "true",
+            "no_delay": "true",
+            "profanity_filter": str(self.profanity_filter).lower(),
+            "numerals": str(self.numerals).lower(),
+            "diarize": str(self.enable_diarization).lower(),
+        }
+        params_list = list(query_params.items())
+        if self.tag is not None:
+            params_list.append(("tag", self.tag))
+        _is_nova3 = self.model == "nova-3" or self.model.startswith("nova-3-")
+        if _is_nova3 and self.keyterm:
+            for t in self.keyterm:
+                if t.strip():
+                    params_list.append(("keyterm", t.strip()))
+        elif not _is_nova3 and self.keywords:
+            for kw in self.keywords[:100]:
+                params_list.append(("keywords", kw))
+        headers = {"Authorization": f"Token {self.api_key}"}
+        ws_url = f"{self.base_url}?{urlencode(params_list)}"
+        self._ws = await self._session.ws_connect(ws_url, headers=headers)
+
+    _DG._connect_ws = _patched_connect_ws  # type: ignore[assignment]
 
 
 def _disable_framework_analytics() -> None:
