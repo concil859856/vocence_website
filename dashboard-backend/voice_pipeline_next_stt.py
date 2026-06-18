@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from contextlib import suppress
 from typing import Any, Optional
 
@@ -33,6 +34,15 @@ _log = logging.getLogger(__name__)
 _DEFAULT_SAMPLE_RATE = 16_000
 _CONNECT_TIMEOUT_SEC = 10.0
 _READY_TIMEOUT_SEC = 10.0
+# Suppress interim events that arrive within this window after a final.
+# The pod sometimes emits echo / next-utterance partials immediately
+# after a final, and the framework's speech_understanding cancels its
+# EOU wait timer on ANY stt event but only re-schedules it on FINALs —
+# so an unfortunate echo partial kills the wait without restart, the
+# accumulated transcript is stranded in memory, and the agent never
+# replies. The grace lets the wait timer settle naturally; new
+# utterances after this window still flow through.
+_POST_FINAL_INTERIM_GRACE_SEC = 1.0
 
 # ISO-639-1 mapping mirrors voicechat_stream._stt_language_code so the
 # new pipeline behaves identically to legacy on agent-config strings.
@@ -95,6 +105,11 @@ class InternalVocenceSTT(STT):
         self._reader_task: asyncio.Task | None = None
         self._connect_lock = asyncio.Lock()
         self._closed = False
+        # Monotonic timestamp of last final we emitted upstream.
+        # Used to suppress echo / pre-roll interims that the pod
+        # sometimes emits right after a final — see comment on
+        # _POST_FINAL_INTERIM_GRACE_SEC.
+        self._last_final_at: float | None = None
 
     # ----- abstract overrides ---------------------------------------------
 
@@ -248,6 +263,17 @@ class InternalVocenceSTT(STT):
             text = (data.get("text") or "").strip()
             if not text:
                 return None
+            # Suppress interims that arrive within the post-final grace
+            # window. See _POST_FINAL_INTERIM_GRACE_SEC for the full
+            # rationale — TL;DR: the framework cancels its EOU wait
+            # timer on any event, only restarts on finals, so an echo
+            # interim immediately after a final strands the accumulated
+            # transcript and the agent silently never replies.
+            if self._last_final_at is not None and (
+                time.monotonic() - self._last_final_at
+                < _POST_FINAL_INTERIM_GRACE_SEC
+            ):
+                return None
             return STTResponse(
                 event_type=SpeechEventType.INTERIM,
                 data=SpeechData(text=text, language=self.language),
@@ -256,6 +282,7 @@ class InternalVocenceSTT(STT):
             text = (data.get("text") or "").strip()
             if not text:
                 return None
+            self._last_final_at = time.monotonic()
             return STTResponse(
                 event_type=SpeechEventType.FINAL,
                 data=SpeechData(

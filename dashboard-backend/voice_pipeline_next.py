@@ -208,7 +208,12 @@ def build_pipeline_from_agent_config(
         stt=stt,
         llm=llm,
         tts=tts,
-        vad=SileroVAD(),  # type: ignore[name-defined]
+        # Pin VAD input rate to 16 kHz — that's what the frontend mic
+        # frames are, and the SileroVAD default is 48 kHz. With the
+        # default, 16 kHz bytes get interpreted as 48 kHz audio,
+        # making VAD timing 3x slower than real-time (END_OF_SPEECH
+        # fires after 3x the actual silence). Explicit match.
+        vad=SileroVAD(input_sample_rate=16000),  # type: ignore[name-defined]
         turn_detector=TurnDetector(),  # type: ignore[name-defined]
         eou_config=eou_cfg,
         interrupt_config=interrupt_cfg,
