@@ -1399,12 +1399,27 @@ async def run_next_session(
                 await billing.stop()
         # Recording: build + upload the stereo WAV. Fields get folded
         # into the voice_call_logs row below.
+        #
+        # Both this and the voice_call_logs INSERT run inside a finally
+        # block. Sessions opened via the dev-api WS proxy are cancelled
+        # from above when the outer client disconnects (the proxy
+        # force-closes its aiohttp ClientSession ~0.5 s after the close
+        # frame, aborting any in-flight cleanup). ``asyncio.shield``
+        # detaches the awaitable from the caller's cancellation so the
+        # upload + DB write actually finish — without it, dev-api–
+        # proxied sessions never land in ``voice_call_logs`` and the
+        # developer-API /v1/agents/{id}/calls endpoint returns empty
+        # for the very calls the developer just made.
+        # Catching ``BaseException`` here on purpose: ``CancelledError``
+        # does NOT inherit from ``Exception`` in Python 3.8+, so a bare
+        # ``except Exception`` lets the cancellation propagate past the
+        # try and never logs the failure.
         _recording_bucket: str | None = None
         _recording_key: str | None = None
         _recording_bytes: int = 0
         if recorder is not None:
             try:
-                bucket, key, n_bytes = await recorder.close()
+                bucket, key, n_bytes = await asyncio.shield(recorder.close())
                 if bucket and key and n_bytes > 0:
                     _recording_bucket = bucket
                     _recording_key = key
@@ -1414,7 +1429,7 @@ async def run_next_session(
                         "session=%s bucket=%s key=%s bytes=%d",
                         session_id, bucket, key, n_bytes,
                     )
-            except Exception:  # noqa: BLE001
+            except BaseException:  # noqa: BLE001
                 _log.exception("[voice-pipeline-next] recorder.close failed")
 
         # voice_call_logs row — one INSERT OR REPLACE per session.
@@ -1429,7 +1444,7 @@ async def run_next_session(
             from routers.voicechat import _log_call_session
             _ended_at = datetime.now(timezone.utc)
             duration_ms = int((_ended_at - _session_started_at).total_seconds() * 1000)
-            await _log_call_session(
+            await asyncio.shield(_log_call_session(
                 session_id=session_id,
                 user_id=user_id,
                 agent_id=agent_id,
@@ -1441,8 +1456,8 @@ async def run_next_session(
                 recording_path=_recording_key,
                 recording_bucket=_recording_bucket,
                 recording_bytes=_recording_bytes or None,
-            )
-        except Exception:  # noqa: BLE001
+            ))
+        except BaseException:  # noqa: BLE001
             _log.exception("[voice-pipeline-next] _log_call_session failed")
 
         _log.info(
