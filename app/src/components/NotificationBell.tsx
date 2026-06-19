@@ -18,6 +18,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { ArrowRight, Check, ChevronRight, Inbox, Loader2, MailWarning, X } from 'lucide-react';
 import { dashboardApi, type NotificationItem } from '../services/dashboardApi';
@@ -268,15 +269,16 @@ function NotificationDetailModal({
     }
   };
 
-  return (
-    // Scroll-safe wrapper mirrors AuthModal: outer ``overflow-y-auto``
-    // catches the case where the rendered card outgrows the viewport
-    // (long notification body, short laptop viewport, mobile browser
-    // chrome eating height). Without it ``flex items-center`` clipped
-    // the top half off-screen with no way to reach it.
+  // Portal to <body>. NotificationBell is mounted inside <nav>, which
+  // when scrolled applies ``backdrop-blur-xl`` — per CSS spec
+  // ``backdrop-filter`` makes the nav a containing block for any
+  // descendant ``position: fixed``, so the modal would anchor to the
+  // ~80 px nav strip instead of the viewport and clip its top. Portaling
+  // escapes the nav entirely. Same fix pattern as AuthModal.
+  return createPortal(
     <div
       className="
-        fixed inset-0 z-[60] overflow-y-auto overscroll-contain
+        fixed inset-0 z-[100] overflow-y-auto overscroll-contain
         bg-black/65 backdrop-blur-sm
         animate-in fade-in duration-150
       "
@@ -394,6 +396,7 @@ function NotificationDetailModal({
         </div>
       </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

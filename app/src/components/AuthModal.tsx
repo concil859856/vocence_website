@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { X, Mail, Lock, Eye, EyeOff, ArrowLeft, CheckCircle2 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { GoogleLogin } from '@react-oauth/google';
@@ -296,16 +297,20 @@ export function AuthModal({ isOpen, onClose, initialMode = 'login' }: AuthModalP
     };
   })();
 
-  return (
-    // Scroll-safe modal wrapper. The previous ``flex items-center
-    // justify-center`` centered the card vertically but clipped its
-    // top when the card was taller than the viewport (mobile keyboard
-    // open, short laptop screens, OS browser chrome eating viewport
-    // height). The new pattern: outer wrapper scrolls its own
-    // overflow; inner flexbox uses ``min-h-full`` so a short card
-    // still centers, but a tall card spills into scroll territory
-    // and the user can reach the top with a swipe / wheel.
-    <div className="fixed inset-0 z-50 overflow-y-auto overscroll-contain">
+  // Render via portal into <body>. AuthModal is mounted inside <nav>,
+  // which when scrolled gets ``backdrop-blur-xl`` — and per CSS spec
+  // ``backdrop-filter`` creates a new containing block for any
+  // ``position: fixed`` descendant. That made the modal anchor to the
+  // ~80 px-tall nav element instead of the viewport: the centered card
+  // would push its top above the visible area and the user saw only
+  // the bottom slice. Portaling to <body> escapes the nav's containing
+  // block entirely and ``fixed inset-0`` works as intended again.
+  //
+  // The outer wrapper still uses ``overflow-y-auto`` + ``min-h-full``
+  // so a card taller than the viewport remains scrollable instead of
+  // clipping (independent guard against the original "tall card" case).
+  return createPortal(
+    <div className="fixed inset-0 z-[100] overflow-y-auto overscroll-contain">
       <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={closeAll} />
 
       <div className="relative z-10 min-h-full w-full flex items-center justify-center p-4">
@@ -568,6 +573,7 @@ export function AuthModal({ isOpen, onClose, initialMode = 'login' }: AuthModalP
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
