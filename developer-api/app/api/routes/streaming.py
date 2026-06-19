@@ -183,6 +183,14 @@ async def _auth_and_reserve(
     raw_key = ""
     if auth_header.lower().startswith("bearer "):
         raw_key = auth_header.split(" ", 1)[1].strip()
+    # Browsers can't set headers on WebSocket — accept ?token= as
+    # a fallback for browser-based clients (playground, embeds).
+    # Header path is still primary; query string leaks into access
+    # logs so server-side callers should keep using the header.
+    if not raw_key:
+        qp_token = (ws.query_params.get("token") or "").strip()
+        if qp_token.startswith("voc_live_") or qp_token.startswith("voc_test_"):
+            raw_key = qp_token
 
     auth_ctx = await _resolve_api_key_user(raw_key) if raw_key else None
     await ws.accept()

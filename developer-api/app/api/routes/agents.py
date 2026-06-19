@@ -322,10 +322,21 @@ async def agent_session(ws: WebSocket, agent_id: str) -> None:
 
     # 1. Extract API key from Authorization header BEFORE accepting,
     #    so an unauth'd client gets rejected without an open WS.
+    #    Browsers can't set custom headers on a WebSocket handshake,
+    #    so we also honor ``?token=voc_live_...`` as a fallback for
+    #    browser-based clients (playground UIs, embeds). The header
+    #    is still the primary path — server-side SDK callers should
+    #    keep using ``Authorization: Bearer …`` because the key
+    #    leaks into nginx access logs / browser history when sent
+    #    as a query parameter.
     auth_header = ws.headers.get("authorization") or ws.headers.get("Authorization") or ""
     raw_key = ""
     if auth_header.lower().startswith("bearer "):
         raw_key = auth_header.split(" ", 1)[1].strip()
+    if not raw_key:
+        qp_token = (ws.query_params.get("token") or "").strip()
+        if qp_token.startswith("voc_live_") or qp_token.startswith("voc_test_"):
+            raw_key = qp_token
 
     auth_ctx = await _resolve_api_key_user(raw_key) if raw_key else None
 
