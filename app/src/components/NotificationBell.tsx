@@ -393,6 +393,7 @@ function NotificationDetailModal({
           )}
         </div>
       </div>
+      </div>
     </div>
   );
 }
