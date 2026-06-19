@@ -2,7 +2,7 @@
 
 > **Audience.** An implementing engineer/agent with no prior Vocence-codebase access. After reading this single document end-to-end, you should be able to (a) build any of the four new components without further context, and (b) understand how they fit together so what you build correctly integrates.
 
-> **What this replaces.** Earlier separate documents (`STREAMING_STT_SPEC.md`, `TURN_DETECTION_SPEC.md`, `KNOWLEDGE_INGESTION_SPEC.md`, `EMBEDDABLE_WIDGET_SPEC.md`). All four are fully inlined below — this is the canonical source. The earlier files exist for reference but defer to this one if they disagree.
+> **What this replaces.** Earlier separate documents covered streaming STT, turn detection, knowledge ingestion, and the embeddable widget as four files. All four have been fully inlined below — this is the canonical source. The standalone files were removed once their content landed here.
 
 ---
 
@@ -1523,13 +1523,15 @@ VOC_ENSEMBLE_HARD_CAP_MS=5000
 
 ### 25.5 Documents this replaces
 
-Earlier separate spec files exist in this repo but defer to this one:
-- `STREAMING_STT_SPEC.md` — content inlined as §16
-- `TURN_DETECTION_SPEC.md` — content inlined as §17
-- `KNOWLEDGE_INGESTION_SPEC.md` — content inlined as §18
-- `EMBEDDABLE_WIDGET_SPEC.md` — content inlined as §19
+The standalone spec files that previously covered these subsystems have been
+removed in favor of this consolidated document. Their content lives in the
+sections noted below:
+- streaming STT → §16 (was `STREAMING_STT_SPEC.md`)
+- turn detection → §17 (was `TURN_DETECTION_SPEC.md`)
+- knowledge ingestion → §18 (was `KNOWLEDGE_INGESTION_SPEC.md`)
+- embeddable widget → §19 (was `EMBEDDABLE_WIDGET_SPEC.md`)
 
-If a question is answered both in an old file and here, **this file is the source of truth**.
+This file is the source of truth.
 
 ---
 

@@ -187,7 +187,7 @@ STT_PROVIDER = (os.environ.get("STT_PROVIDER") or "vocence").strip().lower()
 # Agent-config language names (the values stored in agents.config.language
 # — see developer-api/app/api/routes/agent_mgmt.py AGENT_LANGUAGE) → the
 # ISO-639-1 codes the STT pod's ``/v1/stream`` start frame expects
-# (STREAMING_STT_SPEC.md §5: "ISO-639-1 code or 'auto' for auto-detect").
+# (VOICE_AGENT_PLATFORM_SPEC.md §16: "ISO-639-1 code or 'auto' for auto-detect").
 # Sending the full name silently degrades to auto-detect on the pod
 # side, which is the root cause of English-configured agents
 # occasionally transcribing Russian / French — Parakeet TDT v3 is
