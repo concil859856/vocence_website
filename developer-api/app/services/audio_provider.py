@@ -19,19 +19,27 @@ from minio import Minio
 
 _log = logging.getLogger(__name__)
 
-# Allow the dev-api to import the dashboard-backend's ``ops.pool`` and
-# ``sample_voice_loader`` modules. In production both checkouts live
-# side-by-side under ``/deployment/vocence_website/`` (sibling
-# directories); locally they're under ``/workspace/...``. The dashboard
-# is the source of truth for the GPU pod registry — sharing the
-# same SQLite DB the dashboard writes to. Without this, the dev-api
-# keeps hitting its legacy hardcoded CHUTES_* chute URLs (mostly dead
-# now that pod deployment moved to the admin/ops form).
+# Allow the dev-api to import the dashboard-backend's ``ops.pool``
+# module. In production both checkouts live side-by-side under
+# ``/deployment/vocence_website/`` (sibling directories); locally
+# they're under ``/workspace/...``. The dashboard is the source of
+# truth for the GPU pod registry — sharing the same SQLite DB the
+# dashboard writes to. Without this, the dev-api keeps hitting its
+# legacy hardcoded CHUTES_* chute URLs (mostly dead now that pod
+# deployment moved to the admin/ops form).
+#
+# CRITICAL: ``sys.path.append`` (not insert) — both checkouts have a
+# top-level ``main.py``. Inserting dashboard-backend at index 0 makes
+# uvicorn's ``main:app`` string resolve to dashboard's main.py first,
+# so the dev-api process ends up serving the dashboard app (every
+# ``/v1/*`` route 404s with the symptom "0 routes registered"). Appending
+# keeps dev-api's own modules first; dashboard-backend is only consulted
+# for modules dev-api doesn't have (which is just ``ops.*``).
 _DASHBOARD_BACKEND_PATH = (
     Path(__file__).resolve().parent.parent.parent.parent / "dashboard-backend"
 )
 if _DASHBOARD_BACKEND_PATH.is_dir() and str(_DASHBOARD_BACKEND_PATH) not in sys.path:
-    sys.path.insert(0, str(_DASHBOARD_BACKEND_PATH))
+    sys.path.append(str(_DASHBOARD_BACKEND_PATH))
 
 
 def _ops_pool():
