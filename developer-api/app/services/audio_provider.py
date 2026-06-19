@@ -6,13 +6,45 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
 import os
+import sys
 import uuid
+from contextlib import suppress
 from datetime import datetime, timedelta, timezone
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 import aiohttp
 from minio import Minio
+
+_log = logging.getLogger(__name__)
+
+# Allow the dev-api to import the dashboard-backend's ``ops.pool`` and
+# ``sample_voice_loader`` modules. In production both checkouts live
+# side-by-side under ``/deployment/vocence_website/`` (sibling
+# directories); locally they're under ``/workspace/...``. The dashboard
+# is the source of truth for the GPU pod registry — sharing the
+# same SQLite DB the dashboard writes to. Without this, the dev-api
+# keeps hitting its legacy hardcoded CHUTES_* chute URLs (mostly dead
+# now that pod deployment moved to the admin/ops form).
+_DASHBOARD_BACKEND_PATH = (
+    Path(__file__).resolve().parent.parent.parent.parent / "dashboard-backend"
+)
+if _DASHBOARD_BACKEND_PATH.is_dir() and str(_DASHBOARD_BACKEND_PATH) not in sys.path:
+    sys.path.insert(0, str(_DASHBOARD_BACKEND_PATH))
+
+
+def _ops_pool():
+    """Lazy-import — the heavy ``ops.pool`` module is only loaded
+    when we actually need it. Returns ``None`` if the dashboard's
+    ops module isn't importable (deployments that ship the dev-api
+    without a sibling dashboard checkout)."""
+    try:
+        from ops import pool as gpu_pool  # type: ignore[import-not-found]
+        return gpu_pool
+    except Exception as exc:  # noqa: BLE001
+        _log.debug("ops.pool unavailable from dev-api: %s", exc)
+        return None
 
 CHUTES_AUTH_KEY = os.environ.get("CHUTES_AUTH_KEY") or os.environ.get("CHUTES_API_KEY", "")
 # STT endpoint. We run our own Qwen3-ASR server (POST /transcribe with
@@ -76,14 +108,61 @@ def _active_bucket() -> str:
 
 
 async def synthesize_speak(chute_slug: str, text: str, instruction: str) -> tuple[bytes | None, str]:
+    """PromptTTS — "speak" with a text description of the desired voice.
+
+    Same migration story as ``transcribe_audio``: the dashboard now
+    dispatches to ``voice_design`` pods via ``ops_pool.pick_pod``, but
+    the dev-api kept hitting hardcoded chute slugs from
+    ``API_TTS_PROVIDER_<N>_CHUTE_SLUG`` env vars. Most production
+    deployments left those env vars empty after moving pod registration
+    to the admin/ops form, so this endpoint returned 502 on every call.
+
+    Dispatch order:
+      1. ops_pool voice_design pod (matches what /api/dashboard/studio
+         uses internally and what works in the production UI)
+      2. Fall back to the legacy ``{chute_slug}.chutes.ai/speak`` URL
+         when no voice_design pod is registered — covers single-host
+         dev environments that ship the chute slug via .env.
+    """
     payload = {"text": text or "Hello.", "instruction": instruction or "neutral voice"}
+
+    pod_cm = None
+    pod_url: str | None = None
+    pod_key: str | None = None
+
+    gp = _ops_pool()
+    if gp is not None:
+        try:
+            if gp.online_pod_count("voice_design") > 0:
+                pod_cm = gp.pick_pod("voice_design")
+                pod = await pod_cm.__aenter__()
+                pod_url = pod.url.rstrip("/") + "/speak"
+                pod_key = pod.api_key or None
+        except Exception as e:  # noqa: BLE001
+            try:
+                from ops.pool import NoCapacity  # type: ignore[import-not-found]
+                if isinstance(e, NoCapacity):
+                    return None, "voice synthesis temporarily unavailable (fleet busy)"
+            except ImportError:
+                pass
+            _log.warning("ops_pool voice_design dispatch failed, falling back: %s", e)
+
+    if pod_url is None and chute_slug:
+        pod_url = _chute_speak_url(chute_slug)
+
+    if not pod_url:
+        return None, "voice synthesis temporarily unavailable"
+
     headers = {"Content-Type": "application/json"}
-    if CHUTES_AUTH_KEY:
+    if pod_key:
+        headers["X-API-Key"] = pod_key
+    elif CHUTES_AUTH_KEY:
         headers["Authorization"] = f"Bearer {CHUTES_AUTH_KEY}"
+
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                _chute_speak_url(chute_slug),
+                pod_url,
                 headers=headers,
                 json=payload,
                 timeout=aiohttp.ClientTimeout(total=120),
@@ -99,26 +178,79 @@ async def synthesize_speak(chute_slug: str, text: str, instruction: str) -> tupl
         return None, "provider request timed out"
     except Exception as exc:
         return None, str(exc)
+    finally:
+        if pod_cm is not None:
+            with suppress(Exception):
+                await pod_cm.__aexit__(None, None, None)
 
 
 async def transcribe_audio(audio_bytes: bytes, language: str | None = None) -> tuple[dict | None, str]:
-    # Qwen3-ASR expects ``audio_base64`` (not ``audio_b64``). We pass the
-    # same value under both keys so the request also works against any
-    # legacy Whisper-shaped chute that might be in front of this code.
+    # The dashboard migrated STT dispatch from hardcoded chute URLs to
+    # the ops_pool registry — operators deploy STT pods via /admin/ops
+    # and the pool tracks them. The dev-api was never updated and kept
+    # calling its legacy ``CHUTES_WHISPER_STT_URL`` env var (a chute
+    # slug that's mostly decommissioned now — the user-facing symptom
+    # is every ``client.stt.transcribe`` returning 502). Mirror the
+    # dashboard's dispatch logic here:
+    #   1. Prefer ``asr_streaming_rt`` pods (modern, POST /v1/transcribe)
+    #   2. Fall back to legacy ``stt`` pods (POST /transcribe)
+    #   3. Final fallback: the env-var URL, for deployments that
+    #      haven't set up the ops pool at all.
     b64 = base64.b64encode(audio_bytes).decode("utf-8")
     payload: dict[str, str] = {
-        "audio_base64": b64,
-        "audio_b64": b64,
+        "audio_base64": b64,  # Qwen3-ASR / asr_streaming_rt shape
+        "audio_b64": b64,     # legacy Whisper shape — both keys for safety
     }
     if language:
         payload["language"] = language
+
+    ops_url: str | None = None
+    ops_api_key: str | None = None
+    pod_cm = None
+
+    gp = _ops_pool()
+    if gp is not None:
+        try:
+            target = None
+            if gp.online_pod_count("asr_streaming_rt") > 0:
+                target = ("asr_streaming_rt", "/v1/transcribe")
+            elif gp.online_pod_count("stt") > 0:
+                target = ("stt", "/transcribe")
+            if target is not None:
+                svc_name, path = target
+                pod_cm = gp.pick_pod(svc_name)
+                pod = await pod_cm.__aenter__()
+                ops_url = pod.url.rstrip("/") + path
+                ops_api_key = pod.api_key or None
+        except Exception as e:  # noqa: BLE001
+            # Translate NoCapacity to a clear user-facing string; everything
+            # else falls through to the legacy CHUTES_WHISPER_STT_URL path.
+            try:
+                from ops.pool import NoCapacity  # type: ignore[import-not-found]
+                if isinstance(e, NoCapacity):
+                    return None, "stt fleet busy (all pods at capacity)"
+            except ImportError:
+                pass
+            _log.warning("ops_pool dispatch failed, falling back to legacy URL: %s", e)
+
+    target_url = ops_url or CHUTES_WHISPER_STT_URL
+    if not target_url:
+        return None, "speech recognition temporarily unavailable"
+
     headers = {"Content-Type": "application/json"}
-    if CHUTES_AUTH_KEY:
-        headers["Authorization"] = f"Bearer {CHUTES_AUTH_KEY}"
+    auth_key = ops_api_key or CHUTES_AUTH_KEY
+    if auth_key:
+        # ops pod uses X-API-Key; legacy chute uses Authorization Bearer.
+        # Send both — pods ignore the one they don't recognize.
+        if ops_api_key:
+            headers["X-API-Key"] = ops_api_key
+        else:
+            headers["Authorization"] = f"Bearer {auth_key}"
+
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                CHUTES_WHISPER_STT_URL,
+                target_url,
                 headers=headers,
                 json=payload,
                 timeout=aiohttp.ClientTimeout(total=180),
@@ -143,6 +275,12 @@ async def transcribe_audio(audio_bytes: bytes, language: str | None = None) -> t
         return None, "provider request timed out"
     except Exception as exc:
         return None, str(exc)
+    finally:
+        # Release the ops_pool slot. The dispatcher's per-pod in_flight
+        # counter (the one /admin/ops graphs) leaks if we forget this.
+        if pod_cm is not None:
+            with suppress(Exception):
+                await pod_cm.__aexit__(None, None, None)
 
 
 def _ensure_bucket(client: Minio, bucket: str) -> None:

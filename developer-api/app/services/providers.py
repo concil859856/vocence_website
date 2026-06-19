@@ -44,10 +44,18 @@ def select_api_tts_provider(model: str | None) -> tuple[str, str]:
             candidates.append((name, slug, weight))
 
     if not candidates:
-        raise HTTPException(
-            status_code=503,
-            detail="No API TTS provider configured (set API_TTS_PROVIDER_<N>_NAME and CHUTE_SLUG on developer-api)",
-        )
+        # No legacy chute slug configured — but ``synthesize_speak`` will
+        # try ops_pool first anyway and only falls back to chute_slug if
+        # no voice_design pod is registered. Return empty strings so the
+        # caller can pass them through; the dispatch logic in
+        # ``synthesize_speak`` decides whether to 503 based on whether
+        # the ops_pool has a pod.
+        #
+        # The previous behavior (503 here) gated every call on the
+        # legacy env vars even when an ops_pool pod was healthy, which
+        # is the exact symptom seen in production after pod registration
+        # moved to the /admin/ops form.
+        return ("PromptTTS", "")
 
     weights = [c[2] for c in candidates]
     chosen = random.choices(candidates, weights=weights, k=1)[0]
