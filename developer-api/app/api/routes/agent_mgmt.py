@@ -933,15 +933,29 @@ async def get_call_recording_url(
     if not row or not row[0] or not row[1]:
         raise HTTPException(status_code=404, detail="recording not found")
     bucket, key = str(row[0]), str(row[1])
-    # Late import — keeps the developer-api cold-start lean for
-    # deployments that don't use call recordings.
-    from studio_tts_service import presigned_call_recording_url
-    url = presigned_call_recording_url(
-        bucket,
-        key,
-        expires_seconds=3600,
-        download_filename=f"{session_id}.wav" if download else None,
-    )
+    # The dev-api already ships an R2/Hippius client in audio_provider
+    # (used for /v1/tts/speak result uploads) — reuse it instead of
+    # importing dashboard-backend's ``studio_tts_service``. The earlier
+    # import path was a sibling-checkout shortcut that ModuleNotFound's
+    # in any deployment that ships the dev-api alone (and would re-
+    # introduce the sys.path collision we already fixed in 3d279b0).
+    from datetime import timedelta
+    from app.services.audio_provider import _minio_client
+    try:
+        client = _minio_client()
+        headers = (
+            {"response-content-disposition": f'attachment; filename="{session_id}.wav"'}
+            if download
+            else None
+        )
+        url = client.presigned_get_object(
+            bucket,
+            key,
+            expires=timedelta(seconds=3600),
+            response_headers=headers,
+        )
+    except Exception:
+        url = None
     if not url:
         raise HTTPException(status_code=502, detail="object store unavailable")
     return {"url": url, "expires_in": 3600}
@@ -982,10 +996,17 @@ async def delete_call_recording(
         key = row[1]
         already_gone = bucket is None or key is None
         if not already_gone:
-            from studio_tts_service import delete_call_recording_object
-            ok = await asyncio.to_thread(
-                delete_call_recording_object, str(bucket), str(key),
-            )
+            # Use the dev-api's own R2/Hippius client — sibling to the
+            # presigned-URL fix in get_call_recording_url above. Same
+            # rationale: don't depend on dashboard-backend's module path.
+            from app.services.audio_provider import _minio_client
+            def _drop(b: str, k: str) -> bool:
+                try:
+                    _minio_client().remove_object(b, k)
+                    return True
+                except Exception:
+                    return False
+            ok = await asyncio.to_thread(_drop, str(bucket), str(key))
             if not ok:
                 raise HTTPException(
                     status_code=502,
