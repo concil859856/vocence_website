@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.api.routes import router
 
@@ -37,4 +39,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(router)
+
+
+# Override FastAPI's default RequestValidationError handler so it
+# doesn't try to JSON-encode the raw request body. The default
+# encoder runs ``bytes.decode()`` on the body for the error response;
+# when the body is binary (multipart with audio bytes, mis-shaped
+# uploads), that raises UnicodeDecodeError → a secondary 500 + a
+# huge wall of escaped binary in logs every time someone POSTs an
+# audio file to a JSON-only route. Now we redact ``input`` entirely
+# on validation errors so the log stays clean and the response stays
+# small. Real schema info (loc / msg / type) is preserved so SDK users
+# still see what they got wrong.
+@app.exception_handler(RequestValidationError)
+async def _validation_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    safe_errors = []
+    for err in exc.errors():
+        scrubbed = {k: v for k, v in err.items() if k != "input"}
+        safe_errors.append(scrubbed)
+    return JSONResponse(status_code=422, content={"detail": safe_errors})
 

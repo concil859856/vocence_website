@@ -118,68 +118,47 @@ async def synthesize_speak(
     text: str,
     instruction: str,
     *,
-    user_id: str | None = None,
+    user_id: str | None = None,  # noqa: ARG001 — kept for call-site symmetry with transcribe_audio
 ) -> tuple[bytes | None, str]:
-    """PromptTTS — proxy to the dashboard's voice-design speak endpoint.
+    """PromptTTS — "speak this text in a voice with these characteristics".
 
-    The dashboard manages the voice_design pod pool (in-memory state
-    hydrated by lifespan-scoped pollers — not reachable from this
-    process). The previous in-process attempt to use ``ops_pool`` from
-    here saw an empty cache and silently fell through to dead legacy
-    URLs. Forwarding to ``/api/dashboard/studio/voice-design/speak``
-    routes the request through the same code the UI uses.
+    There is NO dashboard endpoint for this exact shape. The
+    dashboard's voice-design routes are different concepts:
+      • /voice-design/preview — DESIGNS a voice from a description and
+        returns sample audio (LLM-proposed sample line, not the caller's
+        text). Charges 70 credits per call.
+      • /voice-design/speak   — clones a saved designed voice with
+        caller's text. Needs an INTEGER voice_id of a saved design.
 
-    ``chute_slug`` is kept for signature compatibility with the
-    existing call site but is no longer consulted — the dashboard
-    picks the pod itself.
-
-    ``user_id`` is required: the dashboard's
-    ``is_internal_proxy`` auth dep expects ``X-Internal-User-Id``
-    to identify the caller for billing / ownership checks.
+    So PromptTTS still uses its direct chute slug (the legacy path).
+    When ``API_TTS_PROVIDER_<N>_CHUTE_SLUG`` env vars aren't set,
+    return a clean 503-style error rather than leaking env-var names
+    (the user is an API customer, not the operator).
     """
-    if not user_id:
-        return None, "synthesize_speak requires a user_id when proxying"
-    if not INTERNAL_SERVICE_TOKEN:
-        return None, "internal service token not configured on developer-api"
-    url = f"{DASHBOARD_BASE_URL}/api/dashboard/studio/voice-design/speak"
-    payload = {
-        "text": text or "Hello.",
-        "instruction": instruction or "neutral voice",
-        "user_id": user_id,
-    }
+    if not chute_slug:
+        return None, "voice synthesis temporarily unavailable"
+    pod_url = _chute_speak_url(chute_slug)
+    headers = {"Content-Type": "application/json"}
+    if CHUTES_AUTH_KEY:
+        headers["Authorization"] = f"Bearer {CHUTES_AUTH_KEY}"
+    payload = {"text": text or "Hello.", "instruction": instruction or "neutral voice"}
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                url,
-                headers={**_dashboard_internal_headers(user_id), "Content-Type": "application/json"},
+                pod_url,
+                headers=headers,
                 json=payload,
                 timeout=aiohttp.ClientTimeout(total=120),
             ) as resp:
                 body = await resp.read()
                 if resp.status != 200:
-                    err = body.decode("utf-8", errors="replace")[:300] if body else ""
-                    return None, f"dashboard returned {resp.status}" + (f": {err}" if err else "")
-                # The dashboard's /voice-design/speak returns JSON
-                # containing an audio_url. Fetch the audio for the
-                # caller's existing wire shape (raw bytes).
-                ctype = resp.headers.get("content-type", "")
-                if "json" in ctype.lower():
-                    try:
-                        data = await resp.json(content_type=None)
-                    except Exception:
-                        return None, "dashboard returned non-JSON for speak"
-                    audio_url = data.get("audio_url") if isinstance(data, dict) else None
-                    if not audio_url:
-                        return None, "dashboard speak response missing audio_url"
-                    async with session.get(audio_url, timeout=aiohttp.ClientTimeout(total=60)) as a:
-                        if a.status != 200:
-                            return None, f"audio fetch returned {a.status}"
-                        return await a.read(), ""
+                    err = body.decode("utf-8", errors="replace")[:200] if body else ""
+                    return None, f"provider returned {resp.status}" + (f": {err}" if err else "")
                 if not body:
-                    return None, "dashboard returned no audio"
+                    return None, "provider returned no audio"
                 return body, ""
     except asyncio.TimeoutError:
-        return None, "dashboard request timed out"
+        return None, "provider request timed out"
     except Exception as exc:
         return None, str(exc)
 
