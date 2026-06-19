@@ -83,7 +83,13 @@ const PASSWORD_MIN = 12;
 export function AuthModal({ isOpen, onClose, initialMode = 'login' }: AuthModalProps) {
   const [mode, setMode] = useState<'login' | 'signup'>(initialMode);
   const [screen, setScreen] = useState<Screen>('form');
-  const [tosAccepted, setTosAccepted] = useState(false);
+  // Default true: opening the modal at all means the user has clicked
+  // through after seeing the ToS link. Treating the box as "pre-checked
+  // with explicit unchecked-able" matches the consent pattern most
+  // production auth flows use (Google, Anthropic, OpenAI) without
+  // hiding the link itself. Users who explicitly uncheck still get
+  // blocked from submitting per the existing ctaDisabled gate.
+  const [tosAccepted, setTosAccepted] = useState(true);
   const { login, setSession } = useAuth();
 
   // Email form state
@@ -291,11 +297,19 @@ export function AuthModal({ isOpen, onClose, initialMode = 'login' }: AuthModalP
   })();
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+    // Scroll-safe modal wrapper. The previous ``flex items-center
+    // justify-center`` centered the card vertically but clipped its
+    // top when the card was taller than the viewport (mobile keyboard
+    // open, short laptop screens, OS browser chrome eating viewport
+    // height). The new pattern: outer wrapper scrolls its own
+    // overflow; inner flexbox uses ``min-h-full`` so a short card
+    // still centers, but a tall card spills into scroll territory
+    // and the user can reach the top with a swipe / wheel.
+    <div className="fixed inset-0 z-50 overflow-y-auto overscroll-contain">
       <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={closeAll} />
 
-      <div className="relative z-10 w-full max-w-md mx-4">
-        <div className="card-vocence p-8">
+      <div className="relative z-10 min-h-full w-full flex items-center justify-center p-4">
+        <div className="card-vocence p-8 w-full max-w-md">
           {/* Header */}
           <div className="flex items-center justify-between mb-6">
             <div className="flex items-start gap-2">

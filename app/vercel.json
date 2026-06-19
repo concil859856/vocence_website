@@ -17,6 +17,10 @@
       "source": "/devapi/:path*",
       "destination": "https://api.vocence.ai/:path*"
     },
-    { "source": "/((?!assets/).*)", "destination": "/index.html" }
+    {
+      "source": "/api/:path*",
+      "destination": "https://backend.vocence.ai/api/:path*"
+    },
+    { "source": "/((?!assets/|api/).*)", "destination": "/index.html" }
   ]
 }

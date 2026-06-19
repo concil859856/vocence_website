@@ -269,14 +269,24 @@ function NotificationDetailModal({
   };
 
   return (
+    // Scroll-safe wrapper mirrors AuthModal: outer ``overflow-y-auto``
+    // catches the case where the rendered card outgrows the viewport
+    // (long notification body, short laptop viewport, mobile browser
+    // chrome eating height). Without it ``flex items-center`` clipped
+    // the top half off-screen with no way to reach it.
     <div
       className="
-        fixed inset-0 z-[60] flex items-center justify-center p-4
+        fixed inset-0 z-[60] overflow-y-auto overscroll-contain
         bg-black/65 backdrop-blur-sm
         animate-in fade-in duration-150
       "
       onClick={onClose}
     >
+      <div
+        className="
+          relative min-h-full w-full flex items-center justify-center p-4
+        "
+      >
       <div
         className="
           relative w-full max-w-xl rounded-2xl border border-white/10
