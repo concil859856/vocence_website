@@ -1422,12 +1422,15 @@ async def voice_design_preview(body: VoiceDesignPreviewIn, auth_ctx: dict = Depe
         timeout_sec=120.0,
     )
     # Collapse the two-variant response down to a single audio URL —
-    # the "original" / variant_a one, matching the user's prompt
-    # exactly. The variant key naming is dashboard-side; we accept
-    # both ``variant_a`` and a flat ``audio_url`` so this still works
-    # if the upstream response shape evolves.
+    # the "original" variant, matching the user's prompt exactly.
+    # The dashboard's StudioVoiceDesignPreviewResponse uses
+    # ``audio_a_url`` for original and ``audio_b_url`` for revised.
+    # We tolerate other shapes (``variant_a``, nested ``original``,
+    # flat ``audio_url``) so this stays correct if the upstream
+    # response shape evolves.
     original_url = (
-        raw.get("variant_a")
+        raw.get("audio_a_url")
+        or raw.get("variant_a")
         or (raw.get("original") or {}).get("audio_url")
         or raw.get("audio_url")
         or ""
