@@ -13,6 +13,10 @@
       "source": "/embed/p/:id",
       "destination": "https://backend.vocence.ai/embed/p/:id"
     },
+    {
+      "source": "/devapi/:path*",
+      "destination": "https://api.vocence.ai/:path*"
+    },
     { "source": "/((?!assets/).*)", "destination": "/index.html" }
   ]
 }
