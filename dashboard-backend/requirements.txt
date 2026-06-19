@@ -33,3 +33,23 @@ argon2-cffi>=23.1.0
 # email-auth signup endpoint. Rejects malformed addresses and (optional)
 # domains with no mail records before we even hash a password.
 email-validator>=2.1.0
+
+# ---------------------------------------------------------------------------
+# Voice pipeline (VOICE_PIPELINE=next). Required at runtime by
+# voice_pipeline_next*.py — imports videosdk.agents + a handful of
+# plug-ins. Without these, the import in routers/voicechat.py
+# (``from voice_pipeline_next import …``) fails at startup once the
+# env flag flips, taking the whole dashboard-backend with it.
+#
+# The Python floor is 3.11 — set by videosdk-agents itself. Ensure
+# the production venv is 3.11+ before pip-installing these.
+# ---------------------------------------------------------------------------
+videosdk-agents>=1.0.20,<2.0.0
+videosdk-plugins-silero>=1.0.20,<2.0.0
+videosdk-plugins-turn-detector>=1.0.20,<2.0.0
+videosdk-plugins-deepgram>=1.0.20,<2.0.0
+videosdk-plugins-google>=1.0.20,<2.0.0
+# Pulled transitively but pin floor to match what our code expects
+# (the Gemini LLM plugin uses the new google-genai SDK, not the old
+# google-cloud-aiplatform).
+google-genai>=2.5.0
