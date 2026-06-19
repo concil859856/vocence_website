@@ -94,17 +94,48 @@ export interface UseVoiceChatResult {
 }
 
 function buildWsUrl(token: string, agentId?: string | null): string {
-  // ALWAYS use the page's own origin for the WS, even when
-  // ``API_ORIGIN_BASE`` (= VITE_API_URL) points at a different backend
-  // host. The dev Vite proxy forwards same-origin ``/api/*`` WebSocket
-  // upgrades to the backend (vite.config.ts → ``ws: true``).
+  // WebSocket origin resolution. Same-origin works in dev (Vite proxy
+  // forwards /api/* WS upgrades to the backend) and on a single-host
+  // production deploy where the SPA + backend share a hostname.
   //
-  // Going direct cross-origin (page on :5173 → ws on :8095) trips
-  // Chrome's cross-origin WebSocket handling and closes the
-  // connection with code 1006 immediately after handshake. Same-origin
-  // through the proxy avoids it entirely.
-  const origin = `${window.location.protocol}//${window.location.host}`;
-  const wsOrigin = origin.replace(/^http:/, 'ws:').replace(/^https:/, 'wss:');
+  // It does NOT work on Vercel: Vercel rewrites proxy HTTP cleanly
+  // but DROP the WebSocket upgrade headers, so ``wss://www.vocence.ai
+  // /api/dashboard/voicechat/session`` 1006s immediately. The previous
+  // cross-origin-is-bad comment referred to a dev-only :5173 → :8095
+  // case; production HTTPS cross-origin WebSocket is fine as long as
+  // the backend doesn't reject the Origin header (backend's CORS
+  // middleware already allowlists vocence.ai for HTTP, and the WS
+  // handler doesn't gate on Origin).
+  //
+  // Resolution order:
+  //   1. ``VITE_WS_API_URL`` (explicit override) — set this in Vercel
+  //      to ``https://backend.vocence.ai`` for the prod website build.
+  //   2. ``VITE_API_URL`` — if set, reuse the HTTP API host for WS
+  //      (typical when the SPA was built with a cross-origin backend).
+  //   3. Heuristic for the production website host (www.vocence.ai /
+  //      vocence.ai / *.vercel.app) — prefer ``backend.vocence.ai`` so
+  //      a forgotten env var doesn't break voice on prod.
+  //   4. Same-origin (dev with Vite proxy, single-host self-hosts).
+  let httpBase = '';
+  const explicit = (import.meta.env.VITE_WS_API_URL || '').trim();
+  if (explicit) {
+    httpBase = explicit;
+  } else {
+    const apiBase = (import.meta.env.VITE_API_URL || '').trim();
+    if (apiBase) {
+      httpBase = apiBase;
+    } else if (typeof window !== 'undefined') {
+      const host = window.location.host;
+      if (host === 'www.vocence.ai' || host === 'vocence.ai' || host.endsWith('.vercel.app')) {
+        httpBase = 'https://backend.vocence.ai';
+      }
+    }
+  }
+  const origin = httpBase || `${window.location.protocol}//${window.location.host}`;
+  const wsOrigin = origin
+    .replace(/^http:/, 'ws:')
+    .replace(/^https:/, 'wss:')
+    .replace(/\/$/, '');
   const params = new URLSearchParams({ token });
   if (agentId) params.set('agent_id', agentId);
   return `${wsOrigin}/api/dashboard/voicechat/session?${params.toString()}`;
