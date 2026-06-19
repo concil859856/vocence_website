@@ -41,10 +41,14 @@ _log = logging.getLogger(__name__)
 router = APIRouter()
 
 
-# `voice_id` in the URL is the integer primary key from
-# studio_user_designed_voices / cloned voices. Reject anything that
-# isn't a positive int at the boundary.
-_VOICE_ID_RE = re.compile(r"^[1-9][0-9]{0,15}$")
+# ``voice_id`` in the URL accepts two shapes:
+#   • a positive integer  → the primary key of a designed / cloned
+#     voice from ``GET /v1/voices`` (ownership-checked downstream).
+#   • a slug ``design-…``  → a built-in sample voice from the shared
+#     catalog (the dashboard's sample_voice_loader resolves it).
+# Rejecting anything outside these two shapes early saves an
+# accept+error roundtrip on the obvious garbage case.
+_VOICE_ID_RE = re.compile(r"^([1-9][0-9]{0,15}|design-[a-z0-9-]{1,40})$")
 
 
 def _dashboard_ws_base() -> str:

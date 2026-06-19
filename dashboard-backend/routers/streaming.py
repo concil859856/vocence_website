@@ -154,12 +154,23 @@ async def _send_error(ws: WebSocket, code: str, message: str) -> None:
 @router.websocket("/tts/{voice_id}")
 async def streaming_tts(
     ws: WebSocket,
-    voice_id: int,
+    voice_id: str,
     token: Optional[str] = Query(None),
     user_id_override: Optional[str] = Query(None, alias="user_id"),
     language: Optional[str] = Query(None),
 ) -> None:
     """Bidirectional WS for low-latency TTS using a pre-registered voice.
+
+    ``voice_id`` accepts either:
+      • an INTEGER id from ``GET /v1/voices`` — a designed or cloned voice
+        owned by the authenticated user, OR
+      • a STRING slug (e.g. ``"design-aria"``) — a built-in sample voice
+        from the shared catalog.
+
+    The REST endpoints already accept both shapes; this WS endpoint used
+    to reject non-int values as "Malformed voice_id", forcing users to
+    clone/design a voice before they could try streaming TTS. Now both
+    shapes resolve transparently.
 
     Protocol (after ``ready``):
       C → S  JSON  {"type": "speak", "text": "...", "language": "English"}
@@ -184,8 +195,28 @@ async def streaming_tts(
     # Pre-fetch voice metadata once so a non-existent / non-owned voice
     # 404s before we send "ready" — clients can distinguish from
     # transient pod failures during synthesis.
+    #
+    # Dispatch by shape: integer-like → designed/cloned voice (ownership-
+    # checked), otherwise treat as a built-in slug from the sample-voice
+    # catalog. The sample loader 404s on unknown slugs.
     try:
-        ref_audio, ref_text = await _resolve_designed_voice(auth_user_id, voice_id)
+        if voice_id.isdigit():
+            ref_audio, ref_text = await _resolve_designed_voice(
+                auth_user_id, int(voice_id),
+            )
+        else:
+            from sample_voice_loader import is_sample_voice, load_sample_voice
+            if not is_sample_voice(voice_id):
+                await _send_error(
+                    ws, "voice_not_found",
+                    f"unknown voice {voice_id!r} — pass an integer id from "
+                    f"/v1/voices or a built-in sample slug",
+                )
+                await ws.close(code=WS_CLOSE_NOT_FOUND)
+                return
+            ref_audio, ref_text = await load_sample_voice(
+                voice_id, language=language,
+            )
     except FileNotFoundError as exc:
         await _send_error(ws, "voice_not_found", str(exc))
         await ws.close(code=WS_CLOSE_NOT_FOUND)

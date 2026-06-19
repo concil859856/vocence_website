@@ -783,7 +783,16 @@ async def voice_clone_synthesize(
     else:
         slug = (chute_slug or STUDIO_VOICE_CLONE_CHUTE_SLUG).strip()
         if not slug:
-            return None, "voice clone not configured (set STUDIO_VOICE_CLONE_URL or STUDIO_VOICE_CLONE_CHUTE_SLUG)"
+            # Log the operator-facing detail (env var names) but return
+            # a generic user-facing message — exposing internal env
+            # vars to API callers leaks deployment topology and gives
+            # the false impression that the customer can act on it.
+            _log.error(
+                "studio_tts: voice clone not configured — set STUDIO_VOICE_CLONE_URL "
+                "OR STUDIO_VOICE_CLONE_CHUTE_SLUG (admin ops form). Until then "
+                "all voice-clone synthesis on this deployment will 503."
+            )
+            return None, "voice synthesis temporarily unavailable"
         url = _chute_voice_clone_url(slug)
         if CHUTES_AUTH_KEY:
             headers["Authorization"] = f"Bearer {CHUTES_AUTH_KEY}"

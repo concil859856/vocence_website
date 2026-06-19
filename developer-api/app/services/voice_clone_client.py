@@ -10,12 +10,15 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import os
 import shutil
 import subprocess
 from urllib.parse import urlparse
 
 import aiohttp
+
+_log = logging.getLogger(__name__)
 
 CHUTES_AUTH_KEY = os.environ.get("CHUTES_AUTH_KEY") or os.environ.get("CHUTES_API_KEY", "")
 STUDIO_VOICE_CLONE_URL = (os.environ.get("STUDIO_VOICE_CLONE_URL") or "").strip()
@@ -117,7 +120,15 @@ async def voice_clone_synthesize(
     else:
         slug = (chute_slug or STUDIO_VOICE_CLONE_CHUTE_SLUG).strip()
         if not slug:
-            return None, "voice clone not configured (set STUDIO_VOICE_CLONE_URL or STUDIO_VOICE_CLONE_CHUTE_SLUG)"
+            # Log operator-facing detail (env var names) but surface a
+            # generic user-facing message — mirror studio_tts_service so
+            # API callers don't see deployment env-var hints.
+            _log.error(
+                "voice_clone_client: voice clone not configured — set "
+                "STUDIO_VOICE_CLONE_URL OR STUDIO_VOICE_CLONE_CHUTE_SLUG. "
+                "All voice-clone synthesis on this deployment will 503 until set."
+            )
+            return None, "voice synthesis temporarily unavailable"
         url = _chute_voice_clone_url(slug)
         if CHUTES_AUTH_KEY:
             headers["Authorization"] = f"Bearer {CHUTES_AUTH_KEY}"

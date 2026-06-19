@@ -94,7 +94,7 @@ const docLinks: DocLink[] = [
   { id: 'sdk-cli', label: 'CLI Reference', category: 'SDK', adminOnly: true },
   { id: 'sdk-agents', label: 'Voice Agents', category: 'SDK', adminOnly: true },
   { id: 'sdk-webhooks', label: 'Webhooks', category: 'SDK', adminOnly: true },
-  { id: 'sdk-plugins', label: 'Voice Plugins', category: 'SDK', adminOnly: true },
+  { id: 'sdk-plugins', label: 'Voice Plugins', category: 'SDK' },
   // Billing — credits-and-plans reference. The canonical pricing page
   // lives at /pricing (top-level marketing route); the docs entry here
   // is the detailed breakdown the marketing page links to via its

@@ -263,10 +263,18 @@ def tool_specs(enabled: set[str] | None = None) -> list[dict[str, Any]]:
 
 def tool_catalog() -> list[dict[str, Any]]:
     """Lightweight info-only listing for the frontend Tools picker.
-    Returns ``[{name, description, available}, ...]`` — no executor
-    references, JSON-serializable."""
+    Returns ``[{id, name, description, available, requires_env}, ...]``
+    — no executor references, JSON-serializable.
+
+    ``id`` and ``name`` are intentionally the same slug. SDK consumers
+    iterating via ``t.get('id')`` (the documented shape in the cookbook
+    examples) used to silently get None and end up with an unusable
+    list of options because we only emitted ``name``. ``id`` is the
+    canonical key; ``name`` stays for backward compatibility with any
+    UI that's already wired to it."""
     return [
         {
+            "id": t.name,
             "name": t.name,
             "description": t.description,
             "available": t.available(),
