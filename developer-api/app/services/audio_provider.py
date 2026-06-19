@@ -1,5 +1,19 @@
 """
 Developer API audio provider helpers (TTS + STT + storage).
+
+STT and PromptTTS PROXY to the dashboard-backend rather than
+talking to GPU pods directly. The dashboard is the single source
+of truth for the ops_pool pod registry (which is hydrated by
+background pollers running in the dashboard's lifespan); a separate
+process can't reliably reproduce that state. The dashboard's
+``/api/dashboard/studio/transcribe`` and ``/voice-design/speak``
+routes already do all the pod-dispatch correctly and are what the
+production UI uses — proxying to them keeps the two surfaces in
+lock-step at the cost of one extra in-process HTTP hop.
+
+The voice-clone REST path stays direct (uses ``voice_clone_client``
+which talks to the chute URL configured in env) because that flow
+predates pod-pool migration; it can be migrated next.
 """
 
 from __future__ import annotations
@@ -8,51 +22,25 @@ import asyncio
 import base64
 import logging
 import os
-import sys
 import uuid
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
-from pathlib import Path, PurePosixPath
+from pathlib import PurePosixPath
 
 import aiohttp
 from minio import Minio
 
 _log = logging.getLogger(__name__)
 
-# Allow the dev-api to import the dashboard-backend's ``ops.pool``
-# module. In production both checkouts live side-by-side under
-# ``/deployment/vocence_website/`` (sibling directories); locally
-# they're under ``/workspace/...``. The dashboard is the source of
-# truth for the GPU pod registry — sharing the same SQLite DB the
-# dashboard writes to. Without this, the dev-api keeps hitting its
-# legacy hardcoded CHUTES_* chute URLs (mostly dead now that pod
-# deployment moved to the admin/ops form).
-#
-# CRITICAL: ``sys.path.append`` (not insert) — both checkouts have a
-# top-level ``main.py``. Inserting dashboard-backend at index 0 makes
-# uvicorn's ``main:app`` string resolve to dashboard's main.py first,
-# so the dev-api process ends up serving the dashboard app (every
-# ``/v1/*`` route 404s with the symptom "0 routes registered"). Appending
-# keeps dev-api's own modules first; dashboard-backend is only consulted
-# for modules dev-api doesn't have (which is just ``ops.*``).
-_DASHBOARD_BACKEND_PATH = (
-    Path(__file__).resolve().parent.parent.parent.parent / "dashboard-backend"
-)
-if _DASHBOARD_BACKEND_PATH.is_dir() and str(_DASHBOARD_BACKEND_PATH) not in sys.path:
-    sys.path.append(str(_DASHBOARD_BACKEND_PATH))
-
-
-def _ops_pool():
-    """Lazy-import — the heavy ``ops.pool`` module is only loaded
-    when we actually need it. Returns ``None`` if the dashboard's
-    ops module isn't importable (deployments that ship the dev-api
-    without a sibling dashboard checkout)."""
-    try:
-        from ops import pool as gpu_pool  # type: ignore[import-not-found]
-        return gpu_pool
-    except Exception as exc:  # noqa: BLE001
-        _log.debug("ops.pool unavailable from dev-api: %s", exc)
-        return None
+# URL of the dashboard-backend on the same host. The dev-api proxies
+# STT + PromptTTS calls here. Defaults to ``http://127.0.0.1:8083``
+# (production loopback); override via DASHBOARD_BASE_URL if the two
+# services don't share a host.
+DASHBOARD_BASE_URL = (os.environ.get("DASHBOARD_BASE_URL") or "http://127.0.0.1:8083").rstrip("/")
+# Same shared secret used for the voice-agent WS proxy. The dashboard
+# verifies it via the ``is_internal_proxy`` dependency and accepts the
+# user_id forwarded from this layer.
+INTERNAL_SERVICE_TOKEN = (os.environ.get("INTERNAL_SERVICE_TOKEN") or "").strip()
 
 CHUTES_AUTH_KEY = os.environ.get("CHUTES_AUTH_KEY") or os.environ.get("CHUTES_API_KEY", "")
 # STT endpoint. We run our own Qwen3-ASR server (POST /transcribe with
@@ -115,180 +103,141 @@ def _active_bucket() -> str:
     return STUDIO_TTS_BUCKET
 
 
-async def synthesize_speak(chute_slug: str, text: str, instruction: str) -> tuple[bytes | None, str]:
-    """PromptTTS — "speak" with a text description of the desired voice.
+def _dashboard_internal_headers(user_id: str) -> dict[str, str]:
+    """Headers the dashboard's ``is_internal_proxy`` dependency expects.
+    Without these the dashboard rejects loopback requests as unauthenticated
+    even though we're on the same box."""
+    return {
+        "X-Internal-Service-Token": INTERNAL_SERVICE_TOKEN,
+        "X-Internal-User-Id": user_id,
+    }
 
-    Same migration story as ``transcribe_audio``: the dashboard now
-    dispatches to ``voice_design`` pods via ``ops_pool.pick_pod``, but
-    the dev-api kept hitting hardcoded chute slugs from
-    ``API_TTS_PROVIDER_<N>_CHUTE_SLUG`` env vars. Most production
-    deployments left those env vars empty after moving pod registration
-    to the admin/ops form, so this endpoint returned 502 on every call.
 
-    Dispatch order:
-      1. ops_pool voice_design pod (matches what /api/dashboard/studio
-         uses internally and what works in the production UI)
-      2. Fall back to the legacy ``{chute_slug}.chutes.ai/speak`` URL
-         when no voice_design pod is registered — covers single-host
-         dev environments that ship the chute slug via .env.
+async def synthesize_speak(
+    chute_slug: str,
+    text: str,
+    instruction: str,
+    *,
+    user_id: str | None = None,
+) -> tuple[bytes | None, str]:
+    """PromptTTS — proxy to the dashboard's voice-design speak endpoint.
+
+    The dashboard manages the voice_design pod pool (in-memory state
+    hydrated by lifespan-scoped pollers — not reachable from this
+    process). The previous in-process attempt to use ``ops_pool`` from
+    here saw an empty cache and silently fell through to dead legacy
+    URLs. Forwarding to ``/api/dashboard/studio/voice-design/speak``
+    routes the request through the same code the UI uses.
+
+    ``chute_slug`` is kept for signature compatibility with the
+    existing call site but is no longer consulted — the dashboard
+    picks the pod itself.
+
+    ``user_id`` is required: the dashboard's
+    ``is_internal_proxy`` auth dep expects ``X-Internal-User-Id``
+    to identify the caller for billing / ownership checks.
     """
-    payload = {"text": text or "Hello.", "instruction": instruction or "neutral voice"}
-
-    pod_cm = None
-    pod_url: str | None = None
-    pod_key: str | None = None
-
-    gp = _ops_pool()
-    if gp is not None:
-        try:
-            if gp.online_pod_count("voice_design") > 0:
-                pod_cm = gp.pick_pod("voice_design")
-                pod = await pod_cm.__aenter__()
-                pod_url = pod.url.rstrip("/") + "/speak"
-                pod_key = pod.api_key or None
-        except Exception as e:  # noqa: BLE001
-            try:
-                from ops.pool import NoCapacity  # type: ignore[import-not-found]
-                if isinstance(e, NoCapacity):
-                    return None, "voice synthesis temporarily unavailable (fleet busy)"
-            except ImportError:
-                pass
-            _log.warning("ops_pool voice_design dispatch failed, falling back: %s", e)
-
-    if pod_url is None and chute_slug:
-        pod_url = _chute_speak_url(chute_slug)
-
-    if not pod_url:
-        return None, "voice synthesis temporarily unavailable"
-
-    headers = {"Content-Type": "application/json"}
-    if pod_key:
-        headers["X-API-Key"] = pod_key
-    elif CHUTES_AUTH_KEY:
-        headers["Authorization"] = f"Bearer {CHUTES_AUTH_KEY}"
-
+    if not user_id:
+        return None, "synthesize_speak requires a user_id when proxying"
+    if not INTERNAL_SERVICE_TOKEN:
+        return None, "internal service token not configured on developer-api"
+    url = f"{DASHBOARD_BASE_URL}/api/dashboard/studio/voice-design/speak"
+    payload = {
+        "text": text or "Hello.",
+        "instruction": instruction or "neutral voice",
+        "user_id": user_id,
+    }
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                pod_url,
-                headers=headers,
+                url,
+                headers={**_dashboard_internal_headers(user_id), "Content-Type": "application/json"},
                 json=payload,
                 timeout=aiohttp.ClientTimeout(total=120),
             ) as resp:
                 body = await resp.read()
                 if resp.status != 200:
-                    err = body.decode("utf-8", errors="replace")[:200] if body else ""
-                    return None, f"provider returned {resp.status}" + (f": {err}" if err else "")
+                    err = body.decode("utf-8", errors="replace")[:300] if body else ""
+                    return None, f"dashboard returned {resp.status}" + (f": {err}" if err else "")
+                # The dashboard's /voice-design/speak returns JSON
+                # containing an audio_url. Fetch the audio for the
+                # caller's existing wire shape (raw bytes).
+                ctype = resp.headers.get("content-type", "")
+                if "json" in ctype.lower():
+                    try:
+                        data = await resp.json(content_type=None)
+                    except Exception:
+                        return None, "dashboard returned non-JSON for speak"
+                    audio_url = data.get("audio_url") if isinstance(data, dict) else None
+                    if not audio_url:
+                        return None, "dashboard speak response missing audio_url"
+                    async with session.get(audio_url, timeout=aiohttp.ClientTimeout(total=60)) as a:
+                        if a.status != 200:
+                            return None, f"audio fetch returned {a.status}"
+                        return await a.read(), ""
                 if not body:
-                    return None, "provider returned no audio"
+                    return None, "dashboard returned no audio"
                 return body, ""
     except asyncio.TimeoutError:
-        return None, "provider request timed out"
+        return None, "dashboard request timed out"
     except Exception as exc:
         return None, str(exc)
-    finally:
-        if pod_cm is not None:
-            with suppress(Exception):
-                await pod_cm.__aexit__(None, None, None)
 
 
-async def transcribe_audio(audio_bytes: bytes, language: str | None = None) -> tuple[dict | None, str]:
-    # The dashboard migrated STT dispatch from hardcoded chute URLs to
-    # the ops_pool registry — operators deploy STT pods via /admin/ops
-    # and the pool tracks them. The dev-api was never updated and kept
-    # calling its legacy ``CHUTES_WHISPER_STT_URL`` env var (a chute
-    # slug that's mostly decommissioned now — the user-facing symptom
-    # is every ``client.stt.transcribe`` returning 502). Mirror the
-    # dashboard's dispatch logic here:
-    #   1. Prefer ``asr_streaming_rt`` pods (modern, POST /v1/transcribe)
-    #   2. Fall back to legacy ``stt`` pods (POST /transcribe)
-    #   3. Final fallback: the env-var URL, for deployments that
-    #      haven't set up the ops pool at all.
-    b64 = base64.b64encode(audio_bytes).decode("utf-8")
-    payload: dict[str, str] = {
-        "audio_base64": b64,  # Qwen3-ASR / asr_streaming_rt shape
-        "audio_b64": b64,     # legacy Whisper shape — both keys for safety
-    }
+async def transcribe_audio(
+    audio_bytes: bytes,
+    language: str | None = None,
+    *,
+    user_id: str | None = None,
+) -> tuple[dict | None, str]:
+    """STT — proxy to the dashboard's transcribe endpoint.
+
+    Replaces the previous direct-chute call (and the short-lived
+    in-process ops_pool import attempt that broke for the same
+    reason as synthesize_speak: pool state is hydrated by the
+    dashboard's lifespan pollers and not reachable from here).
+
+    The dashboard's ``/api/dashboard/studio/transcribe`` already does
+    the pod dispatch (asr_streaming_rt → stt fallback), credit
+    deduction, duration capping, and provider name selection. We just
+    forward.
+    """
+    if not user_id:
+        return None, "transcribe_audio requires a user_id when proxying"
+    if not INTERNAL_SERVICE_TOKEN:
+        return None, "internal service token not configured on developer-api"
+    url = f"{DASHBOARD_BASE_URL}/api/dashboard/studio/transcribe"
+    form = aiohttp.FormData()
+    form.add_field("user_id", user_id)
     if language:
-        payload["language"] = language
-
-    ops_url: str | None = None
-    ops_api_key: str | None = None
-    pod_cm = None
-
-    gp = _ops_pool()
-    if gp is not None:
-        try:
-            target = None
-            if gp.online_pod_count("asr_streaming_rt") > 0:
-                target = ("asr_streaming_rt", "/v1/transcribe")
-            elif gp.online_pod_count("stt") > 0:
-                target = ("stt", "/transcribe")
-            if target is not None:
-                svc_name, path = target
-                pod_cm = gp.pick_pod(svc_name)
-                pod = await pod_cm.__aenter__()
-                ops_url = pod.url.rstrip("/") + path
-                ops_api_key = pod.api_key or None
-        except Exception as e:  # noqa: BLE001
-            # Translate NoCapacity to a clear user-facing string; everything
-            # else falls through to the legacy CHUTES_WHISPER_STT_URL path.
-            try:
-                from ops.pool import NoCapacity  # type: ignore[import-not-found]
-                if isinstance(e, NoCapacity):
-                    return None, "stt fleet busy (all pods at capacity)"
-            except ImportError:
-                pass
-            _log.warning("ops_pool dispatch failed, falling back to legacy URL: %s", e)
-
-    target_url = ops_url or CHUTES_WHISPER_STT_URL
-    if not target_url:
-        return None, "speech recognition temporarily unavailable"
-
-    headers = {"Content-Type": "application/json"}
-    auth_key = ops_api_key or CHUTES_AUTH_KEY
-    if auth_key:
-        # ops pod uses X-API-Key; legacy chute uses Authorization Bearer.
-        # Send both — pods ignore the one they don't recognize.
-        if ops_api_key:
-            headers["X-API-Key"] = ops_api_key
-        else:
-            headers["Authorization"] = f"Bearer {auth_key}"
-
+        form.add_field("language", language)
+    form.add_field(
+        "audio_file", audio_bytes,
+        filename="audio.wav", content_type="audio/wav",
+    )
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                target_url,
-                headers=headers,
-                json=payload,
+                url,
+                headers=_dashboard_internal_headers(user_id),
+                data=form,
                 timeout=aiohttp.ClientTimeout(total=180),
             ) as resp:
                 body = await resp.read()
                 if resp.status != 200:
                     err = body.decode("utf-8", errors="replace")[:300] if body else ""
-                    return None, f"provider returned {resp.status}" + (f": {err}" if err else "")
+                    return None, f"dashboard returned {resp.status}" + (f": {err}" if err else "")
                 try:
                     data = await resp.json(content_type=None)
                 except Exception:
-                    return None, "provider returned non-JSON transcription response"
-                if isinstance(data, list):
-                    first = data[0] if data else {}
-                    if not isinstance(first, dict):
-                        return None, "provider returned unsupported list response"
-                    return first, ""
+                    return None, "dashboard returned non-JSON transcription response"
                 if not isinstance(data, dict):
-                    return None, "provider returned unsupported JSON response"
+                    return None, "dashboard returned unsupported transcription response"
                 return data, ""
     except asyncio.TimeoutError:
-        return None, "provider request timed out"
+        return None, "dashboard request timed out"
     except Exception as exc:
         return None, str(exc)
-    finally:
-        # Release the ops_pool slot. The dispatcher's per-pod in_flight
-        # counter (the one /admin/ops graphs) leaks if we forget this.
-        if pod_cm is not None:
-            with suppress(Exception):
-                await pod_cm.__aexit__(None, None, None)
 
 
 def _ensure_bucket(client: Minio, bucket: str) -> None:

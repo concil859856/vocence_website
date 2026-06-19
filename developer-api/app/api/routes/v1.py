@@ -137,7 +137,7 @@ async def tts_generate(body: TtsGenerateRequest, auth_ctx: dict = Depends(requir
             await conn.commit()
             raise HTTPException(status_code=402, detail=f"Insufficient credits. Need {credits_needed}, have {credits_before}")
 
-        wav_bytes, err = await synthesize_speak(chute_slug, text, style_instruction)
+        wav_bytes, err = await synthesize_speak(chute_slug, text, style_instruction, user_id=auth_ctx["user_id"])
         if not wav_bytes:
             latency_ms = int((time.perf_counter() - started) * 1000)
             await log_api_request(
@@ -347,7 +347,7 @@ async def stt_transcribe(body: SttTranscribeRequest, auth_ctx: dict = Depends(re
                 detail=f"Insufficient credits. STT may cost up to {max_credits_per_call} credits per call, you have {credits_before}.",
             )
 
-        result, err = await transcribe_audio(audio_bytes=audio_bytes, language=(body.language or "").strip() or None)
+        result, err = await transcribe_audio(audio_bytes=audio_bytes, language=(body.language or "").strip() or None, user_id=auth_ctx["user_id"])
         if not result:
             latency_ms = int((time.perf_counter() - started) * 1000)
             await log_api_request(
@@ -514,7 +514,7 @@ async def voice_clone(body: VoiceCloneRequest, auth_ctx: dict = Depends(require_
             await conn.commit()
             raise HTTPException(status_code=402, detail=f"Insufficient credits. Need {credits_needed}, have {credits_before}")
 
-        stt_result, stt_err = await transcribe_audio(audio_bytes=ref_bytes, language=lang)
+        stt_result, stt_err = await transcribe_audio(audio_bytes=ref_bytes, language=lang, user_id=auth_ctx["user_id"])
         if not stt_result:
             latency_ms = int((time.perf_counter() - started) * 1000)
             await log_api_request(
