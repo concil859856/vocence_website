@@ -272,7 +272,7 @@ def _agent_row_to_response(row: dict) -> dict:
             # turn_decider removed in Phase C — kept out of the response.
             "ultravad_threshold": (
                 float(cfg.get("ultravad_threshold"))
-                if cfg.get("ultravad_threshold") is not None else 0.50
+                if cfg.get("ultravad_threshold") is not None else 0.60
             ),
             "min_delay_ms": cfg.get("min_delay_ms"),
             "record_enabled": bool(cfg.get("record_enabled", False)),
@@ -620,7 +620,7 @@ async def create_agent(body: AgentCreateIn, auth_ctx: dict = Depends(require_api
         "denoise_enabled": bool(body.denoise_enabled) if body.denoise_enabled is not None else False,
         # turn_decider: removed in Phase C
         "ultravad_threshold": (
-            float(body.ultravad_threshold) if body.ultravad_threshold is not None else 0.50
+            float(body.ultravad_threshold) if body.ultravad_threshold is not None else 0.60
         ),
         "min_delay_ms": body.min_delay_ms,
         "record_enabled": bool(body.record_enabled) if body.record_enabled is not None else False,

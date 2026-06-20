@@ -53,10 +53,19 @@ class AgentConfigIn(BaseModel):
     # sample_voices_data.py (NOT a display name). "Ryan" was the
     # historic default but didn't exist in the sample registry, so
     # every new agent routed to the dead /v1/tts/stream endpoint.
-    # voc-sienna is friendly + versatile, a safe out-of-the-box pick.
-    voice: str = "voc-sienna"
+    # design-aurora is the validated "feels natural in the new pipeline"
+    # default — built-in design voice (no clone-reference dependency,
+    # so acoustic output is consistent across deployments), and the
+    # voice the voldmert reference agent was tested against. Switched
+    # from voc-sienna because cloned voices' acoustic output can vary
+    # per reference clip.
+    voice: str = "design-aurora"
     language: str = "English"
-    llm_model: str = ""
+    # Explicit default so new agents don't fall through to the server's
+    # picked-by-availability logic at first call. cerebras:gpt-oss-120b
+    # is the fastest model with reliable tool calling (~150 ms TTFT,
+    # used by the voldmert reference agent).
+    llm_model: str = "cerebras:gpt-oss-120b"
     temperature: float = 0.6
     goal: Optional[str] = None
     success_metric: Optional[str] = None
@@ -80,9 +89,11 @@ class AgentConfigIn(BaseModel):
     # [0, 1]; higher = more conservative (waits for stronger model
     # confidence, lets brief mid-sentence pauses through), lower =
     # more eager (snappier but more likely to cut mid-utterance).
-    # 0.50 is the global default — biased slightly toward "wait for
-    # the user to finish" over "snap fast at any pause."
-    ultravad_threshold: float = Field(default=0.50, ge=0.0, le=1.0)
+    # 0.60 is the platform default — bumped from 0.50 to match the
+    # voldmert reference agent that consistently produced clean
+    # transcripts on the new pipeline. 0.50 was too eager and let
+    # speaker-bleed-induced false-positive turns through.
+    ultravad_threshold: float = Field(default=0.60, ge=0.0, le=1.0)
     # Minimum silence (ms) before the UltraVAD primary path is even
     # allowed to fire commit, regardless of model confidence. Bumping
     # this up gives the user a longer "is the next sentence coming?"
