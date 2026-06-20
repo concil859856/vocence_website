@@ -459,24 +459,32 @@ def _translate_eou_config(agent_config: dict[str, Any]) -> Any:
     """Map legacy EOU knobs (min_delay_ms, ultravad_threshold) to the
     framework's ``EOUConfig`` shape.
 
-    Defaults pinned to the voice_agent example the user validated as
-    working well (``[0.8, 1.6]`` window, ``0.8`` certainty threshold) —
-    those values produce the most natural turn-taking. Legacy field
-    overrides are still respected: if an agent's config_json sets
-    ``min_delay_ms``, that becomes the low end of the window; if it
-    sets ``ultravad_threshold``, that maps onto the certainty
-    threshold via the same 0.5+0.5*x rescale used before.
+    Defaults tightened from the original ``[0.8, 1.6]`` window + ``0.8``
+    certainty (voice_agent reference) to ``[0.8, 1.2]`` + ``0.68`` after
+    real-traffic measurement. The 1.6 s ceiling was firing on most
+    uncertain turns and dominating perceived latency (~1.6 s of dead
+    air between user stopping and the LLM starting). 1.2 s ceiling
+    keeps a safety margin for slow speakers but caps the worst case;
+    0.68 lets the floor (0.8 s) fire on more turns instead of waiting
+    for very-high certainty. TurnDetector still has authority — these
+    just nudge the wait-vs-commit decision toward sooner.
+
+    Per-agent overrides still respected: ``min_delay_ms`` overrides
+    the low end of the window (high end = 1.5× min); ``ultravad_threshold``
+    overrides the certainty threshold via the same 0.5+0.5*x rescale.
     """
     _ensure_next_pipeline_loaded()
     min_delay_ms_set = agent_config.get("min_delay_ms")
     if min_delay_ms_set:
         min_sec = int(min_delay_ms_set) / 1000.0
-        max_sec = min_sec * 2.0
+        # 1.5× (was 2×) — the previous max=2*min reproduced the loose
+        # 0.8/1.6 default; tightening default also tightens per-agent.
+        max_sec = min_sec * 1.5
     else:
-        min_sec, max_sec = 0.8, 1.6  # voice_agent's validated values
+        min_sec, max_sec = 0.8, 1.2  # tightened from 0.8/1.6
     threshold = agent_config.get("ultravad_threshold")
     if threshold is None:
-        eou_certainty = 0.8  # voice_agent's validated value
+        eou_certainty = 0.68  # tightened from 0.8
     else:
         eou_certainty = min(max(0.5 + 0.5 * float(threshold), 0.0), 1.0)
     return EOUConfig(  # type: ignore[name-defined]
@@ -499,14 +507,14 @@ def _translate_interrupt_config(agent_config: dict[str, Any]) -> Any:
     _ensure_next_pipeline_loaded()
     return InterruptConfig(  # type: ignore[name-defined]
         mode="HYBRID",
-        # Dropped 0.2 → 0.1: brief barge-in attempts ("hey", "stop")
-        # that are too short to sustain 200ms of continuous speech
-        # were getting their interrupt-monitor task cancelled before
-        # firing (VAD END_OF_SPEECH cancels the monitor). 100ms catches
-        # those without significantly increasing false interrupts —
-        # the framework still requires ``interrupt_min_words=1`` so
-        # background noise alone won't fire.
-        interrupt_min_duration=0.1,
+        # Dropped 0.2 → 0.09: brief barge-in attempts ("hey", "stop")
+        # that are too short to sustain even 100ms of continuous speech
+        # were still getting their interrupt-monitor task cancelled
+        # before firing (VAD END_OF_SPEECH cancels the monitor). 90ms
+        # catches those without significantly increasing false
+        # interrupts — the framework still requires
+        # ``interrupt_min_words=1`` so background noise alone won't fire.
+        interrupt_min_duration=0.09,
         interrupt_min_words=1,
         interrupt_fade_duration=0.1,
         resume_on_false_interrupt=False,
