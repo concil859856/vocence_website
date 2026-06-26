@@ -1613,6 +1613,16 @@ _GOOGLE_TOKEN_ISSUERS = {"https://accounts.google.com", "accounts.google.com"}
 # frontend uses (VITE_GOOGLE_CLIENT_ID). Set in env so devs / staging /
 # prod can have different OAuth client IDs.
 GOOGLE_CLIENT_ID = (os.environ.get("GOOGLE_CLIENT_ID") or "").strip()
+# Mobile: the iOS / Android / web OAuth client IDs all issue ID tokens for
+# the SAME Google project but with DIFFERENT ``aud`` values. Accept any
+# configured one. ``GOOGLE_CLIENT_IDS`` is a comma-separated extra list
+# (set the iOS + Android client IDs there); the web ``GOOGLE_CLIENT_ID``
+# stays valid unchanged.
+_GOOGLE_ALLOWED_AUDS = {
+    c.strip()
+    for c in ([GOOGLE_CLIENT_ID] + (os.environ.get("GOOGLE_CLIENT_IDS") or "").split(","))
+    if c.strip()
+}
 
 
 async def _verify_google_id_token(credential: str) -> dict:
@@ -1633,7 +1643,7 @@ async def _verify_google_id_token(credential: str) -> dict:
     """
     if not credential or not isinstance(credential, str):
         raise HTTPException(status_code=400, detail="Missing Google credential")
-    if not GOOGLE_CLIENT_ID:
+    if not _GOOGLE_ALLOWED_AUDS:
         # Refuse to authenticate when we can't validate ``aud`` —
         # otherwise an attacker who got any Google JWT (e.g. issued for
         # some other app) could log into ours.
@@ -1657,7 +1667,7 @@ async def _verify_google_id_token(credential: str) -> dict:
     # Verify the critical claims. Google's tokeninfo endpoint already
     # checks the signature + expiry, but ``aud`` (our app) and ``iss``
     # (Google) we have to enforce ourselves.
-    if data.get("aud") != GOOGLE_CLIENT_ID:
+    if data.get("aud") not in _GOOGLE_ALLOWED_AUDS:
         raise HTTPException(status_code=401, detail="Google credential audience mismatch")
     if data.get("iss") not in _GOOGLE_TOKEN_ISSUERS:
         raise HTTPException(status_code=401, detail="Google credential issuer mismatch")
@@ -1670,29 +1680,98 @@ async def _verify_google_id_token(credential: str) -> dict:
     return data
 
 
+# ── Sign in with Apple (mobile) ──────────────────────────────────────
+# Apple issues an identity token (RS256 JWT) signed by appleid.apple.com.
+# Verify it against Apple's published JWKS: ``aud`` must be our app's
+# bundle/services ID(s) (APPLE_CLIENT_IDS), ``iss`` must be Apple. Apple
+# carries ``email`` in the token but NOT the user's name — the native
+# authorization hands the name to the client ONCE, so the app posts it
+# alongside on first login.
+APPLE_ISSUER = "https://appleid.apple.com"
+_APPLE_KEYS_URL = "https://appleid.apple.com/auth/keys"
+_APPLE_ALLOWED_AUDS = {
+    c.strip()
+    for c in (os.environ.get("APPLE_CLIENT_IDS") or os.environ.get("APPLE_CLIENT_ID") or "").split(",")
+    if c.strip()
+}
+_apple_jwks_cache = {"keys": {}, "fetched_at": 0.0}
+
+
+async def _apple_signing_key(kid: str):
+    """RSA public key for ``kid`` from Apple's JWKS, cached ~6 h and
+    refetched on a miss so key rotation is handled automatically."""
+    import time as _t
+
+    cache = _apple_jwks_cache
+    if kid not in cache["keys"] or (_t.time() - cache["fetched_at"]) > 6 * 3600:
+        timeout = aiohttp.ClientTimeout(total=8)
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(_APPLE_KEYS_URL) as resp:
+                    if resp.status != 200:
+                        raise HTTPException(status_code=502, detail="Apple key fetch failed")
+                    jwks = await resp.json()
+        except aiohttp.ClientError as exc:
+            raise HTTPException(status_code=502, detail=f"Apple verification unavailable: {exc}") from exc
+        cache["keys"] = {
+            k["kid"]: jwt.algorithms.RSAAlgorithm.from_jwk(json.dumps(k))
+            for k in jwks.get("keys", [])
+        }
+        cache["fetched_at"] = _t.time()
+    key = cache["keys"].get(kid)
+    if key is None:
+        raise HTTPException(status_code=401, detail="Apple credential key not found")
+    return key
+
+
+async def _verify_apple_id_token(identity_token: str) -> dict:
+    """Verify a Sign-in-with-Apple identity token. Returns its claims
+    (sub, email, email_verified, …) only on a valid signature + aud + iss."""
+    if not identity_token or not isinstance(identity_token, str):
+        raise HTTPException(status_code=400, detail="Missing Apple identity token")
+    if not _APPLE_ALLOWED_AUDS:
+        raise HTTPException(status_code=500, detail="APPLE_CLIENT_ID not configured on this deployment")
+    try:
+        kid = jwt.get_unverified_header(identity_token).get("kid")
+    except jwt.PyJWTError as exc:
+        raise HTTPException(status_code=401, detail=f"Malformed Apple token: {exc}") from exc
+    key = await _apple_signing_key(kid or "")
+    claims = None
+    for aud in _APPLE_ALLOWED_AUDS:
+        try:
+            claims = jwt.decode(identity_token, key, algorithms=["RS256"], audience=aud, issuer=APPLE_ISSUER)
+            break
+        except jwt.InvalidAudienceError:
+            continue
+        except jwt.PyJWTError as exc:
+            raise HTTPException(status_code=401, detail=f"Invalid Apple identity token: {exc}") from exc
+    if claims is None:
+        raise HTTPException(status_code=401, detail="Apple credential audience mismatch")
+    if not claims.get("sub"):
+        raise HTTPException(status_code=401, detail="Apple credential missing sub")
+    return claims
+
+
 @router.post("/auth/login", response_model=LoginResponse)
 async def auth_login(body: LoginRequest, response: Response):
     # SECURITY: require a verified Google credential. The legacy
-    # ``email/name/googleId`` fields the frontend used to send are
-    # IGNORED — we use the claims from the verified JWT instead so
-    # an attacker can't forge an account by posting arbitrary values.
+    # ``email/name/googleId`` fields are IGNORED — the verified JWT claims
+    # always win, so an attacker can't forge an account by posting values.
     claims = await _verify_google_id_token(body.credential or "")
-    verified_email = (claims.get("email") or "").strip().lower()
-    verified_google_id = str(claims.get("sub") or "").strip()
-    verified_name = (claims.get("name") or body.name or verified_email.split("@")[0]).strip()
-    verified_picture = claims.get("picture") or body.picture
-    if not verified_email or not verified_google_id:
+    body.email = (claims.get("email") or "").strip().lower()
+    body.googleId = str(claims.get("sub") or "").strip()
+    body.name = (claims.get("name") or body.name or (body.email.split("@")[0] if body.email else "")).strip()
+    body.picture = claims.get("picture") or body.picture
+    if not body.email or not body.googleId:
         raise HTTPException(status_code=401, detail="Google credential missing email or sub")
+    return await _finish_oauth_login(body, response)
 
-    # Override whatever the client posted. The remainder of this
-    # function uses ``body.email`` / ``body.googleId`` references —
-    # rebind them to the verified values so the rest of the existing
-    # logic flows through unchanged.
-    body.email = verified_email
-    body.name = verified_name
-    body.picture = verified_picture
-    body.googleId = verified_google_id
 
+async def _finish_oauth_login(body: LoginRequest, response: Response) -> LoginResponse:
+    """Shared find-or-create for federated logins (Google, Apple). ``body``
+    must already carry VERIFIED ``email`` / ``name`` / ``picture`` /
+    ``googleId`` (the provider's subject, used as the new user's id on
+    first login). Mirrors the original Google-login flow exactly."""
     await ensure_tables()
     conn = await get_connection()
     try:
@@ -1826,6 +1905,40 @@ async def auth_login(body: LoginRequest, response: Response):
         return LoginResponse(user=user_out, token=_install_session(response, user_out.id, user_out.email))
     finally:
         await conn.close()
+
+
+class AppleLoginRequest(BaseModel):
+    """Sign in with Apple payload (mobile)."""
+    identity_token: str | None = None
+    # Apple returns the user's name to the client only on the FIRST
+    # authorization — pass it through so we can store it at signup.
+    name: str | None = None
+    email: str | None = None          # fallback only; the token's email wins
+    referral_code: str | None = None
+    device_fingerprint: str | None = None
+
+
+@router.post("/auth/apple", response_model=LoginResponse)
+async def auth_apple(body: AppleLoginRequest, response: Response):
+    """Sign in with Apple (mobile). Verifies the identity token against
+    Apple's JWKS, then runs the SAME find-or-create as Google login."""
+    claims = await _verify_apple_id_token(body.identity_token or "")
+    email = (claims.get("email") or body.email or "").strip().lower()
+    sub = str(claims.get("sub") or "").strip()
+    if not sub:
+        raise HTTPException(status_code=401, detail="Apple credential missing sub")
+    if not email:
+        # Accounts are keyed by email; Apple omits it when the user hid
+        # their email and the app didn't request the email scope.
+        raise HTTPException(status_code=400, detail="Apple login requires the email scope")
+    lr = LoginRequest(
+        email=email,
+        name=(body.name or email.split("@")[0]).strip(),
+        googleId=sub,                  # provider subject → new user's id
+        referral_code=body.referral_code,
+        device_fingerprint=body.device_fingerprint,
+    )
+    return await _finish_oauth_login(lr, response)
 
 
 @router.post("/auth/verify", response_model=VerifyResponse)
