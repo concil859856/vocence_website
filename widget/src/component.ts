@@ -49,7 +49,11 @@ export class VocenceAgentElement extends LitElement {
 
   @property({ attribute: 'agent-id' }) agentId = '';
   @property({ attribute: 'embed-token' }) embedToken = '';
-  @property() server = 'https://api.vocence.ai';
+  // Real-time host. Defaults to the dedicated, non-CDN-proxied WebSocket
+  // host so the call works out of the box without an explicit ``server``
+  // attribute (the CDN edge blocks raw WebSocket handshakes). Override for
+  // self-hosted deployments.
+  @property() server = 'https://voice.vocence.ai';
   @property() position: 'bottom-right' | 'bottom-left' | 'inline' = 'bottom-right';
   @property() greeting = '';
   @property({ attribute: 'voice-enabled', type: Boolean }) voiceEnabled = true;
@@ -202,7 +206,14 @@ export class VocenceAgentElement extends LitElement {
       this.streamingVoiceEnabled = !!capabilities?.voice_stream;
       this.state = 'idle';
     });
-    ws.on('state', (s) => { this.state = s as State; });
+    ws.on('state', (s) => {
+      this.state = s as State;
+      // ``turn_end`` / ``cancelled`` both surface as 'listening' — the
+      // agent's turn is complete, so close its streaming bubble. The next
+      // turn's tokens then open a NEW message instead of concatenating
+      // every turn into one ever-growing bubble.
+      if (s === 'listening') this.streamingAgentMsgId = null;
+    });
     ws.on('message', (m) => this.handleIncomingMessage(m));
     ws.on('partialTranscript', ({ text }) => {
       this.partialCaption = text;
@@ -370,6 +381,10 @@ export class VocenceAgentElement extends LitElement {
   // -------------------------------------------------------------------------
 
   private appendUserMessage(text: string): void {
+    // A new user turn closes any open agent bubble, so the agent's reply
+    // starts as a fresh message rendered AFTER this user message (instead
+    // of appending to the previous turn's bubble above it).
+    this.streamingAgentMsgId = null;
     const msg: ChatMessage = { id: makeId(), role: 'user', text };
     this.messages = [...this.messages, msg];
   }
@@ -432,6 +447,14 @@ export class VocenceAgentElement extends LitElement {
   // Render
   // -------------------------------------------------------------------------
 
+  // Keep the message list pinned to the newest message as turns stream in.
+  override updated(changed: Map<string, unknown>): void {
+    if (changed.has('messages') || changed.has('partialCaption')) {
+      const box = this.renderRoot?.querySelector?.('.messages') as HTMLElement | null;
+      if (box) box.scrollTop = box.scrollHeight;
+    }
+  }
+
   override render() {
     return html`
       ${!this.isOpen ? this.renderLauncher() : nothing}
@@ -449,11 +472,11 @@ export class VocenceAgentElement extends LitElement {
 
   private renderPanel() {
     return html`
-      <div class="panel" role="dialog" aria-label="Voice agent">
+      <div class="panel" role="dialog" aria-label="Voice agent" data-state=${this.state}>
         <div class="header">
           <span class="avatar">${initials(this.agentName)}</span>
           <div class="name">
-            ${this.agentName}
+            <span class="title">${this.agentName}</span>
             <span class="state">${stateLabel(this.state)}</span>
           </div>
           ${this.voiceEnabled ? html`
@@ -539,22 +562,24 @@ export class VocenceAgentElement extends LitElement {
       || !this.textInput.trim();
     return html`
       <form class="composer" @submit=${(e: Event) => { e.preventDefault(); void this.submitText(); }}>
-        ${this.voiceEnabled ? html`
-          <button type="button" class="mic" aria-label="Voice mode"
-                  @click=${() => this.switchToVoice()}>${iconMic}</button>
-        ` : nothing}
-        <textarea
-          .value=${this.textInput}
-          @input=${(e: Event) => { this.textInput = (e.target as HTMLTextAreaElement).value; }}
-          @keydown=${(e: KeyboardEvent) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault();
-              void this.submitText();
-            }
-          }}
-          placeholder="Type a message…"
-          rows="1"
-        ></textarea>
+        <div class="input-wrap">
+          ${this.voiceEnabled ? html`
+            <button type="button" class="mic" aria-label="Switch to voice"
+                    @click=${() => this.switchToVoice()}>${iconMic}</button>
+          ` : nothing}
+          <textarea
+            .value=${this.textInput}
+            @input=${(e: Event) => { this.textInput = (e.target as HTMLTextAreaElement).value; }}
+            @keydown=${(e: KeyboardEvent) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                void this.submitText();
+              }
+            }}
+            placeholder="Type a message…"
+            rows="1"
+          ></textarea>
+        </div>
         <button class="send" type="submit" ?disabled=${disabled} aria-label="Send">
           ${iconSend}
         </button>

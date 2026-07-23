@@ -155,3 +155,7 @@ vocence-plugins/
 voice_agent/
 .agents/
 skills-lock.json
+
+# Widget host runtime assets — reproducible from npm run build + node_modules
+# (onnxruntime-web wasm, @ricky0123/vad-web worklet + silero models). See serve.py.
+widget/host/

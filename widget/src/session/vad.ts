@@ -27,6 +27,18 @@
 
 import { MicVAD, utils } from '@ricky0123/vad-web';
 
+// The VAD loads three runtime assets: an AudioWorklet, the Silero ONNX
+// model, and the ONNX-Runtime WASM binaries. When the widget runs on a
+// customer origin (cross-origin from where widget.js was served), the
+// libraries' default *relative* paths resolve against about:blank and fail
+// ("Failed to resolve module specifier './ort-wasm-simd-threaded.mjs' ...
+// base URL is about:blank because import() is called from a CORS-cross-
+// origin script"). Pin both asset roots to an absolute URL on the widget
+// host (CORS-served). vad-web applies ``baseAssetPath`` (worklet + model)
+// and ``onnxWASMBasePath`` (→ ort.env.wasm.wasmPaths) for us, so we do NOT
+// import onnxruntime-web directly (that would bundle ~40 MB of wasm).
+const VAD_ASSET_BASE = 'https://widget.vocence.ai/v1/';
+
 
 export interface VadEvents {
   /** User started speaking. Fires BEFORE we have any audio — used to
@@ -82,6 +94,10 @@ export class VadController {
     const isStream = this.opts.mode === 'stream';
     try {
       this.vad = await MicVAD.new({
+        // Worklet + Silero ONNX model are fetched from here (CORS-served).
+        baseAssetPath: VAD_ASSET_BASE,
+        // ONNX-Runtime wasm binaries (vad-web sets ort.env.wasm.wasmPaths).
+        onnxWASMBasePath: VAD_ASSET_BASE,
         positiveSpeechThreshold: 0.55,
         negativeSpeechThreshold: 0.40,
         // ``@ricky0123/vad-web`` accepts millisecond-based knobs
