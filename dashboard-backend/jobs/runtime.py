@@ -9,13 +9,14 @@ import asyncio
 import logging
 
 from . import api, state
-from .registry import all_pools
+from .registry import VIDEO_DUB_CONCURRENCY, all_pools
 from .timeouts import QUEUE_TIMEOUT_SEC
 from .workers import dispatch
 from .workers.clone import process_clone
 from .workers.music import process_music
 from .workers.stt import process_stt
 from .workers.tts import process_tts
+from .workers.video_dub import process_video_dub
 from .workers.voice_design import process_voice_design
 
 
@@ -31,6 +32,7 @@ def _register_handlers() -> None:
     dispatch.register_handler("clone", process_clone)
     dispatch.register_handler("voice_design", process_voice_design)
     dispatch.register_handler("music", process_music)
+    dispatch.register_handler("video_dub", process_video_dub)
 
 
 async def _recover_orphans() -> None:
@@ -109,12 +111,17 @@ async def start_workers() -> None:
     vd_workers = max(1, pools["tts"].size, pools["clone"].size)
     for i in range(vd_workers):
         _tasks.append(asyncio.create_task(dispatch.worker_loop("voice_design", i)))
+    # video_dub also has no pool — the compute is upstream. One worker per
+    # admission slot so the queue drains as fast as the cap allows.
+    dub_workers = max(1, VIDEO_DUB_CONCURRENCY)
+    for i in range(dub_workers):
+        _tasks.append(asyncio.create_task(dispatch.worker_loop("video_dub", i)))
 
     _tasks.append(asyncio.create_task(_queue_timeout_sweeper()))
-    _log.info("[jobs] started %d worker tasks (counts per type: tts=%d stt=%d clone=%d music=%d voice_design=%d)",
+    _log.info("[jobs] started %d worker tasks (counts per type: tts=%d stt=%d clone=%d music=%d voice_design=%d video_dub=%d)",
               len(_tasks),
               pools["tts"].size, pools["stt"].size, pools["clone"].size, pools["music"].size,
-              vd_workers)
+              vd_workers, dub_workers)
 
 
 async def stop_workers() -> None:

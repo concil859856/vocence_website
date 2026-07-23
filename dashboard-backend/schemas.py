@@ -611,6 +611,17 @@ class StudioHistoryItemResponse(BaseModel):
     lyrics: str | None = None
     music_task: str | None = None
     music_metadata_json: str | None = None
+    # Video-dubbing-only fields. ``video_url`` is separate from ``audio_url``
+    # so the UI can pick a <video> element without sniffing the extension.
+    # ``collection_id`` groups the language variants produced by one dub job:
+    # one source video in, N sibling rows out. Rows sharing a collection_id
+    # render as one card with a child row per language, each keeping its own
+    # download and expiry. Always null for non-dub rows.
+    video_url: str | None = None
+    poster_url: str | None = None
+    target_language: str | None = None
+    lipsync: bool | None = None
+    collection_id: str | None = None
 
 
 class StudioHistoryResponse(BaseModel):

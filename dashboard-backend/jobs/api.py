@@ -212,6 +212,7 @@ _HUMAN_POOL = {
     "stt": "Speech-to-Text",
     "clone": "Voice cloning",
     "music": "Music generation",
+    "video_dub": "Video dubbing",
 }
 
 
@@ -226,6 +227,7 @@ def _capacity_message(task_type: str, cap: int) -> str:
         "clone": "voice cloning",
         "voice_design": "voice design",
         "music": "music",
+        "video_dub": "video dubbing",
     }.get(task_type, task_type)
     return (
         f"We're at capacity right now — Vocence is processing the maximum "
@@ -265,15 +267,22 @@ async def _charge_credits(user_id: str, task_type: str, amount: int) -> None:
         await conn.close()
 
 
-async def _refund_credits(job: state.Job) -> None:
-    """Refund a previously charged amount to the user."""
-    if job.credits_charged <= 0:
+async def _refund_credits(job: state.Job, amount: int | None = None) -> None:
+    """Refund a previously charged amount to the user.
+
+    ``amount`` defaults to the full charge. Pass a smaller value for jobs that
+    partially succeeded — video dubbing bills per language, so a 3-language
+    job that delivers 2 must refund only the third, or we hand back credits
+    for work the user received and we already paid an upstream provider for.
+    """
+    refund = job.credits_charged if amount is None else min(amount, job.credits_charged)
+    if refund <= 0:
         return
     conn = await get_connection()
     try:
         await conn.execute(
             "UPDATE auth_users SET credits = credits + ?, updated_at = datetime('now') WHERE id = ?",
-            (job.credits_charged, job.user_id),
+            (refund, job.user_id),
         )
         row = await (await conn.execute(
             "SELECT credits FROM auth_users WHERE id = ?", (job.user_id,)
@@ -283,9 +292,12 @@ async def _refund_credits(job: state.Job) -> None:
             conn,
             user_id=job.user_id,
             transaction_type=f"{job.type}_refund",
-            amount=job.credits_charged,
+            amount=refund,
             balance_after=new_balance,
-            description=f"Refund for {job.type} job {job.id} ({job.status})",
+            description=(
+                f"Refund for {job.type} job {job.id} ({job.status})"
+                + ("" if amount is None else f" — partial, {refund}/{job.credits_charged}")
+            ),
             reference_type="generation_jobs",
             reference_id=job.id,
         )

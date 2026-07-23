@@ -15,6 +15,10 @@ PHASE_TIMEOUT_STT = _int_env("LB_PHASE_TIMEOUT_STT", 90)
 PHASE_TIMEOUT_CLONE = _int_env("LB_PHASE_TIMEOUT_CLONE", 240)
 PHASE_TIMEOUT_MUSIC = _int_env("LB_PHASE_TIMEOUT_MUSIC", 600)
 PHASE_TIMEOUT_LLM = _int_env("LB_PHASE_TIMEOUT_LLM", 30)
+# Per-language wait on the upstream dubbing engine. Generous because the
+# lip-sync tier re-renders every frame — a 10-minute source can legitimately
+# take many minutes upstream.
+PHASE_TIMEOUT_VIDEO_DUB = _int_env("LB_PHASE_TIMEOUT_VIDEO_DUB", 1800)
 
 # Total budget per job type (worker wraps process_job in wait_for(this))
 # voice_design uses max(preview, speak) since the same queue handles both:
@@ -29,6 +33,9 @@ JOB_BUDGET = {
         PHASE_TIMEOUT_LLM + (2 * PHASE_TIMEOUT_TTS) + 15,       # preview branch
         PHASE_TIMEOUT_CLONE + 15,                                # speak branch
     ),
+    # Languages are dubbed sequentially, so the budget scales with the
+    # per-language cap; +120s covers download, R2 upload and DB writes.
+    "video_dub": (PHASE_TIMEOUT_VIDEO_DUB * _int_env("STUDIO_VIDEO_DUB_MAX_LANGUAGES", 3)) + 120,
 }
 
 # How long a job can sit in `pending` before we give up

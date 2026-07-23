@@ -11,6 +11,7 @@ _QUEUES: dict[str, asyncio.Queue[str]] = {
     "clone": asyncio.Queue(),
     "voice_design": asyncio.Queue(),
     "music": asyncio.Queue(),
+    "video_dub": asyncio.Queue(),
 }
 
 

@@ -1352,6 +1352,60 @@ def upload_wav_to_hippius(user_id: str, wav_bytes: bytes, subdir: str = "") -> t
     return bucket, key, expires_at
 
 
+def upload_video_to_bucket(
+    user_id: str,
+    video_bytes: bytes,
+    *,
+    subdir: str = "video-dub",
+    extension: str = "mp4",
+    content_type: str = "video/mp4",
+    retention_days: int | None = None,
+) -> tuple[str, str, datetime | None]:
+    """Upload video bytes to the active bucket. Returns (bucket, key, expires_at).
+
+    Video counterpart of :func:`upload_wav_to_hippius`, but it does not force
+    a ``.wav``/``audio/wav`` pair, so the object serves correctly to a browser
+    ``<video>`` element.
+
+    ``retention_days=None`` (the default) means **keep permanently** and
+    returns ``expires_at=None``. Dubbed video is retained for every plan tier,
+    free included: a dub is a deliverable the user paid credits to produce and
+    often the only copy of a translated asset, unlike a regenerable TTS clip.
+    Pass an integer to opt a caller back into a retention window.
+    """
+    bucket = _active_bucket()
+    client = _minio_client()
+    ensure_bucket(client, bucket)
+    safe_ext = (extension or "mp4").lstrip(".").lower() or "mp4"
+    key = f"{user_id}/{subdir}/{uuid.uuid4().hex}.{safe_ext}"
+    expires_at = (
+        None if retention_days is None
+        else datetime.now(timezone.utc) + timedelta(days=retention_days)
+    )
+    client.put_object(
+        bucket,
+        key,
+        BytesIO(video_bytes),
+        length=len(video_bytes),
+        content_type=content_type or "video/mp4",
+    )
+    return bucket, key, expires_at
+
+
+def presigned_url_for_permanent_object(bucket: str, key: str, *, public: bool = False) -> str | None:
+    """URL for an object with no retention window.
+
+    Presigned links are inherently time-boxed, so a "permanent" asset gets a
+    freshly-minted, maximum-length link on every request rather than one
+    long-lived URL. Premium accounts on R2 get the public domain instead,
+    which needs no signing at all.
+    """
+    if public and BUCKET_PROVIDER == "r2" and R2_PUBLIC_DOMAIN:
+        return f"https://{R2_PUBLIC_DOMAIN}/{key}"
+    horizon = datetime.now(timezone.utc) + timedelta(seconds=PRESIGNED_EXPIRY_SECONDS)
+    return get_presigned_url(bucket, key, horizon, public=False)
+
+
 def assert_user_owned_object(bucket: str, key: str, user_id: str, allowed_subdir: str) -> None:
     """Raise RuntimeError if the (bucket, key) pair isn't an object that:
     - lives in our active bucket

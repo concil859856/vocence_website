@@ -53,6 +53,13 @@ STT_CAP = PoolCounter("stt", STT_POOL.size)
 CLONE_CAP = PoolCounter("clone", CLONE_POOL.size)
 MUSIC_CAP = PoolCounter("music", MUSIC_POOL.size)
 
+# Video dubbing runs upstream, not on our pods, so it has no PodPool — but it
+# still needs an admission cap, because every concurrent job is real upstream
+# spend. multiplier=1 makes the env value the literal max in-flight count.
+# Set STUDIO_VIDEO_DUB_CONCURRENCY=0 to disable the feature entirely.
+VIDEO_DUB_CONCURRENCY = int(os.environ.get("STUDIO_VIDEO_DUB_CONCURRENCY", "4"))
+VIDEO_DUB_CAP = PoolCounter("video_dub", VIDEO_DUB_CONCURRENCY, multiplier=1)
+
 
 def all_counters() -> dict[str, PoolCounter]:
     return {
@@ -60,6 +67,7 @@ def all_counters() -> dict[str, PoolCounter]:
         "stt": STT_CAP,
         "clone": CLONE_CAP,
         "music": MUSIC_CAP,
+        "video_dub": VIDEO_DUB_CAP,
     }
 
 
@@ -101,6 +109,9 @@ def required_pools(job_type: str, payload: dict) -> dict[str, int]:
         return {"clone": 1, **({"stt": 1} if needs_stt else {})}
     if job_type == "music":
         return {"music": 1}
+    if job_type == "video_dub":
+        # No pod pool — the counter alone bounds concurrent upstream spend.
+        return {"video_dub": 1}
     if job_type == "voice_design":
         mode = (payload.get("mode") or "preview").lower()
         if mode == "preview":

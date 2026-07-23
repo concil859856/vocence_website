@@ -55,7 +55,26 @@ _AUDIO_MIMES = {
     "application/octet-stream",  # browsers sometimes send this for audio
 }
 
+# Video dubbing sources. Kept separate from _AUDIO_MIMES so an audio-only
+# feature can never be handed a 200 MB video by mistake.
+_VIDEO_MIMES = {
+    "video/mp4",
+    "video/quicktime",       # .mov
+    "video/webm",
+    "video/x-matroska",      # .mkv
+    "video/x-msvideo",       # .avi
+    "application/octet-stream",
+}
+
 UPLOAD_KINDS: dict[str, dict] = {
+    "video-dub-source": {
+        "subdir": "video-dub-source",
+        # Larger than the audio default: dubbing sources are real video.
+        # The per-tier engine caps (and the duration ceiling enforced in
+        # video_dub_service) are the binding limits, not this one.
+        "max_bytes": int(os.environ.get("UPLOAD_VIDEO_DUB_SOURCE_MAX_BYTES", str(200 * 1024 * 1024))),
+        "allowed_mimes": _VIDEO_MIMES,
+    },
     "music-source": {
         "subdir": "music-source",
         "max_bytes": int(os.environ.get("UPLOAD_MUSIC_SOURCE_MAX_BYTES", str(_DEFAULT_MAX_BYTES))),

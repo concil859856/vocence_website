@@ -62,6 +62,7 @@ from studio_tts_service import (
     download_object_bytes,
     fetch_chute_slug,
     get_presigned_url,
+    presigned_url_for_permanent_object,
     load_community_voice,
     synthesize_speak,
     transcribe_audio,
@@ -1575,6 +1576,15 @@ async def get_history(
             ORDER BY datetime(created_at) DESC
             LIMIT 100
         """, (user_id,))).fetchall()
+        video_dub_rows = await (await conn.execute("""
+            SELECT id, source_filename, source_language, target_language, tier, job_id,
+                   duration_sec, video_s3_bucket, video_s3_key,
+                   poster_s3_bucket, poster_s3_key, expires_at, created_at
+            FROM studio_video_dub_history
+            WHERE user_id = ?
+            ORDER BY datetime(created_at) DESC
+            LIMIT 100
+        """, (user_id,))).fetchall()
     finally:
         await conn.close()
 
@@ -1723,6 +1733,51 @@ async def get_history(
                 created_at=str(r["created_at"] or ""),
                 expired=expired,
                 source_audio_filename=r["source_audio_filename"] or "",
+            )
+        )
+    for r in video_dub_rows:
+        # Dubbed video is retained permanently for every plan tier, so rows
+        # written since that change carry no expires_at. Older rows may still
+        # have one; honour it rather than resurrecting a swept object.
+        expires_at = datetime.fromisoformat(str(r["expires_at"]).replace("Z", "+00:00")) if r["expires_at"] else None
+        expired = expires_at is not None and expires_at <= now if not is_premium else False
+        video_url = poster_url = None
+        if not expired and r["video_s3_bucket"] and r["video_s3_key"]:
+            video_url = (
+                presigned_url_for_permanent_object(r["video_s3_bucket"], r["video_s3_key"], public=is_premium)
+                if expires_at is None
+                else get_presigned_url(r["video_s3_bucket"], r["video_s3_key"], expires_at, public=is_premium)
+            )
+        if not expired and r["poster_s3_bucket"] and r["poster_s3_key"]:
+            poster_url = (
+                presigned_url_for_permanent_object(r["poster_s3_bucket"], r["poster_s3_key"], public=is_premium)
+                if expires_at is None
+                else get_presigned_url(r["poster_s3_bucket"], r["poster_s3_key"], expires_at, public=is_premium)
+            )
+        items.append(
+            StudioHistoryItemResponse(
+                id=int(r["id"]),
+                entry_type="video_dub",
+                miner_hotkey="",
+                model_name="Video Dubbing",
+                display_name="Video Dubbing",
+                prompt_text=None,
+                style_instruction="Dubbing",
+                # Left null: this is a video, and the shared player treats a
+                # non-null audio_url as an audio track it can stream.
+                audio_url=None,
+                video_url=video_url,
+                poster_url=poster_url,
+                expires_at=expires_at.isoformat() if expires_at else "",
+                created_at=str(r["created_at"] or ""),
+                expired=expired,
+                source_audio_filename=r["source_filename"] or "",
+                source_language=r["source_language"] or None,
+                target_language=r["target_language"] or None,
+                duration_seconds=float(r["duration_sec"] or 0.0),
+                # Surfaced as a boolean; the internal tier name stays server-side.
+                lipsync=(r["tier"] == "lipsync"),
+                collection_id=r["job_id"] or None,
             )
         )
     items.sort(key=lambda x: x.created_at, reverse=True)

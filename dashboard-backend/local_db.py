@@ -332,6 +332,42 @@ SCHEMA_SQL = [
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS studio_video_dub_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        source_filename TEXT NOT NULL DEFAULT '',
+        source_language TEXT NOT NULL DEFAULT 'auto',
+        target_language TEXT NOT NULL,
+        tier TEXT NOT NULL DEFAULT 'standard',
+        -- Groups the language variants produced by one dub job into a
+        -- "collection": one source video in, N sibling rows out. Indexed
+        -- because the Library groups on it. Nullable so a row is never
+        -- orphaned if the job row is later pruned — the asset outlives its job.
+        job_id TEXT,
+        duration_sec REAL NOT NULL DEFAULT 0,
+        video_s3_bucket TEXT NOT NULL,
+        video_s3_key TEXT NOT NULL,
+        -- One extracted frame, so the library renders as cards rather than
+        -- a list of filenames. Nullable: ffmpeg may be unavailable, and a
+        -- missing poster degrades the card without failing the dub.
+        poster_s3_bucket TEXT,
+        poster_s3_key TEXT,
+        expires_at TEXT NOT NULL,
+        credits_used INTEGER NOT NULL DEFAULT 0,
+        latency_ms INTEGER,
+        status TEXT NOT NULL DEFAULT 'completed',
+        error_message TEXT,
+        -- Rights attestation captured at upload. The upstream lip-sync engine
+        -- puts the likeness-consent obligation on us as the API caller, so we
+        -- record who attested and when for every dubbed clip.
+        consent_attested INTEGER NOT NULL DEFAULT 0,
+        consent_attested_at TEXT,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS studio_noise_remover_history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id TEXT NOT NULL,
@@ -879,6 +915,9 @@ INDEX_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_playbook_votes_user ON playbook_votes (user_id)",
     "CREATE INDEX IF NOT EXISTS idx_voice_likes_voice ON voice_likes (voice_id)",
     "CREATE INDEX IF NOT EXISTS idx_voice_likes_user ON voice_likes (user_id)",
+    "CREATE INDEX IF NOT EXISTS idx_studio_video_dub_history_user ON studio_video_dub_history (user_id, created_at DESC)",
+    # Collection lookup: fetch every language variant of one dub job.
+    "CREATE INDEX IF NOT EXISTS idx_studio_video_dub_history_job ON studio_video_dub_history (job_id)",
     "CREATE INDEX IF NOT EXISTS idx_generation_jobs_user_created ON generation_jobs (user_id, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_generation_jobs_status ON generation_jobs (status, created_at)",
     "CREATE INDEX IF NOT EXISTS idx_generation_jobs_type_status ON generation_jobs (type, status, created_at)",
@@ -1299,6 +1338,27 @@ async def ensure_tables() -> None:
         # Either triggers a full rebuild. Both paths converge on
         # the same end state, so the recovery is the same.
         await _ensure_transcript_fts(conn)
+
+        # Added after the table shipped — existing rows carry the job id in
+        # metadata_json, so backfill from there rather than leaving them
+        # ungroupable.
+        await _ensure_column(conn, "studio_video_dub_history", "job_id", "job_id TEXT")
+        await _ensure_column(conn, "studio_video_dub_history", "poster_s3_bucket", "poster_s3_bucket TEXT")
+        await _ensure_column(conn, "studio_video_dub_history", "poster_s3_key", "poster_s3_key TEXT")
+        try:
+            await conn.execute(
+                """
+                UPDATE studio_video_dub_history
+                SET job_id = json_extract(metadata_json, '$.job_id')
+                WHERE job_id IS NULL
+                  AND json_valid(metadata_json)
+                  AND json_extract(metadata_json, '$.job_id') IS NOT NULL
+                """
+            )
+        except Exception:
+            # json1 unavailable on this SQLite build — new rows still populate
+            # the column directly, only pre-existing ones stay ungrouped.
+            pass
 
         await _ensure_column(conn, "auth_users", "plan_code", "plan_code TEXT")
         await _ensure_column(conn, "auth_users", "plan_status", "plan_status TEXT")
