@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Link, useLocation, useSearchParams } from 'react-router-dom';
 import { Menu, X } from 'lucide-react';
+import { toast } from 'sonner';
 import { useAuth } from '../contexts/AuthContext';
 import { AuthModal } from './AuthModal';
 import { UserMenu } from './UserMenu';
@@ -12,8 +13,19 @@ export function Navbar() {
   const [searchParams] = useSearchParams();
   const [isScrolled, setIsScrolled] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
-  const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
+  // Seed the auth modal from URL landing intent, read once at mount. A
+  // referral link (?ref=) means the visitor wants to join → signup; ?login=1
+  // (CLI-authorize / password-reset redirects) → login. Doing this as a lazy
+  // initializer rather than an effect avoids a synchronous setState-in-effect
+  // (and the cascading render it causes). The modal is dismissible, so these
+  // stay as state — later triggers (manual buttons, session-expired) drive
+  // them imperatively.
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(
+    () => !!searchParams.get('ref') || searchParams.get('login') === '1',
+  );
+  const [authMode, setAuthMode] = useState<'login' | 'signup'>(
+    () => (searchParams.get('ref') ? 'signup' : 'login'),
+  );
   const { user, isAuthenticated } = useAuth();
   const isAdmin = isAuthenticated && !!ADMIN_EMAIL && user?.email === ADMIN_EMAIL;
 
@@ -25,20 +37,20 @@ export function Navbar() {
     return () => window.removeEventListener('scroll', handleScroll);
   }, []);
 
-  // Auto-open the auth modal from URL intent — but never for an already
-  // signed-in user. A referral link (?ref=) means the visitor wants to join,
-  // so default to signup; ?login=1 (CLI-authorize / password-reset redirects)
-  // opens login. The referral code itself is captured separately in App.tsx.
+  // When a session expires mid-use, the API layer fires `session-expired`.
+  // AuthContext has already torn down the client session by the time this
+  // runs; here we surface it and open the sign-in modal so the user can
+  // continue instead of staring at cryptic "invalid token" errors.
   useEffect(() => {
-    if (isAuthenticated) return;
-    if (searchParams.get('ref')) {
-      setAuthMode('signup');
-      setIsAuthModalOpen(true);
-    } else if (searchParams.get('login') === '1') {
+    const onExpired = (e: Event) => {
+      const detail = (e as CustomEvent<string>).detail;
+      toast.error(detail || 'Your session expired. Please sign in again.');
       setAuthMode('login');
       setIsAuthModalOpen(true);
-    }
-  }, [searchParams, isAuthenticated]);
+    };
+    window.addEventListener('session-expired', onExpired);
+    return () => window.removeEventListener('session-expired', onExpired);
+  }, []);
 
   const navLinks = [
     { path: '/', label: 'Overview' },
@@ -158,8 +170,10 @@ export function Navbar() {
       )}
 
       {/* Auth Modal */}
+      {/* Never present sign-in to an already authenticated user — covers a
+          stale ?ref= / ?login=1 link, without a close-on-auth effect. */}
       <AuthModal
-        isOpen={isAuthModalOpen}
+        isOpen={isAuthModalOpen && !isAuthenticated}
         onClose={() => setIsAuthModalOpen(false)}
         initialMode={authMode}
       />

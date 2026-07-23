@@ -66,11 +66,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setUser(userData);
           localStorage.setItem('vocence_user', JSON.stringify(userData));
         } catch (apiError) {
-          // No valid session, either token expired / cleared or
-          // server unreachable. Fall back to whatever local user
-          // we've cached (purely for offline-display purposes — they
-          // can't make authed calls without a session anyway).
-          if (storedUser) {
+          // Distinguish a genuinely dead session from a transient failure.
+          // A 401 means the cookie is expired/invalid: the user is NOT logged
+          // in, so restoring the cached user would leave the app in the broken
+          // "looks logged in, every call 401s" state. Clear it instead — the
+          // UI then shows a logged-out state and the next authed action
+          // prompts sign-in. Any other failure (offline, 5xx) keeps the cached
+          // user for offline display, since they may still have a valid
+          // session once connectivity returns.
+          const status = (apiError as { status?: number })?.status;
+          if (status === 401) {
+            localStorage.removeItem('vocence_user');
+            localStorage.removeItem('vocence_token');
+          } else if (storedUser) {
             try {
               setUser(JSON.parse(storedUser));
             } catch {
@@ -179,6 +187,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } finally {
       setIsLoading(false);
     }
+  }, []);
+
+  // Any authed API call that comes back 401 means the session died out from
+  // under us (30-day expiry, cleared cookie, password change). The API layer
+  // dispatches a global `session-expired` event; here we just tear down the
+  // client session so the app stops presenting a logged-in UI. Navbar handles
+  // opening the sign-in modal, so this can't create a dependency cycle.
+  useEffect(() => {
+    const onExpired = () => {
+      setUser(null);
+      localStorage.removeItem('vocence_user');
+      localStorage.removeItem('vocence_token');
+    };
+    window.addEventListener('session-expired', onExpired);
+    return () => window.removeEventListener('session-expired', onExpired);
   }, []);
 
   const logout = useCallback(() => {
