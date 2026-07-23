@@ -24,3 +24,10 @@ cryptography>=42.0.0
 # most deployments — but local_db is imported eagerly and tries to
 # resolve the backend driver upfront.
 asyncpg>=0.29.0
+
+# OKX MCP merchant surface (app/okx). jsonschema validates tool arguments and
+# is always required. The x402 payment SDK is OPTIONAL — install it only on the
+# deployment that lists on the OKX AI Marketplace; without it the /okx routes
+# still serve the discovery manifest but paid tool calls return 503.
+jsonschema>=3.2.0
+# okxweb3-app-x402[fastapi,evm]>=0.1.1   # uncomment on the OKX-listed deployment (extras REQUIRED)

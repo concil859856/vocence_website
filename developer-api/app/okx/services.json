@@ -1,0 +1,51 @@
+{
+  "asp_identity": {
+    "name": "Vocence",
+    "role": "asp",
+    "description": "Decentralized voice AI: speech, transcription, cloning, voice design, dubbing, denoise."
+  },
+  "services": [
+    {
+      "name": "Text to Speech",
+      "description": "Synthesize natural speech from text using a built-in Vocence voice. Returns an audio URL.",
+      "type": "A2MCP",
+      "fee": "0.02",
+      "endpoint": "https://api.vocence.ai/okx/tools/vocence_text_to_speech"
+    },
+    {
+      "name": "Speech to Text",
+      "description": "Transcribe spoken audio to text. Accepts an audio URL.",
+      "type": "A2MCP",
+      "fee": "0.02",
+      "endpoint": "https://api.vocence.ai/okx/tools/vocence_speech_to_text"
+    },
+    {
+      "name": "Voice Design",
+      "description": "Generate a brand-new voice from a text description and speak a line in it. Returns a preview audio URL.",
+      "type": "A2MCP",
+      "fee": "0.10",
+      "endpoint": "https://api.vocence.ai/okx/tools/vocence_voice_design"
+    },
+    {
+      "name": "Voice Cloning",
+      "description": "Clone the voice from a short reference clip and make it say new text. You must hold the rights/consent for the reference voice.",
+      "type": "A2MCP",
+      "fee": "0.05",
+      "endpoint": "https://api.vocence.ai/okx/tools/vocence_voice_clone"
+    },
+    {
+      "name": "Noise Remover",
+      "description": "Remove background noise from audio while preserving speech. Accepts an audio URL.",
+      "type": "A2MCP",
+      "fee": "0.02",
+      "endpoint": "https://api.vocence.ai/okx/tools/vocence_noise_remover"
+    },
+    {
+      "name": "Video Dubbing",
+      "description": "Translate a video into another language in the original speaker's voice, optionally lip-synced. Metered: $0.60 per minute of source video per language ($2.40/min with lip-sync); the listed fee is the 1-minute base rate and the exact amount is quoted in each x402 challenge. Async: the paid call returns a job_id polled for free at GET /okx/tools/vocence_video_dub/jobs/{job_id}.",
+      "type": "A2MCP",
+      "fee": "0.60",
+      "endpoint": "https://api.vocence.ai/okx/tools/vocence_video_dub"
+    }
+  ]
+}
