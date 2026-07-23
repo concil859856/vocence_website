@@ -404,7 +404,7 @@ Correct order: **deploy → `agent create` → agent ID → send to OKX for huma
 
 | # | Blocker | Notes |
 |---|---|---|
-| 1 | **Python 3.10.12 on the server** | SDK requires **≥3.11**. Hard stop — it cannot install. |
+| 1 | developer-api runs **Python 3.10.12** | SDK requires **≥3.11**. **Not a hard stop** — `/usr/bin/python3.12` is already on the prod box and `dashboard-backend` already runs a `venv_3.12`. Build a matching venv for developer-api. See `guide.md` §B2.1. |
 | 2 | Deploy `/okx` to api.vocence.ai | `pip install "okxweb3-app-x402[fastapi,evm]"` (extras are required) |
 | 3 | OKX dev-portal credentials | API key / secret / passphrase. Confirmed required for settlement. |
 | 4 | Testnet settlement-token address | Ask OKX. Needed for `OKX_ASSET_ADDRESS`. |
