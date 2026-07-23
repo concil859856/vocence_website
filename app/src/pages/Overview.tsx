@@ -440,8 +440,8 @@ export function Overview() {
               },
               {
                 icon: MessageSquare,
-                title: 'STT, Cloning & Music',
-                description: 'Transcribe speech, clone voices, design custom voices, and generate music. Full voice and audio stack.',
+                title: 'STT, Cloning & Dubbing',
+                description: 'Transcribe speech, clone and design voices, generate music, and dub videos into 28 languages — lip-sync included.',
                 image: '/stt_sts_cloning_image.png',
               },
               {
@@ -808,6 +808,78 @@ export function Overview() {
                 </div>
               </div>
             ))}
+          </div>
+        </div>
+      </section>
+
+      {/* Video Dubbing Section */}
+      <section className="py-24 px-6 lg:px-8 border-t border-white/5">
+        <div className="max-w-7xl mx-auto">
+          <div className="grid lg:grid-cols-2 gap-12 items-center">
+            <div>
+              <span className="label-mono mb-4 block">New — Video Dubbing</span>
+              <h2 className="text-3xl md:text-4xl font-semibold mb-4">
+                Speak Every Language. Keep Your Voice.
+              </h2>
+              <p className="text-[#A7B0B7] mb-6 leading-relaxed">
+                Upload a video and get it back speaking Japanese, Spanish, or 26 other
+                languages — in the original speaker's own voice. Turn on lip-sync and the
+                mouth moves with the new words.
+              </p>
+              <ul className="space-y-3 mb-8">
+                {[
+                  'Voice-preserving translation into 28 languages, up to 3 per job',
+                  'Optional lip-sync that re-renders the mouth to match the dub',
+                  'Billed per second of video — Studio and API, dubs stored in your Library',
+                ].map((item, i) => (
+                  <li key={i} className="flex items-start gap-3 text-sm text-[#A7B0B7]">
+                    <span className="mt-1 w-1.5 h-1.5 rounded-full bg-[#DFFF00] shrink-0" />
+                    {item}
+                  </li>
+                ))}
+              </ul>
+              <div className="flex flex-wrap gap-4">
+                <Link to="/studio/dubbing" className="btn-primary">
+                  Try Video Dubbing
+                </Link>
+                <Link to="/docs/guide-video-dub" className="btn-outline">
+                  Read the Guide
+                </Link>
+              </div>
+            </div>
+            <div className="relative rounded-2xl border border-white/10 bg-white/[0.02] p-8 overflow-hidden">
+              <div
+                className="absolute inset-0 opacity-25"
+                style={{ backgroundImage: 'url(/usecase_dubbing.jpg)', backgroundSize: 'cover', backgroundPosition: 'center' }}
+                aria-hidden
+              />
+              <div className="absolute inset-0 bg-gradient-to-t from-[#07080A] via-[#07080A]/70 to-[#07080A]/30" aria-hidden />
+              <div className="relative">
+                <div className="text-sm text-[#A7B0B7] mb-4">One upload, many voices of you</div>
+                <div className="flex flex-wrap gap-2 mb-8">
+                  {['Japanese', 'Spanish', 'French', 'German', 'Korean', 'Hindi', 'Portuguese', 'Arabic', 'Norwegian', 'Hungarian', '+18 more'].map((lang) => (
+                    <span
+                      key={lang}
+                      className="px-3 py-1.5 rounded-full border border-white/10 bg-white/[0.04] text-xs text-white/80"
+                    >
+                      {lang}
+                    </span>
+                  ))}
+                </div>
+                <div className="space-y-3">
+                  {[
+                    { label: 'Original', width: 'w-full', accent: false },
+                    { label: 'Dubbed · same voice', width: 'w-full', accent: true },
+                    { label: 'Lip-synced', width: 'w-3/4', accent: true },
+                  ].map((row) => (
+                    <div key={row.label} className="flex items-center gap-3">
+                      <span className="text-xs text-[#A7B0B7] w-32 shrink-0">{row.label}</span>
+                      <div className={`h-2 rounded-full ${row.width} ${row.accent ? 'bg-[#DFFF00]/50' : 'bg-white/15'}`} />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </section>

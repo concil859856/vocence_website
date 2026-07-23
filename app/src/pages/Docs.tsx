@@ -57,7 +57,7 @@ import {
   CREDIT_VOICE_DESIGN_PREVIEW,
 } from '../studio/creditCosts';
 
-type DocSection = 'getting-started' | 'core-concepts' | 'architecture' | 'api' | 'pricing' | 'faq' | 'troubleshooting' | 'guide-tts' | 'guide-cloning' | 'guide-stt' | 'guide-music' | 'guide-dubbing' | 'guide-agents' | 'cookbook' | 'sdk-python' | 'sdk-cli' | 'sdk-agents' | 'sdk-webhooks' | 'sdk-plugins' | 'miner' | 'validator';
+type DocSection = 'getting-started' | 'core-concepts' | 'architecture' | 'api' | 'pricing' | 'faq' | 'troubleshooting' | 'guide-tts' | 'guide-cloning' | 'guide-stt' | 'guide-music' | 'guide-dubbing' | 'guide-video-dub' | 'guide-agents' | 'cookbook' | 'sdk-python' | 'sdk-cli' | 'sdk-agents' | 'sdk-webhooks' | 'sdk-plugins' | 'miner' | 'validator';
 
 interface DocLink {
   id: DocSection;
@@ -84,6 +84,7 @@ const docLinks: DocLink[] = [
   { id: 'guide-stt', label: 'Speech-to-Text', category: 'Studio' },
   { id: 'guide-music', label: 'Music', category: 'Studio' },
   { id: 'guide-dubbing', label: 'Noise Remover', category: 'Studio' },
+  { id: 'guide-video-dub', label: 'Video Dubbing', category: 'Studio' },
   // API, everything a developer needs to integrate.
   // API + Cookbook are admin-only until public launch.
   { id: 'api', label: 'API Reference', category: 'API', adminOnly: true },
@@ -114,7 +115,7 @@ const ADMIN_ONLY_SECTIONS: Set<DocSection> = new Set(
   docLinks.filter((l) => l.adminOnly).map((l) => l.id),
 );
 
-const DOC_SECTIONS: DocSection[] = ['getting-started', 'core-concepts', 'architecture', 'guide-agents', 'guide-tts', 'guide-cloning', 'guide-stt', 'guide-music', 'guide-dubbing', 'cookbook', 'api', 'sdk-python', 'sdk-cli', 'sdk-agents', 'sdk-webhooks', 'sdk-plugins', 'pricing', 'miner', 'validator', 'faq', 'troubleshooting'];
+const DOC_SECTIONS: DocSection[] = ['getting-started', 'core-concepts', 'architecture', 'guide-agents', 'guide-tts', 'guide-cloning', 'guide-stt', 'guide-music', 'guide-dubbing', 'guide-video-dub', 'cookbook', 'api', 'sdk-python', 'sdk-cli', 'sdk-agents', 'sdk-webhooks', 'sdk-plugins', 'pricing', 'miner', 'validator', 'faq', 'troubleshooting'];
 
 /**
  * Per-section SEO meta. Picked up by ``usePageMeta`` so Googlebot (and
@@ -161,6 +162,10 @@ const SECTION_META: Record<DocSection, { title: string; description: string }> =
   'guide-dubbing': {
     title: 'Noise Remover Guide — Vocence Studio',
     description: 'Strip background noise from voice recordings while preserving speech fidelity. Up to 5 minutes / 50 MB per request.',
+  },
+  'guide-video-dub': {
+    title: 'Video Dubbing Guide — Vocence Studio',
+    description: 'Translate a video into another language in the original speaker\'s voice, with optional lip-sync. $0.50/min standard, $2.00/min lip-synced, per language.',
   },
   'cookbook': {
     title: 'API Cookbook — Vocence Docs',
@@ -843,6 +848,16 @@ export function Docs() {
                 <td className="px-4 py-3">WAV / MP3 / M4A / OGG / FLAC / WebM / AAC</td>
               </tr>
               <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">POST /v1/uploads/presign</code></td>
+                <td className="px-4 py-3">200 MB video</td>
+                <td className="px-4 py-3">returns a direct-to-storage PUT URL + <code className="text-white/70">bucket/key</code> for /v1/video/dub</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">POST /v1/video/dub</code></td>
+                <td className="px-4 py-3">10 min · 200 MB (100 MB lip-sync) · ≤3 languages</td>
+                <td className="px-4 py-3">async: poll <code className="text-white/70">GET /v1/video/dub/{`{id}`}</code>; requires consent_attested</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
                 <td className="px-4 py-3"><code className="text-white/90">POST /v1/voice/design/save</code></td>
                 <td className="px-4 py-3">display_name: 20 chars</td>
                 <td className="px-4 py-3">requires preview_token from previous call</td>
@@ -1196,6 +1211,16 @@ export function Docs() {
                 <td className="px-4 py-3"><code className="text-white/90">POST /v1/audio/noise-remover</code></td>
                 <td className="px-4 py-3">1 credit / min · 5 min / 50 MB max</td>
                 <td className="px-4 py-3">$0.0025 / min</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">POST /v1/video/dub</code></td>
+                <td className="px-4 py-3">200 credits / min · per language · per-second billing</td>
+                <td className="px-4 py-3">$0.50 / min</td>
+              </tr>
+              <tr className="border-t border-white/[0.06]">
+                <td className="px-4 py-3"><code className="text-white/90">POST /v1/video/dub</code> <span className="text-white/50">(lip-sync)</span></td>
+                <td className="px-4 py-3">800 credits / min · per language · per-second billing</td>
+                <td className="px-4 py-3">$2.00 / min</td>
               </tr>
               <tr className="border-t border-white/[0.06]">
                 <td className="px-4 py-3"><code className="text-white/90">POST /v1/voice/design/preview</code></td>
@@ -3211,6 +3236,153 @@ X-Vocence-Signature: v1=BASE64(HMAC-SHA256(secret, "v1.{ts}.{body}"))
     </div>
   );
 
+  const renderGuideVideoDub = () => (
+    <div className="space-y-8">
+      <div className="border-b border-white/[0.06] pb-6">
+        <div className="flex items-center gap-1.5 text-xs text-zinc-500 mb-3">
+          <span>Docs</span>
+          <span>/</span>
+          <span>Studio</span>
+          <span>/</span>
+          <span className="text-zinc-300">Video Dubbing</span>
+        </div>
+        <h1 className="text-3xl font-bold mb-2">Video Dubbing</h1>
+        <p className="text-zinc-400 leading-relaxed">
+          Translate a video into another language while keeping the original speaker&apos;s voice.
+          Optionally re-render the speaker&apos;s mouth so it matches the new audio. Dubbed videos
+          are kept permanently.
+        </p>
+      </div>
+
+      <section>
+        <h2 className="text-lg font-semibold mb-3">How it works</h2>
+        <ol className="space-y-3 text-sm text-zinc-400 leading-relaxed list-decimal list-inside">
+          <li>Open <Link to="/studio/dubbing" className="text-[#DFFF00] hover:underline">Studio → Video Dubbing</Link>.</li>
+          <li>Upload a video (MP4, MOV, WebM, MKV or AVI).</li>
+          <li>Pick up to 3 target languages. Each language is dubbed and billed separately.</li>
+          <li>Optionally enable <span className="text-zinc-200 font-medium">Match lip movements</span> to re-render the mouth.</li>
+          <li>Confirm you hold the rights to everyone in the video, then start the dub.</li>
+          <li>The result appears in your library when ready, playable in-browser and downloadable.</li>
+        </ol>
+      </section>
+
+      <section>
+        <h2 className="text-lg font-semibold mb-3">Two quality tiers</h2>
+        <div className="card-vocence p-5">
+          <ul className="space-y-2 text-sm text-zinc-400">
+            <li>• <span className="text-zinc-200">Standard</span> — translated audio in the speaker&apos;s voice, original video untouched. <span className="text-zinc-200">200 credits / min</span> ($0.50), per language.</li>
+            <li>• <span className="text-zinc-200">Lip-sync</span> — the above, plus the mouth re-rendered to match the dub. <span className="text-zinc-200">800 credits / min</span> ($2.00), per language.</li>
+          </ul>
+          <p className="mt-3 text-xs text-zinc-500">
+            Billed per second, so a 30-second clip costs half of a 60-second one. Charged per output
+            language: one video into three languages costs three times a single language.
+          </p>
+        </div>
+      </section>
+
+      <section>
+        <h2 className="text-lg font-semibold mb-3">Tips for best results</h2>
+        <ul className="space-y-2 text-sm text-zinc-400 leading-relaxed">
+          <li>• Lip-sync works best on close-up, front-facing shots with a clearly visible mouth.</li>
+          <li>• One speaker, clean audio, and minimal head-turning give the strongest result.</li>
+          <li>• For voiceover, narration, or off-camera speech, standard dubbing is enough — skip lip-sync.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2 className="text-lg font-semibold mb-3">Limits</h2>
+        <div className="card-vocence p-5">
+          <ul className="space-y-1 text-sm text-zinc-400">
+            <li>• Max duration: <span className="text-zinc-200">10 minutes</span></li>
+            <li>• Max file size: <span className="text-zinc-200">200 MB</span> (standard) · <span className="text-zinc-200">100 MB</span> (lip-sync)</li>
+            <li>• Lip-sync resolution: <span className="text-zinc-200">up to 2048px</span> on the longest side</li>
+            <li>• Languages per job: <span className="text-zinc-200">up to 3</span></li>
+            <li>• Free plan: lip-sync limited to <span className="text-zinc-200">10 seconds</span>; standard dubbing is uncapped</li>
+          </ul>
+        </div>
+      </section>
+
+      <section>
+        <h2 className="text-lg font-semibold mb-3">Use the API</h2>
+        <p className="text-sm text-zinc-400 leading-relaxed mb-4">
+          Dubbing is asynchronous: upload the source straight to storage with a presigned URL,
+          submit the job, then poll — or pass a <code className="rounded bg-white/[0.06] px-1 text-zinc-300">callback_url</code>{' '}
+          and we POST you the result when it finishes.
+        </p>
+        <CodeBlock language="bash" code={`# 1. Get an upload slot (direct-to-storage, no proxy hop)
+curl -s https://api.vocence.ai/v1/uploads/presign \\
+  -H "Authorization: Bearer $VOCENCE_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"kind":"video-dub-source","filename":"clip.mp4","content_type":"video/mp4","size":1700000}'
+# → {"put_url":"https://...","bucket":"...","key":"...", ...}
+
+# 2. Upload the raw bytes
+curl -s -X PUT "$PUT_URL" -H "Content-Type: video/mp4" --data-binary @clip.mp4
+
+# 3. Submit the dub (up to 3 languages; add "lipsync": true for lip-sync)
+curl -s https://api.vocence.ai/v1/video/dub \\
+  -H "Authorization: Bearer $VOCENCE_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "src_bucket": "'$BUCKET'", "src_key": "'$KEY'",
+    "duration_sec": 42.0, "target_languages": ["ja","es"],
+    "consent_attested": true,
+    "callback_url": "https://your.app/hooks/vocence",
+    "callback_secret": "whsec_your_secret"
+  }'
+# → {"job_id":"...","credits_charged":280, ...}
+
+# 4. Poll until completed (or skip this — the callback tells you)
+curl -s https://api.vocence.ai/v1/video/dub/$JOB_ID \\
+  -H "Authorization: Bearer $VOCENCE_API_KEY"`} />
+        <p className="text-sm text-zinc-400 leading-relaxed my-4">
+          Or the same flow in Python:
+        </p>
+        <CodeBlock language="python" code={`import requests, time
+
+API = "https://api.vocence.ai"
+H = {"Authorization": f"Bearer {KEY}"}
+
+# 1–2. Presign + upload
+slot = requests.post(f"{API}/v1/uploads/presign", headers=H, json={
+    "kind": "video-dub-source", "filename": "clip.mp4",
+    "content_type": "video/mp4", "size": len(video_bytes),
+}).json()
+requests.put(slot["put_url"], data=video_bytes,
+             headers={"Content-Type": "video/mp4"})
+
+# 3. Submit
+job = requests.post(f"{API}/v1/video/dub", headers=H, json={
+    "src_bucket": slot["bucket"], "src_key": slot["key"],
+    "duration_sec": 42.0, "target_languages": ["ja", "es"],
+    "lipsync": False, "consent_attested": True,
+}).json()
+
+# 4. Poll (a completion webhook via callback_url works too)
+while True:
+    j = requests.get(f"{API}/v1/video/dub/{job['job_id']}", headers=H).json()
+    if j["status"] in ("completed", "failed", "timeout"):
+        break
+    time.sleep(5)
+for r in (j.get("result") or {}).get("results", []):
+    print(r)`} />
+        <div className="card-vocence p-5 mt-4">
+          <p className="text-sm text-zinc-400 leading-relaxed">
+            <span className="text-zinc-200">Completion webhooks.</span> When you pass{' '}
+            <code className="rounded bg-white/[0.06] px-1 text-zinc-300">callback_url</code>, we POST the terminal
+            status once (events <code className="rounded bg-white/[0.06] px-1 text-zinc-300">video_dub.completed</code> /{' '}
+            <code className="rounded bg-white/[0.06] px-1 text-zinc-300">video_dub.failed</code>) with a few retries.
+            If you also pass <code className="rounded bg-white/[0.06] px-1 text-zinc-300">callback_secret</code>, the body is
+            HMAC-signed in the same <code className="rounded bg-white/[0.06] px-1 text-zinc-300">X-Vocence-Signature</code> format
+            as agent webhooks, so <code className="rounded bg-white/[0.06] px-1 text-zinc-300">vocence.webhooks.verify()</code>{' '}
+            works unchanged. The URL must be public HTTPS. Delivery is best-effort — treat the poll endpoint as the
+            source of truth.
+          </p>
+        </div>
+      </section>
+    </div>
+  );
+
   const renderSdkPython = () => (
     <div className="space-y-8">
       <nav className="flex items-center gap-1.5 text-xs text-zinc-500">
@@ -4722,6 +4894,8 @@ print(agent.id, "—", agent.name)
         return renderGuideMusic();
       case 'guide-dubbing':
         return renderGuideDubbing();
+      case 'guide-video-dub':
+        return renderGuideVideoDub();
       case 'cookbook':
         return renderCookbook();
       case 'api':

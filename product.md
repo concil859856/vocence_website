@@ -86,6 +86,7 @@ The left sidebar lists every feature:
 | **Text-to-Speech** | Turn text into speech using a chosen style. |
 | **Speech-to-Text** | Transcribe an audio file or recording. |
 | **Voice Cloning** | Reproduce a reference voice saying new text. |
+| **Video Dubbing** | Translate a video into another language, optionally lip-synced. |
 | **Text-to-Music** | Generate music from a prompt. |
 | **My Voices** | Your saved custom voices. |
 | **Playbooks** | Personal or public collections of audio tracks. |
@@ -110,7 +111,7 @@ Design a brand-new voice by describing it in plain English (e.g., *"warm female 
 4. Pick the variant you prefer and **save** it to your library.
 5. Saved voices appear in **My Voices** and can be used to generate new speech anytime.
 
-**Cost:** 120 credits per A/B preview. Saving the chosen voice has no extra fee. Generating speech from a saved "My voice" later: 25 credits.
+**Cost:** 70 credits per A/B preview. Saving the chosen voice has no extra fee. Generating speech from a saved "My voice" later: 30 credits.
 
 **Limits:**
 - **Normal plan:** up to 5 saved custom voices.
@@ -127,7 +128,7 @@ Convert any text up to **2,000 characters** into spoken audio.
 3. Type your text.
 4. Click generate. Audio plays in the result panel and is saved to History.
 
-**Cost:** 25 credits per generation.
+**Cost:** 30 credits per generation.
 
 **Limits:** Maximum 2,000 characters of input text per request.
 
@@ -142,7 +143,7 @@ Transcribe a spoken audio clip into written text.
 3. Optionally choose the source language.
 4. Click transcribe. The text appears in the result panel.
 
-**Cost:** 20 credits per generation.
+**Cost:** 15 credits per generation.
 
 ### 4. Voice Cloning
 
@@ -156,9 +157,30 @@ Reproduce the voice from a reference clip saying new text.
 4. Type the **target text** — what you want the cloned voice to say.
 5. Click generate. The result is a WAV file in the new voice.
 
-**Cost:** 50 credits per generation.
+**Cost:** 40 credits per generation.
 
 **Important:** You may only clone voices for which you have permission — your own voice, voices you have explicit consent from, or voices clearly licensed for synthesis. See [Acceptable Use](#acceptable-use--community-guidelines).
+
+### 4b. Video Dubbing
+
+Translate a video into another language while keeping the original speaker's voice — optionally re-rendering their mouth so it matches the new audio.
+
+**How it works:**
+
+1. Open [Studio → Video Dubbing](https://vocence.ai/studio/dubbing).
+2. Upload a video (MP4, MOV, WebM, MKV or AVI).
+3. Choose up to 3 target languages. Each is dubbed and billed separately.
+4. Optionally enable **Match lip movements** to re-render the speaker's mouth.
+5. Confirm you hold the rights to everyone in the video, then start the dub.
+6. The result lands in your library — playable in-browser and downloadable. Dubbed videos are kept permanently.
+
+**Two tiers:**
+- **Standard** — translated audio in the speaker's voice, original video untouched.
+- **Lip-sync** — the above, plus the mouth re-rendered to match the dub. Best for close-up, front-facing shots.
+
+**Cost:** Billed per second, per output language. Standard: **200 credits/min** (~$0.50). Lip-sync: **800 credits/min** (~$2.00).
+
+**Limits:** Up to 10 minutes and 200 MB (100 MB for lip-sync); lip-sync up to 2048px on the longest side; up to 3 languages per job. On the free plan, lip-sync is limited to 10-second clips — standard dubbing is uncapped.
 
 ### 5. Text-to-Music
 
@@ -180,7 +202,7 @@ Generate original music from a prompt.
 - **Edit** — modify a section.
 - **Extend** — extend an existing track.
 
-**Cost:** 50 credits per generation, regardless of mode.
+**Cost:** 30 credits per generation, regardless of mode.
 
 ### 6. My Voices
 
@@ -190,7 +212,7 @@ Your library of saved custom voices designed in **Voice Design**.
 
 From here you can:
 - Preview each voice.
-- Generate new speech from a saved voice (25 credits per generation).
+- Generate new speech from a saved voice (30 credits per generation).
 - Delete voices you no longer want.
 
 **Limits:**
@@ -240,12 +262,15 @@ Every generation in Studio consumes **credits**. Credits are a single, simple un
 | Action | Credits |
 |---|---|
 | Sign-up bonus (one-time) | **+300** |
-| Text-to-Speech | 25 |
-| Speech-to-Text | 20 |
-| Voice Cloning | 50 |
-| Voice Design (A/B preview) | 120 |
-| Generate from saved "My Voice" | 25 |
-| Text-to-Music (any mode) | 50 |
+| Text-to-Speech | 30 |
+| Speech-to-Text | 15 |
+| Voice Cloning | 40 |
+| Voice Design (A/B preview) | 70 |
+| Generate from saved "My Voice" | 30 |
+| Text-to-Music (any mode) | 30 |
+| Noise Remover | 5 |
+| Video Dubbing (standard) | 200 / min · per language |
+| Video Dubbing (lip-sync) | 800 / min · per language |
 
 **Refunds:** If a generation fails on our side (e.g., temporary network capacity), the credits are automatically returned to your balance — you only pay for successful generations.
 
@@ -305,8 +330,8 @@ After payment confirms, credits are added to your account automatically and a tr
 The Developer API gives you programmatic access to the same generation backends used by Studio.
 
 - **Eligibility:** Requires a successful **Premium** purchase. The API tab on [Account](https://vocence.ai/account) is locked until then.
-- **Endpoints:** Text-to-Speech, Speech-to-Text, Voice Cloning, Voice Dubbing.
-- **Billing:** Pay-as-you-go from your existing credit balance. Same flat per-request costs as Studio (TTS: 25 cr, STT: 20 cr, Clone: 50 cr, Dubbing: 5 cr).
+- **Endpoints:** Text-to-Speech, Speech-to-Text, Voice Cloning, Voice Design, Music, Noise Remover, Video Dubbing.
+- **Billing:** Pay-as-you-go from your existing credit balance, at the same rates as Studio. Metered by usage — per 1M characters for TTS/Clone, per minute for STT / Noise Remover / Video Dubbing. Video Dubbing is 200 credits/min ($0.50) standard and 800 credits/min ($2.00) with lip-sync, billed per second and per output language.
 - **Default rate limit:** 4 requests / minute / API key. Higher limits available on request for established usage patterns.
 - **Key management:** Create, name, and revoke API keys from your [Account](https://vocence.ai/account) page. Each key shows a prefix and the last-used timestamp.
 

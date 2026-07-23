@@ -134,6 +134,7 @@ export function Pricing() {
               <span className="font-medium text-white">Voice Design</span>,{' '}
               <span className="font-medium text-white">Music</span>,{' '}
               <span className="font-medium text-white">Noise Remover</span>,{' '}
+              <span className="font-medium text-white">Video Dubbing</span>,{' '}
               <span className="font-medium text-white">Voice Agents</span>. Premium adds never-expiring history + unlimited custom voices.
             </p>
             <Link
@@ -356,6 +357,16 @@ export function Pricing() {
               <p className="text-xs uppercase tracking-[0.18em] text-[#7D8A95]">Voice Agents</p>
               <p className="mt-1 text-base font-semibold text-white">$0.10 / min</p>
               <p className="text-[11px] text-[#7D8A95]">40 credits / min · 6-sec billing</p>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
+              <p className="text-xs uppercase tracking-[0.18em] text-[#7D8A95]">Video Dub</p>
+              <p className="mt-1 text-base font-semibold text-white">$0.50 / min</p>
+              <p className="text-[11px] text-[#7D8A95]">200 credits / min · per language</p>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
+              <p className="text-xs uppercase tracking-[0.18em] text-[#7D8A95]">Video Dub + Lip-sync</p>
+              <p className="mt-1 text-base font-semibold text-white">$2.00 / min</p>
+              <p className="text-[11px] text-[#7D8A95]">800 credits / min · per language</p>
             </div>
             <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
               <p className="text-xs uppercase tracking-[0.18em] text-[#7D8A95]">Default limit</p>
