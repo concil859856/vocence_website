@@ -301,3 +301,52 @@ def test_plan_cap_message_never_names_a_vendor(svc):
     with pytest.raises(svc.DubbingError) as ei:
         svc.check_plan_limits(svc.TIER_LIPSYNC, 9999, is_premium=False)
     assert not any(w in ei.value.public_message.lower() for w in _VENDOR_WORDS)
+
+
+# ---------------------------------------------------------------------------
+# Failure explanation
+# ---------------------------------------------------------------------------
+#
+# Upstream failure text is vendor-branded and written for its own developers,
+# so it can never be forwarded. But collapsing every failure to one generic
+# sentence left users with no idea what to fix — the complaint these tests
+# exist to prevent regressing.
+
+
+@pytest.mark.parametrize(
+    "raw,expect",
+    [
+        ("No speech detected in the source audio", "speech"),
+        ("ERROR: no_audio_stream found", "speech"),
+        ("Face not detected in frame 0", "face"),
+        ("multiple faces detected in video", "one speaker"),
+        ("Unsupported codec: prores", "MP4"),
+        ("could not decode input", "MP4"),
+        ("Could not detect language of the source", "source"),
+    ],
+)
+def test_explain_failure_maps_known_causes(svc, raw, expect):
+    msg = svc.explain_failure(raw)
+    assert expect.lower() in msg.lower(), f"{raw!r} -> {msg!r}"
+
+
+def test_explain_failure_falls_back_without_guessing(svc):
+    msg = svc.explain_failure("kbxq 0x8f internal assertion")
+    # Names the two causes that account for most real failures, and reassures
+    # about billing rather than pretending to know the reason.
+    assert "speech" in msg.lower() and "face" in msg.lower()
+    assert "not been charged" in msg.lower()
+
+
+def test_explain_failure_handles_empty_and_none(svc):
+    for raw in (None, "", "   "):
+        assert svc.explain_failure(raw)  # non-empty fallback, never raises
+
+
+def test_explain_failure_never_returns_raw_upstream_text(svc):
+    """The whole point: the input must not survive into the output."""
+    raw = "ElevenLabs dubbing pipeline error: HeyGen avatar sync failed"
+    msg = svc.explain_failure(raw)
+    assert "elevenlabs" not in msg.lower()
+    assert "heygen" not in msg.lower()
+    assert raw not in msg

@@ -243,6 +243,19 @@ async def process_video_dub(job: state.Job) -> dict:
             "We couldn't read this video's length. Please try a different file.",
         )
 
+    # Dubbing translates speech, so a source with no audio track can only ever
+    # fail — and it would fail upstream, minutes later, with a vague message.
+    # ffprobe already knows, so refuse here. Only trust a definite "no audio":
+    # when the probe itself failed it reports zeros and no streams, and we must
+    # not turn an unreadable probe into a wrong accusation about the file.
+    probe_worked = float(meta.get("duration") or 0) > 0
+    if probe_worked and not meta.get("has_audio", True):
+        raise DubbingError(
+            f"source has no audio stream: {filename}",
+            "This video has no audio track, so there's nothing to dub. "
+            "Upload a video that contains speech.",
+        )
+
     # Authoritative gate. The router ran the same checks against the client's
     # declared numbers; this run uses what ffprobe actually found, so a
     # mis-declared upload is caught before we spend anything upstream.

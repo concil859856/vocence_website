@@ -50,6 +50,11 @@ export const NOISE_REMOVER_MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 export const VIDEO_DUB_MAX_DURATION_SEC = 10 * 60;   // 10 min hard cap
 export const VIDEO_DUB_MAX_UPLOAD_BYTES = 200 * 1024 * 1024;
 export const VIDEO_DUB_MAX_LANGUAGES = 3;
+// Lip-sync is tighter than standard dubbing on both size and resolution.
+// Mirrors STUDIO_VIDEO_DUB_LIPSYNC_MAX_BYTES / _MAX_DIM on the server; these
+// are display-only, /start re-checks authoritatively.
+export const VIDEO_DUB_LIPSYNC_MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
+export const VIDEO_DUB_LIPSYNC_MAX_DIMENSION = 2048;
 
 // ── One-time bonuses ──────────────────────────────────────────────────────
 export const CREDIT_SIGNUP_BONUS = 300;

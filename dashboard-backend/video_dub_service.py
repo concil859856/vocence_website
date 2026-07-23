@@ -182,6 +182,76 @@ class DubbingError(RuntimeError):
         self.retryable = retryable
 
 
+# Upstream failure text → a message that tells the user what to actually fix.
+# Both engines report why a render failed, but the raw text is vendor-branded
+# and jargon-heavy, so it can never be forwarded. Matching on stable keywords
+# lets us keep the diagnosis while writing our own words. Order matters: the
+# first matching pair wins, so put specific causes before generic ones.
+_FAILURE_HINTS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (
+        ("no speech", "no voice", "no audio", "silent", "speech not detected",
+         "could not detect speech", "no transcript", "empty transcript"),
+        "We couldn't find any speech in this video. Dubbing needs audible "
+        "talking — check the video isn't silent, music-only, or muted.",
+    ),
+    (
+        ("no face", "face not detected", "face not found", "cannot detect face",
+         "no person", "face too small"),
+        "Lip-sync needs a clearly visible face. Use a shot where the speaker "
+        "faces the camera and their mouth stays in frame — or turn off "
+        "lip-sync to dub the audio only.",
+    ),
+    (
+        ("multiple faces", "too many faces", "multiple speakers detected"),
+        "Lip-sync works on one speaker at a time and this video has several "
+        "people on screen. Try a single-speaker clip, or turn off lip-sync.",
+    ),
+    (
+        ("too noisy", "background noise", "low quality audio", "audio quality"),
+        "The speech in this video is too unclear to dub. Try a recording with "
+        "less background noise, or clean it up with Noise Remover first.",
+    ),
+    (
+        ("unsupported", "invalid format", "codec", "corrupt", "could not decode",
+         "cannot read", "malformed"),
+        "We couldn't read this video file. Re-export it as a standard MP4 "
+        "(H.264 video + AAC audio) and upload again.",
+    ),
+    (
+        ("language", "not supported", "detect language"),
+        "We couldn't work out what language is being spoken. Pick the source "
+        "language explicitly instead of leaving it on automatic.",
+    ),
+    (
+        ("too long", "duration", "exceeds"),
+        "This video is longer than dubbing supports. Trim it and try again.",
+    ),
+)
+
+# Said when nothing matches. Deliberately admits we don't know rather than
+# guessing, and points at the most common real causes.
+_FAILURE_FALLBACK = (
+    "This video could not be dubbed. The usual causes are no clear speech in "
+    "the audio, or — with lip-sync on — no clearly visible face. Check those "
+    "and try again; you have not been charged for this language."
+)
+
+
+def explain_failure(raw_detail: str | None) -> str:
+    """Turn an upstream failure string into something the user can act on.
+
+    Never returns the input: the raw text names the engine and is written for
+    its own developers. Unmatched failures get a fallback that names the two
+    causes that actually account for most of them.
+    """
+    text = (raw_detail or "").lower()
+    if text:
+        for needles, message in _FAILURE_HINTS:
+            if any(n in text for n in needles):
+                return message
+    return _FAILURE_FALLBACK
+
+
 class DubbingNotConfigured(DubbingError):
     def __init__(self, tier: str):
         super().__init__(
@@ -300,8 +370,10 @@ async def _std_poll(job: DubJob, lang: str) -> DubStatus:
         return DubStatus(state="done")
     if status == "failed":
         # Upstream error text can name the vendor — log it, don't forward it.
-        _log.error("[video_dub] standard job %s failed: %s", job_id, data.get("error"))
-        return DubStatus(state="failed", detail="The dubbing engine could not process this video.")
+        # explain_failure keeps the diagnosis while rewording it in our voice.
+        raw = data.get("error")
+        _log.error("[video_dub] standard job %s failed: %s", job_id, raw)
+        return DubStatus(state="failed", detail=explain_failure(raw if isinstance(raw, str) else str(raw or "")))
     return DubStatus(state="running", detail="dubbing")
 
 
@@ -435,8 +507,9 @@ async def _lip_poll(job: DubJob, lang: str) -> DubStatus:
     if status == "completed":
         return DubStatus(state="done", media_url=data.get("video_url"))
     if status == "failed":
-        _log.error("[video_dub] lipsync job %s failed: %s", job_id, data.get("failure_message"))
-        return DubStatus(state="failed", detail="The dubbing engine could not process this video.")
+        raw = data.get("failure_message")
+        _log.error("[video_dub] lipsync job %s failed: %s", job_id, raw)
+        return DubStatus(state="failed", detail=explain_failure(raw if isinstance(raw, str) else str(raw or "")))
     return DubStatus(state="running", detail="rendering")
 
 

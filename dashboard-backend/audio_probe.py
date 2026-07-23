@@ -96,6 +96,11 @@ def probe_video_metadata(video_bytes: bytes, filename_hint: str | None = None) -
     audio-only upload with a video extension), which callers should treat as
     "not a video" rather than "small video".
 
+    ``has_audio`` is False when the file carries no audio stream at all.
+    Dubbing translates speech, so a silent source can never succeed — catching
+    it here means we can refuse before charging instead of after an upstream
+    round trip returns an unhelpful error.
+
     Sync, like its sibling — call it via ``asyncio.to_thread`` from async
     code, since ffprobe reads the whole header and a 200 MB file is not fast.
     """
@@ -133,16 +138,22 @@ def probe_video_metadata(video_bytes: bytes, filename_hint: str | None = None) -
 
         duration = data.get("format", {}).get("duration")
         width = height = 0
+        has_audio = False
+        seen_video = False
         for stream in data.get("streams", []) or []:
-            if stream.get("codec_type") == "video":
+            codec_type = stream.get("codec_type")
+            if codec_type == "audio":
+                has_audio = True
+            elif codec_type == "video" and not seen_video:
                 width = int(stream.get("width") or 0)
                 height = int(stream.get("height") or 0)
-                break
+                seen_video = True
 
         return {
             "duration": float(duration) if duration is not None else 0.0,
             "width": width,
             "height": height,
+            "has_audio": has_audio,
         }
     except (FileNotFoundError, subprocess.TimeoutExpired, json.JSONDecodeError, ValueError, OSError):
         return None

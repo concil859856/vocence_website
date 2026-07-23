@@ -8,12 +8,16 @@ import { useGenerations } from '../contexts/GenerationsContext';
 import { dashboardApi, type VideoDubHistoryItem } from '../services/dashboardApi';
 import {
   estimateVideoDubCredits,
+  VIDEO_DUB_LIPSYNC_MAX_DIMENSION,
+  VIDEO_DUB_LIPSYNC_MAX_UPLOAD_BYTES,
   VIDEO_DUB_MAX_DURATION_SEC,
   VIDEO_DUB_MAX_LANGUAGES,
   VIDEO_DUB_MAX_UPLOAD_BYTES,
 } from '../studio/creditCosts';
 
 const MAX_FILE_MB = VIDEO_DUB_MAX_UPLOAD_BYTES / (1024 * 1024);
+const LIPSYNC_MAX_FILE_MB = VIDEO_DUB_LIPSYNC_MAX_UPLOAD_BYTES / (1024 * 1024);
+const LIPSYNC_MAX_DIM = VIDEO_DUB_LIPSYNC_MAX_DIMENSION;
 /** Shown inline under the composer — enough to confirm a dub landed. */
 const RECENT_COUNT = 3;
 const ALLOWED_EXTENSIONS = new Set(['mp4', 'mov', 'webm', 'mkv', 'avi']);
@@ -45,16 +49,46 @@ function getToken(): string | null {
 /** Read duration client-side so we can quote a price before uploading.
  *  The server re-probes with ffprobe and is the billing authority — this
  *  is only ever a preview of the cost. */
-function probeVideo(file: File): Promise<{ duration: number; width: number; height: number }> {
+/** Best-effort "does this file have an audio track?" check.
+ *
+ * There is no standard way to ask. Firefox exposes `mozHasAudio`, Chromium
+ * counts decoded audio bytes, and some browsers implement `audioTracks`.
+ * Returns `null` when none of them answer — the caller must treat that as
+ * "unknown" and stay silent rather than accusing a perfectly good file of
+ * being silent. The server re-checks with ffprobe either way; this only
+ * exists to fail fast, before the user is charged.
+ */
+function detectAudio(el: HTMLVideoElement): boolean | null {
+  const probe = el as HTMLVideoElement & {
+    mozHasAudio?: boolean;
+    webkitAudioDecodedByteCount?: number;
+    audioTracks?: { length: number };
+  };
+  if (typeof probe.mozHasAudio === 'boolean') return probe.mozHasAudio;
+  if (probe.audioTracks && typeof probe.audioTracks.length === 'number') {
+    return probe.audioTracks.length > 0;
+  }
+  if (typeof probe.webkitAudioDecodedByteCount === 'number') {
+    // Only meaningful once decoding has started; 0 at metadata time is
+    // inconclusive, so report unknown rather than "no audio".
+    return probe.webkitAudioDecodedByteCount > 0 ? true : null;
+  }
+  return null;
+}
+
+function probeVideo(
+  file: File,
+): Promise<{ duration: number; width: number; height: number; hasAudio: boolean | null }> {
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(file);
     const el = document.createElement('video');
     el.preload = 'metadata';
     el.onloadedmetadata = () => {
-      URL.revokeObjectURL(url);
       const d = el.duration;
+      const hasAudio = detectAudio(el);
+      URL.revokeObjectURL(url);
       if (!Number.isFinite(d) || d <= 0) reject(new Error("Couldn't read this video's length."));
-      else resolve({ duration: d, width: el.videoWidth, height: el.videoHeight });
+      else resolve({ duration: d, width: el.videoWidth, height: el.videoHeight, hasAudio });
     };
     el.onerror = () => {
       URL.revokeObjectURL(url);
@@ -230,7 +264,7 @@ export default function StudioVideoDub() {
       return;
     }
 
-    let meta: { duration: number; width: number; height: number };
+    let meta: { duration: number; width: number; height: number; hasAudio: boolean | null };
     try {
       meta = await probeVideo(picked);
     } catch (e) {
@@ -239,6 +273,15 @@ export default function StudioVideoDub() {
     }
     if (meta.duration > VIDEO_DUB_MAX_DURATION_SEC) {
       setError(`Video is ${formatTime(meta.duration)}. Max length is ${formatTime(VIDEO_DUB_MAX_DURATION_SEC)}.`);
+      return;
+    }
+    // Only reject on a definite "no audio" — `null` means the browser can't
+    // tell, and the server re-checks with ffprobe before charging anyway.
+    if (meta.hasAudio === false) {
+      setError(
+        'This video has no audio track, so there is nothing to dub. ' +
+          'Upload a video that contains speech.',
+      );
       return;
     }
 
@@ -409,7 +452,43 @@ export default function StudioVideoDub() {
               MP4, MOV, WebM, MKV or AVI · up to {MAX_FILE_MB} MB · max {formatTime(VIDEO_DUB_MAX_DURATION_SEC)}
             </span>
           </button>
-        ) : (
+        ) : null}
+
+        {/* What actually works. Most failures are a silent clip or, with
+            lip-sync on, no visible face — both invisible in the file's
+            metadata, so they can only be prevented by saying so up front. */}
+        {!file && (
+          <div className="rounded-lg border border-border bg-muted/20 p-4">
+            <h3 className="mb-2 text-xs font-medium">What works best</h3>
+            <ul className="space-y-1.5 text-xs text-muted-foreground">
+              <li>
+                <span className="text-foreground">Clear speech.</span> Dubbing translates
+                what it can hear — a silent, music-only or heavily muffled clip can&apos;t be dubbed.
+              </li>
+              <li>
+                <span className="text-foreground">One speaker.</span> Several people talking
+                over each other confuses the voice match.
+              </li>
+              <li>
+                <span className="text-foreground">Little background noise.</span> Run noisy
+                audio through Noise Remover first for a cleaner result.
+              </li>
+              <li>
+                <span className="text-foreground">For lip-sync:</span> a front-facing shot
+                where the speaker&apos;s mouth stays visible, up to {LIPSYNC_MAX_DIM}px on the
+                longest side and {LIPSYNC_MAX_FILE_MB} MB. Off-camera narration doesn&apos;t
+                need lip-sync at all.
+              </li>
+            </ul>
+            <p className="mt-3 border-t border-border pt-2 text-[11px] text-muted-foreground">
+              Limits: {formatTime(VIDEO_DUB_MAX_DURATION_SEC)} · {MAX_FILE_MB} MB · up to{' '}
+              {VIDEO_DUB_MAX_LANGUAGES} languages per video. If a language fails, you&apos;re
+              refunded for that language automatically.
+            </p>
+          </div>
+        )}
+
+        {file ? (
           <div className="space-y-2 rounded-lg border border-border p-3">
             {previewUrl && (
               // aspect-video reserves the box before metadata loads. Without
@@ -453,7 +532,7 @@ export default function StudioVideoDub() {
               </button>
             </div>
           </div>
-        )}
+        ) : null}
         <input
           ref={inputRef}
           type="file"
