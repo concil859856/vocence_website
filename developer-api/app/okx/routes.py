@@ -93,7 +93,10 @@ def _validate(tool: Tool, arguments: dict) -> None:
 
 
 async def _run(tool: Tool, arguments: dict) -> dict:
-    if not config.okx_enabled():
+    # Require the payment layer too, not just fulfillment: with the wallet and
+    # system key set but no facilitator credentials, the x402 middleware never
+    # attaches — executing here would serve paid tools for free.
+    if not (config.okx_enabled() and config.payments_configured()):
         raise HTTPException(503, "This service is not currently accepting requests.")
     _validate(tool, arguments)
     try:

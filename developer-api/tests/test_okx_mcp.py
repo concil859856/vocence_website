@@ -102,9 +102,19 @@ def test_paid_tool_fails_closed_when_disabled():
     assert client.post("/okx/tools/vocence_text_to_speech", json={"text": "hi"}).status_code == 503
 
 
+def test_paid_tool_fails_closed_when_payments_unconfigured(monkeypatch):
+    # Fulfillment wired (wallet + system key + SDK) but no facilitator creds:
+    # the x402 middleware is absent, so execution must refuse rather than
+    # serve the tool without a payment gate.
+    monkeypatch.setattr(config, "okx_enabled", lambda: True)
+    assert config.payments_configured() is False
+    assert client.post("/okx/tools/vocence_text_to_speech", json={"text": "hi"}).status_code == 503
+
+
 def test_arguments_are_validated_when_enabled(monkeypatch):
     # Force the gate open but stub fulfillment, to reach the validation layer.
     monkeypatch.setattr(config, "okx_enabled", lambda: True)
+    monkeypatch.setattr(config, "payments_configured", lambda: True)
 
     async def fake_exec(tool, arguments):
         return {"ok": True, "echo": arguments}
@@ -167,6 +177,7 @@ def test_route_key_shape():
 
 def test_dub_requires_consent_attestation(monkeypatch):
     monkeypatch.setattr(config, "okx_enabled", lambda: True)
+    monkeypatch.setattr(config, "payments_configured", lambda: True)
 
     async def fake_exec(tool, arguments):
         return {"job_id": "j1"}
