@@ -400,19 +400,26 @@ which has never been run.
 
 Correct order: **deploy → `agent create` → agent ID → send to OKX for human review.**
 
-### 10.6 Blockers (all human/ops — no code is blocking)
+### 10.6 Blockers — updated 2026-07-23 (our side is DONE; waiting on OKX)
 
-| # | Blocker | Notes |
+Everything Vocence-side was completed and verified live on 2026-07-23:
+
+| # | Blocker | Status |
 |---|---|---|
-| 1 | developer-api runs **Python 3.10.12** | SDK requires **≥3.11**. **Not a hard stop** — `/usr/bin/python3.12` is already on the prod box and `dashboard-backend` already runs a `venv_3.12`. Build a matching venv for developer-api. See `guide.md` §B2.1. |
-| 2 | Deploy `/okx` to api.vocence.ai | `pip install "okxweb3-app-x402[fastapi,evm]"` (extras are required) |
-| 3 | OKX dev-portal credentials | API key / secret / passphrase. Confirmed required for settlement. |
-| 4 | Testnet settlement-token address | Ask OKX. Needed for `OKX_ASSET_ADDRESS`. |
-| 5 | Funded `voc_live_` system key | Fulfillment executor; keep it topped up with credits |
-| 6 | WL email to OKX | Send the wallet email `space@vocence.ai`. Postponed pending "where do we send it?" |
-| 7 | Testnet end-to-end dry run | Never done |
-| 8 | On-chain `agent create --role asp` | Produces the agent ID |
+| 1 | developer-api Python ≥3.11 | ✅ **DONE** — api runs in `developer-api/venv_3.12` (3.12.13); full test suite passes on it |
+| 2 | Deploy `/okx` to api.vocence.ai | ✅ **DONE** — SDK installed with extras; manifest live at https://api.vocence.ai/okx/manifest (payments_ready false) |
+| 5 | Funded `voc_live_` system key | ✅ **DONE** — system account `okx-system@vocence.ai` (premium, 100k credits, internal $0 grant row satisfies the dev-api premium gate); key in `developer-api/.env` `OKX_SYSTEM_API_KEY`. Fulfillment chain verified end-to-end (OKX route → key auth → gate → dashboard). Keep it topped up. |
+| 3 | OKX dev-portal credentials | ❌ waiting on OKX — API key / secret / passphrase; required for settlement |
+| 4 | Testnet settlement-token address | ❌ waiting on OKX — needed for `OKX_ASSET_ADDRESS` on `eip155:1952` |
+| 6 | WL email to OKX | ❌ waiting — send wallet email `space@vocence.ai`; destination unknown |
+| 7 | Testnet end-to-end dry run | pending #3 + #4 |
+| 8 | On-chain `agent create --role asp` | pending #7 — produces the agent ID |
 | 9 | Flip to mainnet + send agent ID | `OKX_NETWORK=eip155:196` |
+
+Note: commit `21f6c4f` closed a fail-open gap — with fulfillment wired but no
+portal creds, paid tools would previously have served for FREE (the x402
+middleware only attaches when `payments_configured()`). Execution now requires
+both gates; the current live state (503 on paid tools) depends on that fix.
 
 ### 10.7 Open questions for OKX (Vincent)
 
