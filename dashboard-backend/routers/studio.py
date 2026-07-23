@@ -81,17 +81,36 @@ logger = logging.getLogger(__name__)
 
 
 async def _is_premium_user(user_id: str) -> bool:
-    """Check if user has premium plan (paid premium at least once)."""
+    """True if the user is on Premium, whether bought or granted.
+
+    Two ways to qualify:
+      1. A real Premium purchase (a paid/completed payments row), or
+      2. ``auth_users.plan_code = 'premium'`` — how staff comp an account.
+
+    Both are checked because the Account page renders from ``auth_users``:
+    honouring only payments made a comped account read "Premium" everywhere
+    while still being refused Premium features. Demotion stays payment-driven
+    (see the refund handler in routers/auth.py) and resets plan_code to
+    'normal', so a lapsed subscriber does not linger as Premium here.
+    """
     conn = await get_connection()
     try:
         row = await (await conn.execute(
             """
-            SELECT COUNT(*) AS n FROM payments
-            WHERE user_id = ? AND status IN ('paid', 'completed')
-              AND credits_granted > 0
-              AND LOWER(COALESCE(plan_code, '')) = 'premium'
+            SELECT (
+              EXISTS(
+                SELECT 1 FROM payments
+                WHERE user_id = ? AND status IN ('paid', 'completed')
+                  AND credits_granted > 0
+                  AND LOWER(COALESCE(plan_code, '')) = 'premium'
+              )
+              OR EXISTS(
+                SELECT 1 FROM auth_users
+                WHERE id = ? AND LOWER(COALESCE(plan_code, '')) = 'premium'
+              )
+            ) AS n
             """,
-            (user_id,),
+            (user_id, user_id),
         )).fetchone()
         return int(row["n"] or 0) > 0
     except Exception:

@@ -50,24 +50,38 @@ _log = logging.getLogger(__name__)
 async def _ensure_premium(conn, user_id: str) -> None:
     """Re-check Premium status. Schema mirrors the historic
     ``_ensure_premium`` in agent_mgmt.py — kept identical so both
-    surfaces gate the same set of users."""
+    surfaces gate the same set of users.
+
+    Premium counts whether it was bought (a paid/completed payments row) or
+    granted by staff (``auth_users.plan_code``). Checking payments alone left
+    comped accounts reading "Premium" on the Account page while every gated
+    route refused them. Demotion remains payment-driven and resets plan_code
+    to 'normal', so lapsed subscribers still lose access.
+    """
     paid_row = await (
         await conn.execute(
             """
-            SELECT COUNT(*) AS n
-            FROM payments
-            WHERE user_id = ?
-              AND status IN ('paid', 'completed')
-              AND credits_granted > 0
-              AND LOWER(COALESCE(plan_code, '')) = 'premium'
+            SELECT (
+              EXISTS(
+                SELECT 1 FROM payments
+                WHERE user_id = ?
+                  AND status IN ('paid', 'completed')
+                  AND credits_granted > 0
+                  AND LOWER(COALESCE(plan_code, '')) = 'premium'
+              )
+              OR EXISTS(
+                SELECT 1 FROM auth_users
+                WHERE id = ? AND LOWER(COALESCE(plan_code, '')) = 'premium'
+              )
+            ) AS n
             """,
-            (user_id,),
+            (user_id, user_id),
         )
     ).fetchone()
     if int(paid_row["n"] or 0) <= 0:
         raise HTTPException(
             status_code=402,
-            detail="Developer API requires a successful Premium plan purchase first.",
+            detail="Developer API requires an active Premium plan.",
         )
 
 

@@ -185,17 +185,26 @@ async def _user_has_premium(user_id: str) -> bool:
     connect time enforces the gate at the actual usage point."""
     conn = await get_db()
     try:
+        # Premium counts whether bought (payments) or granted by staff
+        # (auth_users.plan_code) — see services/gating.py for the rationale.
         row = await (
             await conn.execute(
                 """
-                SELECT COUNT(*) AS n
-                FROM payments
-                WHERE user_id = ?
-                  AND status IN ('paid', 'completed')
-                  AND credits_granted > 0
-                  AND LOWER(COALESCE(plan_code, '')) = 'premium'
+                SELECT (
+                  EXISTS(
+                    SELECT 1 FROM payments
+                    WHERE user_id = ?
+                      AND status IN ('paid', 'completed')
+                      AND credits_granted > 0
+                      AND LOWER(COALESCE(plan_code, '')) = 'premium'
+                  )
+                  OR EXISTS(
+                    SELECT 1 FROM auth_users
+                    WHERE id = ? AND LOWER(COALESCE(plan_code, '')) = 'premium'
+                  )
+                ) AS n
                 """,
-                (user_id,),
+                (user_id, user_id),
             )
         ).fetchone()
         return int(row["n"] or 0) > 0 if row else False

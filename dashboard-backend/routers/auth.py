@@ -3136,23 +3136,35 @@ async def create_developer_key(body: DeveloperKeyCreateRequest, userId: str = De
     rate_limit_rpm = _api_rate_limit_for_tier(tier)
     conn = await get_connection()
     try:
+        # Premium either bought (payments row) or granted by staff
+        # (auth_users.plan_code). Both count — the Account page renders from
+        # auth_users, so honouring only payments left comped accounts showing
+        # "Premium" yet refused a key. Demotion is still payment-driven and
+        # resets plan_code to 'normal', so lapsed users lose access here too.
         paid_row = await (
             await conn.execute(
                 """
-                SELECT COUNT(*) AS n
-                FROM payments
-                WHERE user_id = ?
-                  AND status IN ('paid', 'completed')
-                  AND credits_granted > 0
-                  AND LOWER(COALESCE(plan_code, '')) = 'premium'
+                SELECT (
+                  EXISTS(
+                    SELECT 1 FROM payments
+                    WHERE user_id = ?
+                      AND status IN ('paid', 'completed')
+                      AND credits_granted > 0
+                      AND LOWER(COALESCE(plan_code, '')) = 'premium'
+                  )
+                  OR EXISTS(
+                    SELECT 1 FROM auth_users
+                    WHERE id = ? AND LOWER(COALESCE(plan_code, '')) = 'premium'
+                  )
+                ) AS n
                 """,
-                (userId,),
+                (userId, userId),
             )
         ).fetchone()
         if int(paid_row["n"] or 0) <= 0:
             raise HTTPException(
                 status_code=402,
-                detail="Developer API requires a successful Premium plan purchase first.",
+                detail="Developer API requires an active Premium plan.",
             )
         await conn.execute(
             """

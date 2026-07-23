@@ -59,21 +59,30 @@ async def _ensure_premium(conn, user_id: str) -> None:
     cross-importing) so this module stays self-contained — the v1.py
     helper is module-private and we don't want to leak that contract.
     """
+    # Premium counts whether bought (payments) or granted by staff
+    # (auth_users.plan_code) — see services/gating.py for the rationale.
     paid_row = await (
         await conn.execute(
             """
-            SELECT COUNT(*) AS n
-            FROM payments
-            WHERE user_id = ?
-              AND status IN ('paid', 'completed')
-              AND credits_granted > 0
-              AND LOWER(COALESCE(plan_code, '')) = 'premium'
+            SELECT (
+              EXISTS(
+                SELECT 1 FROM payments
+                WHERE user_id = ?
+                  AND status IN ('paid', 'completed')
+                  AND credits_granted > 0
+                  AND LOWER(COALESCE(plan_code, '')) = 'premium'
+              )
+              OR EXISTS(
+                SELECT 1 FROM auth_users
+                WHERE id = ? AND LOWER(COALESCE(plan_code, '')) = 'premium'
+              )
+            ) AS n
             """,
-            (user_id,),
+            (user_id, user_id),
         )
     ).fetchone()
     if int(paid_row["n"] or 0) <= 0:
-        raise HTTPException(status_code=402, detail="Developer API requires a successful Premium plan purchase first.")
+        raise HTTPException(status_code=402, detail="Developer API requires an active Premium plan.")
 
 
 async def _gate_request(user_id: str) -> None:
