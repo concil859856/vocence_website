@@ -703,6 +703,12 @@ async def run_next_session(
         # those flags here so process_text's content_generation can
         # actually run instead of bailing out on the first chunk.
         _reset_pipeline_interrupt_flags()
+        # A typed message IS user activity — reset the idle watchdog just
+        # like a spoken turn does, so text-only sessions don't hit the
+        # voice-oriented idle timeout. process_text never emits
+        # transcript_ready / user_turn_start, so nothing else marks it.
+        if billing is not None:
+            billing.mark_activity()
         # Capture the typed text into _turn_state so the per-turn
         # studio_voicechat_history INSERT (fired from the TTS wrap
         # below) has both user_text + agent_text. process_text does
@@ -1396,6 +1402,15 @@ async def run_next_session(
     finally:
         with _suppress():
             await session.aclose()  # type: ignore[attr-defined]
+        # Backstop: guarantee the pinned tts_streaming pod slot is released
+        # even if session.aclose() didn't cascade to the TTS plugin's
+        # aclose(). Otherwise the pod's in_flight counter leaks and pods
+        # saturate ("all tts_streaming pods at cap") across repeated
+        # sessions. TurnTtsPodPin.release() is idempotent, so this never
+        # double-frees.
+        with _suppress():
+            if _tts_plugin is not None and hasattr(_tts_plugin, "aclose"):
+                await _tts_plugin.aclose()
         with _suppress():
             await transport.cleanup()
         with _suppress():

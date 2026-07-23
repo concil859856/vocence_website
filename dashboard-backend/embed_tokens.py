@@ -294,13 +294,35 @@ def _origin_matches(origin: str | None, allowed: list[str]) -> bool:
     if not host:
         return False
     for pattern in allowed:
-        p = pattern.strip().lower()
-        if not p:
+        ph = _pattern_host(pattern)
+        if not ph:
             continue
         # fnmatch handles plain hostname and ``*.example.com`` cases.
-        if fnmatch.fnmatch(host, p):
+        if fnmatch.fnmatch(host, ph):
             return True
     return False
+
+
+def _pattern_host(pattern: str) -> str:
+    """Normalize a stored allowed-origin entry to a bare host for matching.
+
+    Stored entries come in several shapes depending on how the token was
+    minted — a full origin (``http://localhost:8009``), a host:port
+    (``localhost:8009``), a bare host (``docs.example.com``), or a glob
+    (``*.example.com`` / ``*``). We compare on host only (scheme + port are
+    ignored), so reduce every form to its host. Without this, a stored full
+    origin never matches the request's extracted host → ``origin_not_allowed``.
+    """
+    p = (pattern or "").strip().lower()
+    if not p:
+        return ""
+    if p == "*":
+        return "*"
+    if "://" in p:
+        p = urlparse(p).netloc or p
+    p = p.split("/", 1)[0]   # drop any path
+    p = p.split(":", 1)[0]   # drop port
+    return p
 
 
 async def _enforce_rate_limit(

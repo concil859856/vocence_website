@@ -330,7 +330,15 @@ class VoiceAgentBilling:
         # Reconcile to the minimum-charge floor if applicable.
         # Free-mode sessions skip both reconciliation and the
         # transaction row — no money should change hands.
+        #
+        # Cap the billable duration at the hard session limit: a leaked or
+        # wedged session that only gets settled at backend shutdown must
+        # never be charged for its full multi-hour/day wall-clock age. The
+        # watchdog should reap it at MAX_SESSION_SEC; this guarantees the
+        # CHARGE is bounded even if the watchdog failed to.
         elapsed = self.elapsed_seconds
+        if MAX_SESSION_SEC > 0:
+            elapsed = min(elapsed, MAX_SESSION_SEC)
         if self.free_mode:
             return 0
         owed_total = credits_for_seconds(elapsed)
@@ -474,10 +482,16 @@ class VoiceAgentBilling:
                 self.session_id, self._in_flight_turns, since,
                 IDLE_TIMEOUT_SEC,
             )
-            if (
-                IDLE_TIMEOUT_SEC > 0
-                and self._in_flight_turns == 0
-                and (now - self._last_activity_at) >= IDLE_TIMEOUT_SEC
+            idle_elapsed = now - self._last_activity_at
+            if IDLE_TIMEOUT_SEC > 0 and idle_elapsed >= IDLE_TIMEOUT_SEC and (
+                self._in_flight_turns == 0
+                # Fallback: ``_in_flight_turns`` leaks in barge-in / cancelled-
+                # turn scenarios (see mark_agent_audio_pushed docstring), which
+                # would otherwise gate idle_timeout off FOREVER. _last_activity_at
+                # is already pushed forward to estimated audio-playback-end, so a
+                # session genuinely idle for well past the threshold must close
+                # even if the turn counter is stuck > 0.
+                or idle_elapsed >= IDLE_TIMEOUT_SEC * 3
             ):
                 await self._fire_end(self.REASON_IDLE_TIMEOUT)
                 return
@@ -494,9 +508,24 @@ class VoiceAgentBilling:
             # cancellation be deferred until both complete. Prevents
             # the stop() reconciliation from over-billing by one
             # increment when the WS closes mid-deduct.
-            new_balance = await asyncio.shield(
-                self._deduct_once(self._increment_credits)
-            )
+            try:
+                new_balance = await asyncio.shield(
+                    self._deduct_once(self._increment_credits)
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # A transient deduction error (DB hiccup, pool timeout) must
+                # NOT kill the watchdog. If it did, this session would lose
+                # its idle / max-duration caps and leak open — and BILLED —
+                # until the backend restarts (the cause of the multi-hour
+                # "Voice agent session (Ns)" charges). Skip this increment;
+                # the next tick retries, and the max/idle checks still reap it.
+                _log.exception(
+                    "[billing] deduct failed for session=%s; watchdog continues",
+                    self.session_id,
+                )
+                continue
             if new_balance is None:
                 await self._fire_end(self.REASON_EXHAUSTED)
                 return

@@ -700,6 +700,15 @@ async def voicechat_session(
     # we log and fall through to the legacy handler so a misconfigured
     # deployment can't kill live calls.
     if is_next_pipeline() and agent_ctx is not None:
+        # run_next_session (and its transport) require the WS to be ALREADY
+        # accepted — neither calls ws.accept(). The auth block above only
+        # accepts on the JWT path (``embed_ctx is None``) and on error paths,
+        # so an embed-token session reaches here un-accepted, the upgrade
+        # never completes, and Starlette rejects it with HTTP 403. Accept now
+        # if it hasn't been already (application_state guards double-accept).
+        from starlette.websockets import WebSocketState as _WSState
+        if ws.application_state != _WSState.CONNECTED:
+            await ws.accept()
         try:
             await run_next_session(
                 ws=ws,

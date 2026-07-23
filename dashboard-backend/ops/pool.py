@@ -46,6 +46,21 @@ _log = logging.getLogger(__name__)
 # where N is the number of online pods for that service. Override via env.
 OVERSUBSCRIBE_FACTOR = int(os.environ.get("OPS_OVERSUBSCRIBE_FACTOR") or "2")
 
+# Services that must run exactly ONE concurrent session per pod, no matter
+# what the pod advertises in its healthz ``cap``. The voice-clone TTS model
+# settles its voice per WS call, so one-agent-per-pod avoids cross-session
+# voice drift. Enable per service via OPS_ONE_SESSION_PER_POD (comma-sep).
+#
+# Default OFF: with cap=1 a single TTS pod offers only one slot, so any
+# slow/leaked session teardown saturates the pool ("all tts_streaming pods
+# at cap"). Re-enable (OPS_ONE_SESSION_PER_POD=tts_streaming) once the
+# per-session TTS pod-slot release is bulletproof across all teardown paths.
+ONE_SESSION_PER_POD_SERVICES = {
+    s.strip()
+    for s in (os.environ.get("OPS_ONE_SESSION_PER_POD") or "").split(",")
+    if s.strip()
+}
+
 # Pod statuses considered eligible for new traffic.
 ROUTABLE_STATUSES = ("online",)
 
@@ -135,9 +150,19 @@ async def reload_pool() -> None:
             try:
                 import json as _json
                 hz = _json.loads(last_h)
-                pod_cap = int(hz.get("cap") or 1)
+                # Streaming pods (e.g. asr_streaming_rt / turn_detection)
+                # advertise their per-pod ceiling as ``max_concurrent_streams``
+                # rather than ``cap``; honor both so their real capacity (32/64)
+                # is used instead of silently falling back to 1.
+                pod_cap = int(hz.get("cap") or hz.get("max_concurrent_streams") or 1)
             except Exception:
                 pass
+
+        # Enforce one-session-per-pod for services that can't safely share a
+        # pod across concurrent sessions (TTS voice cloning). This overrides
+        # the pod's self-advertised cap so capacity == pod count.
+        if r["service"] in ONE_SESSION_PER_POD_SERVICES:
+            pod_cap = 1
 
         view = PodView(
             id=int(r["id"]),

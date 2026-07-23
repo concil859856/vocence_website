@@ -1336,6 +1336,15 @@ async def _stream_clone_via_service(
         except Exception:
             pod_cm = None
 
+    # Fail fast when there is no usable TTS endpoint. With pods deployed but
+    # all at capacity (one-session-per-pod), pick_pod above leaves pod_url
+    # None; with no static QWEN3_CLONE_BASE_URL fallback there is nothing to
+    # synthesize against. Proceeding would stall ~16s on a dead target and
+    # trip the client's WS handshake timeout (surfaces as a Cloudflare 502).
+    # Raise now so the turn fails in-band immediately instead of hanging.
+    if pod_url is None and not QWEN3_CLONE_BASE_URL:
+        raise RuntimeError("tts_unavailable: all tts_streaming pods at capacity")
+
     try:
         # Build a hash-only `start` payload first if we believe the server has
         # the voice cached. The warmer pre-opens a WS that we want to use, so
