@@ -412,9 +412,9 @@ Everything Vocence-side was completed and verified live on 2026-07-23:
 | 3 | OKX dev-portal credentials | ❌ waiting on OKX — API key / secret / passphrase; required for settlement |
 | 4 | Testnet settlement-token address | ❌ waiting on OKX — needed for `OKX_ASSET_ADDRESS` on `eip155:1952` |
 | 6 | WL email to OKX | ❌ waiting — send wallet email `space@vocence.ai`; destination unknown |
-| 7 | Testnet end-to-end dry run | pending #3 + #4 |
-| 8 | On-chain `agent create --role asp` | pending #7 — produces the agent ID |
-| 9 | Flip to mainnet + send agent ID | `OKX_NETWORK=eip155:196` |
+| 7 | Testnet end-to-end dry run | pending #3 + #4 — may be SKIPPABLE: agent registered on mainnet (196), where the SDK has a default asset |
+| 8 | On-chain `agent create --role asp` | ✅ **DONE 2026-07-23** — **agent ID `8148`**, tx `0x0fb4a90e…e655d7`, chainIndex 196 (X Layer mainnet), avatar + all 6 A2MCP services registered. ToS consent accepted for the wallet. Remaining: `onchainos agent activate --agent-id 8148 --preferred-language en` (submits for OKX review), then send `8148` to Vincent. |
+| 9 | Flip to mainnet + send agent ID | `OKX_NETWORK=eip155:196` in developer-api/.env once portal creds (#3) arrive — no `OKX_ASSET_ADDRESS` needed on mainnet |
 
 Note: commit `21f6c4f` closed a fail-open gap — with fulfillment wired but no
 portal creds, paid tools would previously have served for FREE (the x402
