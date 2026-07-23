@@ -60,6 +60,7 @@ async def _process_one(task_type: str, job_id: str, handler):
             timeout=JOB_BUDGET.get(task_type, 600),
         )
         await state.update_status(job_id, status="completed", phase=None, result=result)
+        _fire_callback(job, "completed", result, None)
 
         # Referral activation: first successful generation activates the
         # user's referral, granting credits to their referrer.
@@ -70,27 +71,45 @@ async def _process_one(task_type: str, job_id: str, handler):
             pass  # non-critical — don't fail the job
 
     except asyncio.TimeoutError:
+        timeout_msg = "This generation took too long and was cancelled. Please try again."
         await state.update_status(
             job_id,
             status="timeout",
             phase=None,
-            error_message="This generation took too long and was cancelled. Please try again.",
+            error_message=timeout_msg,
         )
         await api._refund_credits(job)
+        _fire_callback(job, "timeout", None, timeout_msg)
     except Exception as e:
         msg = str(e) or e.__class__.__name__
+        # Errors carrying their own vetted public message use it verbatim.
+        # Video dubbing relies on this: str(exc) holds the upstream response
+        # body, which names the third-party engine, and that must never reach
+        # the user. The full detail still goes to the log below.
+        public = getattr(e, "public_message", None)
         # Hide raw stack info from the user; keep enough for debugging in DB.
         await state.update_status(
             job_id,
             status="failed",
             phase=None,
-            error_message=_friendly_failure_message(task_type, msg),
+            error_message=public or _friendly_failure_message(task_type, msg),
         )
         _log.exception("[jobs] %s#%s failed", task_type, job_id)
         await api._refund_credits(job)
+        _fire_callback(job, "failed", None, public or _friendly_failure_message(task_type, msg))
     finally:
         # Release pool reservations regardless of outcome
         _release_for_job(job)
+
+
+def _fire_callback(job: state.Job, status: str, result: dict | None, error: str | None) -> None:
+    """Best-effort one-shot callback_url delivery; never affects the job."""
+    try:
+        from job_callbacks import fire_and_forget
+
+        fire_and_forget(job, status, result, error)
+    except Exception:
+        _log.exception("[jobs] callback scheduling failed for %s", job.id)
 
 
 def _release_for_job(job: state.Job) -> None:
@@ -108,6 +127,7 @@ def _friendly_failure_message(task_type: str, raw: str) -> str:
         "clone": "Voice cloning",
         "voice_design": "Voice design",
         "music": "Music generation",
+        "video_dub": "Video dubbing",
     }.get(task_type, task_type)
 
     raw_l = (raw or "").lower()

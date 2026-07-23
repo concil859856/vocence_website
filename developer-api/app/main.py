@@ -21,6 +21,8 @@ app = FastAPI(
         {"name": "STT", "description": "Transcribe speech to text via Whisper."},
         {"name": "Voice Clone", "description": "One-shot voice cloning from a reference audio clip."},
         {"name": "Audio", "description": "Audio enhancement and noise reduction."},
+        {"name": "video", "description": "Video dubbing: translate a video into other languages in the original speaker's voice, optionally lip-synced."},
+        {"name": "Uploads", "description": "Presigned direct-to-storage uploads for large media (video dubbing sources)."},
         {"name": "Agents", "description": "CRUD + voice WebSocket session for your Studio agents."},
         {"name": "Knowledge", "description": "Per-agent RAG knowledge ingestion (text / URL / sitemap / PDF)."},
         {"name": "Call History", "description": "Per-agent voice-call list, per-turn transcripts, and presigned URLs to stereo WAV recordings. Recordings require `config.record_enabled = true` and are retained 30 days by default."},
@@ -39,6 +41,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(router)
+
+# OKX AI Marketplace surface (A2MCP ASP). The routes always mount so the
+# discovery manifest is reachable; the x402 payment gate attaches only when
+# fully configured, and adds nothing to the app otherwise. Wrapped in try so a
+# missing optional dep can never break API boot.
+try:
+    from app.okx.routes import router as okx_router
+    from app.okx.payments import build_payment_middleware
+
+    app.include_router(okx_router)
+    _okx_payment_mw = build_payment_middleware()
+    if _okx_payment_mw is not None:
+        app.middleware("http")(_okx_payment_mw)
+except Exception:  # pragma: no cover - defensive: never block API startup
+    import logging
+
+    logging.getLogger(__name__).exception("[okx] surface failed to mount; continuing without it")
 
 
 # Override FastAPI's default RequestValidationError handler so it

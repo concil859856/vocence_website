@@ -12,7 +12,7 @@ from local_db import get_connection
 
 
 JOB_STATUSES = {"pending", "processing", "completed", "failed", "timeout", "cancelled"}
-JOB_TYPES = {"tts", "stt", "clone", "voice_design", "music"}
+JOB_TYPES = {"tts", "stt", "clone", "voice_design", "music", "video_dub"}
 
 
 @dataclass
@@ -32,13 +32,16 @@ class Job:
     finished_at: str | None
 
     def to_dict(self) -> dict[str, Any]:
+        # The payload is echoed by the job-status endpoints; the callback
+        # signing secret must never travel back out, even to the owner.
+        payload = {k: v for k, v in (self.payload or {}).items() if k != "callback_secret"}
         return {
             "id": self.id,
             "user_id": self.user_id,
             "type": self.type,
             "status": self.status,
             "phase": self.phase,
-            "payload": self.payload,
+            "payload": payload,
             "result": self.result,
             "error_message": self.error_message,
             "pod_url": self.pod_url,
