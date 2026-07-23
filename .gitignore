@@ -134,7 +134,11 @@ app/.vite/
 developer-api/node_modules/
 developer-api/.env
 developer-api/*.db
-developer-api/venv/
+# Match every virtualenv flavour, not just the original `venv/`. The prod box
+# runs a second one (`venv_3.12/`, 187 MB) for the Python 3.11+ OKX SDK, and a
+# stray `git add -A` there would otherwise commit the whole interpreter tree.
+developer-api/venv*/
+dashboard-backend/venv*/
 
 # Temporary files
 *.tmp
