@@ -8,7 +8,9 @@
     "types": ["vite/client"],
     "skipLibCheck": true,
 
-    "baseUrl": ".",
+    /* No `baseUrl` — deprecated in TS 5.x and removed in 7. The `paths`
+       patterns below are explicitly relative ("./src/*"), so they resolve
+       against this file's directory without it. */
     "paths": {
       "@/*": [
         "./src/*"

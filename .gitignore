@@ -153,3 +153,5 @@ knowledge-ingestion/
 turn-detection/
 vocence-plugins/
 voice_agent/
+.agents/
+skills-lock.json
