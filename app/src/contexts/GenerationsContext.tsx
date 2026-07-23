@@ -4,7 +4,7 @@ import { toast } from 'sonner';
 import { useStudioPlayer } from './StudioPlayerContext';
 import { dashboardApi, type JobStatusResponse } from '../services/dashboardApi';
 
-export type JobType = 'tts' | 'stt' | 'clone' | 'voice_design' | 'music';
+export type JobType = 'tts' | 'stt' | 'clone' | 'voice_design' | 'music' | 'video_dub';
 
 export interface JobResult {
   audioUrl?: string;
@@ -70,6 +70,7 @@ const TYPE_LABEL: Record<JobType, string> = {
   clone: 'Voice clone',
   voice_design: 'Voice design',
   music: 'Music',
+  video_dub: 'Video dubbing',
 };
 
 const STORAGE_KEY = 'vocence_generations_v1';
@@ -308,7 +309,7 @@ export function GenerationsProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<ContextValue>(() => {
     const pending = jobs.filter((j) => j.status === 'pending');
-    const pendingByType: Record<JobType, number> = { tts: 0, stt: 0, clone: 0, voice_design: 0, music: 0 };
+    const pendingByType: Record<JobType, number> = { tts: 0, stt: 0, clone: 0, voice_design: 0, music: 0, video_dub: 0 };
     for (const j of pending) pendingByType[j.type]++;
     return {
       jobs,

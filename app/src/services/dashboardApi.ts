@@ -123,6 +123,22 @@ async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
         } catch { /* ignore */ }
         window.dispatchEvent(new Event('admin-unlock-required'));
       }
+    } else if (res.status === 401 && typeof window !== 'undefined') {
+      // A plain 401 on an authed call means the session expired or was
+      // revoked. Fire a global event so AuthContext tears down the session
+      // and Navbar prompts sign-in — otherwise the app sits in a broken
+      // "logged in but every call fails" state.
+      //
+      // Gated on a stored user: a genuinely logged-out visitor hitting an
+      // authed endpoint gets a normal 401 and must NOT see a "session
+      // expired" prompt. AuthContext clears vocence_user when it handles
+      // this, so a burst of parallel 401s only prompts once.
+      try {
+        if (window.localStorage.getItem('vocence_user')) {
+          const { userMessage } = _extractUserMessage(res.status, text);
+          window.dispatchEvent(new CustomEvent('session-expired', { detail: userMessage }));
+        }
+      } catch { /* ignore */ }
     }
     const { userMessage, detail } = _extractUserMessage(res.status, text);
     throw new ApiError({ status: res.status, userMessage, detail });
@@ -1189,7 +1205,7 @@ export const dashboardApi = {
    *  multipart POSTs to ``backend.vocence.ai``. The caller passes the
    *  returned ``key`` into whichever job/start endpoint needs it. */
   presignUpload(
-    body: { kind: 'music-source' | 'playbook-audio' | 'voice-clone-ref' | 'stt-source'; filename: string; content_type?: string; size: number },
+    body: { kind: 'music-source' | 'playbook-audio' | 'voice-clone-ref' | 'stt-source' | 'video-dub-source'; filename: string; content_type?: string; size: number },
     token: string | null,
   ): Promise<{ put_url: string; bucket: string; key: string; filename: string; expires_at: string; max_bytes: number }> {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -1205,7 +1221,7 @@ export const dashboardApi = {
    *  caller should put in the job payload. PUT goes browser → R2 directly
    *  so it bypasses Cloudflare and isn't subject to your API's body limits. */
   async uploadDirectToR2(
-    kind: 'music-source' | 'playbook-audio' | 'voice-clone-ref' | 'stt-source',
+    kind: 'music-source' | 'playbook-audio' | 'voice-clone-ref' | 'stt-source' | 'video-dub-source',
     file: File,
     token: string | null,
   ): Promise<{ bucket: string; key: string; filename: string }> {
@@ -1322,9 +1338,87 @@ export const dashboardApi = {
     return fetchJson(`/api/dashboard/playbooks/${id}/cover`, { method: 'POST', headers, body: form });
   },
 
+  // ─── Video dubbing ─────────────────────────────────────────────────────
+
+  /** Target languages plus per-tier availability. Availability can be false
+   *  when an upstream isn't configured on this deployment, so the UI should
+   *  disable the matching option rather than let the job fail at submit. */
+  getVideoDubLanguages(token: string | null): Promise<{
+    languages: { code: string; label: string; lipsync: boolean }[];
+    max_languages: number;
+    max_duration_sec: number;
+    standard_available: boolean;
+    lipsync_available: boolean;
+    lipsync_free_max_sec: number;
+    is_premium: boolean;
+  }> {
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson('/api/dashboard/video-dub/languages', { headers });
+  },
+
+  /** Server-side price for a job. Always quote before charging — the
+   *  client-side estimate is for display only and the backend recomputes it. */
+  quoteVideoDub(
+    body: { duration_sec: number; target_languages: string[]; lipsync: boolean },
+    token: string | null,
+  ): Promise<{ credits: number; tier: string; billable_minutes: number; language_count: number }> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson('/api/dashboard/video-dub/quote', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+  },
+
+  startVideoDub(
+    body: {
+      src_bucket: string;
+      src_key: string;
+      src_filename: string;
+      duration_sec: number;
+      size_bytes: number;
+      width: number;
+      height: number;
+      source_language: string;
+      target_languages: string[];
+      lipsync: boolean;
+      num_speakers: number;
+      consent_attested: boolean;
+    },
+    token: string | null,
+  ): Promise<{ job_id: string; credits_charged: number; queue_position: number; load_warning: boolean }> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson('/api/dashboard/video-dub/start', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+  },
+
+  getVideoDubHistory(
+    params: { limit?: number; offset?: number },
+    token: string | null,
+  ): Promise<{ items: VideoDubHistoryItem[]; total?: number; limit: number; offset: number }> {
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    const q = new URLSearchParams();
+    if (params.limit) q.set('limit', String(params.limit));
+    if (params.offset) q.set('offset', String(params.offset));
+    return fetchJson(`/api/dashboard/video-dub/history?${q.toString()}`, { headers });
+  },
+
+  deleteVideoDubHistoryItem(id: number, token: string | null): Promise<{ ok: boolean }> {
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetchJson(`/api/dashboard/video-dub/history/${id}`, { method: 'DELETE', headers });
+  },
+
   // ─── Generation jobs (queued, polled) ──────────────────────────────────
   startJob(
-    body: { type: 'tts' | 'stt' | 'clone' | 'voice_design' | 'music'; payload: Record<string, unknown>; credits?: number },
+    body: { type: 'tts' | 'stt' | 'clone' | 'voice_design' | 'music' | 'video_dub'; payload: Record<string, unknown>; credits?: number },
     token: string | null,
   ): Promise<{ job_id: string; status: string; queue_position: number; load_warning: boolean; pool_snapshots: Record<string, unknown> }> {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -1814,6 +1908,26 @@ export interface StudioMusicGenerateResponse {
   task: string;
 }
 
+export interface VideoDubHistoryItem {
+  id: number;
+  source_filename: string;
+  poster_url: string;
+  /** Groups the language variants produced by one dub job. */
+  collection_id: string | null;
+  source_language: string;
+  target_language: string;
+  /** Whether the speaker's mouth was re-rendered. The tier name behind this
+   *  is a server-side concern and is intentionally not exposed. */
+  lipsync: boolean;
+  duration_sec: number;
+  credits_used: number;
+  latency_ms: number | null;
+  status: string;
+  created_at: string;
+  expires_at: string;
+  video_url: string;
+}
+
 export interface StudioMusicHistoryItem {
   id: number;
   entry_type: 'music';
@@ -1830,7 +1944,7 @@ export interface StudioMusicHistoryItem {
 
 export interface StudioHistoryItem {
   id: number;
-  entry_type: 'tts' | 'stt' | 'clone' | 'voice_design' | 'music' | 'noise_remover' | 'dubbing';
+  entry_type: 'tts' | 'stt' | 'clone' | 'voice_design' | 'music' | 'noise_remover' | 'dubbing' | 'video_dub';
   miner_hotkey: string;
   model_name: string;
   display_name: string;
@@ -1856,6 +1970,18 @@ export interface StudioHistoryItem {
   lyrics?: string | null;
   music_task?: string | null;
   music_metadata_json?: string | null;
+  // Video-dubbing only. ``video_url`` is separate from ``audio_url`` so the
+  // UI renders a <video> without sniffing the extension, and the shared audio
+  // player never tries to stream a dub.
+  video_url?: string | null;
+  /** Extracted frame, shown as the card thumbnail. Null when ffmpeg was
+   *  unavailable at store time or the asset has expired. */
+  poster_url?: string | null;
+  target_language?: string | null;
+  lipsync?: boolean | null;
+  /** Groups the language variants produced by one dub job. Rows sharing this
+   *  render as a single collection card with one child row per language. */
+  collection_id?: string | null;
 }
 
 export interface StudioVoiceDesignConfig {

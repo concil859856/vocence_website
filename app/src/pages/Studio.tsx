@@ -56,6 +56,7 @@ import {
 } from '../services/dashboardApi';
 import { StudioMusic } from './StudioMusic';
 import { StudioNoiseRemover } from './StudioNoiseRemover';
+import StudioVideoDub from './StudioVideoDub';
 import { StudioHome } from './StudioHome';
 import { StudioPlaybooks } from './StudioPlaybooks';
 import { StudioTtsGeneral } from '../components/studio/StudioTtsGeneral';
@@ -305,9 +306,11 @@ export function Studio() {
   // Map legacy URLs to their new equivalents so bookmarks and external
   // links don't 404 after a rename. Add new aliases here as features
   // get renamed.
-  const LEGACY_VIEW_ALIASES: Record<string, StudioView> = {
-    dubbing: 'noise-remover',
-  };
+  // NOTE: `dubbing` used to alias to `noise-remover` (the pod was renamed in
+  // Nov 2026 and the old URL was kept alive). `/studio/dubbing` is now the
+  // real Video Dubbing feature, so that alias is gone — re-adding it would
+  // hijack this page.
+  const LEGACY_VIEW_ALIASES: Record<string, StudioView> = {};
   const resolvedView = LEGACY_VIEW_ALIASES[routeViewRaw] ?? routeViewRaw;
   const activeView: StudioView = STUDIO_VIEWS.includes(resolvedView as StudioView)
     ? (resolvedView as StudioView)
@@ -2998,14 +3001,15 @@ export function Studio() {
             {activeView === 'community-voices' && <StudioCommunityVoices />}
             {activeView === 'music' && <StudioMusic />}
             {activeView === 'noise-remover' && <StudioNoiseRemover />}
+            {activeView === 'dubbing' && <StudioVideoDub />}
             {activeView === 'playbooks' && <StudioPlaybooks />}
             {activeView === 'history' && (
               <div className="space-y-6">
                 <div>
-                  <h2 className="text-2xl font-semibold mb-2">History</h2>
+                  <h2 className="text-2xl font-semibold mb-2">Library</h2>
                   <p className="text-[#A7B0B7]">
-                    View and manage your Studio activity: TTS, STT, voice cloning, music generation, and My voice (Voice Design) generations.
-                    Audio is available for 7 days for Normal users. Premium users enjoy never-expiring history.
+                    Everything you've generated: TTS, STT, voice cloning, music, My voice (Voice Design), noise removal, and video dubbing.
+                    Audio is kept for 7 days on the Normal plan — each item shows how long it has left. Dubbed videos and Premium files are kept permanently.
                   </p>
                 </div>
                 {!user ? (

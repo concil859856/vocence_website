@@ -284,7 +284,12 @@ export const api = {
         body: JSON.stringify({}),
       });
       if (!response.ok) {
-        throw new Error('Session verification failed');
+        // Preserve the status so the caller can distinguish a genuinely
+        // expired/invalid session (401 → log out) from a transient network
+        // or server failure (→ keep the cached user for offline display).
+        const err = new Error('Session verification failed') as Error & { status?: number };
+        err.status = response.status;
+        throw err;
       }
       const data = await response.json();
       return data.user;

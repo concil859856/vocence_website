@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { ExpiryBadge } from '../components/ExpiryBadge';
 import { useAuth } from '../contexts/AuthContext';
 import { useStudioPlayer } from '../contexts/StudioPlayerContext';
 import {
@@ -13,6 +14,7 @@ import {
   ChevronDown,
   ChevronRight,
   Check,
+  Film,
 } from 'lucide-react';
 import { dashboardApi } from '../services/dashboardApi';
 import {
@@ -27,7 +29,7 @@ const HISTORY_PAGE_SIZE = 10;
 
 interface HistoryItem {
   id: string;
-  type: 'tts' | 'stt' | 'cloning' | 'voice_design' | 'music' | 'noise_remover';
+  type: 'tts' | 'stt' | 'cloning' | 'voice_design' | 'music' | 'noise_remover' | 'video_dub';
   timestamp: string;
   date: string;
   content: string;
@@ -48,10 +50,66 @@ interface HistoryItem {
    *  ``musicTask``, retake has variance/seeds, repaint has start/end,
    *  edit has target_prompt/target_lyrics, extend has left/right, etc. */
   musicMeta?: Record<string, unknown>;
+  /** ISO expiry, used by the retention badge. */
+  expiresAt?: string;
+  /** Video-dub only: the dubbed file (a video, not an audio track). */
+  videoUrl?: string | null;
+  targetLanguage?: string;
+  lipsync?: boolean;
+  /** Video-dub only: identifies the job that produced this row. Rows sharing
+   *  one are collapsed into a single collection card. */
+  collectionId?: string;
+  /** Present on the card that represents a multi-language collection. Each
+   *  variant keeps its own URL, expiry and download — they are siblings, not
+   *  a single asset with alternate renditions. */
+  variants?: HistoryItem[];
+}
+
+/** Language code -> display name for dub variant chips. */
+const DUB_LANG_LABEL: Record<string, string> = {
+  en: 'English', es: 'Spanish', fr: 'French', de: 'German', it: 'Italian',
+  pt: 'Portuguese', pl: 'Polish', tr: 'Turkish', ru: 'Russian', nl: 'Dutch',
+  sv: 'Swedish', id: 'Indonesian', fil: 'Filipino', ja: 'Japanese', ko: 'Korean',
+  zh: 'Chinese', hi: 'Hindi', ar: 'Arabic', vi: 'Vietnamese', uk: 'Ukrainian',
+  cs: 'Czech', el: 'Greek', da: 'Danish', fi: 'Finnish', no: 'Norwegian',
+  ro: 'Romanian', hu: 'Hungarian', ms: 'Malay',
+};
+
+const dubLang = (code?: string) => (code ? DUB_LANG_LABEL[code] || code.toUpperCase() : '');
+
+/**
+ * Collapse dub rows that came from the same job into one collection card.
+ *
+ * One source video dubbed into three languages is three independent assets
+ * (own URL, own expiry, own download) that a user thinks of as one thing.
+ * They are kept as sibling ``variants`` rather than merged, so nothing is
+ * hidden and deleting the group never implies deleting the files.
+ */
+function groupCollections(items: HistoryItem[]): HistoryItem[] {
+  const out: HistoryItem[] = [];
+  const byCollection = new Map<string, HistoryItem>();
+  for (const item of items) {
+    if (item.type !== 'video_dub' || !item.collectionId) {
+      out.push(item);
+      continue;
+    }
+    const head = byCollection.get(item.collectionId);
+    if (!head) {
+      const parent = { ...item, variants: [item] };
+      byCollection.set(item.collectionId, parent);
+      out.push(parent);
+    } else {
+      head.variants!.push(item);
+    }
+  }
+  return out;
 }
 
 export function History() {
   const { user } = useAuth();
+  // Premium keeps assets permanently, so the retention badge is suppressed —
+  // telling someone their files expire when they don't is worse than silence.
+  const isPremium = (user?.planCode || '').toLowerCase() === 'premium';
   const navigate = useNavigate();
   const player = useStudioPlayer();
   const [history, setHistory] = useState<HistoryItem[]>([]);
@@ -138,9 +196,11 @@ export function History() {
                   ? 'voice_design'
                   : item.entry_type === 'music'
                     ? 'music'
-                    : item.entry_type === 'noise_remover' || item.entry_type === 'dubbing'
-                      ? 'noise_remover'
-                      : 'tts';
+                    : item.entry_type === 'video_dub'
+                      ? 'video_dub'
+                      : item.entry_type === 'noise_remover' || item.entry_type === 'dubbing'
+                        ? 'noise_remover'
+                        : 'tts';
           const isCloneLike = item.entry_type === 'clone' || item.entry_type === 'voice_design';
           // Parse music metadata into a plain object so the expandable
           // row can render task-specific fields without each consumer
@@ -167,7 +227,9 @@ export function History() {
                 ? item.transcribed_text || item.source_audio_filename || ''
                 : item.entry_type === 'noise_remover'
                   ? item.source_audio_filename || 'Audio enhancement'
-                  : item.prompt_text || '',
+                  : item.entry_type === 'video_dub'
+                    ? item.source_audio_filename || 'Dubbed video'
+                    : item.prompt_text || '',
             stylePrompt: isCloneLike
               ? (item.reference_text || '').slice(0, 120) + ((item.reference_text || '').length > 120 ? '…' : '')
               : item.entry_type === 'stt'
@@ -176,7 +238,9 @@ export function History() {
                   ? musicTaskLabel
                   : item.entry_type === 'noise_remover'
                     ? 'Noise reduction'
-                    : item.style_instruction,
+                    : item.entry_type === 'video_dub'
+                      ? `${dubLang(item.source_language || 'auto')} → ${dubLang(item.target_language || '')}`
+                      : item.style_instruction,
             model: item.display_name,
             meta:
               item.entry_type === 'voice_design'
@@ -189,7 +253,9 @@ export function History() {
                       ? `Studio Music · ${musicTaskLabel}`
                       : item.entry_type === 'noise_remover'
                         ? 'Noise Remover · DeepFilterNet'
-                        : 'Studio TTS',
+                        : item.entry_type === 'video_dub'
+                          ? `Video Dubbing${item.lipsync ? ' · lip-synced' : ''}`
+                          : 'Studio TTS',
             duration: item.duration_seconds != null ? `${item.duration_seconds.toFixed(1)}s` : '—',
             audioUrl: item.audio_url,
             expired: item.expired,
@@ -206,9 +272,14 @@ export function History() {
             musicTask: item.music_task || undefined,
             lyrics: item.lyrics || undefined,
             musicMeta,
+            expiresAt: item.expires_at || undefined,
+            videoUrl: item.video_url,
+            targetLanguage: item.target_language || undefined,
+            lipsync: item.lipsync ?? undefined,
+            collectionId: item.collection_id || undefined,
           };
         });
-        setHistory(items);
+        setHistory(groupCollections(items));
       })
       .catch(() => setHistory([]));
   }, [user, navigate]);
@@ -256,6 +327,8 @@ export function History() {
         return 'bg-pink-500/15 text-pink-300';
       case 'noise_remover':
         return 'bg-amber-500/15 text-amber-300';
+      case 'video_dub':
+        return 'bg-orange-500/15 text-orange-300';
       default:
         return 'bg-white/10 text-white';
     }
@@ -271,6 +344,8 @@ export function History() {
         return 'MUSIC';
       case 'noise_remover':
         return 'NOISE REMOVER';
+      case 'video_dub':
+        return 'DUBBING';
       default:
         return type.toUpperCase();
     }
@@ -366,7 +441,7 @@ export function History() {
             <ArrowLeft size={20} />
           </button>
           <div>
-            <h1 className="text-3xl font-semibold">History</h1>
+            <h1 className="text-3xl font-semibold">Library</h1>
             <p className="text-[#A7B0B7]">View and manage all your creations</p>
           </div>
         </div>
@@ -400,6 +475,7 @@ export function History() {
                 <SelectItem value="voice_design">My voice (Voice Design)</SelectItem>
                 <SelectItem value="music">Music</SelectItem>
                 <SelectItem value="noise_remover">Noise Remover</SelectItem>
+                <SelectItem value="video_dub">Video Dubbing</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -433,16 +509,23 @@ export function History() {
                 <tbody className="divide-y divide-white/5">
                   {paginatedHistory.flatMap((item) => {
                     const isMusic = item.type === 'music';
-                    const isExpanded = isMusic && expandedIds.has(item.id);
+                    const isDub = item.type === 'video_dub';
+                    // A dub job that produced more than one language renders as
+                    // a collection: one card, one expandable child row per
+                    // language, each keeping its own download and expiry.
+                    const variants = item.variants ?? [];
+                    const isCollection = isDub && variants.length > 1;
+                    const canExpand = isMusic || isCollection;
+                    const isExpanded = canExpand && expandedIds.has(item.id);
                     const rows = [
                     <tr
                       key={item.id}
-                      className={`hover:bg-white/5 transition-colors ${isMusic ? 'cursor-pointer' : ''}`}
-                      onClick={isMusic ? () => toggleExpanded(item.id) : undefined}
+                      className={`hover:bg-white/5 transition-colors ${canExpand ? 'cursor-pointer' : ''}`}
+                      onClick={canExpand ? () => toggleExpanded(item.id) : undefined}
                     >
                       <td className="px-4 py-4">
                         <div className="font-medium flex items-center gap-1.5">
-                          {isMusic && (
+                          {canExpand && (
                             isExpanded ? <ChevronDown size={14} className="text-[#A7B0B7]" /> : <ChevronRight size={14} className="text-[#A7B0B7]" />
                           )}
                           {item.timestamp}
@@ -457,6 +540,11 @@ export function History() {
                         >
                           {getTypeLabel(item.type)}
                         </span>
+                        {isCollection && (
+                          <span className="ml-1 px-1.5 py-0.5 rounded bg-white/10 text-[10px] text-[#A7B0B7]">
+                            {variants.length} languages
+                          </span>
+                        )}
                       </td>
                       <td className="px-4 py-4">
                         <div className="flex items-center gap-2">
@@ -511,13 +599,32 @@ export function History() {
                           )}
                           <span className="text-xs">{item.duration}</span>
                         </div>
+                        <ExpiryBadge
+                          expiresAt={item.expiresAt}
+                          expired={item.expired}
+                          permanent={isPremium}
+                          className="mt-1"
+                        />
                       </td>
                       <td
                         className="px-4 py-4 text-right"
                         onClick={(e) => e.stopPropagation()}
                       >
                         <div className="flex items-center justify-end gap-2">
-                          {item.audioUrl != null && !item.expired ? (
+                          {isDub ? (
+                            item.videoUrl && !item.expired ? (
+                              <a
+                                href={item.videoUrl}
+                                download={`vocence-dub-${item.targetLanguage || 'out'}-${item.id.replace(/^api-/, '')}.mp4`}
+                                className="p-1.5 text-[#666] hover:text-white"
+                                title={isCollection ? 'Download first language' : 'Download'}
+                              >
+                                <Download size={16} />
+                              </a>
+                            ) : (
+                              <span className="text-xs text-[#666]">{item.expired ? 'Expired' : 'Unavailable'}</span>
+                            )
+                          ) : item.audioUrl != null && !item.expired ? (
                             <>
                               {(() => {
                                 const isThis = !!item.audioUrl && player.track?.src === item.audioUrl;
@@ -607,11 +714,58 @@ export function History() {
                       </td>
                     </tr>,
                     ];
-                    if (isExpanded) {
+                    if (isExpanded && isMusic) {
                       rows.push(
                         <tr key={`${item.id}-details`} className="bg-[#0a0a0a]">
                           <td colSpan={7} className="p-0">
                             {renderMusicDetails(item)}
+                          </td>
+                        </tr>,
+                      );
+                    }
+                    if (isExpanded && isCollection) {
+                      // Siblings, not renditions: each language has its own
+                      // file, expiry and download. Listing them individually
+                      // is what lets a user grab just the one they need.
+                      rows.push(
+                        <tr key={`${item.id}-variants`} className="bg-[#0a0a0a]">
+                          <td colSpan={7} className="p-0">
+                            <div className="divide-y divide-white/5">
+                              {variants.map((v) => (
+                                <div key={v.id} className="flex items-center gap-3 px-6 py-3">
+                                  <Film size={14} className="text-orange-300 shrink-0" />
+                                  <span className="text-sm text-white min-w-[120px]">
+                                    {dubLang(v.targetLanguage)}
+                                  </span>
+                                  {v.lipsync && (
+                                    <span className="px-1.5 py-0.5 rounded bg-orange-500/15 text-orange-300 text-[10px]">
+                                      lip-synced
+                                    </span>
+                                  )}
+                                  <ExpiryBadge
+                                    expiresAt={v.expiresAt}
+                                    expired={v.expired}
+                                    permanent={isPremium}
+                                  />
+                                  <div className="ml-auto flex items-center gap-2">
+                                    {v.videoUrl && !v.expired ? (
+                                      <a
+                                        href={v.videoUrl}
+                                        download={`vocence-dub-${v.targetLanguage || 'out'}-${v.id.replace(/^api-/, '')}.mp4`}
+                                        className="p-1.5 text-[#666] hover:text-white"
+                                        title={`Download ${dubLang(v.targetLanguage)}`}
+                                      >
+                                        <Download size={16} />
+                                      </a>
+                                    ) : (
+                                      <span className="text-xs text-[#666]">
+                                        {v.expired ? 'Expired' : 'Unavailable'}
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
                           </td>
                         </tr>,
                       );

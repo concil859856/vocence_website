@@ -36,6 +36,8 @@ function typeBadgeClass(et: StudioHistoryItem['entry_type']): string {
     case 'noise_remover':
     case 'dubbing':
       return 'bg-amber-500/15 text-amber-300';
+    case 'video_dub':
+      return 'bg-orange-500/15 text-orange-300';
   }
 }
 
@@ -54,6 +56,8 @@ function typeBadgeLabel(et: StudioHistoryItem['entry_type']): string {
     case 'noise_remover':
       return 'NOISE REMOVER';
     case 'dubbing':
+      return 'DUBBING';
+    case 'video_dub':
       return 'DUBBING';
   }
 }

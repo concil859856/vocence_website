@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Activity, Mic, Copy as CopyIcon, Music as MusicIcon, Palette, Zap, X, AlertTriangle } from 'lucide-react';
+import { Activity, Mic, Copy as CopyIcon, Film, Music as MusicIcon, Palette, Zap, X, AlertTriangle } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useGenerations, type JobType } from '../contexts/GenerationsContext';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
@@ -10,6 +10,7 @@ const TYPE_META: Record<JobType, { label: string; color: string; icon: typeof Mi
   clone:        { label: 'Voice clone',  color: '#22d3ee', icon: CopyIcon, href: '/studio/cloning' },
   voice_design: { label: 'Voice design', color: '#a78bfa', icon: Palette,  href: '/studio/voice-design' },
   music:        { label: 'Music',        color: '#f472b6', icon: MusicIcon, href: '/studio/music' },
+  video_dub:    { label: 'Video dubbing', color: '#fb923c', icon: Film,     href: '/studio/dubbing' },
 };
 
 type PillVariant = 'sidebar' | 'floating';

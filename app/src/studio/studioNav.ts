@@ -58,17 +58,20 @@ export const studioNavSections: StudioNavSection[] = [
     items: [
       { id: 'cloning',       label: 'Voice Cloning', icon: Users },
       { id: 'stt',           label: 'Speech to Text', icon: MessageSquare },
-      { id: 'dubbing',       label: 'Dubbing',       icon: Film,       badge: { text: 'SOON', variant: 'soon' }, disabled: true },
+      { id: 'dubbing',       label: 'Video Dubbing', icon: Film,       badge: { text: 'NEW',  variant: 'new'  } },
       { id: 'noise-remover', label: 'Noise Remover', icon: AudioLines, badge: { text: 'NEW',  variant: 'new'  } },
     ],
   },
   {
-    heading: 'Library',
+    // "Assets" groups everything the user owns; "Library" inside it is the
+    // flat all-outputs view (previously "History" — that name described an
+    // event log, but the page is storage).
+    heading: 'Assets',
     items: [
       { id: 'community-voices', label: 'Community Voices', icon: Library },
       { id: 'my-voices',        label: 'My Voices',        icon: LayoutGrid },
       { id: 'playbooks',        label: 'Playbooks',        icon: ListMusic },
-      { id: 'history',          label: 'History',          icon: History },
+      { id: 'history',          label: 'Library',          icon: History },
     ],
   },
   {

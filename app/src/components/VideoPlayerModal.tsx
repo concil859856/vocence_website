@@ -328,7 +328,12 @@ export function VideoPlayerModal({
       onClick={onBackdropClick}
       onMouseMove={() => wakeControls()}
       onTouchStart={() => wakeControls()}
-      className="fixed inset-0 z-[120] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 sm:p-8"
+      // pointer-events-auto is load-bearing when this opens above a Radix
+      // dialog: Radix sets `pointer-events: none` on <body> while a modal is
+      // open and re-enables it only inside its own layer. This portal is a
+      // sibling of that layer, so without this the whole player — controls
+      // and close button included — is inert.
+      className="pointer-events-auto fixed inset-0 z-[120] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 sm:p-8"
     >
       <span id={labelId} className="sr-only">{title}</span>
 
@@ -605,8 +610,7 @@ function VolumeControl({
         onChange={(e) => onVolume(parseFloat(e.target.value))}
         aria-label="Volume"
         className="
-          h-[3px] w-0 cursor-pointer appearance-none rounded-full bg-white/20 transition-all
-          group-hover/vol:w-20
+          h-[3px] w-20 cursor-pointer appearance-none rounded-full bg-white/20 transition-all
           [&::-webkit-slider-thumb]:appearance-none
           [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:w-3
           [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white
