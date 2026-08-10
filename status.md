@@ -400,7 +400,17 @@ which has never been run.
 
 Correct order: **deploy → `agent create` → agent ID → send to OKX for human review.**
 
-### 10.6 Blockers — updated 2026-07-23 (our side is DONE; waiting on OKX)
+### 10.6 Blockers — updated 2026-08-10: ALL DONE, listing under review
+
+x402 settlement is LIVE on X Layer mainnet (eip155:196): dev-portal creds
+configured, payments_ready=true, all 6 tools serve 402 challenges in USD₮0
+(TTS $0.02→`20000`, dub 10min×2×lipsync $48→`48000000` verified on the wire).
+Agent 8148 resubmitted via `agent activate` — approvalLabel: "Listing under
+review". CLI upgraded to 4.4.9 + `@okxweb3/a2a-node` installed (new activate
+dependency). Wallet balance is $0 — fund with USDT on X Layer for a paid
+self-test via `onchainos payment quote/pay`.
+
+#### Historical blocker list (2026-07-23)
 
 Everything Vocence-side was completed and verified live on 2026-07-23:
 
