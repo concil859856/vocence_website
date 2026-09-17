@@ -1,0 +1,1 @@
+# Whole VOCENCE Platform code
